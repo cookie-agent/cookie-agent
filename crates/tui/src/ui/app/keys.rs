@@ -1688,7 +1688,7 @@ impl App {
                         self.picker_entry_count()
                     }
                     Modal::ConnectProviders => self.filtered_providers().len(),
-                    Modal::UserMessage => USER_MENU_ITEMS.len(),
+                    Modal::UserMessage => self.user_menu_actions().len(),
                     Modal::ConnectDetails
                     | Modal::ConnectSetup
                     | Modal::ConnectError

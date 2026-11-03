@@ -94,6 +94,109 @@ async fn revert_needs_the_current_tip_and_a_retried_fork_returns_the_same_fork()
 }
 
 #[tokio::test]
+async fn a_fork_before_a_message_leaves_out_the_run_it_starts() {
+    let (endpoint, _captured, _reached, _release) = scripted_server_with_delayed_response(
+        vec![
+            text_response("first answer"),
+            text_response("second answer"),
+        ],
+        usize::MAX,
+    )
+    .await;
+    let (fixture, selection) = custom_fixture_with_endpoint(&endpoint);
+    let session = fixture.engine.create_session(selection.clone()).unwrap();
+    for (index, content) in ["first question", "second question"]
+        .into_iter()
+        .enumerate()
+    {
+        fixture
+            .engine
+            .start_run(
+                RunStartParams {
+                    reset_fallback: false,
+                    session_id: session.session_id,
+                    client_run_id: ClientRunId::new(format!("run-{index}")).unwrap(),
+                    selection: selection.clone(),
+                    content: content.into(),
+                },
+                origin(),
+            )
+            .await
+            .unwrap();
+        await_projection(
+            &fixture.engine,
+            session.session_id,
+            "completed run",
+            |projection| {
+                projection.status == SessionStatus::Completed && projection.runs.len() == index + 1
+            },
+        )
+        .await;
+    }
+    let events = fixture
+        .engine
+        .inner
+        .store
+        .get(session.session_id)
+        .unwrap()
+        .log
+        .events();
+    let messages = events
+        .iter()
+        .filter(|event| matches!(event.payload, EventPayload::UserInputSubmitted { .. }))
+        .map(|event| event.seq)
+        .collect::<Vec<_>>();
+    let forked_log = |forked| {
+        fixture
+            .engine
+            .inner
+            .store
+            .get(forked)
+            .unwrap()
+            .log
+            .events()
+            .into_iter()
+            .map(|event| event.payload.clone())
+            .collect::<Vec<_>>()
+    };
+    // Just before the second message: the first run whole, and nothing of
+    // the second, not even an interrupted start.
+    let forked = fixture
+        .engine
+        .fork_session(session.session_id, messages[1] - 1, origin(), None)
+        .await
+        .expect("fork before the second message")
+        .session_id;
+    let payloads = forked_log(forked);
+    let runs = |payloads: &[EventPayload]| {
+        payloads
+            .iter()
+            .filter(|payload| matches!(payload, EventPayload::RunStarted { .. }))
+            .count()
+    };
+    assert_eq!(runs(&payloads), 1);
+    assert!(payloads.iter().all(|payload| match payload {
+        EventPayload::RunFinished { outcome } => outcome.status() == SessionStatus::Completed,
+        _ => true,
+    }));
+    // Just before the first: a session with no message yet, to start over.
+    let forked = fixture
+        .engine
+        .fork_session(session.session_id, messages[0] - 1, origin(), None)
+        .await
+        .expect("fork before the first message")
+        .session_id;
+    let payloads = forked_log(forked);
+    assert_eq!(runs(&payloads), 0);
+    assert!(
+        !payloads
+            .iter()
+            .any(|payload| matches!(payload, EventPayload::UserInputSubmitted { .. }))
+    );
+    fixture.engine.shutdown().await;
+}
+
+#[tokio::test]
 async fn a_manual_compaction_can_be_cancelled_and_input_waits_for_it() {
     let response = |text: &str| text_response(text);
     let old_assistant = format!("OLD_ASSISTANT {}", "old ".repeat(600));

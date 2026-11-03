@@ -504,7 +504,7 @@ impl App {
             Modal::Models => self.filtered_draft_models().len(),
             Modal::Variants => self.variant_step_options().len(),
             Modal::ConnectProviders => self.filtered_providers().len(),
-            Modal::UserMessage => USER_MENU_ITEMS.len(),
+            Modal::UserMessage => self.user_menu_actions().len(),
             Modal::Mcp
             | Modal::Runtimes
             | Modal::Permissions

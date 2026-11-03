@@ -13,7 +13,7 @@ A client must call `handshake` before any other method:
 
 ```json
 { "jsonrpc": "2.0", "id": 1, "method": "handshake", "params": {
-    "protocol_version": "1.78.0",
+    "protocol_version": "1.79.0",
     "client": { "kind": "web", "instance_id": "<uuid>" },
     "token": "<the daemon's token>",
     "features": [] } }
@@ -22,7 +22,7 @@ A client must call `handshake` before any other method:
 The reply:
 
 ```json
-{ "protocol_version": "1.78.0", "engine_version": "0.3.0",
+{ "protocol_version": "1.79.0", "engine_version": "0.3.0",
   "origin": "client:web-<id>", "machine_id": "<opaque>", "features": [],
   "status": { "phase": "ready" } }
 ```
@@ -1528,10 +1528,14 @@ the freed sequence numbers. Subscribers receive a `rewound` notification (see
 `session.fork` takes a `client_fork_id`: while the daemon runs, a retry with the
 same key and target returns the first fork instead of making another, and the
 same key with a different target is an `idempotency_conflict`.
-`session.fork` may read an active source but requires a persisted prefix that
-contains a submitted user message. The fork copies that prefix exactly under a
-new session ID, closes any copied in-flight run locally, appends ` (fork)` to
-the title, and continues with new physical sequences.
+`session.fork` may read an active source and copies a persisted prefix. It
+cuts where a revert to the same sequence would: a run the prefix would leave
+with nothing but its `run_started` is left out, so a fork to just before a
+message leaves out the run that message starts. The prefix needs no
+submitted message, so a session forks before its first message too (both
+since 1.79.0). The fork copies that prefix exactly under a new session ID,
+closes any copied in-flight run locally, appends ` (fork)` to the title, and
+continues with new physical sequences.
 
 ## Delete
 

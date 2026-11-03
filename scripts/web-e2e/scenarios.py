@@ -1732,7 +1732,10 @@ def session_depth(browser):
     browser.wait("the second answer", lambda: answers(browser) >= 2)
     idle(browser, "the second run's end")
     first = browser.text("#session-title")
-    browser.click("#transcript [data-action=user-menu]")
+    browser.script(
+        "const menus = document.querySelectorAll('#transcript [data-action=user-menu]');"
+        "menus[menus.length - 1].click()"
+    )
     browser.wait("the message menu", lambda: "Fork" in browser.text("#sheet"))
     browser.shot("message-menu")
     browser.click("#message-fork")
@@ -1740,11 +1743,29 @@ def session_depth(browser):
         "the fork",
         lambda: browser.text("#session-title") not in (first, "New session")
         and "hello there" in browser.text("#transcript")
-        and "second message" not in browser.text("#transcript"),
+        and "second message" not in browser.text("#transcript")
+        and browser.script("return document.querySelector('#composer').value") == "second message",
     )
-    print("forked the session at its first message")
+    print("forked the session before its second message; its text is in the fork's composer")
     browser.shot("fork")
+    clear_composer(browser)
     # The fork already holds the first message's answer.
+    sent = answers(browser)
+    send(browser, "third message")
+    browser.wait("the third answer", lambda: answers(browser) > sent)
+    idle(browser, "the third run's end")
+
+    # Revert to the end of the first reply, from its footer's menu.
+    close_sheet(browser)
+    browser.click("#transcript [data-action=reply-menu]")
+    browser.wait("the reply menu", lambda: "Revert" in browser.text("#sheet"))
+    browser.shot("reply-menu")
+    browser.click("#message-revert")
+    browser.wait("the revert guard", lambda: "end of this reply" in browser.text("#sheet"))
+    browser.click("#revert-confirm")
+    browser.wait("the revert", lambda: "third message" not in browser.text("#transcript"))
+    assert browser.script("return document.querySelector('#composer').value") == ""
+    print("reverted to the end of the first reply")
     sent = answers(browser)
     send(browser, "third message")
     browser.wait("the third answer", lambda: answers(browser) > sent)
@@ -1803,6 +1824,10 @@ def session_depth(browser):
         print("compact (focus %r): %s" % (focus, browser.text("#compact-outcome")))
         close_sheet(browser)
     browser.shot("compact")
+    assert count(browser, "#transcript [data-action=compaction-revert]") >= 1, "a compaction's revert"
+    browser.cdp("Emulation.setEmulatedMedia", {"features": [{"name": "prefers-color-scheme", "value": "dark"}]})
+    browser.shot("compact-dark")
+    browser.cdp("Emulation.setEmulatedMedia", {"features": [{"name": "prefers-color-scheme", "value": "light"}]})
 
     # A goal, paused while its run streams. The engine tells the agent of a
     # pause only while the session runs (an idle one has no one to tell), so

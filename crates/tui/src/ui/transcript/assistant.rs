@@ -285,10 +285,28 @@ fn finish_assistant_layout(
 ) -> ChunkedItem {
     // The block footer closes the run: one muted, gutter-aligned row with
     // generation speed and context use, from committed-turn usage and
-    // durable event timestamps. Passive — no region, no hover — and absent
-    // entirely when the data is missing.
-    if let Some(footer) = assistant_footer_line(state, item_id, context.width, context.theme) {
-        layout.lines.push_lines(footer);
+    // durable event timestamps, absent when the data is missing. The last
+    // block of a finished run always has one, ending in `⋯`: a click opens
+    // the reply's revert/fork menu.
+    let menu = state.reply_cut(item_id).is_some();
+    if let Some(footer) = assistant_footer_line(state, item_id, menu, context.width, context.theme)
+    {
+        let lines = footer.len();
+        let gutter = if context.width >= 4 { 3 } else { 0 };
+        layout.push_layout(ItemLayout {
+            regions: menu
+                .then_some(BlockRegion {
+                    id: BlockId::ReplyEnd(item_id),
+                    start_line: 0,
+                    end_line: lines,
+                    header_lines: Some(lines),
+                    header_gutter: Some(gutter),
+                })
+                .into_iter()
+                .collect(),
+            lines: footer,
+            user_seq: None,
+        });
     }
     layout
 }
@@ -861,15 +879,23 @@ pub(super) fn attribution_line(
 /// The assistant block's closing footer:
 /// `╰─ ⚡ 42.1 tps · 12.5K ctx · $0.0040` in
 /// muted styling — visually subordinate to the body, closing the block's
-/// gutter tree. Its text, and whether it shows at all, is the shared
-/// [`cookie_agent_client_state::reply::assistant_footer`].
+/// gutter tree. Its text is the shared
+/// [`cookie_agent_client_state::reply::assistant_footer`]; with `menu` it
+/// ends in the `⋯` of the reply's menu, and shows even without that text.
 pub(super) fn assistant_footer_line(
     state: &SessionState,
     item_id: u64,
+    menu: bool,
     width: u16,
     theme: &Theme,
 ) -> Option<Vec<Line<'static>>> {
-    let footer = cookie_agent_client_state::reply::assistant_footer(state, item_id)?;
+    let footer = cookie_agent_client_state::reply::assistant_footer(state, item_id);
+    let footer = match (footer, menu) {
+        (Some(footer), true) => format!("{footer} · {REPLY_MENU_MARKER}"),
+        (Some(footer), false) => footer,
+        (None, true) => REPLY_MENU_MARKER.to_owned(),
+        (None, false) => return None,
+    };
     let prefix = (width >= 4).then(|| vec![Span::styled("╰─ ", theme.muted())]);
     Some(repeated_prefixed_wrapped_line(
         prefix.unwrap_or_default(),
@@ -877,6 +903,9 @@ pub(super) fn assistant_footer_line(
         width,
     ))
 }
+
+/// What ends the footer of a reply that has a revert/fork menu.
+pub(super) const REPLY_MENU_MARKER: &str = "⋯";
 
 pub(super) fn assistant_body_line(
     line: Line<'static>,

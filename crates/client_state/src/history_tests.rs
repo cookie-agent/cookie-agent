@@ -505,3 +505,85 @@ fn held_live_state_keeps_the_newest_of_each_until_its_end() {
     );
     assert!(kept(&held).is_empty());
 }
+
+/// The reply cut of each finished run's last block, in transcript order,
+/// and the revert cut of each compaction.
+fn cuts(state: &SessionState) -> (Vec<u64>, Vec<u64>) {
+    let replies = state
+        .transcript
+        .iter()
+        .filter_map(|item| state.reply_cut(item.id()))
+        .collect();
+    let compactions = state
+        .transcript
+        .iter()
+        .filter_map(|item| match item {
+            TranscriptItem::Compaction { seq, .. } => state.compaction_point(*seq),
+            _ => None,
+        })
+        .map(|point| point.through_seq())
+        .collect();
+    (replies, compactions)
+}
+
+#[test]
+fn each_reply_ends_before_what_starts_after_it_paged_or_whole() {
+    let events = log(CODING);
+    let (whole, _) = display_view::display_events(&events, true);
+    let expected = reduce_session_events(events[0].session_id, 0, &whole);
+    // The runs end at 50, 124, 141, 154, and 168, the session's last event.
+    // The third's reply stops at its run's end: a producer's message comes
+    // in at 142, before the next run. So does the fourth's: the compaction
+    // after it read through 154, and committed at 158.
+    assert_eq!(cuts(&expected), (vec![50, 124, 141, 154, 168], vec![154]));
+    let mut store = StateStore::default();
+    let window = display_view::tail_window(&events, EventsView::Display, 8 * 1024);
+    let session_id = open(&mut store, &events, window);
+    load_all(&mut store, &events, session_id, 8 * 1024);
+    assert_eq!(cuts(&store.sessions[&session_id]), cuts(&expected));
+}
+
+#[test]
+fn a_reply_has_its_cut_once_its_run_finishes_and_keeps_later_settings() {
+    let events = log(CODING);
+    let session_id = events[0].session_id;
+    let mut store = StateStore::default();
+    // The first run, up to its `run_finished` at 50.
+    for event in events.iter().take_while(|event| event.seq < 50) {
+        assert!(store.apply_event((**event).clone()));
+    }
+    let last_block = |store: &StateStore| {
+        store.sessions[&session_id]
+            .transcript
+            .iter()
+            .rev()
+            .find(|item| matches!(item, TranscriptItem::Assistant { .. }))
+            .map(TranscriptItem::id)
+            .expect("block")
+    };
+    let item = last_block(&store);
+    assert_eq!(store.sessions[&session_id].reply_cut(item), None);
+    assert!(store.apply_event((*events[49]).clone()));
+    let state = &store.sessions[&session_id];
+    assert_eq!(state.reply_cut(item), Some(50));
+    assert_eq!(
+        state.reply_point(item),
+        Some(crate::cut_points::CutPoint::ReplyEnd {
+            through_seq: 50,
+            at_tip: true
+        })
+    );
+    // A setting changed after the reply stays with it.
+    let mut renamed = (*events[49]).clone();
+    renamed.seq = 51;
+    renamed.run_id = None;
+    renamed.payload = EventPayload::SessionTitleCommitted {
+        input_through_seq: 50,
+        change: cookie_agent_protocol::SessionTitleChange::UserClear {
+            client_rename_id: cookie_agent_protocol::ClientRenameId::new("rename-1")
+                .expect("rename id"),
+        },
+    };
+    assert!(store.apply_event(renamed));
+    assert_eq!(store.sessions[&session_id].reply_cut(item), Some(51));
+}

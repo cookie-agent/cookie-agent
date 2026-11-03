@@ -684,7 +684,7 @@ impl Engine {
             };
             if let Some(reason) = crate::runtime::acp::lifecycle::rewind_refusal(
                 &events,
-                revert_cut(&events, through_seq),
+                history_cut(&events, through_seq),
                 &known,
             ) {
                 return Err(EngineError::AcpUnsupported(reason));
@@ -803,7 +803,7 @@ impl Engine {
                     // A revert removes the events after the cut: the log keeps no
                     // marker, and later appends reuse the freed sequences.
                     let events = projection.log.event_snapshot();
-                    let cut = revert_cut(&events, through_seq);
+                    let cut = history_cut(&events, through_seq);
                     let deleted = engine.reverted_children(&events, cut)?;
                     // The ACP agent remembers what the cut removes: the
                     // session it talks in is left behind (its next turn
@@ -986,10 +986,14 @@ impl Engine {
                 Err(EngineError::ForkIdempotencyConflict)
             };
         }
-        // An ACP agent must be able to fork its conversation there, or the
-        // fork is refused before anything changes.
-        {
+        let requested_through_seq = through_seq;
+        // A fork to just before a message leaves out the run that message
+        // starts, as a revert there does.
+        let through_seq = {
             let events = self.inner.store.get(session_id)?.log.event_snapshot();
+            let through_seq = history_cut(&events, through_seq);
+            // An ACP agent must be able to fork its conversation there, or
+            // the fork is refused before anything changes.
             let known = |record: &cookie_agent_protocol::AcpSessionRecord| {
                 self.fork_knowledge(&events, record)
             };
@@ -998,7 +1002,8 @@ impl Engine {
             {
                 return Err(EngineError::AcpUnsupported(reason));
             }
-        }
+            through_seq
+        };
         let context_id = crate::plugin::plugin_context_id();
         for hooked in self.inner.plugins.interception_plugins(
             cookie_agent_protocol::ExtensionInterceptionHook::SessionBeforeFork,
@@ -1097,7 +1102,10 @@ impl Engine {
                 .forks
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .insert((session_id, client_fork_id), (through_seq, forked));
+                .insert(
+                    (session_id, client_fork_id),
+                    (requested_through_seq, forked),
+                );
         }
         Ok(SessionForkResult { session_id: forked })
     }
@@ -1245,10 +1253,11 @@ impl Engine {
     }
 }
 
-/// Where a revert to `through_seq` cuts the log. A run the cut would leave
-/// holding nothing but its start goes too: reverting to just before a message
-/// targets the event before it, which is usually that run's `RunStarted`.
-fn revert_cut(events: &[Arc<cookie_agent_protocol::StoredEvent>], through_seq: u64) -> u64 {
+/// Where a revert or a fork through `through_seq` cuts the log. A run the
+/// cut would leave holding nothing but its start goes too: cutting to just
+/// before a message targets the event before it, which is usually that
+/// run's `RunStarted`.
+fn history_cut(events: &[Arc<cookie_agent_protocol::StoredEvent>], through_seq: u64) -> u64 {
     let mut cut = through_seq;
     loop {
         let mut open = None;

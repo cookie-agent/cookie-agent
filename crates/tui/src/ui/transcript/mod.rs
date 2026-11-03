@@ -373,6 +373,9 @@ pub(super) enum BlockId {
         content_index: u32,
     },
     Thinking(u64),
+    /// The footer that closes the reply of the assistant block with this
+    /// item ID: a click opens its revert/fork menu.
+    ReplyEnd(u64),
     /// The reduced mode's work row of the fold that starts at this block's
     /// child.
     Work {
@@ -2543,6 +2546,10 @@ impl App {
                 }
                 return;
             }
+            BlockId::ReplyEnd(item_id) => {
+                self.open_reply_menu(item_id);
+                return;
+            }
             BlockId::MemoryChange(seq) => {
                 let url = self.store.sessions.get(&session_id).and_then(|state| {
                     state.transcript.iter().rev().find_map(|item| match item {
@@ -3171,6 +3178,31 @@ pub(super) fn block_hit_at<'a>(
                     viewport.y
                         + u16::try_from(region.start_line - scroll_offset).unwrap_or(u16::MAX),
                     u16::try_from(UnicodeWidthStr::width(tool_rows::BACKGROUND_BUTTON))
+                        .unwrap_or(u16::MAX),
+                    1,
+                ))
+            })
+        }
+        // A compaction's revert button ends its header row.
+        BlockId::Compaction(_) if region.start_line >= scroll_offset && region.start_line < end => {
+            line_at(region.start_line).and_then(|line| {
+                let text = line
+                    .spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>();
+                let at = text
+                    .trim_end()
+                    .strip_suffix(events::COMPACTION_REVERT_BUTTON)?
+                    .len();
+                let column = UnicodeWidthStr::width(&text[..at]);
+                Some(Rect::new(
+                    viewport
+                        .x
+                        .saturating_add(u16::try_from(column).unwrap_or(u16::MAX)),
+                    viewport.y
+                        + u16::try_from(region.start_line - scroll_offset).unwrap_or(u16::MAX),
+                    u16::try_from(UnicodeWidthStr::width(events::COMPACTION_REVERT_BUTTON))
                         .unwrap_or(u16::MAX),
                     1,
                 ))

@@ -134,17 +134,19 @@ impl App {
         }
         // A running call's background button sits on its title row, which
         // otherwise toggles the call.
-        if let Some(call_id) = hits
+        // So does a compaction's revert button on its header row.
+        if let Some(target) = hits
             .blocks
             .iter()
             .rev()
             .find(|hit| hit.action_rect.is_some_and(&over))
             .and_then(|hit| match hit.id {
-                BlockId::Tool(call_id) => Some(call_id),
+                BlockId::Tool(call_id) => Some(PointerTarget::BackgroundButton(call_id)),
+                BlockId::Compaction(seq) => Some(PointerTarget::CompactionRevert(seq)),
                 _ => None,
             })
         {
-            return Some(PointerTarget::BackgroundButton(call_id));
+            return Some(target);
         }
         hits.blocks
             .iter()
@@ -578,6 +580,7 @@ impl App {
                 }
             }
             PointerTarget::BackgroundButton(call_id) => self.request_background(call_id),
+            PointerTarget::CompactionRevert(seq) => self.confirm_compaction_revert(seq),
             PointerTarget::MemoryLink(call_id) => self.open_tool_memory(call_id),
             PointerTarget::DeferredPromptLink => self.open_deferred_prompt(),
             PointerTarget::TranscriptBlock(id) => self.toggle_block(id),
@@ -656,6 +659,18 @@ impl App {
                     .blocks
                     .iter()
                     .find(|hit| hit.id == BlockId::Tool(call_id))
+                    .and_then(|hit| hit.action_rect)
+                    .map(|rect| match hits.conversation {
+                        Some(viewport) => rect.intersection(viewport),
+                        None => rect,
+                    })),
+                fill_style,
+            ),
+            PointerTarget::CompactionRevert(seq) => (
+                one(hits
+                    .blocks
+                    .iter()
+                    .find(|hit| hit.id == BlockId::Compaction(seq))
                     .and_then(|hit| hit.action_rect)
                     .map(|rect| match hits.conversation {
                         Some(viewport) => rect.intersection(viewport),

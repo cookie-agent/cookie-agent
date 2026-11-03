@@ -1,6 +1,9 @@
 use crate::ui::transcript::*;
 
+use std::sync::{Arc, Mutex};
+
 use cookie_agent_protocol::SessionId;
+use serde_json::Value;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
@@ -37,8 +40,13 @@ async fn user_message_click_opens_the_menu_only_on_user_rows() {
     app.handle_click(hit.rect.x + 2, hit.rect.y).await;
     assert_eq!(app.modal, Modal::UserMessage);
     let menu = app.user_menu.as_ref().expect("menu state");
-    assert_eq!(menu.seq, 1);
-    assert_eq!(menu.text, "first question");
+    assert_eq!(
+        menu.target,
+        CutPoint::UserMessage {
+            seq: 1,
+            text: "first question".into()
+        }
+    );
     // The menu does not open from assistant/tool rows; they keep their
     // expand/collapse toggle. (The menu closes first so its overlay
     // does not swallow the click.)
@@ -151,7 +159,7 @@ async fn revert_confirm_fits_a_standard_terminal_and_its_buttons_click() {
 }
 
 #[tokio::test]
-async fn menu_fork_targets_the_message_seq_and_switches_sessions() {
+async fn menu_fork_leaves_the_message_out_and_edits_it_in_the_fork() {
     let (mut app, session, _) = app_with_user_messages().await;
     let (client, recorded, _incoming) = live_recording_client();
     app.client = client;
@@ -173,12 +181,120 @@ async fn menu_fork_targets_the_message_seq_and_switches_sessions() {
         request["params"]["session_id"].as_str(),
         Some(session.to_string().as_str())
     );
-    // Fork keeps the message in the copied prefix: through_seq = seq.
-    assert_eq!(request["params"]["through_seq"].as_u64(), Some(2));
-    // The committed fork switches the viewed session.
+    // The fork cuts where a revert there would: through_seq = seq - 1.
+    assert_eq!(request["params"]["through_seq"].as_u64(), Some(1));
+    // The committed fork switches the viewed session, with the message to
+    // edit in its composer.
     let forked = SessionId::new_v7();
-    app.handle_rpc_update(RpcUpdate::Forked { forked });
+    app.handle_rpc_update(RpcUpdate::Forked {
+        forked,
+        text: Some("second question".into()),
+    });
     assert_eq!(app.selected, Some(forked));
+    assert_eq!(app.input.as_str(), "second question");
+}
+
+/// The `through_seq` of the `method` request `app` sent last.
+async fn sent_through_seq(recorded: &Arc<Mutex<Vec<Value>>>, method: &str, count: usize) -> u64 {
+    let id = wait_for_recorded_request(recorded, method, count).await;
+    recorded
+        .lock()
+        .expect("recorded")
+        .iter()
+        .find(|value| value["id"].as_i64() == Some(id))
+        .and_then(|value| value["params"]["through_seq"].as_u64())
+        .expect("through_seq")
+}
+
+#[tokio::test]
+async fn a_reply_footer_reverts_and_forks_at_the_end_of_the_reply() {
+    let (mut app, _) = app_with_finished_replies().await;
+    let (client, recorded, _incoming) = live_recording_client();
+    app.client = client;
+    rendered_frame(&mut app, 80, 40);
+    // The first reply ends before the compaction that follows its run.
+    let footer = reply_end_hit(&app, 0);
+    app.handle_click(footer.rect.x + 4, footer.rect.y).await;
+    assert_eq!(app.modal, Modal::UserMessage);
+    assert_eq!(
+        app.user_menu.as_ref().expect("menu").target,
+        CutPoint::ReplyEnd {
+            through_seq: 5,
+            at_tip: false
+        }
+    );
+    // No message to copy: `c` does nothing.
+    app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE))
+        .await;
+    assert_eq!(app.modal, Modal::UserMessage);
+    app.handle_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE))
+        .await;
+    assert_eq!(app.modal, Modal::RevertConfirm);
+    app.handle_key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE))
+        .await;
+    assert_eq!(sent_through_seq(&recorded, "session.revert", 1).await, 5);
+
+    rendered_frame(&mut app, 80, 40);
+    let footer = reply_end_hit(&app, 0);
+    app.handle_click(footer.rect.x + 4, footer.rect.y).await;
+    app.handle_key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::NONE))
+        .await;
+    assert_eq!(sent_through_seq(&recorded, "session.fork", 1).await, 5);
+}
+
+#[tokio::test]
+async fn the_last_reply_forks_the_whole_session_and_has_nothing_to_revert() {
+    let (mut app, _) = app_with_finished_replies().await;
+    let (client, recorded, _incoming) = live_recording_client();
+    app.client = client;
+    rendered_frame(&mut app, 80, 40);
+    let footer = reply_end_hit(&app, 1);
+    app.handle_click(footer.rect.x + 4, footer.rect.y).await;
+    assert_eq!(app.user_menu_actions().len(), 1);
+    app.handle_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE))
+        .await;
+    assert_eq!(app.modal, Modal::UserMessage, "no revert to confirm");
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+        .await;
+    assert_eq!(sent_through_seq(&recorded, "session.fork", 1).await, 11);
+    assert_eq!(recorded_method_count(&recorded, "session.revert"), 0);
+}
+
+#[tokio::test]
+async fn a_compaction_reverts_to_before_it_behind_its_guard() {
+    let (mut app, _) = app_with_finished_replies().await;
+    let (client, recorded, _incoming) = live_recording_client();
+    app.client = client;
+    rendered_frame(&mut app, 80, 40);
+    let button = app
+        .hit_map
+        .blocks
+        .iter()
+        .find(|hit| matches!(hit.id, BlockId::Compaction(_)))
+        .and_then(|hit| hit.action_rect)
+        .expect("revert button");
+    app.handle_click(button.x, button.y).await;
+    assert_eq!(app.modal, Modal::RevertConfirm);
+    // Cancel closes: the button has no menu to go back to.
+    app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
+        .await;
+    assert_eq!(app.modal, Modal::None);
+    assert!(app.user_menu.is_none());
+    rendered_frame(&mut app, 80, 40);
+    app.handle_click(button.x, button.y).await;
+    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+        .await;
+    assert_eq!(sent_through_seq(&recorded, "session.revert", 1).await, 5);
+}
+
+#[tokio::test]
+async fn a_reverted_reply_leaves_the_composer_alone() {
+    let (mut app, session, _) = app_with_user_messages().await;
+    app.handle_rpc_update(RpcUpdate::Reverted {
+        session_id: session,
+        text: None,
+    });
+    assert_eq!(app.input.as_str(), "");
 }
 
 #[tokio::test]
@@ -186,7 +302,7 @@ async fn reverted_update_restores_the_message_text_into_the_composer() {
     let (mut app, session, _) = app_with_user_messages().await;
     app.handle_rpc_update(RpcUpdate::Reverted {
         session_id: session,
-        text: "second question".into(),
+        text: Some("second question".into()),
     });
     assert_eq!(app.input.as_str(), "second question");
     assert!(app.composer_focused());

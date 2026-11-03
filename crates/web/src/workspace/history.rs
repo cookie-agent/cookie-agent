@@ -1,7 +1,8 @@
-//! History edits, as the TUI makes them: a user message's menu (copy,
-//! revert, fork), and `/compact` with its cancel.
+//! History edits, as the TUI makes them: the menu of a user message (copy,
+//! revert, fork), of a reply's end (revert, fork), and a compaction's
+//! revert; and `/compact` with its cancel.
 
-use cookie_agent_client_state::TranscriptItem;
+use cookie_agent_client_state::{TranscriptItem, cut_points::CutPoint};
 use cookie_agent_protocol::{
     ClientForkId, SafeDisplayText, SessionCompactCancelParams, SessionCompactParams,
     SessionForkParams, SessionId, SessionRevertParams,
@@ -10,15 +11,13 @@ use leptos::{prelude::*, task::spawn_local};
 
 use super::{Panel, Workspace, client_run_id};
 
-/// The message a menu was opened on. Its text is captured on opening: a
-/// rebuild (a concurrent revert) can change the transcript before the
-/// action runs.
+/// The point of history a menu was opened on. A user message's text is
+/// captured on opening: a rebuild (a concurrent revert) can change the
+/// transcript before the action runs.
 #[derive(Clone, Debug, PartialEq)]
 pub struct UserMenu {
     pub session_id: SessionId,
-    /// The physical sequence of the message's `user_input_submitted`.
-    pub seq: u64,
-    pub text: String,
+    pub point: CutPoint,
     /// The revert is waiting for its confirmation.
     pub confirming_revert: bool,
 }
@@ -46,18 +45,71 @@ impl Workspace {
                 .set("message is no longer in the visible branch".into());
             return;
         };
+        self.open_point_menu(session_id, CutPoint::UserMessage { seq, text }, false);
+    }
+
+    /// Opens the menu of the reply that ends with the viewed session's
+    /// assistant block `item_id`.
+    pub fn open_reply_menu(self, item_id: u64) {
+        let Some(session_id) = self.selected.get_untracked() else {
+            return;
+        };
+        let point = self.store.with_value(|store| {
+            store
+                .sessions
+                .get(&session_id)
+                .and_then(|state| state.reply_point(item_id))
+        });
+        let Some(point) = point else {
+            self.status
+                .set("reply is no longer in the visible branch".into());
+            return;
+        };
+        self.open_point_menu(session_id, point, false);
+    }
+
+    /// Asks before reverting the viewed session to before its compaction
+    /// committed at `seq`.
+    pub fn open_compaction_revert(self, seq: u64) {
+        let Some(session_id) = self.selected.get_untracked() else {
+            return;
+        };
+        let point = self.store.with_value(|store| {
+            store
+                .sessions
+                .get(&session_id)
+                .and_then(|state| state.compaction_point(seq))
+        });
+        let Some(point) = point else {
+            self.status
+                .set("compaction is no longer in the visible branch".into());
+            return;
+        };
+        self.open_point_menu(session_id, point, true);
+    }
+
+    fn open_point_menu(self, session_id: SessionId, point: CutPoint, confirming_revert: bool) {
         self.user_menu.set(Some(UserMenu {
             session_id,
-            seq,
-            text,
-            confirming_revert: false,
+            point,
+            confirming_revert,
         }));
         self.panel.set(Some(Panel::Message));
     }
 
-    /// Asks before a revert, which removes the message and every later
-    /// turn.
+    /// Asks before a revert, which removes every later turn.
     pub fn confirm_revert(self, confirming: bool) {
+        // A compaction's menu is its confirmation: backing out closes it.
+        if !confirming
+            && self.user_menu.with_untracked(|menu| {
+                menu.as_ref()
+                    .is_some_and(|menu| matches!(menu.point, CutPoint::Compaction { .. }))
+            })
+        {
+            self.panel.set(None);
+            self.user_menu.set(None);
+            return;
+        }
         self.user_menu.update(|menu| {
             if let Some(menu) = menu {
                 menu.confirming_revert = confirming;
@@ -65,11 +117,11 @@ impl Workspace {
         });
     }
 
-    /// Reverts the session to just before the menu's message
-    /// (`through_seq = seq - 1`), naming the tip this view shows so the
+    /// Reverts the session to the menu's point
+    /// ([`CutPoint::through_seq`]), naming the tip this view shows so the
     /// daemon refuses instead of deleting turns another client added. The
-    /// `rewound` notification rebuilds the transcript; the message text
-    /// comes back into the composer.
+    /// `rewound` notification rebuilds the transcript; a reverted
+    /// message's text comes back into the composer.
     pub fn revert(self) {
         let (Some(client), Some(menu)) = (self.client(), self.user_menu.get_untracked()) else {
             return;
@@ -85,8 +137,8 @@ impl Workspace {
             self.status.set("session is not loaded".into());
             return;
         };
-        // User messages always follow `session_created` (sequence 1).
-        let through_seq = menu.seq.saturating_sub(1).max(1);
+        let through_seq = menu.point.through_seq();
+        let text = menu.point.text().map(str::to_owned);
         spawn_local(async move {
             match client
                 .revert_session(SessionRevertParams {
@@ -97,24 +149,21 @@ impl Workspace {
                 .await
             {
                 Ok(result) => {
-                    let text = result.instructions_override.unwrap_or(menu.text);
+                    let text = text.map(|text| result.instructions_override.unwrap_or(text));
                     if self.selected.get_untracked() == Some(menu.session_id) {
-                        self.composer.update(|composer| {
-                            if composer.is_empty() {
-                                *composer = text;
-                            } else {
-                                composer.push('\n');
-                                composer.push_str(&text);
-                            }
-                        });
-                        self.status
-                            .set("reverted; the message text is back in the composer".into());
+                        if let Some(text) = text {
+                            self.put_in_composer(&text);
+                            self.status
+                                .set("reverted; the message text is back in the composer".into());
+                        } else {
+                            self.status.set("reverted".into());
+                        }
                     }
                     self.refresh_tree();
                 }
                 Err(error) if error.is(&cookie_agent_protocol::errors::STALE_REVERT) => {
                     self.status.set(
-                        "revert refused: the session changed since you opened this message; \
+                        "revert refused: the session changed since you opened this menu; \
                          review the new turns and revert again"
                             .into(),
                     );
@@ -127,21 +176,35 @@ impl Workspace {
         });
     }
 
-    /// Forks the session at the menu's message (`through_seq = seq`,
-    /// keeping the message), then opens the fork.
+    /// Adds `text` to the composer, after what it holds.
+    fn put_in_composer(self, text: &str) {
+        self.composer.update(|composer| {
+            if composer.is_empty() {
+                *composer = text.to_owned();
+            } else {
+                composer.push('\n');
+                composer.push_str(text);
+            }
+        });
+    }
+
+    /// Forks the session at the menu's point ([`CutPoint::through_seq`]),
+    /// then opens the fork. A fork at a user message leaves the message
+    /// out and puts its text in the fork's composer, for editing there.
     pub fn fork(self) {
         let (Some(client), Some(menu)) = (self.client(), self.user_menu.get_untracked()) else {
             return;
         };
         self.panel.set(None);
         self.user_menu.set(None);
-        self.status
-            .set("forking the session from the message…".into());
+        self.status.set("forking the session…".into());
+        let through_seq = menu.point.through_seq();
+        let text = menu.point.text().map(str::to_owned);
         spawn_local(async move {
             match client
                 .fork_session(SessionForkParams {
                     session_id: menu.session_id,
-                    through_seq: menu.seq,
+                    through_seq,
                     client_fork_id: ClientForkId::new(client_run_id().as_str())
                         .expect("a client run id is a valid fork id"),
                 })
@@ -158,7 +221,15 @@ impl Workspace {
                     self.refresh_lists().await;
                     self.reroot_tree(forked);
                     self.open_session(forked);
-                    self.status.set("forked the session; switched to it".into());
+                    if let Some(text) = text
+                        && self.selected.get_untracked() == Some(forked)
+                    {
+                        self.put_in_composer(&text);
+                        self.status
+                            .set("forked the session; the message text is in its composer".into());
+                    } else {
+                        self.status.set("forked the session; switched to it".into());
+                    }
                 }
                 Err(error) => self
                     .status
@@ -170,11 +241,15 @@ impl Workspace {
     /// Copies the menu's message with `navigator.clipboard`; elsewhere the
     /// sheet's text is selected for the user to copy.
     pub fn copy_message(self) {
-        let Some(menu) = self.user_menu.get_untracked() else {
+        let Some(text) = self
+            .user_menu
+            .get_untracked()
+            .and_then(|menu| menu.point.text().map(str::to_owned))
+        else {
             return;
         };
         spawn_local(async move {
-            let copied = crate::browser::copy_text(&menu.text).await;
+            let copied = crate::browser::copy_text(&text).await;
             self.status.set(if copied {
                 "message copied".into()
             } else {

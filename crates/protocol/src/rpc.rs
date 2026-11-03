@@ -1833,6 +1833,10 @@ pub struct SessionDeleteResult {
 #[serde(deny_unknown_fields)]
 pub struct SessionForkParams {
     pub session_id: SessionId,
+    /// The last event the fork copies. A run the prefix would leave with
+    /// nothing but its `run_started` is left out, as a revert leaves it,
+    /// so a fork to just before a message leaves out the run it starts;
+    /// and the prefix needs no submitted message (client protocol 1.79.0).
     #[schemars(range(min = 1))]
     pub through_seq: u64,
     /// A retry with the same key returns the fork the first request made,

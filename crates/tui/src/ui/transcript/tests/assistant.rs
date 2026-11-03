@@ -371,7 +371,7 @@ async fn replayed_footer_cost_matches_engine_session_usage() {
         .iter()
         .find_map(|item| matches!(item, TranscriptItem::Assistant { .. }).then(|| item.id()))
         .expect("assistant item");
-    let footer = assistant_footer_line(state, item_id, 100, &Theme::default())
+    let footer = assistant_footer_line(state, item_id, false, 100, &Theme::default())
         .expect("assistant footer")
         .into_iter()
         .map(|line| line.to_string())

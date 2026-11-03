@@ -418,7 +418,7 @@ A new session belongs to no project unless you pick one; `cookie --project
 started in. A daemon older than client protocol 1.8 keeps no projects, so
 the bar names none and `/project` is not offered.
 
-## User-message menu
+## Message and reply menus
 
 Click a past `You` message to open its action menu. Use Up/Down and Enter, Esc
 to close, or the `c`, `r`, and `f` accelerators.
@@ -429,11 +429,19 @@ to close, or the `c`, `r`, and `f` accelerators.
   message text to the composer. If the session gained events since this view
   last showed it, for example a turn another client started, the revert is
   refused so nothing unseen is deleted; review the new turns and revert again.
-- **Fork** creates and selects an independent session whose copied prefix
-  includes that message.
+- **Fork** edits the message in a fork: it creates and selects an
+  independent session that ends just before the message, with the message's
+  text in its composer.
+
+A finished reply's footer ends in `⋯`; click it for the reply's menu:
+**Revert** removes everything after the reply (the last reply has nothing
+after it, so it offers only the fork), and **Fork** creates a session that
+ends with the reply. A compaction's row ends in `[revert]`, which asks to
+revert to before the compaction. See [Revert](../sessions/index.md#revert)
+for where each cuts.
 
 Assistant and tool rows keep their normal expand/collapse behavior and do not
-open the message menu.
+open the menus.
 
 ## Transcript details
 

@@ -17,6 +17,7 @@ pub mod badges;
 pub mod cache;
 pub mod config;
 pub mod cron;
+pub mod cut_points;
 pub mod daemon_status;
 pub mod elicitation;
 pub mod format;
@@ -1466,6 +1467,14 @@ pub struct SessionState {
     pub assistant_ends: HashMap<u64, AssistantEnd>,
     /// The run each assistant block belongs to, when it has one.
     pub assistant_runs: HashMap<u64, RunId>,
+    /// Each run's `run_finished` sequence and its block the transcript
+    /// shows last, and the sequences where something starts that a reply
+    /// before it does not hold: a run, and outside any run a producer's
+    /// message, a goal, or a compaction. Where a revert or fork that keeps a
+    /// reply cuts ([`SessionState::reply_cut`]).
+    pub run_finishes: HashMap<RunId, u64>,
+    pub run_last_blocks: HashMap<RunId, u64>,
+    pub reply_boundaries: std::collections::BTreeSet<u64>,
     /// What of the session's history the display view has not loaded.
     pub history: history::HistoryState,
 }

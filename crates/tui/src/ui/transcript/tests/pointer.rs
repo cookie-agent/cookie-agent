@@ -81,6 +81,7 @@ fn kind(target: PointerTarget) -> &'static str {
         PointerTarget::Scrollbar(ScrollbarTarget::Input) => "composer scrollbar",
         PointerTarget::UserMessage(_) => "user message",
         PointerTarget::BackgroundButton(_) => "background button",
+        PointerTarget::CompactionRevert(_) => "compaction revert",
         PointerTarget::MemoryLink(_) => "memory link",
         PointerTarget::DeferredPromptLink => "deferred prompt link",
         PointerTarget::TranscriptBlock(_) => "transcript block",
@@ -95,6 +96,7 @@ fn is_transcript(target: PointerTarget) -> bool {
         target,
         PointerTarget::TranscriptBlock(_)
             | PointerTarget::BackgroundButton(_)
+            | PointerTarget::CompactionRevert(_)
             | PointerTarget::MemoryLink(_)
             | PointerTarget::DeferredPromptLink
             | PointerTarget::UserMessage(_)
@@ -574,6 +576,23 @@ async fn every_clickable_element_hovers_visibly() {
     assert_eq!(app.modal, Modal::RevertConfirm);
     seen.extend(sweep(&mut app, "revert confirm"));
 
+    // Finished replies end in their menu's footer, and a compaction's
+    // header row in its revert button.
+    let (mut replies, _) = app_with_finished_replies().await;
+    seen.extend(sweep(&mut replies, "finished replies"));
+    assert!(
+        replies
+            .hit_map
+            .blocks
+            .iter()
+            .any(|hit| matches!(hit.id, BlockId::ReplyEnd(_))),
+        "a reply's footer on screen"
+    );
+    let footer = reply_end_hit(&replies, 0);
+    replies.handle_click(footer.rect.x + 4, footer.rect.y).await;
+    assert_eq!(replies.modal, Modal::UserMessage);
+    seen.extend(sweep(&mut replies, "reply menu"));
+
     // The surfaces above reach every target there is.
     let missing = [
         "palette row",
@@ -622,6 +641,7 @@ async fn every_clickable_element_hovers_visibly() {
         "composer scrollbar",
         "user message",
         "background button",
+        "compaction revert",
         "memory link",
         "deferred prompt link",
         "transcript block",

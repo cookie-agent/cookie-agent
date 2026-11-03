@@ -5,6 +5,17 @@ The client protocol's version is `MAJOR.MINOR.PATCH`
 adds and a major breaks; before it, every minor could break the wire (see the
 [compatibility spec](../specs/compatibility-v1.md) section 3).
 
+## 1.79.0
+
+- `session.fork` cuts as `session.revert` does: a run the prefix would
+  leave with nothing but its `run_started` is left out, so a fork to just
+  before a message leaves out the run it starts instead of copying it as
+  an interrupted run. The prefix no longer needs a submitted user message,
+  so a session forks before its first message too. The TUI and the web
+  client fork at a user message this way, putting its text in the fork's
+  composer, and revert and fork at the end of a reply and before a
+  compaction ([Sessions](../sessions/index.md#revert)).
+
 ## 1.78.0
 
 - Compaction before the prompt cache expires

@@ -860,34 +860,88 @@ impl App {
             self.status = "message is no longer in the visible branch".into();
             return;
         };
-        self.user_menu = Some(UserMenuState {
-            session_id,
-            seq: hit.seq,
-            text,
-        });
+        self.open_message_menu(session_id, CutPoint::UserMessage { seq: hit.seq, text });
+    }
+
+    /// Open the revert/fork menu of the reply that ends with the assistant
+    /// block `item_id`, cutting where the transcript says now.
+    pub(in crate::ui) fn open_reply_menu(&mut self, item_id: u64) {
+        let Some(session_id) = self.selected else {
+            return;
+        };
+        let Some(point) = self
+            .store
+            .sessions
+            .get(&session_id)
+            .and_then(|state| state.reply_point(item_id))
+        else {
+            self.status = "reply is no longer in the visible branch".into();
+            return;
+        };
+        self.open_message_menu(session_id, point);
+    }
+
+    /// Ask to revert to before the compaction committed at `seq`.
+    pub(super) fn confirm_compaction_revert(&mut self, seq: u64) {
+        let Some(session_id) = self.selected else {
+            return;
+        };
+        let Some(target) = self
+            .store
+            .sessions
+            .get(&session_id)
+            .and_then(|state| state.compaction_point(seq))
+        else {
+            self.status = "compaction is no longer in the visible branch".into();
+            return;
+        };
+        self.user_menu = Some(UserMenuState { session_id, target });
+        self.modal = Modal::RevertConfirm;
+    }
+
+    fn open_message_menu(&mut self, session_id: SessionId, target: CutPoint) {
+        self.user_menu = Some(UserMenuState { session_id, target });
         self.picker_state.select(Some(0));
         self.modal = Modal::UserMessage;
     }
 
+    /// The open message menu's rows.
+    pub(in crate::ui) fn user_menu_actions(&self) -> Vec<(MenuAction, &'static str)> {
+        self.user_menu
+            .as_ref()
+            .map(|menu| menu_actions(&menu.target))
+            .unwrap_or_default()
+    }
+
     pub(super) async fn handle_user_menu_key(&mut self, key: KeyEvent) {
+        let actions = self.user_menu_actions();
+        let count = actions.len();
         match key.code {
             KeyCode::Esc => {
                 self.modal = Modal::None;
                 self.user_menu = None;
             }
             KeyCode::Up => {
-                move_picker_selection(&mut self.picker_state, USER_MENU_ITEMS.len(), true);
+                move_picker_selection(&mut self.picker_state, count, true);
             }
             KeyCode::Down => {
-                move_picker_selection(&mut self.picker_state, USER_MENU_ITEMS.len(), false);
+                move_picker_selection(&mut self.picker_state, count, false);
             }
             KeyCode::Enter => {
                 self.choose_picker_entry(self.picker_state.selected().unwrap_or(0))
                     .await;
             }
-            KeyCode::Char('c') => self.activate_user_menu_entry(0),
-            KeyCode::Char('r') => self.activate_user_menu_entry(1),
-            KeyCode::Char('f') => self.activate_user_menu_entry(2),
+            KeyCode::Char(letter) => {
+                let action = match letter {
+                    'c' => MenuAction::Copy,
+                    'r' => MenuAction::Revert,
+                    'f' => MenuAction::Fork,
+                    _ => return,
+                };
+                if let Some(index) = actions.iter().position(|(entry, _)| *entry == action) {
+                    self.activate_user_menu_entry(index);
+                }
+            }
             _ => {}
         }
     }
@@ -898,19 +952,23 @@ impl App {
             self.modal = Modal::None;
             return;
         };
-        match index {
-            0 => {
+        let Some((action, _)) = menu_actions(&menu.target).get(index).copied() else {
+            return;
+        };
+        match action {
+            MenuAction::Copy => {
                 self.modal = Modal::None;
                 self.user_menu = None;
-                self.copy_to_clipboard(menu.text);
+                if let Some(text) = menu.target.text() {
+                    self.copy_to_clipboard(text.to_owned());
+                }
             }
-            1 => self.modal = Modal::RevertConfirm,
-            2 => {
+            MenuAction::Revert => self.modal = Modal::RevertConfirm,
+            MenuAction::Fork => {
                 self.modal = Modal::None;
                 self.user_menu = None;
                 self.dispatch_session_fork(menu);
             }
-            _ => {}
         }
     }
 
@@ -927,10 +985,20 @@ impl App {
     }
 
     /// Answer the revert guard from its hotkeys or buttons: confirm
-    /// dispatches the revert, cancel backs out to the message menu.
+    /// dispatches the revert, cancel backs out to the message menu (a
+    /// compaction's guard, opened from its button, just closes).
     pub(super) fn answer_revert_confirm(&mut self, button: ConfirmButton) {
         if button == ConfirmButton::Cancel {
-            self.modal = Modal::UserMessage;
+            if self
+                .user_menu
+                .as_ref()
+                .is_some_and(|menu| matches!(menu.target, CutPoint::Compaction { .. }))
+            {
+                self.modal = Modal::None;
+                self.user_menu = None;
+            } else {
+                self.modal = Modal::UserMessage;
+            }
             return;
         }
         self.modal = Modal::None;
@@ -939,16 +1007,15 @@ impl App {
         }
     }
 
-    /// Revert the session to just before the menu's message (`through_seq =
-    /// seq - 1`), removing it and every later turn from the log. The
-    /// `rewound` notification drives the transcript rebuild. On success the
-    /// message text restores into the composer for editing and resending.
+    /// Revert the session to the menu's point
+    /// ([`CutPoint::through_seq`]), removing every later event from the
+    /// log. The `rewound` notification drives the transcript rebuild. On
+    /// success a reverted message's text restores into the composer for
+    /// editing and resending.
     pub(super) fn dispatch_session_revert(&mut self, menu: UserMenuState) {
-        // User messages always follow `SessionCreated` (sequence 1), so
-        // `seq - 1` is a positive existing physical sequence.
-        let through_seq = menu.seq.saturating_sub(1).max(1);
+        let through_seq = menu.target.through_seq();
         let session_id = menu.session_id;
-        let text = menu.text;
+        let text = menu.target.text().map(str::to_owned);
         // The revert names the tip this view shows: if another client added
         // to the session since, the daemon refuses instead of deleting it.
         let Some(expected_last_seq) = self
@@ -972,12 +1039,12 @@ impl App {
                 .await
             {
                 Ok(result) => {
-                    let text = result.instructions_override.unwrap_or(text);
+                    let text = text.map(|text| result.instructions_override.unwrap_or(text));
                     let _ = updates.send(RpcUpdate::Reverted { session_id, text });
                     return;
                 }
                 Err(error) if error.is(&cookie_agent_protocol::errors::STALE_REVERT) => {
-                    "revert refused: the session changed since you opened this message; \
+                    "revert refused: the session changed since you opened this menu; \
                      review the new turns and revert again"
                         .to_owned()
                 }
@@ -987,17 +1054,21 @@ impl App {
         });
     }
 
-    /// Fork the session at the menu's message (`through_seq = seq`, keeping
-    /// the message in the copied prefix), then switch to the new session.
+    /// Fork the session at the menu's point ([`CutPoint::through_seq`]),
+    /// then switch to the new session. A fork at a user message leaves the
+    /// message out and puts its text in the fork's composer, for editing
+    /// there.
     pub(super) fn dispatch_session_fork(&mut self, menu: UserMenuState) {
         let session_id = menu.session_id;
+        let through_seq = menu.target.through_seq();
+        let text = menu.target.text().map(str::to_owned);
         let client = self.client.clone();
         let updates = self.rpc_updates_tx.clone();
         self.spawn_rpc(async move {
             let message = match client
                 .fork_session(SessionForkParams {
                     session_id,
-                    through_seq: menu.seq,
+                    through_seq,
                     client_fork_id: cookie_agent_protocol::ClientForkId::new(
                         client_run_id().as_str(),
                     )
@@ -1008,6 +1079,7 @@ impl App {
                 Ok(result) => {
                     let _ = updates.send(RpcUpdate::Forked {
                         forked: result.session_id,
+                        text,
                     });
                     return;
                 }
@@ -1019,17 +1091,38 @@ impl App {
 
     pub(super) fn render_user_menu(&mut self, frame: &mut ratatui::Frame, area: Rect) {
         paint_panel(frame, area, &self.theme);
-        let entries = USER_MENU_ITEMS
+        let actions = self.user_menu_actions();
+        let entries = actions
             .iter()
-            .map(|(action, description)| format!("{action} — {description}"))
+            .map(|(action, description)| {
+                let action = match action {
+                    MenuAction::Copy => "copy",
+                    MenuAction::Revert => "revert",
+                    MenuAction::Fork => "fork",
+                };
+                format!("{action} — {description}")
+            })
             .collect();
+        let keys = actions
+            .iter()
+            .map(|(action, _)| match action {
+                MenuAction::Copy => "c",
+                MenuAction::Revert => "r",
+                MenuAction::Fork => "f",
+            })
+            .collect::<Vec<_>>()
+            .join("/");
+        let title = match self.user_menu.as_ref().map(|menu| &menu.target) {
+            Some(CutPoint::ReplyEnd { .. }) => "Reply actions",
+            _ => "Message actions",
+        };
         self.render_picker(
             frame,
-            "Message actions",
+            title,
             entries,
             None,
             area,
-            Some("↑↓ move · enter/c/r/f: run · esc: close"),
+            Some(&format!("↑↓ move · enter/{keys}: run · esc: close")),
         );
     }
 
@@ -1039,21 +1132,31 @@ impl App {
         };
         let theme = &self.theme;
         let body = |width: u16| {
-            let mut lines = vec![
-                Line::styled("Revert to before this message?", theme.heading()),
-                Line::default(),
-            ];
-            lines.extend(quoted_user_message(&menu.text, width, theme));
-            lines.push(Line::default());
-            lines.extend(wrapped_line(
-                Line::styled(
+            let (heading, note) = match &menu.target {
+                CutPoint::UserMessage { .. } => (
+                    "Revert to before this message?",
                     "This message and everything after it will be removed from the \
                      conversation. Its text goes back into the composer so you can edit \
                      and resend. To keep both versions, fork instead.",
-                    theme.muted_text(),
                 ),
-                width,
-            ));
+                CutPoint::ReplyEnd { .. } => (
+                    "Revert to the end of this reply?",
+                    "Everything after this reply will be removed from the conversation. \
+                     To keep both versions, fork instead.",
+                ),
+                CutPoint::Compaction { .. } => (
+                    "Revert to before this compaction?",
+                    "The compaction and everything after it will be removed from the \
+                     conversation, and the model reads the conversation it summarized \
+                     again.",
+                ),
+            };
+            let mut lines = vec![Line::styled(heading, theme.heading()), Line::default()];
+            if let Some(text) = menu.target.text() {
+                lines.extend(quoted_user_message(text, width, theme));
+                lines.push(Line::default());
+            }
+            lines.extend(wrapped_line(Line::styled(note, theme.muted_text()), width));
             lines
         };
         self.hit_map.confirm_buttons =

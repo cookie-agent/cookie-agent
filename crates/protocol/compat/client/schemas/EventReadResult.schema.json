@@ -1428,7 +1428,7 @@
           "type": "object"
         },
         {
-          "description": "An artifact of the session tree, by its hex SHA-256.",
+          "description": "An artifact of the session tree, by its hex SHA-256 or the start of\nit (8 or more digits) as a file label shows it.",
           "properties": {
             "sha256": {
               "type": "string"

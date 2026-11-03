@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use cookie_agent_client_state::{
     attachment_chip,
+    cut_points::CutPoint,
     format::format_clock_elapsed,
     permissions::{PermissionRow, parse_rule_key, rule_runtimes, takes_runtime},
 };
@@ -815,12 +816,25 @@ pub fn message_sheet(workspace: Workspace) -> impl IntoView {
             return ().into_any();
         };
         let writable = workspace.writable();
+        let point = menu.point.clone();
         let actions = if menu.confirming_revert {
+            let (question, note) = match &point {
+                CutPoint::UserMessage { .. } => (
+                    "Revert to before this message?",
+                    "This message and everything after it will be removed from the conversation. Its text goes back into the composer so you can edit and resend. To keep both versions, fork instead.",
+                ),
+                CutPoint::ReplyEnd { .. } => (
+                    "Revert to the end of this reply?",
+                    "Everything after this reply will be removed from the conversation. To keep both versions, fork instead.",
+                ),
+                CutPoint::Compaction { .. } => (
+                    "Revert to before this compaction?",
+                    "The compaction and everything after it will be removed from the conversation, and the model reads the conversation it summarized again.",
+                ),
+            };
             view! {
-                <p class="text-sm font-bold">"Revert to before this message?"</p>
-                <p class=NOTE>
-                    "This message and everything after it will be removed from the conversation. Its text goes back into the composer so you can edit and resend. To keep both versions, fork instead."
-                </p>
+                <p class="text-sm font-bold">{question}</p>
+                <p class=NOTE>{note}</p>
                 <div class="flex flex-wrap gap-2">
                     <button type="button" id="revert-confirm" class=PRIMARY on:click=move |_| workspace.revert()>
                         <Glyph icon=icondata::LuRotateCcw />
@@ -833,35 +847,58 @@ pub fn message_sheet(workspace: Workspace) -> impl IntoView {
             }
                 .into_any()
         } else {
+            let user = matches!(point, CutPoint::UserMessage { .. });
+            let revertible = point.revertible();
+            let forkable = point.forkable();
+            let (revert_note, fork_note) = if user {
+                (
+                    "remove this message and every later turn; edit and resend it",
+                    "edit in a fork: a new session up to before this message, its text in the composer",
+                )
+            } else {
+                (
+                    "remove every turn after this reply",
+                    "a new session with the conversation up to the end of this reply",
+                )
+            };
             view! {
-                <button type="button" id="message-copy" class=ROW on:click=move |_| workspace.copy_message()>
-                    <span class="flex items-center gap-2 text-sm font-bold">
-                        <Glyph icon=icondata::LuCopy />
-                        "Copy"
-                    </span>
-                    <span class=format!("pl-6 {NOTE}")>"copy the message text"</span>
-                </button>
+                <Show when=move || user>
+                    <button type="button" id="message-copy" class=ROW on:click=move |_| workspace.copy_message()>
+                        <span class="flex items-center gap-2 text-sm font-bold">
+                            <Glyph icon=icondata::LuCopy />
+                            "Copy"
+                        </span>
+                        <span class=format!("pl-6 {NOTE}")>"copy the message text"</span>
+                    </button>
+                </Show>
                 <Show when=move || writable>
-                    <button type="button" id="message-revert" class=ROW on:click=move |_| workspace.confirm_revert(true)>
-                        <span class="flex items-center gap-2 text-sm font-bold">
-                            <Glyph icon=icondata::LuRotateCcw />
-                            "Revert"
-                        </span>
-                        <span class=format!("pl-6 {NOTE}")>"remove this message and every later turn; edit and resend it"</span>
-                    </button>
-                    <button type="button" id="message-fork" class=ROW on:click=move |_| workspace.fork()>
-                        <span class="flex items-center gap-2 text-sm font-bold">
-                            <Glyph icon=icondata::LuGitBranch />
-                            "Fork"
-                        </span>
-                        <span class=format!("pl-6 {NOTE}")>"a new session with the conversation up to this message"</span>
-                    </button>
+                    <Show when=move || revertible>
+                        <button type="button" id="message-revert" class=ROW on:click=move |_| workspace.confirm_revert(true)>
+                            <span class="flex items-center gap-2 text-sm font-bold">
+                                <Glyph icon=icondata::LuRotateCcw />
+                                "Revert"
+                            </span>
+                            <span class=format!("pl-6 {NOTE}")>{revert_note}</span>
+                        </button>
+                    </Show>
+                    <Show when=move || forkable>
+                        <button type="button" id="message-fork" class=ROW on:click=move |_| workspace.fork()>
+                            <span class="flex items-center gap-2 text-sm font-bold">
+                                <Glyph icon=icondata::LuGitBranch />
+                                "Fork"
+                            </span>
+                            <span class=format!("pl-6 {NOTE}")>{fork_note}</span>
+                        </button>
+                    </Show>
                 </Show>
             }
                 .into_any()
         };
+        let text = point.text().map(str::to_owned);
         view! {
-            <textarea id="message-text" readonly rows="4" class=FIELD>{menu.text.clone()}</textarea>
+            {text.map(|text| view! {
+                <textarea id="message-text" readonly rows="4" class=FIELD>{text}</textarea>
+            })}
             {actions}
         }
         .into_any()

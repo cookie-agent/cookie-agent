@@ -153,9 +153,28 @@ removed delegations are deleted, together with their own subagents; a revert
 that would delete a running subagent is refused. A revert cannot be undone:
 fork first to keep the current branch.
 
-In the TUI, click a past user message, choose **Revert**, and confirm. The TUI
-targets the sequence immediately before that user message and restores the
-message text to the composer for editing.
+The clients revert, and fork, at three points:
+
+- **A user message.** The cut falls just before the message: the run it
+  started goes, so the session ends with the reply before it, and the
+  message's text goes back into the composer for editing. A fork here is
+  an edit in a fork: the new session ends before the message, and the
+  message's text waits in its composer.
+- **The end of a reply.** The cut keeps the reply and drops what came
+  after it: the next run, or a producer's message, a goal, or a compaction
+  that started before the next run. Settings changed after the reply, such
+  as the model or the permission mode, stay. The last reply has nothing
+  after it to revert; a fork there copies the whole session.
+- **A compaction.** The revert drops the compaction, cutting where the
+  input it summarized ended, so the model reads the full conversation
+  again. A compaction inside a run cuts into the run, which closes as
+  interrupted.
+
+In the TUI, click a past user message, or the `⋯` that ends a reply's
+footer, choose **Revert** or **Fork**, and confirm a revert; a compaction's
+row ends in a `[revert]` button. In the web client, a message's or a
+reply's **⋯** opens the same menu, and a compaction's row has a **Revert**
+button.
 
 ## Delete
 
@@ -180,8 +199,9 @@ trash icon on the session's row. See
 
 ## Fork
 
-Fork copies a persisted prefix containing at least one submitted user message
-into a new independent session. It may read an active source session. Copied
+Fork copies a persisted prefix into a new independent session, cutting where
+a revert to the same point would (see [Revert](#revert)). It may read an
+active source session. Copied
 events retain their sequence numbers, timestamps, run IDs, and payloads, while
 their envelope is rebound to the new session ID. Shared content-addressed
 artifacts remain resolvable without copying their bytes.
@@ -199,5 +219,7 @@ its source's tree, so it is published into that root's directory and needs that
 tree's ownership: forking a subagent of a tree another process holds fails with
 `session_owned_elsewhere` ("This session is open in another cookie process.").
 
-In the TUI, choose **Fork** from a user message. That message is included in the
-copied prefix, the new title receives ` (fork)`, and the new session is selected.
+In the TUI and the web client, choose **Fork** from a user message or from
+the end of a reply. The new title receives ` (fork)`, and the new session is
+selected; a fork from a user message has that message's text in its
+composer.

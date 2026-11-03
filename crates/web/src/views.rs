@@ -2488,6 +2488,22 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
                     workspace.open_user_menu(seq);
                 }
             }
+            "reply-menu" => {
+                if let Some(item) = target
+                    .get_attribute("data-item")
+                    .and_then(|item| item.parse().ok())
+                {
+                    workspace.open_reply_menu(item);
+                }
+            }
+            "compaction-revert" => {
+                if let Some(seq) = target
+                    .get_attribute("data-seq")
+                    .and_then(|seq| seq.parse().ok())
+                {
+                    workspace.open_compaction_revert(seq);
+                }
+            }
             "background" => {
                 if let Some(call) = call.and_then(|call| call.parse().ok()) {
                     workspace.request_background(call);
@@ -3911,7 +3927,19 @@ fn Sheet(workspace: Workspace) -> impl IntoView {
         Some(Panel::Background) => "Background calls",
         Some(Panel::Skills) => "Skills",
         Some(Panel::Permissions) => "Permissions",
-        Some(Panel::Message) => "Message",
+        Some(Panel::Message) => {
+            workspace
+                .user_menu
+                .with(|menu| match menu.as_ref().map(|menu| &menu.point) {
+                    Some(cookie_agent_client_state::cut_points::CutPoint::ReplyEnd { .. }) => {
+                        "Reply"
+                    }
+                    Some(cookie_agent_client_state::cut_points::CutPoint::Compaction {
+                        ..
+                    }) => "Compaction",
+                    _ => "Message",
+                })
+        }
         Some(Panel::Runtimes) => "Runtimes",
         Some(Panel::DeferredPrompt) => "Deferred tools prompt",
         Some(Panel::MoveSession) => "Move to project",

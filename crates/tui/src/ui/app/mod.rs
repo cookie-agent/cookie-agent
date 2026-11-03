@@ -45,6 +45,7 @@ pub(super) use agents::DescendantEvent;
 pub(super) use approvals::{ApprovalPanel, approval_content};
 #[cfg(test)]
 pub(crate) use attachments::pasted_file_path_for_test;
+pub(super) use cookie_agent_client_state::cut_points::CutPoint;
 pub(super) use cookie_agent_client_state::subscriptions::{SubscribeIntent, SubscriptionOutcome};
 use emoji_backend::EmojiBackend;
 use keys::{edit_credential_input, is_newline_key, is_printable_key};
@@ -236,15 +237,54 @@ pub(super) enum ClipboardSink {
     Capture(std::sync::Arc<std::sync::Mutex<Vec<String>>>),
 }
 
-/// The user-message action the menu/confirm guard acts on. The message's
-/// text rides along so copy and the revert's composer restoration never
-/// re-derive it from a transcript that may have rebuilt underneath.
+/// The point of history the message menu and the revert guard act on. A
+/// user message's text rides along so copy and the composer restoration
+/// never re-derive it from a transcript that may have rebuilt underneath.
 #[derive(Clone, Debug)]
 pub(super) struct UserMenuState {
     pub(super) session_id: SessionId,
-    /// Physical sequence of the message's `UserInputSubmitted` event.
-    pub(super) seq: u64,
-    pub(super) text: String,
+    pub(super) target: CutPoint,
+}
+
+/// What a row of the message menu does.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum MenuAction {
+    Copy,
+    Revert,
+    Fork,
+}
+
+/// The message menu's rows for `point`, in display/keyboard order, with
+/// their descriptions.
+pub(super) fn menu_actions(point: &CutPoint) -> Vec<(MenuAction, &'static str)> {
+    let mut actions = Vec::new();
+    if point.text().is_some() {
+        actions.push((MenuAction::Copy, "message text to the clipboard"));
+    }
+    if point.revertible() {
+        actions.push((
+            MenuAction::Revert,
+            match point {
+                CutPoint::UserMessage { .. } => {
+                    "roll back to before this message; its text returns to the composer"
+                }
+                CutPoint::ReplyEnd { .. } => "roll back to the end of this reply",
+                CutPoint::Compaction { .. } => "roll back to before this compaction",
+            },
+        ));
+    }
+    if point.forkable() {
+        actions.push((
+            MenuAction::Fork,
+            match point {
+                CutPoint::UserMessage { .. } => {
+                    "edit in a fork: a new session up to before this message, its text in the composer"
+                }
+                _ => "a new session up to the end of this reply",
+            },
+        ));
+    }
+    actions
 }
 
 /// Mouse text selection, stored in content coordinates so it survives
@@ -579,6 +619,9 @@ pub(super) enum PointerTarget {
     UserMessage(u64),
     /// A running call's background button on its title row.
     BackgroundButton(cookie_agent_protocol::ToolCallId),
+    /// A compaction's revert button on its header row, by the compaction's
+    /// sequence.
+    CompactionRevert(u64),
     /// The memory URL a call's title row names: opens it in the Memory
     /// panel.
     MemoryLink(cookie_agent_protocol::ToolCallId),
@@ -1069,17 +1112,6 @@ impl SessionErrorSummary {
     }
 }
 
-/// The user-message action menu rows, in display/keyboard order:
-/// copy, revert (confirm-guarded), fork.
-const USER_MENU_ITEMS: &[(&str, &str)] = &[
-    ("copy", "message text to the clipboard"),
-    (
-        "revert",
-        "roll back to before this message; its text returns to the composer",
-    ),
-    ("fork", "branch a new session from this message"),
-];
-
 pub(in crate::ui) enum RpcUpdate {
     /// `session.agent_option.set` answered: the agent's options after the
     /// change, or why it failed.
@@ -1203,14 +1235,17 @@ pub(in crate::ui) enum RpcUpdate {
         result: Result<attachments::Uploaded, String>,
     },
     /// A revert RPC committed; the `rewound` notification rebuilds the
-    /// transcript, and the message text is owed back to the composer.
+    /// transcript, and a reverted message's text is owed back to the
+    /// composer.
     Reverted {
         session_id: SessionId,
-        text: String,
+        text: Option<String>,
     },
-    /// A fork RPC committed; the new session becomes the viewed one.
+    /// A fork RPC committed; the new session becomes the viewed one, with
+    /// the text of the message it was forked before in its composer.
     Forked {
         forked: SessionId,
+        text: Option<String>,
     },
     /// How many subagents the session a delete waits for has.
     SessionDeleteSubagents {

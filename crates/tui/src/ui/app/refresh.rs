@@ -598,13 +598,17 @@ impl App {
                 // The transcript rebuild rides the `rewound` notification;
                 // here only the composer's share and the tree's
                 // branch-derived rows (title/status/usage) need attention.
-                if self.selected == Some(session_id) {
-                    self.restore_composer(vec![crate::state::ComposerInput::text(text)]);
-                    self.status = "reverted; the message text is back in the composer".into();
-                } else {
-                    self.store
-                        .park_voided_input(session_id, crate::state::ComposerInput::text(text));
-                    self.status = "reverted; the message text is kept for its session".into();
+                match text {
+                    Some(text) if self.selected == Some(session_id) => {
+                        self.restore_composer(vec![crate::state::ComposerInput::text(text)]);
+                        self.status = "reverted; the message text is back in the composer".into();
+                    }
+                    Some(text) => {
+                        self.store
+                            .park_voided_input(session_id, crate::state::ComposerInput::text(text));
+                        self.status = "reverted; the message text is kept for its session".into();
+                    }
+                    None => self.status = "reverted".into(),
                 }
                 self.refresh_tree_background();
             }
@@ -618,7 +622,7 @@ impl App {
             RpcUpdate::SessionDeleted { title, outcome } => {
                 self.finish_session_delete(title, outcome);
             }
-            RpcUpdate::Forked { forked } => {
+            RpcUpdate::Forked { forked, text } => {
                 self.status = "forked the session; switching to it".into();
                 self.refresh_tree_background();
                 // This update is emitted only after the fork RPC confirms success.
@@ -627,6 +631,17 @@ impl App {
                 self.read_only_sessions.remove(&forked);
                 self.reroot_tree(forked);
                 self.subscribe_session(forked, SubscribeIntent::Follow);
+                // A fork before a message has the message to edit there.
+                if let Some(text) = text {
+                    if self.selected == Some(forked) {
+                        self.restore_composer(vec![crate::state::ComposerInput::text(text)]);
+                        self.status =
+                            "forked the session; the message text is in its composer".into();
+                    } else {
+                        self.store
+                            .park_voided_input(forked, crate::state::ComposerInput::text(text));
+                    }
+                }
             }
             RpcUpdate::Tree {
                 session_id,

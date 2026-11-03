@@ -670,7 +670,7 @@ async fn session_switch_during_new_rebinds_provenance_without_draft_transfer() {
         Some("reviewer")
     );
 
-    app.handle_rpc_update(RpcUpdate::Forked { forked });
+    app.handle_rpc_update(RpcUpdate::Forked { forked, text: None });
     assert_eq!(app.selected, Some(forked));
     assert!(app.owned_sessions.contains(&forked));
     assert!(!app.read_only_sessions.contains(&forked));

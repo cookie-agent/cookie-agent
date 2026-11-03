@@ -567,8 +567,13 @@ refreshes no longer change). Reset and Replace ask once more.
     or scrolling cancels it) opens the same menu. The menu copies the
     message, **reverts** to before it (it and every later turn are
     removed, and its text comes back into the composer), or **forks** a new
-    session with the conversation up to it. A revert is refused when another
-    client added to the session since the menu opened.
+    session that ends before it, with its text in the fork's composer. A
+    revert is refused when another client added to the session since the
+    menu opened.
+  - **A finished reply** ends in a **⋯** beside its footer: it **reverts**
+    to the end of the reply (every later turn is removed) or **forks** a new
+    session that ends with it. A **compaction** row's **Revert** reverts to
+    before the compaction. See [Revert](../sessions/index.md#revert).
 - **An ACP agent's commands.** In a session of an
   [ACP agent](../extend/acp-agents.md), typing `/` in the composer lists the
   slash commands the agent offers above it, marked **agent**, narrowed as

@@ -400,8 +400,10 @@ fn item_key_in(pass: &Pass<'_, '_>, item: &TranscriptItem) -> u64 {
                 pass.hash_attachments(*part, &mut hasher);
             }
         }
-        // The footer's inputs: metrics can land after the reply settles.
+        // The footer's inputs: metrics can land after the reply settles,
+        // and its menu once the run finishes.
         view.state.assistant_metrics.get(id).hash(&mut hasher);
+        view.state.reply_cut(*id).is_some().hash(&mut hasher);
         view.state
             .interrupted_assistant_items
             .contains(id)
@@ -526,7 +528,7 @@ pub fn item_html(view: &TranscriptView<'_>, item: &TranscriptItem) -> Option<Str
                 &body,
             )
         }
-        TranscriptItem::Compaction { commit, .. } => {
+        TranscriptItem::Compaction { commit, seq, .. } => {
             let key = block_key(item).unwrap_or_default();
             // The header names the kind (`rows::compaction_header`).
             let (_kind, body) = match &commit.checkpoint {
@@ -553,13 +555,19 @@ pub fn item_html(view: &TranscriptView<'_>, item: &TranscriptItem) -> Option<Str
             };
             let zone = crate::cron::zone_at(jiff::Timestamp::now());
             let header = cookie_agent_client_state::rows::compaction_header(commit, &zone);
-            collapsible(
+            // Beside its toggle, the button that reverts to before it.
+            let revert = format!(
+                "<button type=\"button\" data-action=\"compaction-revert\" data-seq=\"{seq}\" aria-label=\"Revert to before this compaction\" title=\"Revert to before this compaction\" class=\"inline-flex min-h-11 shrink-0 items-center gap-1 rounded-md px-2 {NOTE} hover:bg-hover active:bg-press\">{}Revert</button>",
+                svg(icondata::LuRotateCcw, ""),
+            );
+            collapsible_with_action(
                 view.expanded.block(&key),
                 &key,
                 icondata::LuEraser,
                 &header,
                 None,
                 &body,
+                Some(&revert),
             )
         }
         TranscriptItem::AgentCompaction { summary, .. } => {
@@ -1324,13 +1332,28 @@ fn agent_header_html(header: &str) -> String {
 
 /// The line that closes a reply, as the TUI's footer reads: its generation
 /// speed, the context it left, its cost, and whether it was interrupted.
+/// The last block of a finished run always has one, with the ⋯ that opens
+/// the reply's revert/fork menu.
 fn reply_footer_html(state: &SessionState, item_id: u64) -> Option<String> {
-    cookie_agent_client_state::reply::assistant_footer(state, item_id).map(|footer| {
+    let footer = cookie_agent_client_state::reply::assistant_footer(state, item_id);
+    let menu = state.reply_cut(item_id).is_some();
+    if footer.is_none() && !menu {
+        return None;
+    }
+    let text = footer
+        .map(|footer| format!("<span>{}</span>", escape(&footer)))
+        .unwrap_or_default();
+    let button = if menu {
         format!(
-            "<div class=\"text-xs text-faint tabular-nums\" data-reply-footer>{}</div>",
-            escape(&footer)
+            "<button type=\"button\" data-action=\"reply-menu\" data-item=\"{item_id}\" aria-label=\"Reply actions\" title=\"Reply actions\" class=\"-my-3 inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-md text-muted hover:bg-hover active:bg-press\">{}</button>",
+            svg(icondata::LuEllipsis, ""),
         )
-    })
+    } else {
+        String::new()
+    };
+    Some(format!(
+        "<div class=\"flex items-center gap-1 text-xs text-faint tabular-nums\" data-reply-footer>{text}{button}</div>"
+    ))
 }
 
 /// What a thinking block's header says: `thinking…` while it streams,
@@ -1537,19 +1560,41 @@ fn collapsible(
     detail: Option<&str>,
     body: &str,
 ) -> String {
+    collapsible_with_action(expanded, key, icon, header, detail, body, None)
+}
+
+/// [`collapsible`] with `action`, a button's HTML, beside its toggle.
+fn collapsible_with_action(
+    expanded: bool,
+    key: &str,
+    icon: Icon,
+    header: &str,
+    detail: Option<&str>,
+    body: &str,
+    action: Option<&str>,
+) -> String {
     let chevron = if expanded {
         icondata::LuChevronDown
     } else {
         icondata::LuChevronRight
     };
-    let mut html = format!(
-        "<div class=\"collapsible-row\" data-block-key=\"{}\"><button type=\"button\" data-action=\"toggle-block\" data-block-key=\"{}\" aria-expanded=\"{expanded}\" class=\"flex min-h-11 w-full items-center gap-2 rounded-md px-2 text-left {NOTE} hover:bg-hover active:bg-press\">{}{}<span class=\"min-w-0 flex-1 truncate\">{}</span></button>",
-        escape(key),
+    let toggle = format!(
+        "<button type=\"button\" data-action=\"toggle-block\" data-block-key=\"{}\" aria-expanded=\"{expanded}\" class=\"flex min-h-11 w-full items-center gap-2 rounded-md px-2 text-left {NOTE} hover:bg-hover active:bg-press\">{}{}<span class=\"min-w-0 flex-1 truncate\">{}</span></button>",
         escape(key),
         svg(chevron, "text-[0.625rem] opacity-70"),
         svg(icon, ""),
         escape(header)
     );
+    let mut html = match action {
+        Some(action) => format!(
+            "<div class=\"collapsible-row\" data-block-key=\"{}\"><div class=\"flex items-center gap-1\">{toggle}{action}</div>",
+            escape(key),
+        ),
+        None => format!(
+            "<div class=\"collapsible-row\" data-block-key=\"{}\">{toggle}",
+            escape(key),
+        ),
+    };
     if expanded {
         html.push_str("<div class=\"border-l border-line pl-3\">");
         if let Some(detail) = detail {
@@ -3086,7 +3131,7 @@ mod tests {
             other => panic!("no footer: {other:?}"),
         };
         assert!(
-            footer(&metrics).ends_with("data-reply-footer>⚡ 42.1 tps · 12.5K ctx · $0.0040</div>"),
+            footer(&metrics).contains("<span>⚡ 42.1 tps · 12.5K ctx · $0.0040</span>"),
             "{}",
             footer(&metrics)
         );
@@ -3094,7 +3139,7 @@ mod tests {
         let (interrupted_key, interrupted) = draw(&state, &mut cache);
         assert_ne!(interrupted_key, metrics_key);
         assert!(
-            footer(&interrupted).contains("$0.0040 · interrupted</div>"),
+            footer(&interrupted).contains("$0.0040 · interrupted</span>"),
             "{}",
             footer(&interrupted)
         );

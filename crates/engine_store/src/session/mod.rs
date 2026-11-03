@@ -2796,19 +2796,9 @@ impl SessionStore {
         }
         source.log.suspend_writer();
         let source_events = source.log.event_snapshot();
-        let prefix = source_events
-            .iter()
-            .filter(|event| event.seq <= through_seq)
-            .cloned()
-            .collect::<Vec<_>>();
         // The tip counts the lines the log read but left out, which a fork
         // copies as they were written.
-        if through_seq == 0
-            || through_seq > source.log.physical_tip_seq()
-            || !prefix
-                .iter()
-                .any(|event| matches!(event.payload, EventPayload::UserInputSubmitted { .. }))
-        {
+        if through_seq == 0 || through_seq > source.log.physical_tip_seq() {
             return Err(SessionError::InvalidSequence {
                 session_id: source_id,
                 through_seq,

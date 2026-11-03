@@ -14,6 +14,7 @@
       "type": "string"
     },
     "through_seq": {
+      "description": "The last event the fork copies. A run the prefix would leave with\nnothing but its `run_started` is left out, as a revert leaves it,\nso a fork to just before a message leaves out the run it starts;\nand the prefix needs no submitted message (client protocol 1.79.0).",
       "format": "uint64",
       "minimum": 1,
       "type": "integer"

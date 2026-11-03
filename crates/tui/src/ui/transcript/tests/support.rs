@@ -2895,6 +2895,83 @@ pub(crate) async fn app_with_user_messages() -> (App, SessionId, Arc<Mutex<Vec<S
     (app, session, copied)
 }
 
+/// Two finished replies with a compaction between them:
+/// `run_started` 1, the first question 2, its answer 4, `run_finished` 5,
+/// the compaction 6, then the second run 7..=11.
+pub(crate) async fn app_with_finished_replies() -> (App, SessionId) {
+    let mut app = test_app().await;
+    app.theme = Theme::new(ThemeKind::Default, ColorLevel::TrueColor);
+    let session = SessionId::new_v7();
+    app.selected = Some(session);
+    app.tree_root = Some(session);
+    app.store.sessions.insert(session, SessionState::default());
+    let finished = || {
+        EventPayload::run_finished(cookie_agent_protocol::RunOutcome::Completed {
+            final_text: None,
+        })
+    };
+    let (first, second) = (run_id(), run_id());
+    let (attempt_one, attempt_two) = (AttemptId::new_v7(), AttemptId::new_v7());
+    let model = resolved_model(None);
+    for event in [
+        run_started_with_suffix(session, 1, first, vec![model.clone()]),
+        user_input(session, 2, first, "first question"),
+        attempt_started(session, 3, first, attempt_one, None),
+        turn_committed(
+            session,
+            4,
+            first,
+            attempt_one,
+            4,
+            vec![text_part("first answer")],
+            Vec::new(),
+            None,
+        ),
+        event(session, 5, first, finished()),
+        event(
+            session,
+            6,
+            first,
+            EventPayload::ContextCheckpointCommitted {
+                commit: {
+                    let mut commit = checkpoint_commit("what came before");
+                    commit.boundaries.input_through_seq = 5;
+                    commit
+                },
+            },
+        ),
+        run_started_with_suffix(session, 7, second, vec![model.clone()]),
+        user_input(session, 8, second, "second question"),
+        attempt_started(session, 9, second, attempt_two, None),
+        turn_committed(
+            session,
+            10,
+            second,
+            attempt_two,
+            10,
+            vec![text_part("second answer")],
+            Vec::new(),
+            None,
+        ),
+        event(session, 11, second, finished()),
+    ] {
+        assert!(app.store.apply_event(event));
+    }
+    (app, session)
+}
+
+/// The hit of the footer that ends the reply of the `index`th assistant
+/// block on screen.
+pub(crate) fn reply_end_hit(app: &App, index: usize) -> BlockHit {
+    app.hit_map
+        .blocks
+        .iter()
+        .copied()
+        .filter(|hit| matches!(hit.id, BlockId::ReplyEnd(_)))
+        .nth(index)
+        .expect("reply end hit")
+}
+
 pub(crate) fn user_hit(app: &App, seq: u64) -> UserMessageHit {
     app.hit_map
         .user_messages

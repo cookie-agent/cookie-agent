@@ -137,6 +137,7 @@ pub(super) fn reduce_event_from(
     state.event_timestamps.insert(sequence, timestamp);
     state.model_selection.apply(run_id, &payload);
     state.runtime_attachments.observe(&payload);
+    note_reply_boundary(state, sequence, &payload);
     match payload {
         EventPayload::GoalActivated {
             goal_id,
@@ -1317,6 +1318,15 @@ pub(super) fn reduce_event_from(
             state.questions.clear();
             if let Some(run_id) = run_id {
                 state.terminal_runs.insert(run_id);
+                state.run_finishes.insert(run_id, sequence);
+                // The run's last block now ends its reply: its footer offers
+                // the reply's menu.
+                if let Some(last) = state.run_last_blocks.get(&run_id).copied()
+                    && let Some(TranscriptItem::Assistant { version, .. }) =
+                        state.transcript.iter_mut().rfind(|item| item.id() == last)
+                {
+                    *version = version.wrapping_add(1);
+                }
             }
             let (level, message) = run_finished_message(&outcome);
             push_event(state, level, message, timestamp);
@@ -2297,6 +2307,7 @@ fn remove_empty_assistant(state: &mut SessionState, item_id: u64) {
         }
     }
     state.assistant_metrics.remove(&item_id);
+    forget_run_block(state, item_id);
     if state
         .open_run_assistant
         .as_ref()
@@ -2328,6 +2339,10 @@ fn remove_compacting_where(
 pub(super) fn move_transcript_item_to_end(state: &mut SessionState, index: usize) {
     state.transcript[index..].rotate_left(1);
     let last = state.transcript.len() - 1;
+    let moved = state.transcript[last].id();
+    if let Some(run) = state.assistant_runs.get(&moved).copied() {
+        state.run_last_blocks.insert(run, moved);
+    }
     for message in state.producer_messages.values_mut() {
         if message.transcript_index == index {
             message.transcript_index = last;
@@ -2433,8 +2448,50 @@ pub(super) fn open_assistant_item(
         .id();
     if let Some(run) = run {
         state.assistant_runs.insert(item_id, run);
+        state.run_last_blocks.insert(run, item_id);
     }
     item_id
+}
+
+/// Records where something starts that the reply before it does not hold
+/// ([`SessionState::reply_boundaries`]). A compaction outside any run
+/// starts after the input it read.
+fn note_reply_boundary(state: &mut SessionState, sequence: u64, payload: &EventPayload) {
+    let idle = state.active_run.is_none();
+    let start = match payload {
+        EventPayload::RunStarted { .. } => sequence,
+        EventPayload::ProducerMessageAccepted { .. } | EventPayload::GoalActivated { .. }
+            if idle =>
+        {
+            sequence
+        }
+        EventPayload::ContextCheckpointCommitted { commit } if idle => commit
+            .boundaries
+            .input_through_seq
+            .saturating_add(1)
+            .min(sequence),
+        _ => return,
+    };
+    state.reply_boundaries.insert(start);
+}
+
+/// After the block `item_id` left the transcript: its run's last block is
+/// the one shown last of those it has left.
+fn forget_run_block(state: &mut SessionState, item_id: u64) {
+    let Some(run) = state.assistant_runs.remove(&item_id) else {
+        return;
+    };
+    if state.run_last_blocks.get(&run) != Some(&item_id) {
+        return;
+    }
+    let runs = &state.assistant_runs;
+    match state.transcript.iter().rev().find_map(|item| match item {
+        TranscriptItem::Assistant { id, .. } if runs.get(id) == Some(&run) => Some(*id),
+        _ => None,
+    }) {
+        Some(last) => state.run_last_blocks.insert(run, last),
+        None => state.run_last_blocks.remove(&run),
+    };
 }
 
 pub(super) fn append_attribution(
@@ -3425,6 +3482,7 @@ pub(super) fn prune_split_segment(state: &mut SessionState, item_id: u64, commit
     if empty {
         state.transcript.retain(|item| item.id() != item_id);
         state.assistant_metrics.remove(&item_id);
+        forget_run_block(state, item_id);
     }
 }
 

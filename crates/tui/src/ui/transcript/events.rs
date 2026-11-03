@@ -456,6 +456,10 @@ pub(super) fn compacting_layout(
     collapsible_event_block(block_id, body, context.width, context.theme)
 }
 
+/// The button that ends a compaction's header row: a click asks to revert
+/// the session to before the compaction.
+pub(in crate::ui) const COMPACTION_REVERT_BUTTON: &str = "[revert]";
+
 pub(super) fn compaction_layout(
     seq: u64,
     commit: &cookie_agent_protocol::ContextCheckpointCommit,
@@ -468,10 +472,12 @@ pub(super) fn compaction_layout(
     let chevron = if is_expanded { '▾' } else { '▸' };
     let header =
         cookie_agent_client_state::rows::compaction_header(commit, &jiff::tz::TimeZone::system());
-    let mut body = vec![Line::styled(
-        format!("🧹 {chevron} {header}"),
-        context.theme.internal(),
-    )];
+    // The header row ends with the button that reverts to before the
+    // compaction.
+    let mut body = vec![Line::from(vec![
+        Span::styled(format!("🧹 {chevron} {header} "), context.theme.internal()),
+        Span::styled(COMPACTION_REVERT_BUTTON, context.theme.link()),
+    ])];
     if is_expanded {
         match &commit.checkpoint {
             // The summary as the model reads it, in its frame.
