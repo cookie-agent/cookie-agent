@@ -386,16 +386,18 @@ out when it is empty:
    and, when it may attach machines, how it reaches one it attaches. A
    session in a [project](../concepts/projects.md) also names the project
    here;
-3. the tool instructions cookie would give a model for the tools the agent
+3. how to give the user a file in a reply with an `<attach …/>` tag (see
+   [System prompt](../reference/system-prompt.md#attachments));
+4. the tool instructions cookie would give a model for the tools the agent
    is offered over the [bridge](#cookies-tools-for-the-agent-the-mcp-bridge),
    after `hide_tools` and the rules (`<tool_instructions provider=...>`
    sections, such as memory's: how memory is included, and the rubric for
    writing it when a write tool is offered);
-4. the skills a model would see (`<available_skills>`: each skill's name,
+5. the skills a model would see (`<available_skills>`: each skill's name,
    description, and file), when the agent is offered cookie's `skill` tool
    over the bridge, with the same rules a model's listing follows (a
    denied skill, or one that opts out of model invocation, is left out);
-5. the session's memory as a model would see it at the start of a session
+6. the session's memory as a model would see it at the start of a session
    (the `# Memory` reminder), as it is when cookie starts the agent's
    session.
 

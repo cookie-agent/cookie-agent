@@ -218,6 +218,15 @@ async fn a_global_only_root_delegates_to_the_runtimes_it_names() {
         root_request
             .contains("No machine is attached: you have no files or shell of your own yet.")
     );
+    // With no machine, a tag can name an artifact or an asset, not a file;
+    // a child on a machine can name a file too.
+    assert!(root_request.contains("<attach artifact="), "{root_request}");
+    assert!(!root_request.contains("<attach src="), "{root_request}");
+    let child_request = requests
+        .iter()
+        .find(|request| request.contains("first remote task"))
+        .expect("child request");
+    assert!(child_request.contains("<attach src="), "{child_request}");
 
     // Each child got `global`, then the listed capabilities in order, under
     // the usual names, and no `capabilities` of its own.

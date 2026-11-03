@@ -3475,17 +3475,6 @@ impl Engine {
         .await
     }
 
-    /// The context cookie gives an ACP session, as its system prompt or
-    /// ahead of its first prompt (`docs/site/specs/acp-agents.md` section
-    /// 15), in a model run's order, each part left out when empty: the
-    /// agent document's body; the block on the session's attachments a
-    /// model run's system prompt carries, which with several also says
-    /// where the harness's built-in tools run (2026-10-25); the tool
-    /// instruction sections cookie would compose for a model run, for
-    /// exactly the tools the agent is offered over the bridge; the listing
-    /// of the skills a model run would see, when the `skill` tool is
-    /// offered; and last the session's memory snapshot as a model run sees
-    /// it, taken now: the agent reads no later one (2026-10-31).
     /// The machines block an ACP agent of `policy` reads, its harness's
     /// tools on `runtime` in `cwd`, `hide` left out
     /// (`docs/site/specs/acp-several-runtimes.md` section 5).
@@ -3558,6 +3547,18 @@ impl Engine {
         Some(format!("<machines_changed>\n{block}\n</machines_changed>"))
     }
 
+    /// The context cookie gives an ACP session, as its system prompt or
+    /// ahead of its first prompt (`docs/site/specs/acp-agents.md` section
+    /// 15), in a model run's order, each part left out when empty: the
+    /// agent document's body; the block on the session's attachments a
+    /// model run's system prompt carries, which with several also says
+    /// where the harness's built-in tools run (2026-10-25); how to attach
+    /// files to a reply; the tool instruction sections cookie would compose
+    /// for a model run, for exactly the tools the agent is offered over the
+    /// bridge; the listing
+    /// of the skills a model run would see, when the `skill` tool is
+    /// offered; and last the session's memory snapshot as a model run sees
+    /// it, taken now: the agent reads no later one (2026-10-31).
     async fn acp_prompt_context(
         &self,
         session: SessionId,
@@ -3587,6 +3588,7 @@ impl Engine {
             context.push(document.body.clone());
         }
         context.extend(self.acp_runtimes_block(session, policy, &hide, runtime, cwd));
+        context.push(self.session_attachments_block(session));
         context.extend(self.tool_prompt_block(policy, session, Some(&offered), &|_, _| true)?);
         if offered.skill {
             context.extend(self.skill_listing(

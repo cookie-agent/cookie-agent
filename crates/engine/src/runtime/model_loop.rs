@@ -512,6 +512,7 @@ impl Engine {
         let prompt_blocks_live = composition.frozen().is_none();
         if prompt_blocks_live && !acp {
             self.compose_runtimes_prompt(&mut run_policy, params.session_id);
+            self.compose_attachments_prompt(&mut run_policy, params.session_id);
             self.compose_tool_prompt_sections(&mut run_policy, params.session_id)?;
             self.compose_skill_listing(
                 params.session_id,

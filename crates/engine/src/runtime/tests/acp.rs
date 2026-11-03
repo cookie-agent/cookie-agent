@@ -1999,9 +1999,9 @@ async fn the_first_prompt_carries_the_body_the_attachments_the_offered_tools_ins
     let received = prompts(&acp);
     assert_eq!(received.len(), 2);
     let first = &received[0];
-    assert_eq!(first.len(), 5, "{first:#?}");
-    // A model run's order: the body, the attachments, the tool
-    // instructions, then the memory.
+    assert_eq!(first.len(), 6, "{first:#?}");
+    // A model run's order: the body, the machines, how to attach files,
+    // the tool instructions, then the memory.
     assert_eq!(first[0], "You review changes.\n");
     // One machine: the routed machines block, its own machine marked, and
     // where the harness's tools run.
@@ -2018,27 +2018,21 @@ async fn the_first_prompt_carries_the_body_the_attachments_the_offered_tools_ins
     let note = first[1].rsplit("</machines>\n").next().unwrap();
     assert!(note.contains(&format!("`{machine}`")), "{note}");
     assert!(note.contains(&*workspace.to_string_lossy()), "{note}");
-    // How to attach files, then the memory's instructions.
-    assert!(
-        first[2].starts_with("<tool_instructions provider=\"builtin.read_artifact\">\n"),
-        "{}",
-        first[2]
-    );
-    assert!(first[2].contains("<attach src="), "{}", first[2]);
-    let memory = first[2]
-        .split_once("</tool_instructions>\n\n")
-        .map_or("", |(_, memory)| memory);
     assert_eq!(
-        memory,
+        first[2],
+        crate::runtime::prompt_blocks::attachments_block(true)
+    );
+    assert_eq!(
+        first[3],
         "<tool_instructions provider=\"builtin.memory\">\nMemory related to this session is included automatically at the start of each session: the user's memory, your own agent memory, the session's project, and the machines its runtimes run on. Use memory_search for anything else, such as another project or a machine this session doesn't use.\n</tool_instructions>"
     );
     assert!(
-        first[3].starts_with("<system-reminder>\n# Memory\n"),
+        first[4].starts_with("<system-reminder>\n# Memory\n"),
         "{}",
-        first[3]
+        first[4]
     );
-    assert!(first[3].contains("Ada drinks tea."), "{}", first[3]);
-    assert_eq!(first[4], "say one");
+    assert!(first[4].contains("Ada drinks tea."), "{}", first[4]);
+    assert_eq!(first[5], "say one");
     assert_eq!(
         received[1],
         ["say two"],
@@ -2056,7 +2050,7 @@ async fn the_first_prompt_carries_the_body_the_attachments_the_offered_tools_ins
             _ => None,
         })
         .collect::<Vec<_>>();
-    assert_eq!(recorded, [(first[..4].to_vec(), Some(false))]);
+    assert_eq!(recorded, [(first[..5].to_vec(), Some(false))]);
     // The agent reads memory only with its session's context: the second
     // run takes no snapshot of its own.
     let snapshots = events
@@ -2078,21 +2072,22 @@ async fn the_first_prompt_carries_the_body_the_attachments_the_offered_tools_ins
     let session = engine.create_session(selection()).unwrap().session_id;
     turn(engine, session, "first", "say one").await;
     let first = &prompts(&acp)[0];
-    assert_eq!(first.len(), 4, "no body: {first:#?}");
+    assert_eq!(first.len(), 5, "no body: {first:#?}");
     assert!(
         first[0].starts_with("This session is attached to the following machines."),
         "{}",
         first[0]
     );
+    assert!(first[1].contains("<attach src="), "{}", first[1]);
     assert!(
-        first[1].contains("You manage your own memory."),
-        "{}",
-        first[1]
-    );
-    assert!(
-        first[2].starts_with("<system-reminder>\n# Memory\n"),
+        first[2].contains("You manage your own memory."),
         "{}",
         first[2]
+    );
+    assert!(
+        first[3].starts_with("<system-reminder>\n# Memory\n"),
+        "{}",
+        first[3]
     );
     let document = "---\ndescription: Fixture with context\nmode: all\nacp: { hide_tools: [\"memory_*\"] }\n---\nBody.\n";
     let acp = acp_fixture(&[], &[("fixture.md", document)]).await;
@@ -2108,10 +2103,9 @@ async fn the_first_prompt_carries_the_body_the_attachments_the_offered_tools_ins
         "{}",
         first[1]
     );
-    assert!(
-        first[2].starts_with("<tool_instructions provider=\"builtin.read_artifact\">"),
-        "{}",
-        first[2]
+    assert_eq!(
+        first[2],
+        crate::runtime::prompt_blocks::attachments_block(true)
     );
     assert!(
         first[3].starts_with("<system-reminder>\n# Memory\n"),

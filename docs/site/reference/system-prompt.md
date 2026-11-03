@@ -13,24 +13,26 @@ For a root or delegated run, the engine composes the model request in this order
 2. Where the session's runtimes work is appended (see [Runtimes](#runtimes)):
    the working directory, or the list of runtimes when there are several. The
    prompt and document fingerprints are updated.
-3. Tool providers may append bounded behavioral-policy sections. Sections
+3. How to attach files to a reply is appended (see
+   [Attachments](#attachments)).
+4. Tool providers may append bounded behavioral-policy sections. Sections
    retain provider provenance and update both prompt and document
    fingerprints.
-4. If skills are visible to the model, a generated available-skills listing is
+5. If skills are visible to the model, a generated available-skills listing is
    appended to that prompt. The prompt and document fingerprints are updated.
-5. `agent_before_start` plugins run in configured order. A plugin can replace the
+6. `agent_before_start` plugins run in configured order. A plugin can replace the
    composed prompt or append an addendum, subject to the 128 KiB prompt limit.
    Each accepted change recomputes the prompt fingerprint.
-6. History assembly puts the final composed prompt in `history[0]` as the sole
+7. History assembly puts the final composed prompt in `history[0]` as the sole
    system turn.
-7. Root runs may then add a durable [AGENTS.md context](#agentsmd-context-turn)
+8. Root runs may then add a durable [AGENTS.md context](#agentsmd-context-turn)
    user turn. The [memory snapshot](#memory-turn) follows when the session's
    latest snapshot is not empty, then loaded skill bodies as user turns,
    followed by normal session history.
 
 Appended blocks are joined by a markdown horizontal rule (`\n\n---\n\n`) so the
-boundaries between the authored body, the runtimes block, tool-provider
-sections, the skills listing, and a plugin addendum are visible. The authored
+boundaries between the authored body, the runtimes block, the attachments
+block, tool-provider sections, the skills listing, and a plugin addendum are visible. The authored
 body is first and carries no leading separator; a plugin `replace_system_prompt`
 replaces the whole prompt instead of appending to it.
 
@@ -44,7 +46,7 @@ needs current history.
 
 The document fingerprint covers the agent identity, strict frontmatter, and
 body. The prompt fingerprint covers prompt text only. The runtimes block,
-tool-provider sections, skill listings, and plugin composition update the
+the attachments block, tool-provider sections, skill listings, and plugin composition update the
 effective fingerprints before
 `run_started` is persisted. Model-attempt events record the prompt fingerprint,
 and replay validation rejects attempt attribution that contradicts the frozen
@@ -200,6 +202,21 @@ the same block in its first prompt. With several attachments, the
 attachment its harness's built-in tools run on carries
 `builtin_tools="true"`, and a sentence after `</machines>` names it, its
 runtime and machine, and the agent's working directory.
+
+## Attachments
+
+After the runtimes block, every session's prompt says how to give the user
+a file in a reply with an `<attach …/>` tag (see
+[Attachments in a reply](../sessions/assets.md#attachments-in-a-reply)):
+
+```text
+To give the user a file in your reply, write a tag where it should show: `<attach src="runs/loss.png"/>` for a file on a machine (add `machine="name"` for another machine than the workspace's), `<attach artifact="<sha256>"/>` for an artifact of this conversation, or `<attach asset="asset_3f9a1c2e"/>` to show an asset. Add `title="…"` to name it. Pictures, video, and audio play, an HTML page runs live, Markdown renders, and anything else downloads. Tags written next to each other show as one row. A file is read once, when your message ends, at most 25 MiB, and at most 12 attachments go in one message. A tag inside code is only text. If an attachment fails, you are told before your next request.
+```
+
+A session with no runtime besides `global` has no machine to read a file
+from: its block leaves out the `src` form and names only artifacts and
+assets. Attaching a machine changes the block for the next run. An ACP agent
+gets the block in its first prompt, after the machines block.
 
 ## AGENTS.md context turn
 
@@ -446,9 +463,10 @@ compaction. The clients show a refresh as one row naming its reason and what
 it composed again.
 
 **Otherwise a run copies the previous run's system prompt byte for byte**,
-its blocks, plugin composition, and agent body included. Three parts of the
-prompt come from the session's state rather than the agent: the [runtimes
-block](#runtimes) (`runtimes`), the tool providers' `<tool_instructions>`
+its blocks, plugin composition, and agent body included. Four parts of the
+prompt come from cookie rather than the agent: the [runtimes
+block](#runtimes) (`runtimes`), the [attachments block](#attachments)
+(`attachments`), the tool providers' `<tool_instructions>`
 sections (`tool_instructions`), and the skills listing (`skills`). Every run
 records where they sit in its prompt (`prompt_blocks_recorded`, with
 `composed_live` false for a copied prompt). What changed in them is told to
@@ -463,7 +481,7 @@ Working directory: /srv/api
 Machine: labpc (linux)
 </block>
 </instructions_changed>
-Each block replaces the part of the system prompt it names, and a removed block no longer applies: runtimes is where this session's tools work, tool_instructions the <tool_instructions> sections, and skills the <available_skills> listing.
+Each block replaces the part of the system prompt it names, and a removed block no longer applies: runtimes is where this session's tools work, attachments how to attach files to a reply, tool_instructions the <tool_instructions> sections, and skills the <available_skills> listing.
 ```
 
 A plugin's system-prompt hook changes take effect at the next point the
@@ -503,8 +521,8 @@ cached prefix rather than using an isolated cache namespace. See the
 
 | Agent type | System prompt | Additional context |
 |---|---|---|
-| Root | Selected authored agent body, or the concise built-in default coding prompt; runtimes block, optional tool-provider sections, skill listing, and plugin composition | Root-only AGENTS.md context turn, the memory turn, loaded skill bodies, then session history |
-| Delegated | Frozen delegated agent body; runtimes block, optional tool-provider sections, skill listing, and plugin composition | No filesystem AGENTS.md context load. A memory turn of the agent's own memory only (by default; its document's `memory` rules apply). Explicit inherited user/assistant text and ordinary child history remain separate turns. |
+| Root | Selected authored agent body, or the concise built-in default coding prompt; runtimes block, attachments block, optional tool-provider sections, skill listing, and plugin composition | Root-only AGENTS.md context turn, the memory turn, loaded skill bodies, then session history |
+| Delegated | Frozen delegated agent body; runtimes block, attachments block, optional tool-provider sections, skill listing, and plugin composition | No filesystem AGENTS.md context load. A memory turn of the agent's own memory only (by default; its document's `memory` rules apply). Explicit inherited user/assistant text and ordinary child history remain separate turns. |
 | Internal | Authored reserved internal agent body when available, otherwise its built-in prompt | No AGENTS.md discovery, memory, skill listing, or plugin prompt interception. Invocation-specific input is supplied separately. |
 
 The built-in `approval`, `compaction`, and `title` prompts are each roughly 100

@@ -427,11 +427,15 @@ async fn several_attachments_say_where_the_agents_builtin_tools_run() {
     let note = block.rsplit("</machines>\n").next().unwrap();
     assert!(note.contains(&*cwd), "{note}");
     assert!(!block.contains("<attachment>_"), "{block}");
+    assert_eq!(
+        received[0][1],
+        crate::runtime::prompt_blocks::attachments_block(true)
+    );
     assert!(
-        received[0][1].starts_with("<system-reminder>\n# Memory\n"),
+        received[0][2].starts_with("<system-reminder>\n# Memory\n"),
         "{received:?}"
     );
-    assert_eq!(received[0][2..], ["say hi"]);
+    assert_eq!(received[0][3..], ["say hi"]);
     // A resumed ACP session already knows.
     super::acp::stop_process(engine).await;
     turn(engine, session, "second", "say again").await;

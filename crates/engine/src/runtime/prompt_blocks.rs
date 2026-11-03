@@ -18,10 +18,64 @@ pub(crate) fn push_prompt_block(prompt: &mut String, block: &str) {
 
 /// The prompt block of where the session's runtimes work.
 pub(crate) const RUNTIMES_BLOCK: &str = "runtimes";
+/// The prompt block on attaching files to a reply.
+pub(crate) const ATTACHMENTS_BLOCK: &str = "attachments";
 /// The prompt block of the tool providers' `<tool_instructions>` sections.
 pub(crate) const TOOL_INSTRUCTIONS_BLOCK: &str = "tool_instructions";
 /// The prompt block of the `<available_skills>` listing.
 pub(crate) const SKILLS_BLOCK: &str = "skills";
+
+/// How to attach files to a reply
+/// (`docs/site/specs/message-attachments.md` section 9), composed after
+/// where the session's runtimes work. `machine`: the session has a runtime
+/// besides `global`, so a tag can name a file on a machine; without one,
+/// the block names only artifacts and assets.
+pub(crate) fn attachments_block(machine: bool) -> String {
+    let file = if machine {
+        "`<attach src=\"runs/loss.png\"/>` for a file on a machine (add `machine=\"name\"` \
+         for another machine than the workspace's), "
+    } else {
+        ""
+    };
+    format!(
+        "To give the user a file in your reply, write a tag where it should show: {file}\
+         `<attach artifact=\"<sha256>\"/>` for an artifact of this conversation, or \
+         `<attach asset=\"asset_3f9a1c2e\"/>` to show an asset. Add `title=\"…\"` to name it. \
+         Pictures, video, and audio play, an HTML page runs live, Markdown renders, and \
+         anything else downloads. Tags written next to each other show as one row. A file is \
+         read once, when your message ends, at most {} MiB, and at most {} attachments go in \
+         one message. A tag inside code is only text. If an attachment fails, you are told \
+         before your next request.",
+        cookie_agent_protocol::ASSET_MAX_BYTES / (1024 * 1024),
+        cookie_agent_protocol::ATTACH_MAX_PER_MESSAGE,
+    )
+}
+
+impl Engine {
+    /// [`attachments_block`] for `session`: with the file form when it has
+    /// a runtime besides `global`.
+    pub(crate) fn session_attachments_block(&self, session: SessionId) -> String {
+        attachments_block(!self.attachment_facts(session).is_empty())
+    }
+
+    /// Appends the attachments block to `policy`'s composed prompt, skipped
+    /// rather than truncated at the prompt's byte limit.
+    pub(crate) fn compose_attachments_prompt(
+        &self,
+        policy: &mut FrozenRunPolicy,
+        session: SessionId,
+    ) {
+        let block = self.session_attachments_block(session);
+        if !prompt_block_fits(policy, &block) {
+            eprintln!(
+                "cookie-agent: skipping the attachments prompt: the composed prompt would exceed {} bytes",
+                AgentSnapshot::MAX_PROMPT_BYTES
+            );
+            return;
+        }
+        append_prompt_block(policy, ATTACHMENTS_BLOCK, &block);
+    }
+}
 
 /// Appends prompt block `key` to `policy`'s composed prompt, updates the
 /// prompt and document fingerprints, and records where the block sits
@@ -71,6 +125,10 @@ impl Engine {
         if let Some(block) = self.runtimes_block_with(session, None, Some(policy), composition) {
             blocks.push((RUNTIMES_BLOCK.to_owned(), block));
         }
+        blocks.push((
+            ATTACHMENTS_BLOCK.to_owned(),
+            self.session_attachments_block(session),
+        ));
         if let Some(block) = self.live_tool_instructions_block_with(policy, session, composition)? {
             blocks.push((TOOL_INSTRUCTIONS_BLOCK.to_owned(), block));
         }

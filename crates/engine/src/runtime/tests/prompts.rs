@@ -317,9 +317,18 @@ async fn one_runtime_gives_the_prompt_its_working_directory() {
         .expect("the default agent's memory section");
     // A session with `global` routes its tools by machine: the machines
     // block names the one machine, its directory, and what it offers.
-    let (_, block) = before_memory
+    let (_, blocks) = before_memory
         .split_once("\n\n---\n\n")
         .expect("the runtimes block follows the body");
+    // How to attach files follows it, with the file form: there is a
+    // machine to read from.
+    let (block, attachments) = blocks
+        .split_once("\n\n---\n\n")
+        .expect("the attachments block follows the runtimes block");
+    assert_eq!(
+        attachments,
+        crate::runtime::prompt_blocks::attachments_block(true)
+    );
     assert!(
         block.starts_with("This session is attached to the following machines."),
         "{block}"

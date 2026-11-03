@@ -1253,7 +1253,7 @@ async fn compaction_summary_streams_live_deltas_for_its_invocation() {
     let (mut fixture, selection) =
         custom_fixture_with_endpoint_primary_internal_concurrency_and_context(
             &endpoint,
-            "---\ndescription: Streamed compaction test\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions: { attach: deny, asset: deny }\n---\nTest streamed compaction.\n",
+            "---\ndescription: Streamed compaction test\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions: { attach: deny, asset: deny, cron: deny }\n---\nTest streamed compaction.\n",
             None,
             None,
             false,

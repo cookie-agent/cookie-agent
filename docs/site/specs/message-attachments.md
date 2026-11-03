@@ -237,10 +237,11 @@ converter: the text is unchanged.
 
 **Configuration:** none. The `read` rules decide what can be attached.
 
-**The prompt:** a section on the tag joins the system prompt when the
-session has a machine to read from. It is composed when a run starts and
+**The prompt:** a block on the tag, `attachments`, joins every session's
+system prompt after the runtimes block; a session with only `global` is not
+told of the `src` form. It is composed when a run starts and
 frozen with it, and the system prompt row shows it. ACP agents get it in
-the context cookie sends with their first prompt.
+the context cookie sends with their first prompt, after the machines block.
 
 ## 10. Decisions
 
@@ -310,8 +311,12 @@ Implemented on 2026-11-02. Where the code differs from the sections above:
 - **The failure note** is a `message_injected` user message, which clients
   show as a warning row, "The agent was told:" and its lines. An ACP agent
   reads it at the start of its next prompt, beside the machines note.
-- **The prompt section** is the `read_artifact` provider's, "Attachments",
-  in the tool instructions, so it reaches ACP agents with the rest.
+- **The prompt section** is a block of the engine's own, `attachments`,
+  after the runtimes block, not a tool provider's instructions: it holds
+  whatever tools the session is offered, and reaches ACP agents beside the
+  machines block (the user, 2026-11-02; it was first the `read_artifact`
+  provider's "Attachments" section). Without a runtime besides `global` it
+  leaves out the `src` sentence (the user, 2026-11-02).
 - **The TUI** names a tag `📎` and its label in the text, and lists the
   part's attachments under it, each a line; its *Allow* and *Deny* are
   lines of their own, each a click target.
