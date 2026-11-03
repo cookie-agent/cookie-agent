@@ -1,0 +1,636 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tool groups and skills in the web client: draft</title>
+<style>
+  :root {
+    --bg:#ffffff; --bg2:#fafafa; --raised:#ffffff; --sunken:#f4f4f5;
+    --fg:#09090b; --fg2:#3f3f46; --muted:#71717a; --faint:#a1a1aa;
+    --line:rgba(0,0,0,.075); --line2:rgba(0,0,0,.13);
+    --accent:#5b5bd6; --ok:#26935f; --bad:#d1343b; --warn:#b26b00;
+    --warn-soft:rgba(178,107,0,.10); --accent-soft:rgba(91,91,214,.10); --hover:rgba(0,0,0,.045);
+  }
+  .dark {
+    --bg:#0e0e10; --bg2:#0a0a0c; --raised:#17171a; --sunken:#1b1b1f;
+    --fg:#ededef; --fg2:#b4b4bc; --muted:#86868f; --faint:#5c5c66;
+    --line:rgba(255,255,255,.07); --line2:rgba(255,255,255,.12);
+    --accent:#7c7cff; --ok:#4cc38a; --bad:#f2555a; --warn:#e5a93b;
+    --warn-soft:rgba(229,169,59,.12); --accent-soft:rgba(124,124,255,.12); --hover:rgba(255,255,255,.06);
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; font:13.5px/1.45 Inter, ui-sans-serif, system-ui, sans-serif; background:#e9e9ee; color:#09090b; }
+  .page { max-width:1240px; margin:0 auto; padding:28px 20px 60px; }
+  h1 { font-size:22px; margin:0 0 4px; }
+  .lede { color:#52525b; margin:0 0 22px; max-width:820px; }
+  h2 { font-size:14.5px; margin:34px 0 10px; }
+  code, .mono { font:12px "JetBrains Mono", ui-monospace, monospace; }
+  .cols { display:grid; grid-template-columns:1fr 1fr; gap:18px; align-items:start; }
+  @media (max-width:980px){ .cols { grid-template-columns:1fr; } }
+  .theme { background:var(--bg); color:var(--fg); border-radius:12px; border:1px solid var(--line2); overflow:hidden; }
+  .cap { font-size:12px; color:#52525b; margin:8px 2px 0; }
+  .notes { background:#fff; border-radius:12px; border:1px solid rgba(0,0,0,.1); padding:12px 18px; font-size:13px; color:#3f3f46; }
+  .notes li { margin:4px 0; }
+  svg.i { width:14px; height:14px; flex:none; }
+
+  /* app frame */
+  .app { display:grid; grid-template-columns:1fr 430px; }
+  .chat { border-right:1px solid var(--line); display:flex; flex-direction:column; min-width:0; }
+  .hdr { display:flex; align-items:center; gap:10px; height:46px; padding:0 14px; border-bottom:1px solid var(--line); }
+  .crumb { flex:1; color:var(--muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .crumb b { color:var(--fg); font-weight:600; }
+  .ghost { flex:1; padding:22px 28px; color:var(--faint); font-size:12.5px; }
+  .ghost .line { height:9px; border-radius:5px; background:var(--sunken); margin:10px 0; }
+  .toolsrow { display:inline-flex; align-items:center; gap:8px; padding:6px 10px; border:1px solid var(--line); border-radius:8px; color:var(--muted); font-size:12px; }
+  .toolsrow b { color:var(--fg2); font-weight:550; }
+  .toolsrow .off { color:var(--warn); }
+  .composer { margin:0 22px 18px; border:1px solid var(--line2); border-radius:14px; padding:12px 14px 10px; background:var(--raised); }
+  .composer .ph { color:var(--faint); margin-bottom:12px; }
+  .chips { display:flex; gap:4px; align-items:center; flex-wrap:wrap; }
+  .chip { display:inline-flex; align-items:center; gap:6px; height:26px; padding:0 8px; border-radius:6px; font-size:12.5px; color:var(--fg2); }
+  .chip:hover, .chip.hl { background:var(--hover); }
+  .chip .n { color:var(--warn); font-weight:550; }
+  .chip.hl { outline:1.5px dashed var(--accent); outline-offset:1px; }
+
+  /* sheet */
+  .sheet { background:var(--raised); display:flex; flex-direction:column; min-height:0; }
+  .sheet-h { display:flex; align-items:center; padding:12px 16px 0; font-weight:600; }
+  .sheet-h .x { margin-left:auto; color:var(--muted); }
+  .tabs { flex:none; display:flex; gap:2px; padding:8px 10px 0; border-bottom:1px solid var(--line); font-size:12.5px; overflow:hidden; }
+  .tabs span { padding:6px 8px; color:var(--muted); border-bottom:2px solid transparent; white-space:nowrap; }
+  .tabs .on { color:var(--fg); border-color:var(--accent); font-weight:550; }
+  .tabs .cnt { color:var(--warn); margin-left:3px; font-weight:550; }
+  .body { padding:12px 14px 14px; flex:1; }
+  .seg { display:inline-flex; border:1px solid var(--line2); border-radius:7px; padding:2px; gap:2px; background:var(--sunken); }
+  .seg span { font-size:11.5px; padding:2px 8px; border-radius:5px; color:var(--muted); white-space:nowrap; }
+  .seg .on { background:var(--raised); color:var(--fg); box-shadow:0 1px 2px rgba(0,0,0,.08); font-weight:550; }
+  .seg .on.off { color:var(--warn); }
+  .seg .on.def { color:var(--accent); }
+  .seg.dis { opacity:.45; }
+  .seg.big span { font-size:12.5px; padding:4px 14px; }
+  .topbar { display:flex; align-items:center; gap:8px; margin-bottom:10px; }
+  .search { flex:1; display:flex; align-items:center; gap:6px; height:30px; border:1px solid var(--line2); border-radius:7px; padding:0 9px; color:var(--faint); font-size:12.5px; }
+  .summary { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; margin-bottom:6px; }
+  .stat { border:1px solid var(--line); border-radius:9px; padding:8px 10px; }
+  .stat .k { font-size:11.5px; color:var(--muted); }
+  .stat .v { font-size:15px; font-weight:600; font-variant-numeric:tabular-nums; }
+  .stat .v small { font-size:11.5px; color:var(--muted); font-weight:500; }
+  .stat.warn .v { color:var(--warn); }
+  .applies { font-size:11.5px; color:var(--muted); margin:2px 0 4px; }
+
+  .sec { margin-top:14px; }
+  .sec-h { display:flex; align-items:center; gap:7px; font-size:11.5px; font-weight:600; color:var(--muted); text-transform:none; padding:0 2px 6px; }
+  .sec-h .where { font-weight:500; color:var(--faint); }
+  .sec-h .more { margin-left:auto; color:var(--muted); padding:0 4px; border-radius:4px; }
+  .list { border:1px solid var(--line); border-radius:10px; overflow:hidden; }
+  .row { display:grid; grid-template-columns:14px 16px 1fr auto auto; align-items:center; gap:8px; padding:7px 10px; border-top:1px solid var(--line); min-height:40px; }
+  .row:first-child { border-top:0; }
+  .row:hover { background:var(--hover); }
+  .row .chev { color:var(--faint); }
+  .row .kind { color:var(--muted); }
+  .nm { min-width:0; }
+  .nm .t { font-weight:550; font-size:12.8px; display:flex; align-items:center; gap:6px; white-space:nowrap; }
+  .nm .m { font-size:11.5px; color:var(--muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .nm .m .w { color:var(--warn); }
+  .tag { font-size:10.5px; padding:0 6px; border-radius:999px; border:1px solid var(--line2); color:var(--muted); font-weight:500; line-height:16px; }
+  .tag.session { border-color:transparent; background:var(--accent-soft); color:var(--accent); }
+  .tag.project { border-color:transparent; background:var(--sunken); color:var(--fg2); }
+  .reset { color:var(--muted); display:inline-flex; }
+  .row.isoff .nm .t { color:var(--fg2); }
+  .row.locked { color:var(--faint); }
+  .row.locked .nm .t { color:var(--muted); font-weight:500; }
+  .exp { padding:4px 10px 10px 48px; border-top:1px dashed var(--line); background:var(--bg2); font-size:12px; color:var(--fg2); }
+  .exp p { margin:6px 0; color:var(--muted); }
+  .tl { display:flex; flex-wrap:wrap; gap:4px; }
+  .tl span { font:11.5px "JetBrains Mono", ui-monospace, monospace; padding:1px 6px; border-radius:5px; background:var(--sunken); color:var(--fg2); }
+  .link { color:var(--accent); }
+
+  .rules td, .rules th { font-size:12px; padding:6px 8px; border-top:1px solid var(--line); text-align:left; }
+  .rules th { color:var(--muted); font-weight:500; border-top:0; }
+  .rules { width:100%; border-collapse:collapse; }
+  .addrule { display:flex; gap:6px; align-items:center; padding:8px; border-top:1px solid var(--line); background:var(--bg2); }
+  .inp { flex:1; height:28px; border:1px solid var(--line2); border-radius:6px; padding:0 8px; display:flex; align-items:center; font:12px "JetBrains Mono", ui-monospace, monospace; color:var(--fg2); background:var(--raised); }
+  .btn { height:28px; padding:0 10px; border-radius:6px; border:1px solid var(--line2); font-size:12px; display:inline-flex; align-items:center; font-weight:550; background:var(--raised); color:var(--fg); }
+  .btn.pri { background:var(--accent); color:#fff; border-color:transparent; }
+  .hint { font-size:11.5px; color:var(--muted); padding:6px 2px 0; }
+  .suggest { margin:4px 0 0; border:1px solid var(--line2); border-radius:8px; background:var(--raised); box-shadow:0 8px 20px rgba(0,0,0,.10); font-size:12px; overflow:hidden; }
+  .suggest div { padding:5px 10px; display:flex; gap:10px; }
+  .suggest div .mono { color:var(--fg); }
+  .suggest div span:last-child { color:var(--muted); margin-left:auto; }
+  .suggest .sel { background:var(--accent-soft); }
+
+  /* switch for skills */
+  .sw { width:30px; height:18px; border-radius:999px; background:var(--line2); position:relative; flex:none; }
+  .sw::after { content:""; position:absolute; top:2px; left:2px; width:14px; height:14px; border-radius:50%; background:#fff; box-shadow:0 1px 2px rgba(0,0,0,.2); }
+  .sw.on { background:var(--accent); }
+  .sw.on::after { left:14px; }
+  .sw.dis { opacity:.4; }
+  .srow { display:grid; grid-template-columns:16px 1fr auto auto; gap:8px; align-items:center; padding:8px 10px; border-top:1px solid var(--line); }
+  .srow:first-child { border-top:0; }
+  .srow .d { font-size:11.5px; color:var(--muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .srow .t { font-weight:550; font-size:12.8px; display:flex; gap:6px; align-items:center; }
+  .srow.shadow .t { color:var(--faint); font-weight:500; text-decoration:line-through; text-decoration-color:var(--line2); }
+
+  /* states table */
+  table.states { width:100%; border-collapse:collapse; background:var(--bg); }
+  table.states td, table.states th { padding:8px 10px; border-top:1px solid var(--line); vertical-align:middle; font-size:12.5px; text-align:left; }
+  table.states th { color:var(--muted); font-weight:500; border-top:0; }
+  table.states .row { border:0; padding:4px 0; min-height:0; grid-template-columns:16px 1fr auto auto; }
+  table.states .row:hover { background:none; }
+
+  /* project editor */
+  .pe { padding:16px 18px; }
+  .pe h3 { margin:0 0 2px; font-size:15px; }
+  .pe .sub { color:var(--muted); font-size:12px; margin-bottom:14px; }
+  .field { display:grid; grid-template-columns:150px 1fr; gap:10px; align-items:center; padding:9px 0; border-top:1px solid var(--line); font-size:12.5px; }
+  .field .k { color:var(--muted); }
+  .field .v { display:flex; gap:6px; align-items:center; flex-wrap:wrap; }
+  .rb { font-size:11.5px; padding:1px 7px; border-radius:5px; background:var(--sunken); color:var(--fg2); font-weight:550; }
+  .warnrb { color:var(--warn); }
+
+  /* phone */
+  .phone { width:390px; height:760px; border-radius:34px; border:8px solid #18181b; overflow:hidden; position:relative; background:var(--bg); margin:0 auto; }
+  .phone .dim { position:absolute; inset:0; background:rgba(0,0,0,.28); }
+  .phone .bs { position:absolute; left:0; right:0; bottom:0; top:120px; background:var(--raised); border-radius:16px 16px 0 0; display:flex; flex-direction:column; }
+  .grab { width:38px; height:4px; border-radius:2px; background:var(--line2); margin:8px auto 2px; }
+  .pill { display:inline-flex; align-items:center; gap:4px; font-size:11.5px; padding:3px 9px; border-radius:999px; border:1px solid var(--line2); color:var(--fg2); font-weight:550; white-space:nowrap; }
+  .pill.off { color:var(--warn); border-color:var(--warn-soft); background:var(--warn-soft); }
+  .pill.def { color:var(--accent); border-color:transparent; background:var(--accent-soft); }
+  .menu { position:absolute; right:14px; top:500px; width:190px; background:var(--raised); border:1px solid var(--line2); border-radius:10px; box-shadow:0 12px 30px rgba(0,0,0,.18); font-size:13px; overflow:hidden; z-index:3; }
+  .menu div { padding:9px 12px; display:flex; justify-content:space-between; border-top:1px solid var(--line); }
+  .menu div:first-child { border-top:0; }
+  .menu .ck { color:var(--accent); }
+  .menu .sm { font-size:11.5px; color:var(--muted); }
+
+  /* new session page (matches the web client's runtime cards) */
+  .ns { display:grid; grid-template-columns:232px 1fr; min-height:0; }
+  .side { background:var(--bg2); border-right:1px solid var(--line); padding:12px 10px; font-size:13px; color:var(--fg2); }
+  .side .it { display:flex; gap:9px; align-items:center; padding:6px 8px; border-radius:7px; }
+  .side .it.on { background:var(--accent-soft); color:var(--fg); font-weight:600; }
+  .side .lbl { font-size:11.5px; color:var(--muted); padding:12px 8px 4px; }
+  .main { display:flex; flex-direction:column; min-width:0; }
+  .main .hdr b { font-weight:600; color:var(--fg); }
+  .canvas { padding:14px 28px 6px; max-width:820px; margin:0 auto; width:100%; }
+  .projpick { display:flex; align-items:center; gap:8px; font-size:13px; margin-bottom:6px; }
+  .projpick .pp { display:inline-flex; gap:6px; align-items:center; border:1px solid var(--line2); border-radius:7px; padding:4px 10px; font-weight:550; }
+  .intro { color:var(--muted); font-size:12.5px; margin:4px 0 10px; }
+  .mg { display:flex; align-items:center; gap:8px; font-size:13.5px; color:var(--fg2); margin:12px 0 8px; }
+  .cards { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+  .card2 { border:1.5px solid var(--line2); border-radius:9px; padding:10px 12px; background:var(--raised); }
+  .card2.sel { border-color:var(--accent); background:var(--bg2); }
+  .card2 .top { display:flex; align-items:center; gap:8px; }
+  .card2 .ck { width:16px; height:16px; border-radius:50%; border:1.5px solid var(--muted); display:inline-flex; align-items:center; justify-content:center; font-size:10px; color:var(--accent); flex:none; }
+  .card2.sel .ck { border-color:var(--accent); }
+  .card2 .dot { width:7px; height:7px; border-radius:50%; background:#1e3a8a; flex:none; }
+  .card2 .dot.lab { background:#86198f; }
+  .card2 .nmn { font:600 13px "JetBrains Mono", ui-monospace, monospace; }
+  .card2 .st { margin-left:auto; font-size:11.5px; font-weight:600; color:var(--ok); }
+  .card2 .st.use { color:var(--accent); }
+  .card2 .ds { font-size:11.5px; color:var(--muted); margin:2px 0 0 31px; }
+  .card2 .ws { margin:8px 0 0; border:1px solid var(--line2); border-radius:7px; padding:6px 10px; font:12.5px "JetBrains Mono", ui-monospace, monospace; background:var(--raised); }
+  .tg { margin:9px 0 0; padding-top:8px; border-top:1px dashed var(--line2); display:flex; flex-wrap:wrap; gap:5px; align-items:center; }
+  .tg .lb { font-size:11px; color:var(--muted); margin-right:2px; }
+  .gc { display:inline-flex; align-items:center; gap:4px; height:22px; padding:0 7px; border-radius:6px; font-size:11.5px; border:1px solid var(--line2); background:var(--raised); color:var(--fg2); white-space:nowrap; position:relative; }
+  .gc .k { width:11px; height:11px; color:var(--muted); }
+  .gc.def { border-color:transparent; background:var(--accent-soft); color:var(--accent); }
+  .gc.off { border-style:dashed; color:var(--faint); text-decoration:line-through; text-decoration-color:var(--warn); }
+  .gc.ses::after, .gc.prj::after, .gc.agt::after { content:""; position:absolute; top:-3px; right:-3px; width:7px; height:7px; border-radius:50%; border:1.5px solid var(--raised); }
+  .gc.ses::after { background:var(--accent); }
+  .gc.prj::after { background:var(--fg2); }
+  .gc.agt::after { background:var(--faint); }
+  .gc.more { border-style:dotted; color:var(--muted); }
+  .gc.sk { background:var(--sunken); border-color:transparent; }
+  .gc.hl { box-shadow:0 0 0 2px var(--accent); }
+  .faintline { margin:6px 0 0 31px; font-size:11.5px; color:var(--faint); }
+  .where { display:flex; flex-direction:column; gap:4px; margin:12px 0 4px; font-size:12.5px; color:var(--fg2); }
+  .where div { display:flex; gap:8px; align-items:center; }
+  .where .mono { font-size:12.5px; }
+  .where .w2 { color:var(--muted); }
+  .where .w2 b { color:var(--fg2); font-weight:550; }
+  .where .w2 .o { color:var(--warn); }
+  .pop { position:absolute; z-index:4; width:236px; background:var(--raised); border:1px solid var(--line2); border-radius:10px; box-shadow:0 12px 30px rgba(0,0,0,.16); font-size:12.5px; overflow:hidden; }
+  .pop .ph { padding:8px 12px 6px; font-size:11.5px; color:var(--muted); border-bottom:1px solid var(--line); }
+  .pop .ph b { color:var(--fg); font:600 12px "JetBrains Mono", ui-monospace, monospace; }
+  .pop div.o { padding:7px 12px; display:flex; justify-content:space-between; }
+  .pop div.o.cur { background:var(--hover); }
+  .pop .sm { font-size:11.5px; color:var(--muted); }
+  .pop .ckm { color:var(--accent); }
+  .pop .sep { border-top:1px solid var(--line); }
+  .legend { display:flex; flex-wrap:wrap; gap:14px; align-items:center; font-size:12px; color:var(--fg2); padding:10px 14px; border-top:1px solid var(--line); background:var(--bg2); }
+  .legend span.x { display:inline-flex; gap:6px; align-items:center; }
+  .att { border-bottom:1px solid var(--line); padding:10px 0 12px; }
+  .att-h { display:flex; align-items:center; gap:8px; }
+  .att-h .an { font:600 13.5px "JetBrains Mono", ui-monospace, monospace; }
+  .att-h .rdy { margin-left:auto; font-size:11px; padding:1px 8px; border-radius:999px; background:var(--sunken); color:var(--fg2); }
+  .am { font-size:12px; color:var(--muted); margin-top:3px; }
+  .ad { font-size:12px; color:var(--fg2); }
+  .abtn { display:flex; gap:6px; margin-top:9px; }
+  .att .tg { border-top:0; padding-top:0; margin-top:8px; }
+  .note { font-size:11.5px; color:var(--warn); margin-top:6px; }
+  .attach { margin:12px 0 10px; height:36px; border-radius:7px; background:var(--accent); color:#fff; display:flex; align-items:center; justify-content:center; font-weight:600; font-size:13px; }
+  .gc.dis { opacity:.5; border-style:dotted; }
+  .gc.nc { border-style:dotted; color:var(--muted); }
+  .dotm { display:inline-block; width:7px; height:7px; border-radius:50%; }
+  .dotm.ses { background:var(--accent); } .dotm.prj { background:var(--fg2); } .dotm.agt { background:var(--faint); }
+  .srow4 { display:grid; grid-template-columns:1fr auto auto auto; gap:10px; align-items:center; padding:8px 10px; border-top:1px solid var(--line); }
+  .srow3 { display:grid; grid-template-columns:1fr auto auto; gap:10px; align-items:center; padding:8px 10px; border-top:1px solid var(--line); }
+  .srow4:first-child, .srow3:first-child { border-top:0; }
+  .srow4 .t, .srow3 .t { font-weight:550; font-size:12.8px; display:flex; gap:6px; align-items:center; }
+  .srow4 .d, .srow3 .d { font-size:11.5px; color:var(--muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .srow4.shadow .t { color:var(--faint); font-weight:500; text-decoration:line-through; }
+  .run { font-size:11.5px; padding:2px 8px; border-radius:6px; border:1px solid var(--line2); color:var(--fg2); }
+  .jump { margin-left:auto; display:inline-flex; gap:2px; border:1px solid var(--line2); border-radius:7px; padding:2px; background:var(--sunken); font-size:12px; }
+  .jump span { padding:2px 10px; border-radius:5px; color:var(--muted); }
+  .jump .on { background:var(--raised); color:var(--fg); font-weight:550; box-shadow:0 1px 2px rgba(0,0,0,.08); }
+  .jump .cnt { color:var(--warn); font-weight:550; }
+  .skh { font-weight:600; font-size:14px; margin:20px 0 8px; padding-top:14px; border-top:1px solid var(--line); }
+  .skh .w2 { color:var(--muted); font-weight:500; font-size:12.5px; }
+  .sgrid { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+  .gc.cached { border-style:dotted; }
+  .asof { font-size:11px; color:var(--faint); margin-left:2px; }
+  .srow3.cachedrow .d { color:var(--faint); }
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute">
+  <defs>
+    <symbol id="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></symbol>
+    <symbol id="chevd" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></symbol>
+    <symbol id="box" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/></symbol>
+    <symbol id="plug" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22v-5"/><path d="M9 8V2"/><path d="M15 8V2"/><path d="M18 8v5a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V8Z"/></symbol>
+    <symbol id="puzzle" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19.439 7.85c-.049.322.059.648.289.878l1.568 1.568c.47.47.706 1.087.706 1.704s-.235 1.233-.706 1.704l-1.611 1.611a.98.98 0 0 1-.837.276c-.47-.07-.802-.48-.968-.925a2.501 2.501 0 1 0-3.214 3.214c.446.166.855.497.925.968a.979.979 0 0 1-.276.837l-1.61 1.61a2.404 2.404 0 0 1-1.705.707 2.402 2.402 0 0 1-1.704-.706l-1.568-1.568a1.026 1.026 0 0 0-.877-.29c-.493.074-.84.504-1.02.968a2.5 2.5 0 1 1-3.237-3.237c.464-.18.894-.527.967-1.02a1.026 1.026 0 0 0-.289-.877l-1.568-1.568A2.402 2.402 0 0 1 1.998 12c0-.617.236-1.234.706-1.704L4.23 8.77c.24-.24.581-.353.917-.303.515.077.877.528 1.073 1.01a2.5 2.5 0 1 0 3.259-3.259c-.482-.196-.933-.558-1.01-1.073-.05-.336.062-.676.303-.917l1.525-1.525A2.402 2.402 0 0 1 12 1.998c.617 0 1.234.236 1.704.706l1.568 1.568c.23.23.556.338.877.29.493-.074.84-.504 1.02-.968a2.5 2.5 0 1 1 3.237 3.237c-.464.18-.894.527-.967 1.02Z"/></symbol>
+    <symbol id="server" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="8" x="2" y="2" rx="2"/><rect width="20" height="8" x="2" y="14" rx="2"/><line x1="6" x2="6.01" y1="6" y2="6"/><line x1="6" x2="6.01" y1="18" y2="18"/></symbol>
+    <symbol id="cookie" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a10 10 0 1 0 10 10 4 4 0 0 1-5-5 4 4 0 0 1-5-5"/><path d="M8.5 8.5v.01"/><path d="M16 15.5v.01"/><path d="M12 12v.01"/><path d="M11 17v.01"/><path d="M7 14v.01"/></symbol>
+    <symbol id="lock" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></symbol>
+    <symbol id="undo" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7v6h6"/><path d="M21 17a9 9 0 0 0-9-9 9 9 0 0 0-6 2.3L3 13"/></symbol>
+    <symbol id="search" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></symbol>
+    <symbol id="wrench" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></symbol>
+    <symbol id="book" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1 0-5H20"/></symbol>
+    <symbol id="shield" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/></symbol>
+    <symbol id="bot" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/></symbol>
+    <symbol id="spark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.9 5.8L20 10l-5 3.9L16.2 20 12 16.6 7.8 20 9 13.9 4 10l6.1-1.2z"/></symbol>
+    <symbol id="folder" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></symbol>
+    <symbol id="clip" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/></symbol>
+    <symbol id="dots" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/></symbol>
+  </defs>
+</svg>
+
+<div class="page">
+  <h1>Tool groups and skills in the web client: draft</h1>
+  <p class="lede">No separate tools panel and no rule editor: every choice is one group or one skill, set to <b>On</b>, <b>Deferred</b>, or <b>Off</b> (skills: on or off). Tool groups sit on the runtime that brings them, in the session panel's <b>Runtimes</b> tab, on the New session page's cards, and in the project editor's cards. Skills get a tab and a section of their own.</p>
+
+  <h2>1 · Session panel › Runtimes, with each attachment's tool groups (light)</h2>
+  <div class="theme" style="position:relative">
+    <div class="app">
+      <div class="chat">
+        <div class="hdr"><div class="crumb"><b>Fix the greeting in greet.py</b></div></div>
+        <div class="ghost">
+          <span class="toolsrow"><svg class="i"><use href="#wrench"/></svg><b>tools</b> · 31 offered · <span class="off">3 groups off</span></span>
+          <div class="line" style="width:70%;margin-top:22px"></div><div class="line" style="width:52%"></div><div class="line" style="width:61%"></div>
+          <div class="line" style="width:40%;margin-top:26px"></div><div class="line" style="width:66%"></div>
+        </div>
+        <div class="composer">
+          <div class="ph">Ask cookie to…</div>
+          <div class="chips">
+            <span class="chip"><svg class="i"><use href="#clip"/></svg></span>
+            <span class="chip"><svg class="i"><use href="#bot"/></svg>primary</span>
+            <span class="chip"><svg class="i"><use href="#spark"/></svg>GPT-5</span>
+            <span class="chip"><svg class="i"><use href="#shield"/></svg>auto-approve</span>
+          </div>
+        </div>
+      </div>
+      <div class="sheet">
+        <div class="sheet-h">Session <span class="x">✕</span></div>
+        <div class="tabs"><span>Usage</span><span>Permissions</span><span class="on">Runtimes</span><span>Skills</span><span>Goal</span><span>Background</span></div>
+        <div class="body">
+          <div class="summary">
+            <div class="stat"><div class="k">Up front</div><div class="v">17 <small>tools · ~9.6k tok</small></div></div>
+            <div class="stat"><div class="k">Deferred</div><div class="v">14 <small>tools · ~0.4k tok</small></div></div>
+            <div class="stat warn"><div class="k">Off</div><div class="v">3 <small>groups · 45 tools</small></div></div>
+          </div>
+          <div class="applies">Click a group to change it for this session; changes apply from the next request.</div>
+
+          <div class="att">
+            <div class="att-h"><span class="an">global · global</span><span class="rdy">ready</span></div>
+            <div class="am">global/global</div>
+            <div class="ad">The daemon's MCP servers, plugins, and global tools</div>
+            <div class="tg"><span class="lb">Tools</span>
+              <span class="gc def"><svg class="i k"><use href="#box"/></svg>memory</span>
+              <span class="gc"><svg class="i k"><use href="#box"/></svg>cron</span>
+              <span class="gc dis" title="hidden by permissions"><svg class="i k"><use href="#shield"/></svg>delegation</span>
+              <span class="gc more">+5</span>
+              <span class="gc off ses hl"><svg class="i k"><use href="#plug"/></svg>exa</span>
+              <span class="gc off prj"><svg class="i k"><use href="#plug"/></svg>github</span>
+            </div>
+            <div class="abtn"><span class="btn">↻ Retry</span><span class="btn">Detach</span></div>
+          </div>
+
+          <div class="att">
+            <div class="att-h"><span class="an">local_greeter · coding</span><span class="rdy">ready</span></div>
+            <div class="am">local/coding at ~/greeter</div>
+            <div class="ad">Read, write, edit, and run commands in a workspace</div>
+            <div class="tg"><span class="lb">Tools</span>
+              <span class="gc"><svg class="i k"><use href="#box"/></svg>coding</span>
+              <span class="gc"><svg class="i k"><use href="#box"/></svg>web</span>
+              <span class="gc def agt"><svg class="i k"><use href="#plug"/></svg>playwright</span>
+            </div>
+            <div class="abtn"><span class="btn">↻ Retry</span><span class="btn">Detach</span></div>
+          </div>
+
+          <div class="att">
+            <div class="att-h"><span class="an">labpc_api · coding</span><span class="rdy">ready</span></div>
+            <div class="am">labpc/coding at ~/api</div>
+            <div class="ad">Read, write, edit, and run commands in a workspace</div>
+            <div class="tg"><span class="lb">Tools</span>
+              <span class="gc off ses"><svg class="i k"><use href="#box"/></svg>coding</span>
+              <span class="gc"><svg class="i k"><use href="#box"/></svg>web</span>
+              <span class="gc def"><svg class="i k"><use href="#plug"/></svg>rust_analyzer</span>
+            </div>
+            <div class="note">coding is off: it stays listed to the model until the context refreshes; calls are refused.</div>
+            <div class="abtn"><span class="btn">↻ Retry</span><span class="btn">Detach</span></div>
+          </div>
+
+          <div class="attach">＋ Attach a runtime</div>
+          <div><span class="btn">Machines &amp; runtimes</span></div>
+        </div>
+      </div>
+    </div>
+    <div class="pop" style="left:880px; top:284px">
+      <div class="ph"><b>mcp:exa</b> · 2 tools · ~0.6k tok</div>
+      <div class="o"><span>On</span><span class="sm">sent up front</span></div>
+      <div class="o"><span>Deferred</span><span class="sm">loaded on demand</span></div>
+      <div class="o cur"><span>Off</span><span class="ckm">✓</span></div>
+      <div class="o sep"><span>Reset</span><span class="sm">to the agent's: on</span></div>
+      <div class="o sep" style="display:block"><span class="sm">exa_web_search_exa · exa_get_contents</span></div>
+    </div>
+  </div>
+  <p class="cap">The Runtimes tab keeps its attachments, Retry, Detach, and Attach; each attachment gains a <b>Tools</b> row. A click on a group opens the menu shown (here on <b>exa</b>): the three states, <b>Reset</b> to the layer below (named), and the group's tools. The tab has no rule editor and the composer no tools chip.</p>
+
+  <h2>2 · Chip states</h2>
+  <div class="theme">
+    <table class="states">
+      <tr><th style="width:24%">Chip</th><th>What it means</th></tr>
+      <tr><td><span class="gc"><svg class="i k"><use href="#box"/></svg>coding</span></td><td>On (plain).</td></tr>
+      <tr><td><span class="gc def"><svg class="i k"><use href="#box"/></svg>memory</span></td><td>Deferred: loaded with <code>tool_search</code> when needed.</td></tr>
+      <tr><td><span class="gc off"><svg class="i k"><use href="#plug"/></svg>github</span></td><td>Off: dashed and struck through.</td></tr>
+      <tr><td><span class="gc ses">x</span> <span class="gc prj">x</span> <span class="gc agt">x</span></td><td>The dot says who set it: this session (accent), the project's defaults (dark), the agent document (grey). No dot: the defaults.</td></tr>
+      <tr><td><span class="gc dis"><svg class="i k"><use href="#shield"/></svg>delegation</span></td><td>Hidden by permissions: not clickable; its tooltip points at the Permissions tab.</td></tr>
+      <tr><td><span class="gc more">+5</span></td><td>Groups that are on and untouched, folded; a click unfolds them. Fixed groups (artifacts, background, tool_search, skills) are not shown.</td></tr>
+      <tr><td><span class="gc nc"><svg class="i k"><use href="#plug"/></svg>github</span></td><td>An MCP server that is not connected (no open session wants it): shown from its last connection.</td></tr>
+      <tr><td><span class="gc cached"><svg class="i k"><use href="#box"/></svg>web</span> <span class="asof">as of 2 days ago</span></td><td>A runtime that is not running: the groups it offered the last time it ran, kept by the daemon. A runtime that never ran shows <i>known once it starts</i>.</td></tr>
+    </table>
+  </div>
+
+  <h2>3 · Session panel › Skills (dark)</h2>
+  <div class="cols">
+    <div class="theme dark">
+      <div class="sheet">
+        <div class="sheet-h">Session <span class="x">✕</span></div>
+        <div class="tabs"><span>Usage</span><span>Permissions</span><span>Runtimes</span><span class="on">Skills<span class="cnt">2</span></span><span>Goal</span></div>
+        <div class="body">
+          <div class="topbar"><span class="search"><svg class="i"><use href="#search"/></svg>Filter skills</span></div>
+          <div class="applies">9 of 11 on for the agent. <b>Run</b> works on any skill, on or off.</div>
+          <div class="sec">
+            <div class="sec-h"><svg class="i"><use href="#server"/></svg>Project · local_greeter <span class="where">~/greeter</span></div>
+            <div class="list">
+              <div class="srow4"><div><div class="t">release-check</div><div class="d">Check a release candidate for packaging and changelog problems.</div></div><span></span><span class="run">Run</span><span class="sw on"></span></div>
+              <div class="srow4"><div><div class="t">local_deploy <span class="dotm ses"></span></div><div class="d">Deploy the site to the staging bucket.</div></div><span class="reset"><svg class="i"><use href="#undo"/></svg></span><span class="run">Run</span><span class="sw"></span></div>
+            </div>
+          </div>
+          <div class="sec">
+            <div class="sec-h"><svg class="i"><use href="#server"/></svg>Project · labpc_api <span class="where">~/api</span></div>
+            <div class="list">
+              <div class="srow4"><div><div class="t">labpc_deploy</div><div class="d">Roll the API out to the lab cluster.</div></div><span></span><span class="run">Run</span><span class="sw on"></span></div>
+            </div>
+          </div>
+          <div class="sec">
+            <div class="sec-h"><svg class="i"><use href="#book"/></svg>User</div>
+            <div class="list">
+              <div class="srow4"><div><div class="t">paper-figures <span class="dotm agt"></span></div><div class="d">Render figures for a paper from the sim infra.</div></div><span></span><span class="run">Run</span><span class="sw"></span></div>
+              <div class="srow4 shadow"><div><div class="t">release-check</div><div class="d">Shadowed by the project skill of the same name.</div></div><span></span><span></span><span class="sw dis"></span></div>
+            </div>
+          </div>
+          <div class="sec">
+            <div class="sec-h"><svg class="i"><use href="#cookie"/></svg>Official</div>
+            <div class="list">
+              <div class="srow4"><div><div class="t">customize-cookie-agent</div><div class="d">Customize cookie agent: its configuration, providers, runtimes…</div></div><span></span><span class="run">Run</span><span class="sw on"></span></div>
+              <div class="srow4"><div><div class="t">add-cookie-runtime</div><div class="d">Add another machine to cookie agent as a runtime.</div></div><span></span><span class="run">Run</span><span class="sw on"></span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="notes">
+      <ul>
+        <li><b>A switch per skill,</b> grouped by where it comes from: each attachment's project skills, then user, then official. The dot says who set it, as on the chips; ↺ removes this session's choice.</li>
+        <li><b>Run</b> invokes the skill as the Skills sheet does today (arguments next), whether it is on or off for the agent.</li>
+        <li><b>The tab's count</b> is the skills that are off.</li>
+        <li><b>Shadowed skills</b> are struck through, without a switch.</li>
+      </ul>
+    </div>
+  </div>
+
+  <h2>4 · The New session page: runtimes, then skills (light)</h2>
+  <div class="theme" style="position:relative">
+    <div class="ns">
+      <div class="side">
+        <div class="it on">✎ New session</div>
+        <div class="lbl">Workspace</div>
+        <div class="it">Agents</div><div class="it">Skills</div><div class="it">Memory</div><div class="it">Machines</div><div class="it">MCP servers</div>
+        <div class="lbl">Sessions</div>
+        <div class="it">👋 greeter</div><div class="it">🌐 website</div>
+      </div>
+      <div class="main">
+        <div class="hdr"><div class="crumb"><b>New session</b></div></div>
+        <div class="canvas">
+          <div class="projpick">Project <span class="pp">👋 greeter ▾</span><span class="jump"><span class="on">Runtimes</span><span>Skills <span class="cnt">1 off</span></span></span></div>
+          <div class="intro">The first message creates the session, starting the runtimes that are not running. Click a tool group on a selected card to change it for this session.</div>
+
+          <div class="mg">⌂ yunhao-labserver · 3 runtimes · 3 ready · 2 selected</div>
+          <div class="cards">
+            <div class="card2 sel">
+              <div class="top"><span class="ck">✓</span><span class="dot"></span><span class="nmn">global/global</span><span class="st">ready</span></div>
+              <div class="ds">The daemon's own tools, MCP servers, and memory</div>
+              <div class="tg"><span class="lb">Tools</span>
+                <span class="gc def"><svg class="i k"><use href="#box"/></svg>memory</span>
+                <span class="gc"><svg class="i k"><use href="#box"/></svg>cron</span>
+                <span class="gc more">+6</span>
+                <span class="gc off prj"><svg class="i k"><use href="#plug"/></svg>github</span>
+                <span class="gc"><svg class="i k"><use href="#plug"/></svg>exa</span>
+              </div>
+            </div>
+            <div class="card2 sel">
+              <div class="top"><span class="ck">✓</span><span class="dot"></span><span class="nmn">local/coding</span><span class="st">ready</span></div>
+              <div class="ds">Read, write, edit, and run commands in a workspace</div>
+              <div class="ws">~/greeter</div>
+              <div class="tg"><span class="lb">Tools</span>
+                <span class="gc"><svg class="i k"><use href="#box"/></svg>coding</span>
+                <span class="gc"><svg class="i k"><use href="#box"/></svg>web</span>
+                <span class="gc def agt"><svg class="i k"><use href="#plug"/></svg>playwright</span>
+              </div>
+            </div>
+            <div class="card2">
+              <div class="top"><span class="ck"></span><span class="dot"></span><span class="nmn">alt/coding</span><span class="st">ready</span></div>
+              <div class="ds">Read, write, edit, and run commands in a workspace</div>
+              <div class="faintline">Brings coding, web</div>
+            </div>
+          </div>
+          <div class="mg">▭ labpc · 1 runtime · 0 ready · 1 selected</div>
+          <div class="cards">
+            <div class="card2 sel">
+              <div class="top"><span class="ck">✓</span><span class="dot lab"></span><span class="nmn">labpc</span><span class="st use">starts on use</span></div>
+              <div class="ds">Template runtime · the daemon starts it when a session needs it</div>
+              <div class="ws">~/api</div>
+              <div class="tg"><span class="lb">Tools</span><span class="gc off prj cached"><svg class="i k"><use href="#box"/></svg>coding</span><span class="gc cached"><svg class="i k"><use href="#box"/></svg>web</span><span class="gc def cached"><svg class="i k"><use href="#plug"/></svg>rust_analyzer</span><span class="asof">as of its last start, 2 days ago</span></div>
+            </div>
+          </div>
+          <div class="mg">◌ gpu-box · 1 runtime · never connected · 1 selected</div>
+          <div class="cards">
+            <div class="card2 sel">
+              <div class="top"><span class="ck">✓</span><span class="dot" style="background:#0f766e"></span><span class="nmn">gpu-box</span><span class="st use">starts on use</span></div>
+              <div class="ds">Template runtime · the daemon starts it when a session needs it</div>
+              <div class="ws">~/train</div>
+              <div class="tg"><span class="lb">Tools</span><span class="gc more">known once it starts</span></div>
+            </div>
+          </div>
+
+          <div class="where">
+            <div><svg class="i" style="color:var(--muted)"><use href="#folder"/></svg><span class="mono">~/greeter</span> <span class="w2">· and ~/api on labpc, ~/train on gpu-box</span></div>
+            <div><svg class="i" style="color:var(--muted)"><use href="#wrench"/></svg><span class="w2"><b>17</b> tools up front · ~9.6k tok · <b>14</b> deferred · <span class="o">2 groups off</span> · <span>gpu-box not counted yet</span></span></div>
+            <div><span class="w2" style="margin-left:22px">From project greeter: <code>mcp:github</code> off, <code>coding@labpc</code> off, 1 skill off · <span class="link">reset to the project's</span></span></div>
+          </div>
+
+          <div class="skh" id="skills">Skills <span class="w2">· 6 of 7 on for the agent</span></div>
+          <div class="sgrid">
+            <div class="sgcol">
+              <div class="sec-h"><svg class="i"><use href="#server"/></svg>Project · local/coding <span class="where">~/greeter</span></div>
+              <div class="list">
+                <div class="srow3"><div><div class="t">release-check</div><div class="d">Check a release candidate for packaging…</div></div><span></span><span class="sw on"></span></div>
+                <div class="srow3"><div><div class="t">deploy <span class="dotm prj"></span></div><div class="d">Deploy the site to the staging bucket.</div></div><span></span><span class="sw"></span></div>
+              </div>
+              <div class="sec-h" style="margin-top:10px"><svg class="i"><use href="#server"/></svg>Project · labpc <span class="where">~/api</span></div>
+              <div class="list"><div class="srow3 cachedrow"><div><div class="t">labpc_deploy</div><div class="d">Roll the API out to the lab cluster · as of 2 days ago</div></div><span></span><span class="sw on"></span></div></div>
+              <div class="sec-h" style="margin-top:10px"><svg class="i"><use href="#server"/></svg>Project · gpu-box <span class="where">~/train</span></div>
+              <div class="list"><div class="srow3 muted"><div><div class="t" style="color:var(--muted);font-weight:500">Known once gpu-box starts</div></div><span></span><span></span></div></div>
+            </div>
+            <div class="sgcol">
+              <div class="sec-h"><svg class="i"><use href="#book"/></svg>User</div>
+              <div class="list">
+                <div class="srow3"><div><div class="t">paper-figures</div><div class="d">Render figures for a paper from the sim infra.</div></div><span></span><span class="sw on"></span></div>
+                <div class="srow3"><div><div class="t">lab-notes</div><div class="d">Keep a dated lab notebook entry.</div></div><span></span><span class="sw on"></span></div>
+              </div>
+              <div class="sec-h" style="margin-top:10px"><svg class="i"><use href="#cookie"/></svg>Official</div>
+              <div class="list">
+                <div class="srow3"><div><div class="t">customize-cookie-agent</div><div class="d">Customize cookie agent…</div></div><span></span><span class="sw on"></span></div>
+                <div class="srow3"><div><div class="t">add-cookie-runtime</div><div class="d">Add another machine as a runtime.</div></div><span></span><span class="sw on"></span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="composer" style="margin:12px auto 16px;width:calc(100% - 56px);max-width:764px">
+          <div class="ph">Ask cookie to…</div>
+          <div class="chips">
+            <span class="chip"><svg class="i"><use href="#clip"/></svg></span>
+            <span class="chip"><svg class="i"><use href="#bot"/></svg>primary</span>
+            <span class="chip"><svg class="i"><use href="#spark"/></svg>GPT-5</span>
+            <span class="chip"><svg class="i"><use href="#shield"/></svg>auto-approve</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <p class="cap"><b>labpc</b> is not running but started before, so its card shows the groups it offered then, dotted, with when; choices on them work as on live ones. <b>gpu-box</b> never started: its tools and skills are known once it starts. One page that scrolls above the composer: the runtime cards with their tool groups, then <b>Skills</b>. The <b>Runtimes · Skills</b> links beside the project picker jump between the two and stay in view; the Skills link counts the skills that are off. The skills follow the selected cards: selecting <code>alt/coding</code> adds its workspace's project skills, and a runtime that has not started says its skills are known once it starts.</p>
+
+  <h2>5 · The project editor (dark)</h2>
+  <div class="cols">
+    <div class="theme dark">
+      <div class="sheet">
+        <div class="sheet-h">Project <span class="x">✕</span></div>
+        <div class="body">
+          <div style="font-weight:600;font-size:13px;margin:4px 0 8px">New sessions attach</div>
+          <div class="intro" style="margin-top:0">A new session in the project starts with these selected, with the tool groups and skills set here; everything stays editable there.</div>
+          <div class="mg">⌂ yunhao-labserver · 3 runtimes · 3 ready · 2 selected</div>
+          <div class="cards" style="grid-template-columns:1fr">
+            <div class="card2 sel">
+              <div class="top"><span class="ck">✓</span><span class="dot"></span><span class="nmn">global/global</span><span class="st">ready</span></div>
+              <div class="ds">The daemon's own tools, MCP servers, and memory</div>
+              <div class="tg"><span class="lb">Tools</span>
+                <span class="gc def"><svg class="i k"><use href="#box"/></svg>memory</span>
+                <span class="gc more">+7</span>
+                <span class="gc"><svg class="i k"><use href="#plug"/></svg>exa</span>
+                <span class="gc off ses"><svg class="i k"><use href="#plug"/></svg>github</span>
+              </div>
+            </div>
+            <div class="card2 sel">
+              <div class="top"><span class="ck">✓</span><span class="dot"></span><span class="nmn">local/coding</span><span class="st">ready</span></div>
+              <div class="ds">Read, write, edit, and run commands in a workspace</div>
+              <div class="ws">~/greeter</div>
+              <div class="tg"><span class="lb">Tools</span>
+                <span class="gc"><svg class="i k"><use href="#box"/></svg>coding</span>
+                <span class="gc"><svg class="i k"><use href="#box"/></svg>web</span>
+                <span class="gc def agt"><svg class="i k"><use href="#plug"/></svg>playwright</span>
+              </div>
+            </div>
+          </div>
+          <div style="font-weight:600;font-size:13px;margin:16px 0 6px">New sessions' skills</div>
+          <div class="list">
+            <div class="srow3"><div><div class="t">deploy <span class="dotm ses"></span></div><div class="d">Project · local/coding</div></div><span class="reset"><svg class="i"><use href="#undo"/></svg></span><span class="sw"></span></div>
+            <div class="srow3"><div><div class="t">release-check</div><div class="d">Project · local/coding</div></div><span></span><span class="sw on"></span></div>
+            <div class="srow3"><div><div class="t">paper-figures</div><div class="d">User</div></div><span></span><span class="sw on"></span></div>
+            <div class="srow3"><div><div class="t" style="color:var(--muted);font-weight:500">+3 more, all on</div></div><span></span><span></span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="notes">
+      <ul>
+        <li><b>Same cards, same chips</b> under <b>New sessions attach</b>; below them the skills the cards bring, as on the New session page.</li>
+        <li><b>The accent dot means "set by the project"</b> here, since the project is the layer being edited; the agent's keep the grey dot.</li>
+        <li><b>Saved with the project</b> on <b>Save</b>, as <code>defaults.tool_groups</code> and <code>defaults.skills</code>, and copied into each new session; editing them later changes no existing session.</li>
+      </ul>
+    </div>
+  </div>
+
+  <h2>6 · On a phone</h2>
+  <div class="cols">
+    <div>
+      <div class="phone">
+        <div class="dim"></div>
+        <div class="bs">
+          <div class="grab"></div>
+          <div class="sheet-h" style="padding-top:4px">Session <span class="x">✕</span></div>
+          <div class="tabs"><span>Usage</span><span>Permissions</span><span class="on">Runtimes</span><span>Skills</span></div>
+          <div class="body">
+            <div class="applies">17 up front · 14 deferred · <span style="color:var(--warn)">3 groups off</span></div>
+            <div class="att">
+              <div class="att-h"><span class="an">global · global</span><span class="rdy">ready</span></div>
+              <div class="tg"><span class="gc def"><svg class="i k"><use href="#box"/></svg>memory</span><span class="gc"><svg class="i k"><use href="#box"/></svg>cron</span><span class="gc more">+5</span><span class="gc off ses"><svg class="i k"><use href="#plug"/></svg>exa</span><span class="gc off prj"><svg class="i k"><use href="#plug"/></svg>github</span></div>
+            </div>
+            <div class="att">
+              <div class="att-h"><span class="an">labpc_api · coding</span><span class="rdy">ready</span></div>
+              <div class="tg"><span class="gc off ses hl"><svg class="i k"><use href="#box"/></svg>coding</span><span class="gc"><svg class="i k"><use href="#box"/></svg>web</span><span class="gc def"><svg class="i k"><use href="#plug"/></svg>rust_analyzer</span></div>
+            </div>
+          </div>
+        </div>
+        <div class="menu" style="top:auto;bottom:0;left:0;right:0;width:auto;border-radius:16px 16px 0 0">
+          <div style="display:block;font-size:12px;color:var(--muted)"><b style="color:var(--fg);font-family:'JetBrains Mono',monospace">coding</b> on labpc · 4 tools · ~3.1k tok</div>
+          <div><span>On</span><span class="sm">sent up front</span></div>
+          <div><span>Deferred</span><span class="sm">loaded on demand</span></div>
+          <div><span>Off</span><span class="ck">✓</span></div>
+          <div><span>Reset</span><span class="sm">to the agent's: on</span></div>
+        </div>
+      </div>
+    </div>
+    <div class="notes">
+      <ul>
+        <li><b>Phones</b> show the same chips; a tap opens the states as a bottom menu.</li>
+        <li><b>Clicks act at once,</b> like the Permissions tab. Picking the state the layers below already give removes this session's choice instead of storing a copy.</li>
+        <li><b>Another client's change</b> updates the chips live; the transcript gets a quiet row naming it.</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>
