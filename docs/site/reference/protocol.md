@@ -13,7 +13,7 @@ A client must call `handshake` before any other method:
 
 ```json
 { "jsonrpc": "2.0", "id": 1, "method": "handshake", "params": {
-    "protocol_version": "1.80.0",
+    "protocol_version": "1.81.0",
     "client": { "kind": "web", "instance_id": "<uuid>" },
     "token": "<the daemon's token>",
     "features": [] } }
@@ -22,7 +22,7 @@ A client must call `handshake` before any other method:
 The reply:
 
 ```json
-{ "protocol_version": "1.80.0", "engine_version": "0.3.0",
+{ "protocol_version": "1.81.0", "engine_version": "0.3.0",
   "origin": "client:web-<id>", "machine_id": "<opaque>", "features": [],
   "status": { "phase": "ready" } }
 ```
@@ -312,6 +312,8 @@ Idempotent redelivery resolves against the state preceding the original run.
 | `session.unread.set` | `session_ids` (1 to 256 root sessions) and `unread` (since 1.51.0; see [Unread sessions](#unread-sessions)) | `changed`: the sessions whose state changed, each also announced by `sessions.changed`; `skipped`: the IDs it left, each with its `reason` (`session_not_found`, or `not_a_root_session` with its `root_session_id`) |
 | `session.pin.set` | `session_ids` (1 to 256 root sessions) and `pinned` (since 1.66.0; see [Pinned sessions](#pinned-sessions)) | `changed` and `skipped`, as `session.unread.set` answers |
 | `plugins.list` | Empty object | The configured `plugins`, in hook order |
+| `plugins.settings.get` | `{ name }` | A plugin's settings form and the values a client may see |
+| `plugins.settings.set` | `{ name, values }` | Empty object, once the settings are stored |
 | `plugins.restart` | Plugin `name` | Empty object, once the restart is under way |
 | `session.set_permission_mode` | Any session ID in the target tree, `auto_approve`/`auto_approve_n`/`auto_approve_y`/`ask`/`yolo`; updates the runtime-only tree mode | Empty object |
 | `skills.list` | Session ID; optional since 1.22.0, without it the daemon's own user and official skills | Discovered skills with source (`user`, `project`, or `official` since 1.22.0), precedence, visibility, permission effect, and an official skill's `version` |
@@ -1005,7 +1007,7 @@ upgraded on disk. Any client holding the token may call it.
 `plugins.list` returns every configured [plugin](../extend/plugins.md) in the
 order its hooks run. A `PluginInfo` is `{ name, state, reason?, tools,
 hooks, subscribe_events, subscribe_bus, publish_bus, producer_messaging,
-dropped_events, stderr?, ui_path? }`: its `state` (`disabled`, `starting`,
+dropped_events, stderr?, ui_path?, has_settings?, settings_missing? }`: its `state` (`disabled`, `starting`,
 `connected`, `reconnecting`, `failed`, or `stopped`), why it failed or last
 disconnected, the tools it declares and the names of the hooks it
 intercepts, what it streams and
@@ -1013,7 +1015,21 @@ publishes, whether its producer messaging is open, how many notifications it
 dropped for falling behind, the tail of its standard error, and, while it is
 connected with [pages](../development/plugins.md#pages), where they are
 (`ui_path`, since 1.80.0: `plugins/<name>/` with the name percent-encoded,
-relative to the daemon's web page).
+relative to the daemon's web page). `has_settings` and `settings_missing`
+(since 1.81.0) say that the plugin declared a
+[settings form](../development/plugins.md#settings) and that a required
+field of it has no value.
+
+`plugins.settings.get` (since 1.81.0) takes `{ name }` and returns the form
+and what a client may see of the stored values: `{ form, values,
+secrets_set }`, the values of the fields that are not secret and the names
+of the secret fields that have one. `plugins.settings.set` takes `{ name,
+values }`: each named field takes its value, or loses it for `null`, and a
+field left out keeps its value. The daemon checks the result against the
+form, stores it, and tells a plugin that takes settings live or restarts
+any other. A plugin with no form, an unknown field, or a value that does not
+fit is an error (`plugin request rejected`). A text input of a form may be
+`secret` (since 1.81.0), which only plugin settings use.
 
 `plugins.restart` starts a plugin again now: a `failed` or reconnecting
 plugin is started at once, and a `connected` one is stopped and started. An

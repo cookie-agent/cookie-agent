@@ -24,11 +24,13 @@ import threading
 
 # The plugin protocol version this module speaks. A daemon is compatible when
 # its major is the same; the two use what the lower minor includes.
-PROTOCOL_VERSION = "1.40.0"
+PROTOCOL_VERSION = "1.41.0"
 
 # The first plugin protocol version with pages (`ui` in the initialize
 # result, `ui_base_url` in its params).
 PAGES_VERSION = (1, 40, 0)
+# The first with a settings form the daemon shows (`settings`).
+SETTINGS_VERSION = (1, 41, 0)
 
 # JSON-RPC error codes the protocol uses (docs/site/specs/compatibility-v1.md
 # section 6).
@@ -153,6 +155,10 @@ class Plugin:
         self._cancelled = set()
         self._running = True
         self._pages = None
+        self._settings_form = None
+        self._on_settings = None
+        # The values the user set in the settings form, by field name.
+        self.settings = {}
 
     # --- registration -----------------------------------------------------
 
@@ -184,6 +190,15 @@ class Plugin:
             "url": "http://127.0.0.1:%d" % server.server_address[1],
             "public_paths": list(public_paths),
         }
+
+    def settings_form(self, form, on_change=None):
+        """Declares a settings form the daemon shows in the web client and
+        keeps the values of (docs/site/development/plugins.md, "Settings");
+        they are in `self.settings` from the handshake on. With `on_change`,
+        new values reach `on_change(settings)` while the plugin runs;
+        without it, the daemon restarts the plugin with them."""
+        self._settings_form = form
+        self._on_settings = on_change
 
     def hook(self, name, handler, on_error="allow"):
         """Intercepts the hook `name`, such as `tool_before_call`, with
@@ -326,6 +341,10 @@ class Plugin:
             self._prepared.pop(params.get("prepared_id"), None)
         elif method == "tool/cancel":
             self._cancelled.add(params.get("prepared_id"))
+        elif method == "plugin/settings_changed":
+            self.settings = params.get("settings") or {}
+            if self._on_settings is not None:
+                self._on_settings(self.settings)
         elif method == "plugin/shutdown":
             self._running = False
         # Any other notification, such as one a newer daemon sends, is
@@ -342,6 +361,7 @@ class Plugin:
                  "peer_version": str(daemon_version)},
             )
         self.daemon = params
+        self.settings = params.get("settings") or {}
         producing = self._producing and "producer_messaging" in params.get("features", [])
         result = {
             "protocol_version": PROTOCOL_VERSION,
@@ -364,8 +384,13 @@ class Plugin:
             },
         }
         # Only what the daemon's version includes is sent.
-        if self._pages is not None and (_version(daemon_version) or (0,)) >= PAGES_VERSION:
+        version = _version(daemon_version) or (0,)
+        if self._pages is not None and version >= PAGES_VERSION:
             result["ui"] = self._pages
+        if self._settings_form is not None and version >= SETTINGS_VERSION:
+            result["settings"] = self._settings_form
+            if self._on_settings is not None:
+                result["features"] = ["settings_live"]
         return result
 
     def _prepare(self, call):

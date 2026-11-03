@@ -1,5 +1,300 @@
 {
   "$defs": {
+    "ElicitationChoice": {
+      "description": "One choice of a choice field: the value the answer carries and the\nlabel shown.",
+      "properties": {
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "title": {
+          "type": "string"
+        },
+        "value": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "value",
+        "title"
+      ],
+      "type": "object"
+    },
+    "ElicitationField": {
+      "description": "One field of a form.",
+      "properties": {
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "input": {
+          "$ref": "#/$defs/ElicitationInput",
+          "description": "What the field takes. A kind this build does not know cannot be\nfilled in."
+        },
+        "name": {
+          "description": "The member of the answer that carries the field's value.",
+          "type": "string"
+        },
+        "required": {
+          "description": "An accepted answer must give it a value.",
+          "type": "boolean"
+        },
+        "title": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "name",
+        "input"
+      ],
+      "type": "object"
+    },
+    "ElicitationForm": {
+      "description": "A form: fields in the order the agent gave them.",
+      "properties": {
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "fields": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ElicitationField"
+          },
+          "type": "array"
+        },
+        "title": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "ElicitationInput": {
+      "description": "What a field takes, and its default.",
+      "oneOf": [
+        {
+          "description": "A line of text.",
+          "properties": {
+            "default": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "format": {
+              "description": "`email`, `uri`, `date`, or `date-time`.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "max_length": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "min_length": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "pattern": {
+              "description": "A regular expression the agent wants the text to match; shown,\nnot checked.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "secret": {
+              "description": "The text is a secret, such as a key (client protocol 1.81.0,\nplugin settings only): typed without echo, and never sent back\nto a client once stored.",
+              "type": "boolean"
+            },
+            "type": {
+              "const": "text",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "One of the choices.",
+          "properties": {
+            "choices": {
+              "items": {
+                "$ref": "#/$defs/ElicitationChoice"
+              },
+              "type": "array"
+            },
+            "default": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "const": "choice",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "choices"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Any number of the choices, in their order.",
+          "properties": {
+            "choices": {
+              "items": {
+                "$ref": "#/$defs/ElicitationChoice"
+              },
+              "type": "array"
+            },
+            "default": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "max_items": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "min_items": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "type": {
+              "const": "multi_choice",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "choices"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A number.",
+          "properties": {
+            "default": {
+              "format": "double",
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "maximum": {
+              "format": "double",
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "minimum": {
+              "format": "double",
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "type": {
+              "const": "number",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A whole number.",
+          "properties": {
+            "default": {
+              "format": "int64",
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "maximum": {
+              "format": "int64",
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "minimum": {
+              "format": "int64",
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "type": {
+              "const": "integer",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Yes or no.",
+          "properties": {
+            "default": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "type": {
+              "const": "boolean",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        }
+      ],
+      "x-open": true
+    },
     "ExtensionHookOnError": {
       "description": "What the daemon does when a call of a hook fails: the plugin times out,\nis not connected or exits, answers with an error, or answers with a\nresult that does not decode (an unknown action included).\n\nOpen: a policy this build does not know reads as `block`, the stricter\none.",
       "oneOf": [
@@ -284,6 +579,17 @@
       "description": "The plugin's [`crate::PLUGIN_PROTOCOL_VERSION`].",
       "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$",
       "type": "string"
+    },
+    "settings": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ElicitationForm"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "The plugin's settings form (plugin protocol 1.41.0), which clients\nshow and the daemon keeps the values of. A text field may be\n`secret`."
     },
     "summary": {
       "description": "What the plugin's tools are for, in a sentence or two: its summary in\ndeferred tool announcements (plugin protocol 1.25.0), cut to 4 KiB.",

@@ -1237,6 +1237,7 @@ impl Server {
             tools: self.handlers.tools(),
             summary: None,
             ui: None,
+            settings: None,
         })
     }
 

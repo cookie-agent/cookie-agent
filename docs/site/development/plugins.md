@@ -156,7 +156,7 @@ and sends `plugin/initialize` within `startup_timeout_ms`:
 
 ```json
 {"jsonrpc":"2.0","id":1,"method":"plugin/initialize","params":{
-  "protocol_version":"1.40.0","engine_version":"0.3.0",
+  "protocol_version":"1.41.0","engine_version":"0.3.0",
   "features":["producer_messaging"],"interception_timeout_ms":2000,
   "ui_base_url":"https://box.example/plugins/issues/"}}
 ```
@@ -166,20 +166,21 @@ and sends `plugin/initialize` within `startup_timeout_ms`:
 implies a feature. `interception_timeout_ms` is the plugin's
 `interception_timeout_ms`: how long the daemon waits for a hook's answer.
 `ui_base_url` (since 1.40.0) is where the plugin's [pages](#pages) are
-reached, sent when the daemon's `[server] page_url` is set. The
-plugin answers with its own protocol version, its configured name, its own
+reached, sent when the daemon's `[server] page_url` is set. `settings`
+(since 1.41.0) holds the values the user set in the plugin's
+[settings form](#settings). The plugin answers with its own protocol version, its configured name, its own
 version, its features, its capabilities, and its tools:
 
 ```json
 {"jsonrpc":"2.0","id":1,"result":{
-  "protocol_version":"1.40.0","name":"issues","version":"1.2.0","features":[],
+  "protocol_version":"1.41.0","name":"issues","version":"1.2.0","features":[],
   "capabilities":{"producer_messaging":false,"subscribe_events":["run_*","tool_call_*"],
     "subscribe_bus":false,"publish_bus":false,
     "intercept":[{"hook":"tool_before_call","on_error":"block"}]},
   "tools":{"tools":[],"prompt_sections":[]}}}
 ```
 
-The protocol version is a semver string, currently `1.40.0`
+The protocol version is a semver string, currently `1.41.0`
 (`PLUGIN_PROTOCOL_VERSION`, which the SDK re-exports). Each end reads the
 other's `protocol_version` from the raw JSON before anything else, and refuses
 an incompatible one with `unsupported_protocol` naming both versions: the
@@ -187,9 +188,10 @@ majors must be equal, so no `0.x` build from before the freeze connects. A
 minor only adds, so the two ends use what the lower minor includes and the
 patch never matters (see [Compatibility](../reference/compatibility.md)). A
 different name also fails the start. An optional `ui` (since 1.40.0)
-declares the plugin's [pages](#pages). No plugin feature is defined
-yet; the daemon ignores one it does not know and shows it in the plugin's
-status. Capabilities are fixed for the connection; `tools` is the runtime
+declares the plugin's [pages](#pages), and an optional `settings` (since
+1.41.0) its [settings form](#settings). The one plugin feature is
+`settings_live` (since 1.41.0); the daemon ignores one it does not know and
+shows it in the plugin's status. Capabilities are fixed for the connection; `tools` is the runtime
 protocol's `RuntimeTools`. An optional `summary` (since 1.25.0) says in a
 sentence or two what the plugin's tools are for, shown with them when they are
 [deferred](../reference/tools.md#deferred-tools) (see Tools below). The SDK exposes what the handshake said about the
@@ -252,6 +254,42 @@ the plugin runs without pages. A restarted plugin declares its port again.
   in a plugin page therefore gives shell access to the daemon's machine, so
   escape everything that comes from elsewhere, such as event titles or
   email subjects.
+
+## Settings
+
+A plugin that needs a few values from the user, such as an API key, can
+let the daemon ask for them instead of serving pages: it declares a form in
+its initialize result (since 1.41.0), the same form an ACP agent's question
+uses, and a text field may be `secret`:
+
+```json
+"settings": {"title": "Issues", "fields": [
+  {"name": "url", "title": "Server", "required": true, "input": {"type": "text", "format": "uri"}},
+  {"name": "token", "title": "API token", "required": true, "input": {"type": "text", "secret": true}}]}
+```
+
+The web client shows the form under Settings › Plugins, filled in with the
+stored values; a secret shows only whether it is set and is typed without
+echo. The daemon keeps the values in
+`<data_root>/plugin-settings/<name>.json`, readable by the user only, never
+in `config.toml`, and never sends a secret back to a client. It checks
+saved values against the form: required fields, lengths, bounds, and
+choices.
+
+The plugin receives the values of the fields it declares in
+`plugin/initialize`'s `settings`; before the daemon has seen its form, it
+receives every stored value. When the user saves, a plugin that declares
+the feature `settings_live` in its initialize result gets
+`plugin/settings_changed` with the new values, whole:
+
+```json
+{"jsonrpc":"2.0","method":"plugin/settings_changed","params":{"settings":{"url":"https://issues.example","token":"…"}}}
+```
+
+and any other plugin is restarted with them. Values of fields a new
+version no longer declares are kept, in case a later one declares them
+again. A plugin may instead read its own configuration: it runs as the
+user.
 
 ## Compatibility
 

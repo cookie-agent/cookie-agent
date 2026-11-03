@@ -210,8 +210,9 @@ fn url_view(url: &str) -> impl IntoView {
     }
 }
 
-/// A form: one control per field, in the form's order.
-fn form_view(
+/// A form: one control per field, in the form's order. `id` keeps its
+/// radio groups apart from another form's.
+pub(crate) fn form_view(
     id: &str,
     form: &ElicitationForm,
     draft: RwSignal<Option<FormDraft>>,
@@ -379,8 +380,8 @@ fn field_control(
     let label = field.label().to_owned();
     let group = format!("question-{id}-{index}");
     match (field.input.known(), value) {
-        (Some(ElicitationInput::Text { max_length, format, .. }), Some(DraftValue::Text(text))) => {
-            let kind = text_input_type(format.as_deref());
+        (Some(ElicitationInput::Text { max_length, format, secret, .. }), Some(DraftValue::Text(text))) => {
+            let kind = if *secret { "password" } else { text_input_type(format.as_deref()) };
             let placeholder = (format.as_deref() == Some("date-time")).then_some("2026-10-24T10:00:00Z");
             view! {
                 <input

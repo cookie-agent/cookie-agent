@@ -13,6 +13,8 @@ plugin is likely to use, in plain Python with no dependencies.
   the session's next run.
 - A page, which the daemon serves at `/plugins/reference/`: the words it
   counted, escaped, since they come from elsewhere.
+- A settings form the daemon shows, with a secret, taken while it runs: the
+  page greets with the greeting set there.
 
 Configure it as a plugin named `reference` (docs/site/extend/plugins.md):
 
@@ -160,8 +162,10 @@ class Page(http.server.BaseHTTPRequestHandler):
             self.send_error(404)
             return
         items = "".join("<li>%s</li>" % html.escape(text) for text in recent) or "<li>none yet</li>"
+        greeting = plugin.settings.get("greeting") or "Hello"
         body = ("<!doctype html><meta charset=utf-8><title>Reference plugin</title>"
-                "<h1>Reference plugin</h1><p>Texts counted:</p><ul>%s</ul>" % items).encode()
+                "<h1>Reference plugin</h1><p id=greeting>%s</p><p>Texts counted:</p><ul>%s</ul>"
+                % (html.escape(greeting), items)).encode()
         self.send_response(200)
         self.send_header("content-type", "text/html; charset=utf-8")
         self.send_header("content-length", str(len(body)))
@@ -170,6 +174,19 @@ class Page(http.server.BaseHTTPRequestHandler):
 
 
 plugin.pages(Page)
+
+
+# --- the settings ---------------------------------------------------------------
+
+plugin.settings_form({
+    "title": "Reference plugin",
+    "fields": [
+        {"name": "greeting", "title": "Greeting", "description": "What its page says first.",
+         "input": {"type": "text", "max_length": 80}},
+        {"name": "api_key", "title": "API key", "description": "Not used; shows a secret.",
+         "input": {"type": "text", "secret": True}},
+    ],
+}, on_change=lambda settings: log({"settings": sorted(settings)}))
 
 if __name__ == "__main__":
     plugin.run()

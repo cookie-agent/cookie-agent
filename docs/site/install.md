@@ -202,6 +202,7 @@ services above. Deleting it is **permanent and cannot be undone**:
 - `config.toml` and `tui.toml`, with the daemon's token (`[server] token`);
 - `providers/`, your connected providers' credentials;
 - `mcp-oauth.json`, the OAuth credentials of remote MCP servers;
+- `plugin-settings/`, what you entered in plugins' settings forms, keys included;
 - `acp-agents.json`, what ACP agents last offered (options, file kinds), which drafts show;
 - `native-compaction.json`, the providers native compaction stopped being tried for;
 - `deferred-tools.json`, the models that refused deferred tools;

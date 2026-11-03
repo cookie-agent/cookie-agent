@@ -547,6 +547,8 @@ pub const MEMORY_CHANGED_METHOD: &str = "memory.changed";
 pub const PLUGINS_LIST_METHOD: &str = "plugins.list";
 pub const PLUGINS_RESTART_METHOD: &str = "plugins.restart";
 pub const PLUGINS_CHANGED_METHOD: &str = "plugins.changed";
+pub const PLUGINS_SETTINGS_GET_METHOD: &str = "plugins.settings.get";
+pub const PLUGINS_SETTINGS_SET_METHOD: &str = "plugins.settings.set";
 pub const RUN_TOOL_BACKGROUND_METHOD: &str = "run.tool_background";
 pub const SESSION_BACKGROUND_LIST_METHOD: &str = "session.background.list";
 pub const SESSION_BACKGROUND_STOP_METHOD: &str = "session.background.stop";
@@ -1059,6 +1061,41 @@ pub struct PluginsRestartParams {
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 pub struct PluginsRestartResult {}
 
+/// A plugin's settings form and the values stored for it (client protocol
+/// 1.81.0).
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PluginsSettingsGetParams {
+    pub name: String,
+}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
+pub struct PluginsSettingsGetResult {
+    /// The form the plugin last declared.
+    pub form: crate::ElicitationForm,
+    /// The stored values of its fields that are not secret.
+    #[serde(default)]
+    pub values: crate::ElicitationContent,
+    /// The names of its secret fields that have a value; a secret's value
+    /// never leaves the daemon.
+    #[serde(default)]
+    pub secrets_set: Vec<String>,
+}
+
+/// Changes a plugin's settings (client protocol 1.81.0): each named field
+/// takes its value, or loses it for `null`; a field left out keeps its
+/// value. The result is checked against the plugin's form, and then a
+/// plugin that takes settings live is told, and any other restarted.
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PluginsSettingsSetParams {
+    pub name: String,
+    pub values: BTreeMap<String, Option<crate::ElicitationValue>>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct PluginsSettingsSetResult {}
+
 /// A plugin's status changed; refetch `plugins.list`.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 pub struct PluginsChangedNotification {}
@@ -1093,6 +1130,13 @@ pub struct PluginInfo {
     /// declared pages.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ui_path: Option<String>,
+    /// The plugin declared a settings form (client protocol 1.81.0), which
+    /// `plugins.settings.get` returns.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub has_settings: bool,
+    /// A required field of its settings form has no value.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub settings_missing: bool,
 }
 
 crate::open_enum! {

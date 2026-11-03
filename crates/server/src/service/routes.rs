@@ -1238,6 +1238,26 @@ impl ServerProtocol for Server {
         Ok(cookie_agent_protocol::PluginsRestartResult {})
     }
 
+    async fn get_plugin_settings(
+        &self,
+        params: cookie_agent_protocol::PluginsSettingsGetParams,
+    ) -> Result<cookie_agent_protocol::PluginsSettingsGetResult> {
+        self.engine
+            .plugin_settings(&params.name)
+            .map_err(protocol_fault)
+    }
+
+    async fn set_plugin_settings(
+        &self,
+        params: cookie_agent_protocol::PluginsSettingsSetParams,
+    ) -> Result<cookie_agent_protocol::PluginsSettingsSetResult> {
+        self.engine
+            .set_plugin_settings(&params.name, params.values)
+            .await
+            .map_err(protocol_fault)?;
+        Ok(cookie_agent_protocol::PluginsSettingsSetResult {})
+    }
+
     async fn get_config(
         &self,
         _params: cookie_agent_protocol::ConfigGetParams,

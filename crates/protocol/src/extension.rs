@@ -34,6 +34,12 @@ pub const PLUGIN_INTERCEPT_SESSION_BEFORE_REVERT_METHOD: &str =
 /// The handshake feature the daemon sends when the plugin's configuration
 /// lets it produce messages (`producer_messaging = true`).
 pub const FEATURE_PRODUCER_MESSAGING: &str = "producer_messaging";
+/// A plugin feature (plugin protocol 1.41.0): the plugin takes new settings
+/// with `plugin/settings_changed` instead of a restart.
+pub const FEATURE_SETTINGS_LIVE: &str = "settings_live";
+/// The daemon's notification of a plugin's new settings, sent to a plugin
+/// that declared [`FEATURE_SETTINGS_LIVE`] (plugin protocol 1.41.0).
+pub const PLUGIN_SETTINGS_CHANGED_METHOD: &str = "plugin/settings_changed";
 
 /// A hook this build dispatches. Hooks travel as [`crate::HookName`]s: a
 /// plugin may name one this build does not know, which the daemon skips with
@@ -174,7 +180,7 @@ pub struct ExtensionPluginCapabilities {
 
 /// `plugin/initialize` params: the daemon's version and what its
 /// configuration enables for this plugin.
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 pub struct ExtensionInitializeParams {
     /// The daemon's [`crate::PLUGIN_PROTOCOL_VERSION`].
     pub protocol_version: crate::SemVer,
@@ -194,6 +200,19 @@ pub struct ExtensionInitializeParams {
     /// request came from.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ui_base_url: Option<String>,
+    /// The values the user set in the plugin's settings form (plugin
+    /// protocol 1.41.0), by field name: those of the fields its last form
+    /// declared, or every stored one before the daemon has seen a form.
+    /// Absent when none are stored.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settings: Option<crate::ElicitationContent>,
+}
+
+/// `plugin/settings_changed` params (plugin protocol 1.41.0): the plugin's
+/// settings as they are now, whole.
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
+pub struct PluginSettingsChangedParams {
+    pub settings: crate::ElicitationContent,
 }
 
 /// The pages a plugin serves (plugin protocol 1.40.0), which the daemon
@@ -236,6 +255,11 @@ pub struct ExtensionInitializeResult {
     /// plugin runs without pages.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ui: Option<PluginUi>,
+    /// The plugin's settings form (plugin protocol 1.41.0), which clients
+    /// show and the daemon keeps the values of. A text field may be
+    /// `secret`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settings: Option<crate::ElicitationForm>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]

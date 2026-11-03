@@ -81,12 +81,23 @@ async fn start_with_page_url(
     plugins: Vec<(&str, PluginConfig)>,
     page_url: Option<&str>,
 ) -> PluginRegistry {
+    start_with(plugins, page_url, None).await
+}
+
+/// [`start`] for a daemon whose `[server] page_url` is `page_url`, keeping
+/// plugin settings in `settings_dir`.
+async fn start_with(
+    plugins: Vec<(&str, PluginConfig)>,
+    page_url: Option<&str>,
+    settings_dir: Option<&Path>,
+) -> PluginRegistry {
     let registry = PluginRegistry::new(
         plugins
             .into_iter()
             .map(|(name, config)| (name.to_owned(), config))
             .collect::<IndexMap<_, _>>(),
         page_url.map(str::to_owned),
+        settings_dir,
     );
     registry.set_reconnect_policy(ReconnectPolicy::with_delays([Duration::from_millis(1); 2]));
     registry.start_eager(&tokio::runtime::Handle::current());
@@ -553,6 +564,7 @@ async fn contexts_are_one_shot_per_session_and_expire() {
     let registry = PluginRegistry::new(
         IndexMap::from([("fixture".to_owned(), config("fixture", &[]))]),
         None,
+        None,
     );
     let runtime = registry
         .inner
@@ -876,5 +888,143 @@ async fn pages_the_daemon_cannot_serve_are_refused_with_a_reason() {
     // Without `[server] page_url` no address is sent.
     let sent: Value = serde_json::from_str(&std::fs::read_to_string(&params).unwrap()).unwrap();
     assert!(sent.get("ui_base_url").is_none());
+    registry.shutdown().await;
+}
+
+const SETTINGS_FORM: &str = r#"{"settings":{"fields":[
+    {"name":"client_id","required":true,"input":{"type":"text"}},
+    {"name":"client_secret","required":true,"input":{"type":"text","secret":true}}]}}"#;
+
+fn text(value: &str) -> cookie_agent_protocol::ElicitationValue {
+    cookie_agent_protocol::ElicitationValue::Text(value.into())
+}
+
+/// The `plugin/initialize` params the fixture last received.
+async fn initialize_params(path: &Path, after: Option<&Value>) -> Value {
+    eventually_some(WAIT, "the initialize params", || {
+        let sent: Value = serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()?;
+        (Some(&sent) != after).then_some(sent)
+    })
+    .await
+}
+
+#[tokio::test]
+async fn settings_are_kept_hidden_from_clients_and_restart_the_plugin() {
+    let directory = tempfile::tempdir().unwrap();
+    let params = directory.path().join("initialize.json");
+    let settings_dir = directory.path().join("plugin-settings");
+    let plugin = || {
+        config(
+            "keys",
+            &[
+                ("FIXTURE_RESULT_EXTRA", SETTINGS_FORM),
+                ("FIXTURE_INITIALIZE_PARAMS_FILE", params.to_str().unwrap()),
+            ],
+        )
+    };
+    let registry = start_with(vec![("keys", plugin())], None, Some(&settings_dir)).await;
+    wait_for(&registry, "keys", PluginState::Connected).await;
+    let first = initialize_params(&params, None).await;
+    assert!(first.get("settings").is_none(), "{first}");
+    let status = registry.statuses().remove(0);
+    assert!(status.has_settings && status.settings_missing);
+
+    // A required secret cannot be left out, and nothing is stored then.
+    let refused = registry
+        .set_settings(
+            "keys",
+            std::collections::BTreeMap::from([("client_id".to_owned(), Some(text("abc")))]),
+        )
+        .await;
+    assert!(refused.is_err(), "{refused:?}");
+    assert!(registry.settings("keys").unwrap().values.is_empty());
+
+    registry
+        .set_settings(
+            "keys",
+            std::collections::BTreeMap::from([
+                ("client_id".to_owned(), Some(text("abc"))),
+                ("client_secret".to_owned(), Some(text("s3cret"))),
+            ]),
+        )
+        .await
+        .unwrap();
+    let seen = registry.settings("keys").unwrap();
+    assert_eq!(
+        seen.values,
+        cookie_agent_protocol::ElicitationContent::from([("client_id".to_owned(), text("abc"))])
+    );
+    assert_eq!(seen.secrets_set, ["client_secret"]);
+    assert!(!registry.statuses()[0].settings_missing);
+
+    // The plugin restarts with its settings, secrets included.
+    let second = initialize_params(&params, Some(&first)).await;
+    assert_eq!(second["settings"]["client_id"], "abc");
+    assert_eq!(second["settings"]["client_secret"], "s3cret");
+    registry.shutdown().await;
+
+    // Another daemon reads them back from the store.
+    let reopened = start_with(vec![("keys", plugin())], None, Some(&settings_dir)).await;
+    wait_for(&reopened, "keys", PluginState::Connected).await;
+    assert_eq!(
+        reopened.settings("keys").unwrap().secrets_set,
+        ["client_secret"]
+    );
+    reopened.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_plugin_that_takes_settings_live_is_told_instead_of_restarted() {
+    let directory = tempfile::tempdir().unwrap();
+    let changes = directory.path().join("settings.jsonl");
+    let pid = directory.path().join("pid");
+    let registry = start(vec![(
+        "live",
+        config(
+            "live",
+            &[
+                ("FIXTURE_RESULT_EXTRA", SETTINGS_FORM),
+                ("FIXTURE_FEATURES", r#"["settings_live"]"#),
+                ("FIXTURE_SETTINGS_FILE", changes.to_str().unwrap()),
+                ("FIXTURE_PID_FILE", pid.to_str().unwrap()),
+            ],
+        ),
+    )])
+    .await;
+    wait_for(&registry, "live", PluginState::Connected).await;
+    // `settings_live` is a feature the daemon knows: no note about it.
+    assert_eq!(registry.statuses()[0].reason, None);
+    let started = std::fs::read_to_string(&pid).unwrap();
+    registry
+        .set_settings(
+            "live",
+            std::collections::BTreeMap::from([
+                ("client_id".to_owned(), Some(text("abc"))),
+                ("client_secret".to_owned(), Some(text("s3cret"))),
+            ]),
+        )
+        .await
+        .unwrap();
+    let told = lines(&changes, 1).await;
+    assert_eq!(told[0]["settings"]["client_id"], "abc");
+    assert_eq!(told[0]["settings"]["client_secret"], "s3cret");
+    assert_eq!(std::fs::read_to_string(&pid).unwrap(), started);
+    assert_eq!(registry.statuses()[0].state, PluginState::Connected);
+    registry.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_plugin_without_a_form_has_no_settings() {
+    let registry = start(vec![("plain", config("plain", &[]))]).await;
+    wait_for(&registry, "plain", PluginState::Connected).await;
+    assert!(!registry.statuses()[0].has_settings);
+    assert!(registry.settings("plain").is_err());
+    assert!(
+        registry
+            .set_settings("plain", std::collections::BTreeMap::new())
+            .await
+            .is_err()
+    );
+    assert!(registry.settings("unknown").is_err());
     registry.shutdown().await;
 }

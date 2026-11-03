@@ -235,6 +235,11 @@ for line in sys.stdin:
         else:
             emit_from_context(context)
         time.sleep(int(os.environ.get("FIXTURE_EVENT_DELAY_MS", "0")) / 1000)
+    elif method == "plugin/settings_changed":
+        settings_file = os.environ.get("FIXTURE_SETTINGS_FILE")
+        if settings_file:
+            with open(settings_file, "a", encoding="utf-8") as output:
+                output.write(json.dumps(message.get("params", {}), separators=(",", ":")) + "\n")
     elif method == "plugin/bus_event":
         bus_file = os.environ.get("FIXTURE_BUS_EVENT_FILE")
         if bus_file:

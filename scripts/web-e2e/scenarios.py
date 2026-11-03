@@ -2569,6 +2569,29 @@ def management(browser):
     browser.click("#page [data-plugin-page-back]")
     browser.wait("the plugin list", lambda: count(browser, '#page [data-plugin="reference"] [data-plugin-restart]') == 1)
     print("opened the reference plugin's page in its frame")
+    # Its settings: a greeting the page then shows, as the plugin takes
+    # settings while it runs, and a secret that is never shown back.
+    browser.click('#page [data-plugin="reference"] [data-plugin-settings]')
+    browser.wait("the settings form", lambda: count(browser, "#page [data-plugin-settings-form] [data-field]") == 2)
+    browser.shot("plugin-settings")
+    browser.type('#page [data-field="greeting"] input', "Welcome back")
+    browser.type('#page [data-field="api_key"] input', "secret-key-123")
+    browser.click("#page [data-plugin-settings-save]")
+    browser.wait("the saved settings", lambda: "saved the settings of plugin `reference`" in browser.text("#status"))
+    browser.click('#page [data-plugin="reference"] [data-plugin-settings]')
+    browser.wait("the stored settings", lambda: browser.script(
+        "return document.querySelector('#page [data-field=\"greeting\"] input')?.value ?? null") == "Welcome back")
+    assert browser.script("return document.querySelector('#page [data-field=\"api_key\"] input').value") == ""
+    assert "secret-key-123" not in browser.text("#page")
+    browser.click("#page [data-plugin-settings-back]")
+    browser.click('#page [data-plugin="reference"] [data-plugin-open]')
+    browser.wait("the new greeting", lambda: browser.script(
+        "return document.querySelector('#plugin-page-frame')?.contentDocument"
+        "?.querySelector('#greeting')?.textContent ?? null") == "Welcome back")
+    browser.shot("plugin-page")
+    browser.click("#page [data-plugin-page-back]")
+    browser.wait("the plugin list again", lambda: count(browser, '#page [data-plugin="reference"] [data-plugin-restart]') == 1)
+    print("set the reference plugin's settings, which its page showed while it ran")
     browser.click('#page [data-plugin="reference"] [data-plugin-restart]')
     close_sheet(browser)
     browser.wait("the restart", lambda: "is restarting" in browser.text("#status"))

@@ -130,7 +130,17 @@ impl Daemon {
             config
                 .plugins
                 .insert("pages".into(), plugin("pages", Some(ui)));
-            config.plugins.insert("plain".into(), plugin("plain", None));
+            // Without pages, but with a settings form.
+            config.plugins.insert(
+                "plain".into(),
+                plugin(
+                    "plain",
+                    Some(
+                        r#"{"settings":{"fields":[{"name":"token","required":true,"input":{"type":"text","secret":true}}]}}"#
+                            .into(),
+                    ),
+                ),
+            );
             let mut broken = plugin("broken", None);
             broken.command = vec![PYTHON.into(), "-c".into(), "raise SystemExit(3)".into()];
             config.plugins.insert("broken".into(), broken);
@@ -423,5 +433,38 @@ async fn the_handshake_hands_out_the_page_ticket() {
         .collect::<BTreeMap<_, _>>();
     assert_eq!(pages["pages"].as_deref(), Some("plugins/pages/"));
     assert_eq!(pages["plain"], None);
+    daemon.stop().await;
+}
+
+#[tokio::test]
+async fn clients_read_and_change_a_plugins_settings() {
+    let daemon = Daemon::start(upstream().await).await;
+    let client = Arc::clone(&daemon.fixture.server).connect_in_process();
+    client.handshake().await.expect("handshake");
+    let read = client.plugin_settings("plain".into()).await.unwrap();
+    assert_eq!(read.form.fields[0].name, "token");
+    assert!(read.secrets_set.is_empty());
+    assert!(client.plugin_settings("pages".into()).await.is_err());
+    client
+        .set_plugin_settings(
+            "plain".into(),
+            BTreeMap::from([(
+                "token".to_owned(),
+                Some(cookie_agent_protocol::ElicitationValue::Text(
+                    "s3cret".into(),
+                )),
+            )]),
+        )
+        .await
+        .unwrap();
+    let read = client.plugin_settings("plain".into()).await.unwrap();
+    assert!(read.values.is_empty());
+    assert_eq!(read.secrets_set, ["token"]);
+    assert!(
+        client
+            .set_plugin_settings("plain".into(), BTreeMap::from([("token".to_owned(), None)]))
+            .await
+            .is_err()
+    );
     daemon.stop().await;
 }

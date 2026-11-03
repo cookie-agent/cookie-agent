@@ -124,6 +124,14 @@
     {
       "direction": "from_daemon",
       "kind": "notification",
+      "method": "plugin/settings_changed",
+      "params": "PluginSettingsChangedParams",
+      "params_role": "information",
+      "result": null
+    },
+    {
+      "direction": "from_daemon",
+      "kind": "notification",
       "method": "plugin/shutdown",
       "params": "ExtensionShutdownParams",
       "params_role": "information",

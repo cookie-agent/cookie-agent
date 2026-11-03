@@ -188,6 +188,8 @@ mod tests {
             dropped_events: 0,
             stderr: None,
             ui_path: None,
+            has_settings: false,
+            settings_missing: false,
         }
     }
 
@@ -224,6 +226,11 @@ mod tests {
         assert!(!quiet.contains("reason:"));
         assert!(!quiet.contains("dropped"));
         assert!(!quiet.contains("pages:"));
+        assert!(!quiet.contains("settings:"));
+        let mut unset = plugin(PluginState::Connected);
+        unset.has_settings = true;
+        unset.settings_missing = true;
+        assert!(plugin_detail(&unset, None).contains("settings: required values missing"));
 
         let mut pages = plugin(PluginState::Connected);
         pages.ui_path = Some("plugins/issues/".into());

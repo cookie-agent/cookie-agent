@@ -147,6 +147,13 @@ pub struct Waiting {
     pub recallable: bool,
 }
 
+/// The plugin whose settings are open: its name, and its form and values
+/// once read.
+pub type OpenPluginSettings = (
+    String,
+    Option<Result<cookie_agent_protocol::PluginsSettingsGetResult, String>>,
+);
+
 /// The connected page's state. Every field is a handle, so the struct is
 /// `Copy` and closures capture it whole.
 #[derive(Clone, Copy)]
@@ -463,6 +470,9 @@ pub struct Workspace {
     /// The plugin whose pages Settings › Plugins shows in its frame: its
     /// name and `ui_path`.
     pub plugin_page: RwSignal<Option<(String, String)>>,
+    /// The plugin whose settings Settings › Plugins shows, and its form and
+    /// values once read (client protocol 1.81.0).
+    pub plugin_settings: RwSignal<Option<OpenPluginSettings>>,
     /// A restart the daemon scheduled, as the page says it, until the
     /// connection closes.
     pub restarting: RwSignal<Option<String>>,
@@ -694,6 +704,7 @@ impl Workspace {
             asset_panel: RwSignal::new(None),
             plugin_pages_here: RwSignal::new(false),
             plugin_page: RwSignal::new(None),
+            plugin_settings: RwSignal::new(None),
             restarting: RwSignal::new(None),
             onboarding: Onboarding::default(),
         }

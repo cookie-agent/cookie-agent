@@ -1570,6 +1570,9 @@ pub fn plugins_sheet(workspace: Workspace) -> impl IntoView {
         Some(Ok(_)) if workspace.plugin_page.with(Option::is_some) => {
             plugin_page_frame(workspace).into_any()
         }
+        Some(Ok(_)) if workspace.plugin_settings.with(Option::is_some) => {
+            plugin_settings_sheet(workspace).into_any()
+        }
         Some(Ok(plugins)) => plugins
             .into_iter()
             .map(|plugin| {
@@ -1601,6 +1604,17 @@ pub fn plugins_sheet(workspace: Workspace) -> impl IntoView {
                         <pre class=format!("{NOTE} whitespace-pre-wrap font-mono")>{plugin_detail(&plugin, crate::browser::page_href().filter(|_| workspace.plugin_pages_here.get()).as_deref())}</pre>
                         <div class="flex flex-wrap gap-2">
                             {open}
+                            {plugin.has_settings.then(|| {
+                                let name = plugin.name.clone();
+                                let missing = plugin.settings_missing;
+                                view! {
+                                    <button type="button" class=BUTTON data-plugin-settings on:click=move |_| workspace.open_plugin_settings(name.clone())>
+                                        <Glyph icon=icondata::LuSettings />
+                                        "Settings"
+                                        {missing.then(|| view! { <span class="h-2 w-2 rounded-full bg-accent" title="required values missing" data-settings-missing></span> })}
+                                    </button>
+                                }
+                            })}
                             <button type="button" class=BUTTON data-plugin-restart on:click=move |_| workspace.restart_plugin(name.clone())>
                                 <Glyph icon=icondata::LuRefreshCw />
                                 "Restart"
@@ -1612,6 +1626,72 @@ pub fn plugins_sheet(workspace: Workspace) -> impl IntoView {
             .collect_view()
             .into_any(),
     }
+    }
+}
+
+/// A plugin's settings form, filled in with what is stored: a secret that
+/// is set shows empty and keeps its value unless one is typed.
+fn plugin_settings_sheet(workspace: Workspace) -> impl IntoView {
+    let back = move |_| workspace.plugin_settings.set(None);
+    move || {
+        let Some((name, read)) = workspace.plugin_settings.get() else {
+            return ().into_any();
+        };
+        let head = {
+            let name = name.clone();
+            view! {
+                <div class="flex flex-wrap items-center gap-2">
+                    <button type="button" class=BUTTON data-plugin-settings-back on:click=back>
+                        <Glyph icon=icondata::LuArrowLeft />
+                        "Plugins"
+                    </button>
+                    <span class="min-w-0 flex-1 truncate font-mono text-sm font-bold">{name}</span>
+                </div>
+            }
+        };
+        let body = match read {
+            None => loading("Reading the settings…").into_any(),
+            Some(Err(error)) => view! { <p class=ERROR>{error}</p> }.into_any(),
+            Some(Ok(settings)) => {
+                let form = cookie_agent_client_state::plugins::settings_form(&settings);
+                let draft = RwSignal::new(Some(
+                    cookie_agent_client_state::plugins::settings_draft(&form, &settings.values),
+                ));
+                let problem = RwSignal::new(None);
+                let failed = RwSignal::new(None::<String>);
+                let id = format!("plugin-{name}");
+                let fields = super::questions::form_view(&id, &form, draft, problem).into_any();
+                let save = move |_| {
+                    failed.set(None);
+                    let Some(content) = draft
+                        .with_untracked(|draft| draft.as_ref().map(|draft| draft.content(&form)))
+                    else {
+                        return;
+                    };
+                    match content {
+                        Ok(content) => workspace.save_plugin_settings(
+                            name.clone(),
+                            cookie_agent_client_state::plugins::settings_changes(&form, &content),
+                            failed,
+                        ),
+                        Err(field) => problem.set(Some(field)),
+                    }
+                };
+                view! {
+                    <form class="flex flex-col gap-3" data-plugin-settings-form on:submit=move |event| { event.prevent_default(); }>
+                        {fields}
+                        {move || failed.get().map(|error| view! { <p class=ERROR role="alert" data-plugin-settings-error>{error}</p> })}
+                        <div class="flex flex-wrap gap-2">
+                            <button type="button" class=PRIMARY data-plugin-settings-save on:click=save>"Save"</button>
+                            <button type="button" class=BUTTON on:click=back>"Cancel"</button>
+                        </div>
+                        <p class=NOTE>"Saving restarts the plugin, unless it takes new settings while it runs."</p>
+                    </form>
+                }
+                .into_any()
+            }
+        };
+        view! { {head} {body} }.into_any()
     }
 }
 

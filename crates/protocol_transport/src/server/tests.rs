@@ -631,6 +631,18 @@ impl ServerProtocol for StubServer {
     ) -> Result<cookie_agent_protocol::PluginsRestartResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
+    async fn get_plugin_settings(
+        &self,
+        _: cookie_agent_protocol::PluginsSettingsGetParams,
+    ) -> Result<cookie_agent_protocol::PluginsSettingsGetResult, ServerFault> {
+        Err(ServerFault::method_not_found("stub"))
+    }
+    async fn set_plugin_settings(
+        &self,
+        _: cookie_agent_protocol::PluginsSettingsSetParams,
+    ) -> Result<cookie_agent_protocol::PluginsSettingsSetResult, ServerFault> {
+        Err(ServerFault::method_not_found("stub"))
+    }
     async fn get_config(
         &self,
         _: cookie_agent_protocol::ConfigGetParams,

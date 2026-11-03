@@ -1466,6 +1466,54 @@ impl Workspace {
         });
     }
 
+    /// Opens plugin `name`'s settings and reads them.
+    pub fn open_plugin_settings(self, name: String) {
+        let Some(client) = self.client() else {
+            return;
+        };
+        self.plugin_settings.set(Some((name.clone(), None)));
+        spawn_local(async move {
+            let result = client
+                .plugin_settings(name.clone())
+                .await
+                .map_err(|error| crate::errors::describe(&error));
+            self.plugin_settings.update(|open| {
+                if let Some((open, read)) = open
+                    && *open == name
+                {
+                    *read = Some(result);
+                }
+            });
+        });
+    }
+
+    /// Saves plugin `name`'s settings: `changes` as `plugins.settings.set`
+    /// takes them. The daemon then tells or restarts the plugin.
+    pub fn save_plugin_settings(
+        self,
+        name: String,
+        changes: std::collections::BTreeMap<
+            String,
+            Option<cookie_agent_protocol::ElicitationValue>,
+        >,
+        failed: RwSignal<Option<String>>,
+    ) {
+        let Some(client) = self.client() else {
+            return;
+        };
+        spawn_local(async move {
+            match client.set_plugin_settings(name.clone(), changes).await {
+                Ok(_) => {
+                    self.plugin_settings.set(None);
+                    self.status
+                        .set(format!("saved the settings of plugin `{name}`"));
+                    self.poll_plugins();
+                }
+                Err(error) => failed.set(Some(crate::errors::describe(&error))),
+            }
+        });
+    }
+
     pub fn restart_plugin(self, name: String) {
         let Some(client) = self.client() else {
             return;

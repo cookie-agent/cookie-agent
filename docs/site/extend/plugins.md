@@ -143,6 +143,12 @@ command = ["python3", "/path/to/cookie-agent/examples/plugins/python/google_cale
 
 To write one, see [Plugin development](../development/plugins.md#pages).
 
+A plugin without pages may still ask for a few values, such as an API key,
+with a settings form the web client shows under Settings › Plugins
+(**Settings**). The daemon keeps the values in
+`~/.cookie-agent/plugin-settings/<name>.json`, readable by you only, shows a secret only as set, and restarts the plugin
+when you save, unless the plugin takes new settings while it runs.
+
 ## Producer messages
 
 A plugin with `producer_messaging = true` can send messages to any session:

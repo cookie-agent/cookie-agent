@@ -1334,6 +1334,7 @@ impl Engine {
         let plugins = Arc::new(crate::PluginRegistry::new(
             options.config.plugins.clone(),
             options.config.runtime.server.page_url.clone(),
+            Some(&options.data_dir.join("plugin-settings")),
         ));
         let mut global_providers: Vec<Arc<dyn ToolProvider>> = vec![mcp.clone()];
         global_providers.extend(options.runtimes.global_tools.iter().cloned());
@@ -2069,6 +2070,34 @@ impl Engine {
     #[must_use]
     pub fn plugin_statuses(&self) -> Vec<cookie_agent_protocol::PluginInfo> {
         self.inner.plugins.statuses()
+    }
+
+    /// Plugin `name`'s settings form and what a client may see of its
+    /// values (`docs/site/specs/plugin-web-ui.md` section 5).
+    pub fn plugin_settings(
+        &self,
+        name: &str,
+    ) -> Result<cookie_agent_protocol::PluginsSettingsGetResult, EngineError> {
+        self.inner
+            .plugins
+            .settings(name)
+            .map_err(EngineError::Plugin)
+    }
+
+    /// Changes plugin `name`'s settings, then tells or restarts it.
+    pub async fn set_plugin_settings(
+        &self,
+        name: &str,
+        changes: std::collections::BTreeMap<
+            String,
+            Option<cookie_agent_protocol::ElicitationValue>,
+        >,
+    ) -> Result<(), EngineError> {
+        self.inner
+            .plugins
+            .set_settings(name, changes)
+            .await
+            .map_err(EngineError::Plugin)
     }
 
     /// What the daemon serves at `/plugins/<name>/` now

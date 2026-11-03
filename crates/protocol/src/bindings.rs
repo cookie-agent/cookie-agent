@@ -382,6 +382,8 @@ fn client_methods() -> Vec<MethodSpec> {
         request!(ASSET_DELETE_METHOD, ToDaemon, AssetDeleteParams => AssetDeleteResult),
         request!(PLUGINS_LIST_METHOD, ToDaemon, PluginsListParams => PluginsListResult),
         request!(PLUGINS_RESTART_METHOD, ToDaemon, PluginsRestartParams => PluginsRestartResult),
+        request!(PLUGINS_SETTINGS_GET_METHOD, ToDaemon, PluginsSettingsGetParams => PluginsSettingsGetResult),
+        request!(PLUGINS_SETTINGS_SET_METHOD, ToDaemon, PluginsSettingsSetParams => PluginsSettingsSetResult),
         request!(CONFIG_RELOAD_METHOD, ToDaemon, ConfigReloadParams => ConfigReloadResult),
         request!(CONFIG_GET_METHOD, ToDaemon, ConfigGetParams => ConfigGetResult),
         request!(CONFIG_APPLY_METHOD, ToDaemon, ConfigApplyParams => ConfigApplyResult),
@@ -478,6 +480,11 @@ fn plugin_methods() -> Vec<MethodSpec> {
     vec![
         request!(PLUGIN_INITIALIZE_METHOD, FromDaemon, ExtensionInitializeParams => ExtensionInitializeResult),
         notification!(PLUGIN_SHUTDOWN_METHOD, FromDaemon, ExtensionShutdownParams),
+        notification!(
+            PLUGIN_SETTINGS_CHANGED_METHOD,
+            FromDaemon,
+            PluginSettingsChangedParams
+        ),
         notification!(PLUGIN_EVENT_METHOD, FromDaemon, ExtensionEventParams),
         notification!(PLUGIN_BUS_EVENT_METHOD, FromDaemon, ExtensionBusEventParams),
         notification!(PLUGIN_EMIT_METHOD, ToDaemon, ExtensionEmitParams),

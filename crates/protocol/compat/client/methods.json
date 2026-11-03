@@ -668,6 +668,22 @@
     {
       "direction": "to_daemon",
       "kind": "request",
+      "method": "plugins.settings.get",
+      "params": "PluginsSettingsGetParams",
+      "params_role": "command",
+      "result": "PluginsSettingsGetResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "plugins.settings.set",
+      "params": "PluginsSettingsSetParams",
+      "params_role": "command",
+      "result": "PluginsSettingsSetResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
       "method": "project.create",
       "params": "ProjectCreateParams",
       "params_role": "command",

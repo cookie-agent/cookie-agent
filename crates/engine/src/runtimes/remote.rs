@@ -544,6 +544,14 @@ struct ProducerState {
 }
 
 /// A plugin connection after its handshake.
+/// What `plugin/initialize` tells a plugin beyond the configuration's
+/// settings: where its pages are reached, and its stored settings.
+#[derive(Debug, Default)]
+pub(crate) struct PluginStart {
+    pub(crate) ui_base_url: Option<String>,
+    pub(crate) settings: Option<cookie_agent_protocol::ElicitationContent>,
+}
+
 pub(crate) struct PluginHandshake {
     pub(crate) client: RuntimeClient,
     pub(crate) result: cookie_agent_protocol::ExtensionInitializeResult,
@@ -1120,7 +1128,7 @@ impl RuntimeClient {
         interception_timeout: Duration,
         shutdown_grace: Duration,
         extension: Arc<dyn ClientExtension>,
-        ui_base_url: Option<String>,
+        start: PluginStart,
     ) -> Result<PluginHandshake, String> {
         let (peer, incoming) = Peer::start(connection.transport);
         let source = cookie_agent_protocol::ProducerSource::plugin(name)
@@ -1172,7 +1180,8 @@ impl RuntimeClient {
                         .collect(),
                     interception_timeout_ms: u64::try_from(interception_timeout.as_millis())
                         .unwrap_or(u64::MAX),
-                    ui_base_url,
+                    ui_base_url: start.ui_base_url,
+                    settings: start.settings,
                 },
             )
             .await
@@ -1183,10 +1192,10 @@ impl RuntimeClient {
         let result: cookie_agent_protocol::ExtensionInitializeResult =
             read_handshake(cookie_agent_protocol::PLUGIN_PROTOCOL_VERSION, reply)
                 .map_err(|reason| failed(&reason))?;
-        // No plugin feature is defined yet.
         let notes = result
             .features
             .iter()
+            .filter(|feature| *feature != cookie_agent_protocol::FEATURE_SETTINGS_LIVE)
             .map(|feature| {
                 format!(
                     "the plugin declares feature `{feature}`, which this daemon does not know; \

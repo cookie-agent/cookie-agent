@@ -1832,6 +1832,32 @@ impl Client {
         .await
     }
 
+    /// Plugin `name`'s settings form and the values a client may see.
+    pub async fn plugin_settings(
+        &self,
+        name: String,
+    ) -> Result<cookie_agent_protocol::PluginsSettingsGetResult, ClientError> {
+        self.call(
+            cookie_agent_protocol::PLUGINS_SETTINGS_GET_METHOD,
+            &cookie_agent_protocol::PluginsSettingsGetParams { name },
+        )
+        .await
+    }
+
+    /// Changes plugin `name`'s settings: each field of `values` takes its
+    /// value, or loses it for `None`.
+    pub async fn set_plugin_settings(
+        &self,
+        name: String,
+        values: std::collections::BTreeMap<String, Option<cookie_agent_protocol::ElicitationValue>>,
+    ) -> Result<cookie_agent_protocol::PluginsSettingsSetResult, ClientError> {
+        self.call(
+            cookie_agent_protocol::PLUGINS_SETTINGS_SET_METHOD,
+            &cookie_agent_protocol::PluginsSettingsSetParams { name, values },
+        )
+        .await
+    }
+
     /// The daemon's configuration documents on disk.
     pub async fn get_config(&self) -> Result<cookie_agent_protocol::ConfigGetResult, ClientError> {
         self.call(

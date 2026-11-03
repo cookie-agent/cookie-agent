@@ -2859,6 +2859,10 @@
                 "null"
               ]
             },
+            "secret": {
+              "description": "The text is a secret, such as a key (client protocol 1.81.0,\nplugin settings only): typed without echo, and never sent back\nto a client once stored.",
+              "type": "boolean"
+            },
             "type": {
               "const": "text",
               "type": "string"

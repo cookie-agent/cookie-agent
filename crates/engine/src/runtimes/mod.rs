@@ -65,8 +65,9 @@ pub use registry::{
 };
 pub(crate) use registry::{RuntimeInstance, RuntimeRegistry};
 pub(crate) use remote::{
-    ClientExtension, HostedMcpServer, InstanceConnection, ProtocolTemplate, RuntimeClient,
-    RuntimeProducerCall, RuntimeProducerHost, register_configured_templates, runtime_settings,
+    ClientExtension, HostedMcpServer, InstanceConnection, PluginStart, ProtocolTemplate,
+    RuntimeClient, RuntimeProducerCall, RuntimeProducerHost, register_configured_templates,
+    runtime_settings,
 };
 
 /// Where [`crate::Engine::try_register_tool_provider`] adds a provider.

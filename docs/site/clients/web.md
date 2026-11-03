@@ -996,7 +996,11 @@ download, or delete it (after asking).
   back, **Reload** loads them again), and **Open in new tab**. The frame
   keeps working in an installed app on iOS, whose new tabs open in Safari
   without the page's sign-in. Pages open only from the daemon that serves
-  the page (see [plugin pages](../extend/plugins.md#pages)).
+  the page (see [plugin pages](../extend/plugins.md#pages)). A plugin with
+  a settings form has **Settings**, marked while a required value is
+  missing: its form filled in with what is stored, where a secret that is
+  set stays empty and keeps its value unless you type a new one. Saving
+  restarts the plugin unless it takes new settings while it runs.
 - **Notifications.** Settings › Notifications turns push notifications on
   in this browser and lists every device the daemon pushes to; see
   [Notifications](#notifications).

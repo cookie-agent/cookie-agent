@@ -5,6 +5,13 @@ The client protocol's version is `MAJOR.MINOR.PATCH`
 adds and a major breaks; before it, every minor could break the wire (see the
 [compatibility spec](../specs/compatibility-v1.md) section 3).
 
+## 1.81.0
+
+- Plugin settings ([Plugin web pages and settings](../specs/plugin-web-ui.md)
+  section 5): `plugins.settings.get` and `plugins.settings.set`; `PluginInfo`
+  gains `has_settings` and `settings_missing`; the elicitation text input
+  gains `secret`.
+
 ## 1.80.0
 
 - Plugin pages ([Plugin web pages](../specs/plugin-web-ui.md)):

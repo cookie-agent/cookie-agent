@@ -58,6 +58,7 @@ use crate::runtimes::{ClientExtension, ProcessConnector, RuntimeClient};
 
 pub(crate) mod hook_views;
 pub mod pages;
+pub(crate) mod settings;
 
 pub(crate) const MAX_PLUGIN_EVENT_PAYLOAD_BYTES: usize = 256 * 1024;
 pub(crate) const MAX_PLUGIN_EVENT_NAME_CHARS: usize = 128;
@@ -308,6 +309,8 @@ struct Connected {
     /// Where its pages are forwarded, when it declared pages the daemon
     /// can serve.
     ui: Option<pages::PluginPageTarget>,
+    /// It takes new settings with `plugin/settings_changed`.
+    settings_live: bool,
 }
 
 /// One configured plugin.
@@ -326,6 +329,13 @@ struct PluginRuntime {
     /// Cancelled to restart the plugin; replaced with every connection.
     restart: Mutex<CancellationToken>,
     registry: Weak<PluginRegistryInner>,
+    /// The settings form it last declared, kept across its connections.
+    settings_form: Mutex<Option<cookie_agent_protocol::ElicitationForm>>,
+    /// The values the user set, as stored in `settings_path`.
+    settings: Mutex<cookie_agent_protocol::ElicitationContent>,
+    /// Where its settings are kept; none for a registry without a data
+    /// directory, which keeps them in memory.
+    settings_path: Option<PathBuf>,
 }
 
 struct PluginRegistryInner {
@@ -369,7 +379,11 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 }
 
 impl PluginRegistry {
-    pub(crate) fn new(plugins: IndexMap<String, PluginConfig>, page_url: Option<String>) -> Self {
+    pub(crate) fn new(
+        plugins: IndexMap<String, PluginConfig>,
+        page_url: Option<String>,
+        settings_dir: Option<&std::path::Path>,
+    ) -> Self {
         let (changes, _) = watch::channel(0);
         let inner = Arc::new_cyclic(|registry: &Weak<PluginRegistryInner>| {
             let plugins = plugins
@@ -380,7 +394,16 @@ impl PluginRegistry {
                     } else {
                         PluginState::Disabled
                     };
+                    let settings_path =
+                        settings_dir.map(|directory| settings::settings_path(directory, &name));
+                    let stored = settings_path
+                        .as_deref()
+                        .map(settings::load)
+                        .unwrap_or_default();
                     let runtime = Arc::new(PluginRuntime {
+                        settings_form: Mutex::new(None),
+                        settings: Mutex::new(stored),
+                        settings_path,
                         name: name.clone(),
                         first_attempt_done: AtomicBool::new(!config.enabled),
                         config,
@@ -467,6 +490,82 @@ impl PluginRegistry {
                 .clone()
                 .map_or(pages::PluginPage::Unknown, pages::PluginPage::Serving),
             None => pages::PluginPage::Unavailable(*lock(&plugin.state)),
+        }
+    }
+
+    /// Plugin `name`'s settings form and what a client may see of its
+    /// values.
+    pub fn settings(
+        &self,
+        name: &str,
+    ) -> Result<cookie_agent_protocol::PluginsSettingsGetResult, String> {
+        let plugin = self
+            .inner
+            .plugins
+            .get(name)
+            .ok_or_else(|| format!("unknown plugin `{name}`"))?;
+        let form = lock(&plugin.settings_form)
+            .clone()
+            .ok_or_else(|| format!("plugin `{name}` declares no settings"))?;
+        let (values, secrets_set) = settings::for_client(&form, &lock(&plugin.settings));
+        Ok(cookie_agent_protocol::PluginsSettingsGetResult {
+            form,
+            values,
+            secrets_set,
+        })
+    }
+
+    /// Applies `changes` to plugin `name`'s settings and stores them; then
+    /// a plugin that takes settings live is told, and any other restarted.
+    pub async fn set_settings(
+        &self,
+        name: &str,
+        changes: std::collections::BTreeMap<
+            String,
+            Option<cookie_agent_protocol::ElicitationValue>,
+        >,
+    ) -> Result<(), String> {
+        let plugin = self
+            .inner
+            .plugins
+            .get(name)
+            .ok_or_else(|| format!("unknown plugin `{name}`"))?;
+        let form = lock(&plugin.settings_form)
+            .clone()
+            .ok_or_else(|| format!("plugin `{name}` declares no settings"))?;
+        let values = {
+            let mut stored = lock(&plugin.settings);
+            let values = settings::apply(&form, &stored, changes)?;
+            if let Some(path) = &plugin.settings_path {
+                settings::save(path, &values)
+                    .map_err(|error| format!("could not store the settings: {error}"))?;
+            }
+            stored.clone_from(&values);
+            values
+        };
+        self.inner.changed();
+        let live = lock(&plugin.connection)
+            .as_ref()
+            .filter(|connected| connected.settings_live)
+            .map(|connected| connected.client.clone());
+        match live {
+            Some(client) => {
+                let params = raw_params(&cookie_agent_protocol::PluginSettingsChangedParams {
+                    settings: settings::for_plugin(Some(&form), &values),
+                });
+                client
+                    .notify_raw(
+                        cookie_agent_protocol::PLUGIN_SETTINGS_CHANGED_METHOD,
+                        &params,
+                    )
+                    .await
+                    .map_err(|error| format!("the plugin did not take its settings: {error}"))
+            }
+            None if plugin.config.enabled => {
+                lock(&plugin.restart).cancel();
+                Ok(())
+            }
+            None => Ok(()),
         }
     }
 
@@ -868,6 +967,15 @@ impl PluginRuntime {
     }
 
     fn info(&self) -> PluginInfo {
+        // Read before the literal below: its temporaries, guards included,
+        // live until it ends.
+        let (has_settings, settings_missing) = {
+            let form = lock(&self.settings_form);
+            let missing = form
+                .as_ref()
+                .is_some_and(|form| settings::missing_required(form, &lock(&self.settings)));
+            (form.is_some(), missing)
+        };
         let connection = lock(&self.connection);
         let capabilities = connection.as_ref().map(|connected| &connected.capabilities);
         PluginInfo {
@@ -912,6 +1020,8 @@ impl PluginRuntime {
                 .as_ref()
                 .and_then(|connected| connected.ui.as_ref())
                 .map(|_| cookie_agent_protocol::plugin_page_path(&self.name)),
+            has_settings,
+            settings_missing,
         }
     }
 
@@ -1023,6 +1133,12 @@ impl PluginRuntime {
                 .as_deref()
                 .map(|page_url| pages::ui_base_url(page_url, &self.name))
         });
+        let stored =
+            settings::for_plugin(lock(&self.settings_form).as_ref(), &lock(&self.settings));
+        let start = crate::runtimes::PluginStart {
+            ui_base_url,
+            settings: (!stored.is_empty()).then_some(stored),
+        };
         let attempt = async move {
             let connection = connector.connect().await?;
             RuntimeClient::initialize_plugin(
@@ -1032,7 +1148,7 @@ impl PluginRuntime {
                 interception_timeout,
                 grace,
                 extension,
-                ui_base_url,
+                start,
             )
             .await
         };
@@ -1051,6 +1167,14 @@ impl PluginRuntime {
                     .map_err(|reason| notes.push(reason))
                     .ok()
             });
+            let settings_live = handshake
+                .result
+                .features
+                .iter()
+                .any(|feature| feature == cookie_agent_protocol::FEATURE_SETTINGS_LIVE);
+            // The form stays known while the plugin is down, so its
+            // settings can be read and changed then too.
+            *lock(&self.settings_form) = handshake.result.settings.clone();
             Connected {
                 client: handshake.client,
                 capabilities: handshake.result.capabilities,
@@ -1060,6 +1184,7 @@ impl PluginRuntime {
                     .filter(|summary| !summary.trim().is_empty()),
                 notes,
                 ui,
+                settings_live,
             }
         })
     }

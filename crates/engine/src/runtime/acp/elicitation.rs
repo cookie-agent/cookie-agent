@@ -186,6 +186,7 @@ fn input_of(schema: &Value) -> Open<ElicitationInput> {
                     .get("default")
                     .and_then(Value::as_str)
                     .map(str::to_owned),
+                secret: false,
             },
         },
         "number" => ElicitationInput::Number {

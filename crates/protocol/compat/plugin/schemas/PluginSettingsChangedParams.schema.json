@@ -1,0 +1,44 @@
+{
+  "$defs": {
+    "ElicitationValue": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "format": "int64",
+          "type": "integer"
+        },
+        {
+          "format": "double",
+          "type": "number"
+        },
+        {
+          "type": "string"
+        },
+        {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      ],
+      "description": "One field's value in an answer."
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "`plugin/settings_changed` params (plugin protocol 1.41.0): the plugin's\nsettings as they are now, whole.",
+  "properties": {
+    "settings": {
+      "additionalProperties": {
+        "$ref": "#/$defs/ElicitationValue"
+      },
+      "type": "object"
+    }
+  },
+  "required": [
+    "settings"
+  ],
+  "title": "PluginSettingsChangedParams",
+  "type": "object"
+}

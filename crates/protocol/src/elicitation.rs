@@ -125,6 +125,11 @@ pub enum ElicitationInput {
         format: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         default: Option<String>,
+        /// The text is a secret, such as a key (client protocol 1.81.0,
+        /// plugin settings only): typed without echo, and never sent back
+        /// to a client once stored.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        secret: bool,
     },
     /// One of the choices.
     Choice {

@@ -2,7 +2,106 @@
 //! what it declares, as text, and how a plugin's events read in the status
 //! line.
 
-use cookie_agent_protocol::{ExtensionBusEventParams, PluginInfo, PluginState};
+use std::collections::BTreeMap;
+
+use cookie_agent_protocol::{
+    ElicitationContent, ElicitationForm, ElicitationInput, ElicitationValue,
+    ExtensionBusEventParams, PluginInfo, PluginState, PluginsSettingsGetResult,
+};
+
+use crate::elicitation::{DraftValue, FormDraft};
+
+/// Whether `field` takes a secret.
+fn is_secret(field: &cookie_agent_protocol::ElicitationField) -> bool {
+    matches!(
+        field.input.known(),
+        Some(ElicitationInput::Text { secret: true, .. })
+    )
+}
+
+/// The form a client shows for a plugin's settings: a secret that is set
+/// is not required, since left empty it keeps its value, and says so.
+#[must_use]
+pub fn settings_form(settings: &PluginsSettingsGetResult) -> ElicitationForm {
+    let mut form = settings.form.clone();
+    for field in &mut form.fields {
+        if is_secret(field) && settings.secrets_set.contains(&field.name) {
+            field.required = false;
+            let note = "Set. Type a new value to replace it.";
+            field.description = Some(match field.description.take() {
+                Some(description) => format!("{description} {note}"),
+                None => note.to_owned(),
+            });
+        }
+    }
+    form
+}
+
+/// A draft of `form` holding the stored `values`, defaults elsewhere.
+#[must_use]
+pub fn settings_draft(form: &ElicitationForm, values: &ElicitationContent) -> FormDraft {
+    let mut draft = FormDraft::new(form);
+    for (field, slot) in form.fields.iter().zip(draft.values.iter_mut()) {
+        let Some(value) = values.get(&field.name) else {
+            continue;
+        };
+        let stored = match (field.input.known(), value) {
+            (Some(ElicitationInput::Text { .. }), ElicitationValue::Text(text)) => {
+                Some(DraftValue::Text(text.clone()))
+            }
+            (Some(ElicitationInput::Number { .. }), ElicitationValue::Number(number)) => {
+                Some(DraftValue::Text(number.to_string()))
+            }
+            (
+                Some(ElicitationInput::Number { .. } | ElicitationInput::Integer { .. }),
+                ElicitationValue::Integer(number),
+            ) => Some(DraftValue::Text(number.to_string())),
+            (Some(ElicitationInput::Choice { choices, .. }), ElicitationValue::Text(chosen)) => {
+                Some(DraftValue::Choice(
+                    choices.iter().position(|choice| &choice.value == chosen),
+                ))
+            }
+            (
+                Some(ElicitationInput::MultiChoice { choices, .. }),
+                ElicitationValue::List(chosen),
+            ) => Some(DraftValue::MultiChoice(
+                choices
+                    .iter()
+                    .map(|choice| chosen.contains(&choice.value))
+                    .collect(),
+            )),
+            (Some(ElicitationInput::Boolean { .. }), ElicitationValue::Boolean(value)) => {
+                Some(DraftValue::Boolean(*value))
+            }
+            _ => None,
+        };
+        if let Some(stored) = stored {
+            *slot = stored;
+        }
+    }
+    draft
+}
+
+/// The `plugins.settings.set` changes a filled-in form makes: every field
+/// that is not secret takes its value, or loses it when left empty; a
+/// secret changes only when one was typed.
+#[must_use]
+pub fn settings_changes(
+    form: &ElicitationForm,
+    content: &ElicitationContent,
+) -> BTreeMap<String, Option<ElicitationValue>> {
+    form.fields
+        .iter()
+        .filter_map(|field| {
+            let value = content.get(&field.name).cloned();
+            if is_secret(field) {
+                value.map(|value| (field.name.clone(), Some(value)))
+            } else {
+                Some((field.name.clone(), value))
+            }
+        })
+        .collect()
+}
 
 /// The cookie the web page keeps the daemon's page ticket in
 /// (`ServerHello::page_ticket`).
@@ -58,6 +157,9 @@ pub fn plugin_detail(plugin: &PluginInfo, page_url: Option<&str>) -> String {
         };
         text.push_str(&format!("\npages: {pages}"));
     }
+    if plugin.settings_missing {
+        text.push_str("\nsettings: required values missing");
+    }
     let list = |items: &[String]| {
         if items.is_empty() {
             "none".to_owned()
@@ -112,6 +214,79 @@ pub fn plugin_event_status(event: &ExtensionBusEventParams) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn text_field(
+        name: &str,
+        required: bool,
+        secret: bool,
+    ) -> cookie_agent_protocol::ElicitationField {
+        cookie_agent_protocol::ElicitationField {
+            name: name.into(),
+            title: None,
+            description: None,
+            required,
+            input: cookie_agent_protocol::Open::Known(ElicitationInput::Text {
+                min_length: None,
+                max_length: None,
+                pattern: None,
+                format: None,
+                default: None,
+                secret,
+            }),
+        }
+    }
+
+    #[test]
+    fn a_set_secret_may_be_left_empty_and_only_typed_secrets_change() {
+        let settings = PluginsSettingsGetResult {
+            form: ElicitationForm {
+                title: None,
+                description: None,
+                fields: vec![
+                    text_field("client_id", true, false),
+                    text_field("client_secret", true, true),
+                    text_field("note", false, false),
+                ],
+            },
+            values: ElicitationContent::from([(
+                "client_id".to_owned(),
+                ElicitationValue::Text("abc".into()),
+            )]),
+            secrets_set: vec!["client_secret".into()],
+        };
+        let form = settings_form(&settings);
+        assert!(form.fields[0].required);
+        assert!(!form.fields[1].required);
+        assert!(form.fields[1].description.is_some());
+
+        let draft = settings_draft(&form, &settings.values);
+        assert_eq!(draft.values[0], DraftValue::Text("abc".into()));
+        assert_eq!(draft.values[1], DraftValue::Text(String::new()));
+        let content = draft.content(&form).unwrap();
+        let changes = settings_changes(&form, &content);
+        assert_eq!(
+            changes,
+            BTreeMap::from([
+                (
+                    "client_id".to_owned(),
+                    Some(ElicitationValue::Text("abc".into()))
+                ),
+                ("note".to_owned(), None),
+            ])
+        );
+
+        let typed = ElicitationContent::from([
+            ("client_id".to_owned(), ElicitationValue::Text("abc".into())),
+            (
+                "client_secret".to_owned(),
+                ElicitationValue::Text("new".into()),
+            ),
+        ]);
+        assert_eq!(
+            settings_changes(&form, &typed)["client_secret"],
+            Some(ElicitationValue::Text("new".into()))
+        );
+    }
 
     #[test]
     fn only_the_daemon_at_the_pages_origin_serves_its_plugin_pages() {

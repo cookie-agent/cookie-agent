@@ -1,4 +1,31 @@
 {
+  "$defs": {
+    "ElicitationValue": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "format": "int64",
+          "type": "integer"
+        },
+        {
+          "format": "double",
+          "type": "number"
+        },
+        {
+          "type": "string"
+        },
+        {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      ],
+      "description": "One field's value in an answer."
+    }
+  },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "description": "`plugin/initialize` params: the daemon's version and what its\nconfiguration enables for this plugin.",
   "properties": {
@@ -24,6 +51,16 @@
       "description": "The daemon's [`crate::PLUGIN_PROTOCOL_VERSION`].",
       "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$",
       "type": "string"
+    },
+    "settings": {
+      "additionalProperties": {
+        "$ref": "#/$defs/ElicitationValue"
+      },
+      "description": "The values the user set in the plugin's settings form (plugin\nprotocol 1.41.0), by field name: those of the fields its last form\ndeclared, or every stored one before the daemon has seen a form.\nAbsent when none are stored.",
+      "type": [
+        "object",
+        "null"
+      ]
     },
     "ui_base_url": {
       "description": "Where the plugin's pages can be reached (plugin protocol 1.40.0):\nthe daemon's `[server] page_url` joined with `plugins/<name>/`, so a\ntool can send the user there. Absent when `page_url` is not set.\nWhile serving a request, its `X-Forwarded-*` headers say where that\nrequest came from.",

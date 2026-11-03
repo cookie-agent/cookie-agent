@@ -1,7 +1,9 @@
 # Plugin web pages and settings
 
-Status: **approved draft** (2026-11-03), from the user's decisions in
-[section 2](#2-decisions-2026-11-03). Builds on
+Status: **implemented** (2026-11-03; client protocol 1.80.0 and 1.81.0,
+plugin protocol 1.40.0 and 1.41.0), from the user's decisions in
+[section 2](#2-decisions-2026-11-03); how it landed is in
+[section 13](#13-implementation-notes-2026-11-03). Builds on
 [plugins v1](plugins-v1.md), the [web client](web-client.md), and
 [MCP OAuth from the web client](web-mcp-oauth.md).
 
@@ -374,3 +376,55 @@ Each phase lands as its own commits with every gate green, and is pushed.
 ## 12. Open questions
 
 None.
+
+## 13. Implementation notes (2026-11-03)
+
+Implemented in four commits: the pages and their access (client protocol
+1.80.0, plugin protocol 1.40.0), the web client's frame with the Python
+helper and the example, a fix for a phone layout the suite caught, and the
+settings (client protocol 1.81.0, plugin protocol 1.41.0). Where the code
+settled what the draft left open, or differs:
+
+- **`ui.url`** takes no path: `http://<loopback>:<port>` with at most a
+  trailing `/`, since every path below it is the plugin's own. A port of 0
+  is refused.
+- **`ui_path`** is relative, `plugins/<name>/`, so it resolves against a page
+  served under a sub-path. The name is percent-encoded as one segment, and a
+  name of only dots is encoded whole so it is never read as `.` or `..`.
+- **Public paths** are matched after percent-decoding each segment, and a
+  path with a `.` or `..` segment, an encoded `/` or `\`, or bytes that are
+  not UTF-8 never matches, so `/oauth/callback/../settings` cannot reach a
+  gated page. `/` as a public path opens every page.
+- **The proxy** opens a new loopback connection per request (HTTP/1.1 with
+  upgrades), with no timeout. `X-Forwarded-Prefix` puts `page_url`'s path, or
+  a front's own prefix, before `/plugins/<name>`. A front's
+  `X-Forwarded-*` headers are trusted as they come when `page_url` is not
+  set. An unreachable plugin server answers `502`.
+- **The ticket** is sent in every `ServerHello`. The web client sets the
+  cookie only when the daemon it connected to serves the page (the same
+  origin), since another daemon's ticket would replace this one's; **Open**
+  shows only then.
+- **The frame** is in Settings › Plugins, in place of the list (**Plugins**
+  goes back, **Reload**, **Open in new tab**), rather than the session
+  panel, which belongs to a session.
+- **`PluginInfo`** carries `has_settings` and `settings_missing`, not the
+  form: the form and values come from `plugins.settings.get`, so the list
+  stays small and comparable.
+- **The form stays known while the plugin is down**, from its last
+  connection, so its settings can be read and changed then; a daemon that
+  has not yet seen the form refuses both.
+- **Secrets** are kept in memory and in the 0600 file; received ones are not
+  zeroized as `provider.connect`'s credentials are. The web form can replace
+  a secret but not clear an optional one.
+- **The Python helper** (`cookie_plugin.py`) speaks plugin protocol 1.40.0:
+  `Plugin.pages(handler, public_paths)` serves an `http.server` handler on a
+  loopback port and declares it to daemons of 1.40.0 or later, and
+  `external_url(request, path)` builds an address from the forwarded
+  headers. The reference plugin has a page, and the browser suite's
+  management scenario opens it in the frame and checks that a request
+  without the cookie is refused.
+- **The example**, `examples/plugins/python/google_calendar.py`, keeps its
+  client and tokens in its own 0600 file and does not use the daemon's
+  settings form, since its pages already serve one. Google's sign-in opens
+  in a new tab, as Google refuses to be framed.
+

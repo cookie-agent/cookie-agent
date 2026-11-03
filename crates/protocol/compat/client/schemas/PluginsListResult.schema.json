@@ -9,6 +9,10 @@
           "minimum": 0,
           "type": "integer"
         },
+        "has_settings": {
+          "description": "The plugin declared a settings form (client protocol 1.81.0), which\n`plugins.settings.get` returns.",
+          "type": "boolean"
+        },
         "hooks": {
           "description": "The hooks it intercepts, in no particular order.",
           "items": {
@@ -36,6 +40,10 @@
             "string",
             "null"
           ]
+        },
+        "settings_missing": {
+          "description": "A required field of its settings form has no value.",
+          "type": "boolean"
         },
         "state": {
           "$ref": "#/$defs/PluginState"

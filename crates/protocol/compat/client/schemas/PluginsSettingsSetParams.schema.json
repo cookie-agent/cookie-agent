@@ -1,0 +1,56 @@
+{
+  "$defs": {
+    "ElicitationValue": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "format": "int64",
+          "type": "integer"
+        },
+        {
+          "format": "double",
+          "type": "number"
+        },
+        {
+          "type": "string"
+        },
+        {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      ],
+      "description": "One field's value in an answer."
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Changes a plugin's settings (client protocol 1.81.0): each named field\ntakes its value, or loses it for `null`; a field left out keeps its\nvalue. The result is checked against the plugin's form, and then a\nplugin that takes settings live is told, and any other restarted.",
+  "properties": {
+    "name": {
+      "type": "string"
+    },
+    "values": {
+      "additionalProperties": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/ElicitationValue"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "type": "object"
+    }
+  },
+  "required": [
+    "name",
+    "values"
+  ],
+  "title": "PluginsSettingsSetParams",
+  "type": "object"
+}

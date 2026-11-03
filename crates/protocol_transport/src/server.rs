@@ -808,6 +808,16 @@ pub trait ServerProtocol: Send + Sync + 'static {
         &self,
         params: cookie_agent_protocol::PluginsRestartParams,
     ) -> Result<cookie_agent_protocol::PluginsRestartResult, ServerFault>;
+    /// A plugin's settings form and the values a client may see.
+    async fn get_plugin_settings(
+        &self,
+        params: cookie_agent_protocol::PluginsSettingsGetParams,
+    ) -> Result<cookie_agent_protocol::PluginsSettingsGetResult, ServerFault>;
+    /// Changes a plugin's settings.
+    async fn set_plugin_settings(
+        &self,
+        params: cookie_agent_protocol::PluginsSettingsSetParams,
+    ) -> Result<cookie_agent_protocol::PluginsSettingsSetResult, ServerFault>;
     /// The configuration documents on disk.
     async fn get_config(
         &self,
@@ -1894,6 +1904,12 @@ async fn dispatch<S: ServerProtocol>(
         }
         cookie_agent_protocol::PLUGINS_RESTART_METHOD => {
             value(server.restart_plugin(decode(params)?).await?)
+        }
+        cookie_agent_protocol::PLUGINS_SETTINGS_GET_METHOD => {
+            value(server.get_plugin_settings(decode(params)?).await?)
+        }
+        cookie_agent_protocol::PLUGINS_SETTINGS_SET_METHOD => {
+            value(server.set_plugin_settings(decode(params)?).await?)
         }
         cookie_agent_protocol::CONFIG_RELOAD_METHOD => {
             value(server.reload_config(decode_default(params)?).await?)
