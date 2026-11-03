@@ -3991,7 +3991,6 @@ impl Engine {
         if let Some((from, message_id, delete)) = &branch {
             let forked = self
                 .branch_acp_session(
-                    session,
                     process,
                     from,
                     message_id.as_deref(),

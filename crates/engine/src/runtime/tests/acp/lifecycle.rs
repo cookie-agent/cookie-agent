@@ -56,16 +56,6 @@ fn forks(acp: &AcpFixture) -> Vec<serde_json::Value> {
         .collect()
 }
 
-fn diagnostics(engine: &Engine, session: SessionId) -> Vec<String> {
-    events(engine, session)
-        .into_iter()
-        .filter_map(|event| match event.payload {
-            EventPayload::Diagnostic { message, .. } => Some(message),
-            _ => None,
-        })
-        .collect()
-}
-
 /// Waits for `session` to record what the probe found.
 async fn probed(engine: &Engine, session: SessionId) -> bool {
     let event = await_event(engine, session, "the fork point probe", |event| {
@@ -364,13 +354,6 @@ async fn a_revert_forks_the_agents_session_at_the_revert_point_and_deletes_the_o
     assert_eq!(
         requests(&acp, "session/delete")[0]["sessionId"],
         old.as_str()
-    );
-    assert!(
-        diagnostics(engine, session)
-            .iter()
-            .any(|message| message.contains("continues from the revert point")),
-        "{:?}",
-        diagnostics(engine, session)
     );
     let outcome = turn(engine, session, "again", "recall").await;
     assert_eq!(final_text(&outcome), "remembers: say one, say two, recall");

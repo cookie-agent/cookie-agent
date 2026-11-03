@@ -978,9 +978,8 @@ protocol 1.24.0, plugin protocol 1.12.0; history format unchanged):
   `session/fork` on the detached session with the fork point as
   `_meta.jetbrains.air.fork = {version: 1, messageId}` and records the new
   session (`how: forked`, `forked_from`). After a revert the old session is
-  then closed when live and deleted (`session/delete`), and the session is
-  told the agent continues from the revert point; after a fork the source
-  keeps its session. With no agent message kept (a fork or a revert before
+  then closed when live and deleted (`session/delete`); after a fork the
+  source keeps its session. With no agent message kept (a fork or a revert before
   the agent's first reply) the turn starts a new session instead, and a
   revert's old session is deleted. A session whose every record a revert
   cuts is deleted at once. A fork the agent refuses at that turn fails the

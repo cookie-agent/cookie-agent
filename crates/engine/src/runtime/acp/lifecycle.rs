@@ -429,14 +429,12 @@ pub(crate) fn fork_refusal(
 impl super::super::Engine {
     /// Branches off `from`, a session a fork or a revert left behind
     /// (`delete`: a revert), at `message_id`, the agent's last message the
-    /// cookie session `session` keeps: the agent's `session/fork` there
-    /// and its answer, or `None` when no agent message is kept and the turn
-    /// starts a new session. A notice says how the agent goes on; a fork
-    /// the agent refuses fails the turn.
+    /// cookie session keeps: the agent's `session/fork` there and its
+    /// answer, or `None` when no agent message is kept and the turn starts
+    /// a new session. A fork the agent refuses fails the turn.
     #[allow(clippy::too_many_arguments)]
     pub(super) async fn branch_acp_session(
         &self,
-        session: SessionId,
         process: &AgentProcess,
         from: &AcpSessionRecord,
         message_id: Option<&str>,
@@ -447,14 +445,6 @@ impl super::super::Engine {
         system_prompt: Option<serde_json::Value>,
     ) -> Result<Option<(String, wire::SessionResponse)>, super::super::EngineError> {
         let Some(message_id) = message_id else {
-            let notice = if delete {
-                "The revert point is before the agent's first reply, so this turn starts a new \
-                 session."
-            } else {
-                "The session was forked before the agent's first reply, so this turn starts a \
-                 new session."
-            };
-            self.acp_notice(session, None, notice.to_owned()).await;
             return Ok(None);
         };
         let forked = self
@@ -476,15 +466,6 @@ impl super::super::Engine {
                 };
                 super::super::EngineError::Acp(format!("the agent cannot {what}: {reason}"))
             })?;
-        if delete {
-            self.acp_notice(
-                session,
-                None,
-                "The agent continues from the revert point: its conversation after it is gone."
-                    .to_owned(),
-            )
-            .await;
-        }
         Ok(Some(forked))
     }
 

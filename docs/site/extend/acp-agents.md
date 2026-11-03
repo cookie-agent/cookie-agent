@@ -443,9 +443,8 @@ change the session's:
   the fork holds the conversation as it was then; if the agent cannot, the
   fork is refused.
 - **Revert.** After a revert the agent's next turn forks its conversation
-  at its last reply the session keeps, then deletes the old conversation,
-  and the transcript says *the agent continues from the revert point*. The
-  agent must fork at a given message: cookie names it with JetBrains AIR's
+  at its last reply the session keeps, then deletes the old conversation.
+  The agent must fork at a given message: cookie names it with JetBrains AIR's
   fork point, which Claude Code's and Codex's adapters read. Cookie checks
   whether the agent does once per agent process, after its first reply in
   a run; until then, and for an agent that does not (one without
