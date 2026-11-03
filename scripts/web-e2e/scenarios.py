@@ -4246,6 +4246,14 @@ def phone_layout():
         # The keyboard's room: the bar hides while the composer has focus.
         phone.script("document.querySelector('#composer').focus()")
         phone.wait("the hidden bar", lambda: not shown(phone, "#status-bar"))
+        # The actions keep their corner without the bar beside them.
+        gap = phone.script(
+            "const b = document.querySelector('#composer-box').getBoundingClientRect();"
+            "const a = document.querySelector('[data-composer-actions]').getBoundingClientRect();"
+            "return Math.round(b.right - a.right)"
+        )
+        assert 0 <= gap <= 16, "the send button left the right corner: %s px from it" % gap
+        phone.shot("phone-composer-focused")
         phone.script("document.querySelector('#composer').blur()")
         phone.wait("the bar again", lambda: shown(phone, "#status-bar"))
         print("phone: the bottom bar gives way to the composer's keyboard")

@@ -3509,8 +3509,9 @@ fn Composer(workspace: Workspace, composing: RwSignal<bool>) -> impl IntoView {
                     <AttachButtons workspace=workspace />
                 </div>
                 <ComposerChips workspace=workspace composing=composing />
+                // Pinned to the right also while a phone hides the chips.
                 <div
-                    class="flex shrink-0 items-center gap-1.5"
+                    class="ml-auto flex shrink-0 items-center gap-1.5"
                     data-composer-actions
                 >
                     {move || match buttons.get() {
