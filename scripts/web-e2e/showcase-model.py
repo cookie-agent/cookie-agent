@@ -74,9 +74,9 @@ def reply(request):
             "The greeting is missing its comma and exclamation mark.",
             "edit",
             {
-                "filePath": "greet.py",
-                "oldString": '    return "Hello " + name',
-                "newString": '    return f"Hello, {name}!"',
+                "path": "greet.py",
+                "old_string": '    return "Hello " + name',
+                "new_string": '    return f"Hello, {name}!"',
             },
         )
     if results == 1:

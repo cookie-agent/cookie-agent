@@ -476,8 +476,8 @@ fn compact_provider_request_is_the_assembled_normal_prefix_plus_one_instruction(
         "Read a file",
         JsonSchema::new(serde_json::json!({
             "type": "object",
-            "properties": {"filePath": {"type": "string"}},
-            "required": ["filePath"]
+            "properties": {"path": {"type": "string"}},
+            "required": ["path"]
         }))
         .expect("schema"),
     )];

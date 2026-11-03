@@ -1079,7 +1079,7 @@ mod tests {
     #[test]
     fn compaction_rejects_tool_calls_instead_of_executing_them() {
         let parts = vec![oven_sdk::AssistantPart::ToolCall(
-            oven_sdk::ToolCallPart::new("call", "read", serde_json::json!({"filePath":"x"})),
+            oven_sdk::ToolCallPart::new("call", "read", serde_json::json!({"path":"x"})),
         )];
         assert!(invalid_internal_output(&parts, true, "oven.test"));
         assert!(!invalid_internal_output(&parts, false, "oven.test"));
@@ -1092,7 +1092,7 @@ mod tests {
             oven_sdk::AssistantPart::ToolCall(oven_sdk::ToolCallPart::new(
                 "call",
                 "read",
-                serde_json::json!({"filePath":"secret"}),
+                serde_json::json!({"path":"secret"}),
             )),
         ];
         assert!(invalid_internal_output(&parts, true, "oven.test"));
@@ -1259,7 +1259,7 @@ mod tests {
             oven_sdk::AssistantPart::ToolCall(oven_sdk::ToolCallPart::new(
                 "call",
                 "read",
-                serde_json::json!({"filePath":"x"}),
+                serde_json::json!({"path":"x"}),
             )),
             oven_sdk::AssistantPart::File(FilePart::image(
                 "image/png",

@@ -35,7 +35,7 @@ const NONE: &str = "None.";
 const OVER_LIMIT: &str = "over its limit";
 
 /// The heading of the memories the run's rules ask before reading.
-const LISTED: &str = "Listed only, as reading asks first (memory_read):";
+const LISTED: &str = "Listed only, as reading asks first (`memory_read`):";
 
 /// Whether `snapshot` holds any memory to show: a user category, the
 /// agent's file, or a machine or project memory, whole, listed, or counted
@@ -269,7 +269,7 @@ pub fn project_overview(
 /// The index of the project's other memories. Its length counts toward the
 /// machines index's limit.
 pub fn project_index(project: &MemorySnapshotProject, taken_at: Option<Timestamp>) -> String {
-    let mut lines = vec!["Other memories of this project (read with memory_read):".to_owned()];
+    let mut lines = vec!["Other memories of this project (read with `memory_read`):".to_owned()];
     lines.extend(
         project
             .memories
@@ -372,11 +372,7 @@ fn trim_body(body: &str) -> &str {
 }
 
 fn escape_attribute(value: &str) -> String {
-    value
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
+    super::escape_xml_attribute(value)
 }
 
 /// The turn's own tag names. A `<` that starts one of them, with or without

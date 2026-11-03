@@ -528,7 +528,7 @@ async fn cancelling_the_parent_leaves_foreground_children_running_and_reporting(
             .expect("child handle");
         assert!(
             body.as_plain_text().starts_with(&format!(
-                "<subagent_report handle=\"{handle}\" status=\"completed\">"
+                "<subagent_report session_id=\"{handle}\" status=\"completed\">"
             )),
             "{body}"
         );

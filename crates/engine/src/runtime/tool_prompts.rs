@@ -256,12 +256,7 @@ fn render_section(provider_id: &str, body: &str) -> String {
 }
 
 fn escape_attribute(value: &str) -> String {
-    value
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&apos;")
+    cookie_agent_protocol::model_text::escape_xml_attribute(value)
 }
 
 fn section_error(provider_id: &str, title: &str, detail: impl std::fmt::Display) -> EngineError {

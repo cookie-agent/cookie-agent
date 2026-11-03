@@ -1035,6 +1035,14 @@ impl cookie_agent_runtime_api::ToolArtifacts for ArtifactRouter {
     ) -> Result<cookie_agent_runtime_api::ArtifactReadPage, crate::ToolError> {
         super::read_artifact_async(self, session, target, window).await
     }
+
+    async fn resolve_artifact(
+        self: Arc<Self>,
+        session: SessionId,
+        artifact: String,
+    ) -> Result<String, crate::ToolError> {
+        reads::resolve_artifact_async(self, session, artifact).await
+    }
 }
 
 impl std::fmt::Debug for ArtifactRouter {

@@ -456,7 +456,7 @@ async fn moving_a_session_announces_its_project_and_leaves_its_memory_turn() {
     // What the model read.
     assert!(!requests[0].contains("## Project"));
     assert!(!requests[0].contains("<machines project="));
-    assert!(requests[1].contains("[cookie: instructions changed]"));
+    assert!(requests[1].contains("<instructions_changed>"));
     assert!(requests[1].contains("<machines project=\\\"web\\\">"));
     assert!(!requests[1].contains("## Project web"));
     assert!(requests[2].contains("<machines project=\\\"shop\\\">"));

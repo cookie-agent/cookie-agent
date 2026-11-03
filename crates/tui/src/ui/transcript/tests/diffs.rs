@@ -255,9 +255,9 @@ fn a_diff_renders_as_a_diff_whatever_the_tool_is_called() {
     );
     let call_id = read_tool_id(&state);
     state.tools.get_mut(&call_id).unwrap().arguments = serde_json::json!({
-        "filePath": "src/main.rs",
-        "oldString": "let old = 1;",
-        "newString": "let new = 2;"
+        "path": "src/main.rs",
+        "old_string": "let old = 1;",
+        "new_string": "let new = 2;"
     })
     .to_string();
     let text = expanded_rows(&state, 80).join("\n");
@@ -265,7 +265,7 @@ fn a_diff_renders_as_a_diff_whatever_the_tool_is_called() {
     assert!(!text.contains(" + │ "), "{text}");
     assert!(!text.contains(" - │ "), "{text}");
     // Its raw arguments are what an `info` view shows of them.
-    assert!(text.contains("\"oldString\": \"let old = 1;\""), "{text}");
+    assert!(text.contains("\"old_string\": \"let old = 1;\""), "{text}");
 }
 
 #[test]

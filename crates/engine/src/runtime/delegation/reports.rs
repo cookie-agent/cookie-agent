@@ -294,8 +294,8 @@ impl Engine {
 /// The `<subagent_report>` element a subagent's finished turn reports.
 pub(in crate::runtime) fn render_subagent_report(teaser: &super::DelegateTeaser) -> String {
     format!(
-        "<subagent_report handle=\"{}\" status=\"{}\">\n{}\n</subagent_report>",
-        teaser.short_id.replace('"', "&quot;"),
+        "<subagent_report session_id=\"{}\" status=\"{}\">\n{}\n</subagent_report>",
+        cookie_agent_protocol::model_text::escape_xml_attribute(&teaser.short_id),
         super::session_status_name(teaser.status),
         super::render_delegate_teaser_body(
             &teaser.preview,

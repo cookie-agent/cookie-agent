@@ -848,7 +848,7 @@ async fn list_runtimes_prints_machines_runtimes_and_the_session_s_own_attachment
          <global/>\n  \
          <machine name=\"daemon\" platform=\"{os}\">\n    \
          <runtime id=\"local\" connected=\"true\"{home}>\n      \
-         <capability name=\"coding\" takes_workspace=\"true\" description=\"Read, write, edit, and run commands in a workspace\"/>\n      \
+         <capability id=\"coding\" takes_workspace=\"true\" description=\"Read, write, edit, and run commands in a workspace\"/>\n      \
          <attachment name=\"{name}\" capability=\"coding\" workspace=\"{workspace}\" status=\"ready\"/>\n    \
          </runtime>\n  \
          </machine>\n  \

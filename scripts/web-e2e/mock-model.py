@@ -134,7 +134,7 @@ def long_session_step(messages, text):
         "index": 0,
         "id": "call-" + str(time.time_ns()),
         "type": "function",
-        "function": {"name": "read", "arguments": json.dumps({"filePath": "step-%d.txt" % done})},
+        "function": {"name": "read", "arguments": json.dumps({"path": "step-%d.txt" % done})},
     }
 
     def parts():
@@ -190,7 +190,7 @@ def reply(request):
         # A compaction or other tool-less request: a summary.
         return text_reply(["A short summary of the conversation."])
     text = last_text(messages).lower()
-    if "<background_result" in text or "[engine goal control]" in text or "<subagent_report" in text:
+    if "<background_result" in text or "by the user. Stop pursuing" in text or "<subagent_report" in text:
         # A stopped background call's report, a paused goal, or a subagent's
         # report: nothing more to do.
         return text_reply(["ok"])
@@ -249,7 +249,7 @@ def reply(request):
         # runner; the scenario stops it.
         return tool_reply("bash", {"command": "sleep 60; printf 'woke up\\n'"})
     if "picture" in text:
-        return tool_reply("read", {"filePath": "dot.png"})
+        return tool_reply("read", {"path": "dot.png"})
     if "show a figure" in text:
         return tool_reply("write_asset", {"path": "figure.html", "title": "Live page"})
     if "replace the figure" in text:
@@ -276,7 +276,7 @@ def reply(request):
     if "revise" in text:
         return tool_reply(
             "memory_edit",
-            {"url": "user://e2e-build", "oldString": "trunk and tailwind", "newString": "trunk, tailwind, and wasm"},
+            {"url": "user://e2e-build", "old_string": "trunk and tailwind", "new_string": "trunk, tailwind, and wasm"},
         )
     if "forget" in text:
         return tool_reply("memory_delete", {"url": "user://e2e-build"})

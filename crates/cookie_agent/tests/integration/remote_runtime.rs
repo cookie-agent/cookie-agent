@@ -495,7 +495,7 @@ async fn a_configured_runtime_runs_tools_in_its_workspace_next_to_local() {
     ));
     fixture.model.enqueue(tool_call(
         "read",
-        &serde_json::json!({"filePath": "note.txt", "machine": machine}),
+        &serde_json::json!({"path": "note.txt", "machine": machine}),
     ));
     fixture.model.enqueue(final_answer("done"));
     let ended = fixture.run(session, "look at the remote repository").await;
@@ -1602,8 +1602,9 @@ async fn assets_are_saved_from_a_machine_shown_listed_replaced_and_deleted() {
     let requests = fixture.model.requests()[before..].to_vec();
     // The failed attachments are told before the next request.
     assert!(
-        requests[0].contains("[attachment not attached] nowhere.png")
-            && requests[0].contains("[attachment not attached] asset_00000000"),
+        requests[0].contains("Attachments of your last reply that were not attached:")
+            && requests[0].contains("- nowhere.png: ")
+            && requests[0].contains("- asset_00000000: "),
         "{}",
         requests[0]
     );

@@ -139,7 +139,7 @@ fn the_shared_wording() {
     assert_eq!(not_found("a.txt"), "a.txt does not exist");
     assert_eq!(
         occurrence_error("foo", 0, "a.txt", true),
-        "`foo` occurs 0 times in a.txt; include more context so it occurs once or set replaceAll"
+        "`foo` occurs 0 times in a.txt; include more context so it occurs once or set `replace_all`"
     );
     assert_eq!(
         occurrence_error("foo", 2, "user://x", false),

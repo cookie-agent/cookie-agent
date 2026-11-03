@@ -254,8 +254,8 @@ change files ([Memory tools](../reference/tools.md#memory-tools)).
 `memory_read` returns the memory's metadata, then its body as lines numbered
 from 1, a page at a time: `offset` is the 1-based body line to start at and
 `limit` the most lines (2000 by default), and a page that leaves lines out
-ends with the `offset` to read next. `memory_edit` takes `oldString` and
-`newString`, like `edit`, but matches the body only and has no `replaceAll`.
+ends with the `offset` to read next. `memory_edit` takes `old_string` and
+`new_string`, like `edit`, but matches the body only and has no `replace_all`.
 
 The daemon backs the rubric with a few checks that need no model:
 
@@ -272,9 +272,9 @@ The daemon backs the rubric with a few checks that need no model:
 - **Size limits** (above): a write over the limit is refused and told to
   read the memory and condense it.
 - **No revisions.** The tools carry no revision. `memory_edit` applies when
-  its `oldString` occurs exactly once in the current body, so an edit on top of
+  its `old_string` occurs exactly once in the current body, so an edit on top of
   someone else's change that does not touch that text still works. The daemon
-  checks that before it asks you to approve the edit: one whose `oldString`
+  checks that before it asks you to approve the edit: one whose `old_string`
   occurs zero or several times, or whose memory does not exist, fails at once
   and is never shown to you for approval. It checks again when the edit runs.
   `memory_write` replaces an existing memory only when the session saw its

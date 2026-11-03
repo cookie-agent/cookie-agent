@@ -54,7 +54,7 @@ const LISTED_ON_ERROR: usize = 20;
 /// The most assets `list_assets` lists.
 const LIST_MAX: usize = 100;
 
-const WRITE_DESCRIPTION: &str = "Save a file as an asset, a file you give the user, or replace an asset you saved before. The file is read from a machine of this session: `path` resolves as `read` resolves it, against the machine's working directory or under `~`, and `machine` names the machine as the machines block and list_runtimes do; omitted, it is the machine of this session's workspace. Any file up to 25 MiB works. Images, SVG, video, and audio are shown as they are, and a Markdown file (`.md`) as a rendered document, for reports and notes. An HTML page is rendered live, with its scripts and network access, and must be one self-contained file. Anything else is offered as a download. Without `asset` this saves a new asset and returns its handle, such as `asset_3f9a1c2e`. With a handle it replaces that asset's content, and every place it was shown updates, so revise something you saved before by its handle rather than saving it again. `scope` is `session` by default: the asset belongs to this conversation and its subagents, and is deleted with it. Use `project` for something to keep after this conversation, which every session of the project can use. Saving does not show the asset: write `<attach asset=\"asset_3f9a1c2e\"/>` in your reply where it should show.";
+const WRITE_DESCRIPTION: &str = "Save a file as an asset, a file you give the user, or replace an asset you saved before. The file is read from a machine of this session: `path` resolves as `read` resolves it, against the machine's working directory or under `~`, and `machine` names the machine as the machines block and `list_runtimes` do; omitted, it is the default machine the machines block marks. Any file up to 25 MiB works. Images, SVG, video, and audio are shown as they are, and a Markdown file (`.md`) as a rendered document, for reports and notes. An HTML page is rendered live, with its scripts and network access, and must be one self-contained file. Anything else is offered as a download. Without `asset` this saves a new asset and returns its handle, such as `asset_3f9a1c2e`. With a handle it replaces that asset's content, and every place it was shown updates, so revise something you saved before by its handle rather than saving it again. `scope` is `session` by default: the asset belongs to this conversation and its subagents, and is deleted with it. Use `project` for something to keep after this conversation, which every session of the project can use. Saving does not show the asset: write `<attach asset=\"asset_3f9a1c2e\"/>` in your reply where it should show.";
 
 const READ_DESCRIPTION: &str = "Read an asset's content by its handle, as `read` reads a file: text with `offset` and `limit` in 1-based lines, an image as an image when you take images, and otherwise only the asset's type and size.";
 
@@ -147,7 +147,7 @@ fn build_specs() -> Vec<ToolSpec> {
                 "required": ["path"],
                 "properties": {
                     "path": {"type": "string", "description": "The file to save: relative to the machine's working directory, absolute, or under `~`"},
-                    "machine": {"type": "string", "description": "A machine of this session, as the machines block names it. Defaults to the machine of this session's workspace"},
+                    "machine": {"type": "string", "description": "A machine of this session, as the machines block names it. Defaults to the default machine the machines block marks"},
                     "asset": handle("The handle of an asset to replace. Omit it to save a new asset"),
                     "title": {"type": "string", "maxLength": ASSET_TITLE_MAX_CHARS, "description": "Shown with the asset. Defaults to the file name for a new asset, and to the current title when replacing"},
                     "scope": scope("`session` (default): this conversation's, deleted with it. `project`: kept in the project's assets. Only for a new asset"),
@@ -313,7 +313,7 @@ pub(crate) fn resolve(
             listed.join("\n"),
             if known.len() > LISTED_ON_ERROR {
                 format!(
-                    "\n({} more; call list_assets)",
+                    "\n({} more; call `list_assets`)",
                     known.len() - LISTED_ON_ERROR
                 )
             } else {

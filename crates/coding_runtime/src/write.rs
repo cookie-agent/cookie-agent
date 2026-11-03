@@ -34,7 +34,8 @@ pub struct WriteTool {
 #[serde(deny_unknown_fields)]
 struct WriteArgs {
     #[serde(
-        rename = "filePath",
+        rename = "path",
+        alias = "path",
         deserialize_with = "crate::path_args::deserialize"
     )]
     /// Path to the file. Relative paths resolve against the session working directory.
@@ -218,7 +219,7 @@ impl ToolProvider for WriteTool {
         let permission_name = Self::get_permission_name(name)?;
         let args: WriteArgs = parse_args("write", arguments.clone())?;
         if args.file_path.is_empty() {
-            return Err(ToolError::execution("filePath must not be empty"));
+            return Err(ToolError::execution("`path` must not be empty"));
         }
         Ok((
             permission_name,
@@ -267,7 +268,7 @@ fn prepare_write(tool: &WriteTool, args: WriteArgs) -> Result<PreparedTool, Tool
         ));
     }
     let normalized_arguments = serde_json::json!({
-        "filePath": target.display_path(),
+        "path": target.display_path(),
         "content": args.content,
     });
     let shown_path = tool.shown_path(&args);
@@ -363,7 +364,7 @@ mod tests {
         assert_eq!(
             tool.get_permission_resource(
                 "write",
-                &serde_json::json!({"filePath":"out.txt","content":"x"})
+                &serde_json::json!({"path":"out.txt","content":"x"})
             )
             .expect("permission resource"),
             (Some("write"), Some("out.txt".into()))
@@ -381,7 +382,7 @@ mod tests {
         assert_eq!(
             tool.get_display_argument(
                 "write",
-                &serde_json::json!({"filePath":"out.txt","content":"x"})
+                &serde_json::json!({"path":"out.txt","content":"x"})
             )
             .expect("relative"),
             "out.txt"
@@ -389,7 +390,7 @@ mod tests {
         assert_eq!(
             tool.get_display_argument(
                 "write",
-                &serde_json::json!({"filePath":workspace.path().join("out.txt"),"content":"x"})
+                &serde_json::json!({"path":workspace.path().join("out.txt"),"content":"x"})
             )
             .expect("workspace"),
             "out.txt"
@@ -398,7 +399,7 @@ mod tests {
         assert_eq!(
             tool.get_display_argument(
                 "write",
-                &serde_json::json!({"filePath": home.join("notes.txt"),"content":"x"})
+                &serde_json::json!({"path": home.join("notes.txt"),"content":"x"})
             )
             .expect("home"),
             "~/notes.txt"
@@ -424,7 +425,7 @@ mod tests {
                 ToolCall {
                     id: ToolCallId::new_v7(),
                     name: "write".into(),
-                    arguments: serde_json::json!({"filePath":"value.txt","content":"one"}),
+                    arguments: serde_json::json!({"path":"value.txt","content":"one"}),
                 },
             )
             .await
@@ -435,7 +436,7 @@ mod tests {
                 ToolCall {
                     id: ToolCallId::new_v7(),
                     name: "write".into(),
-                    arguments: serde_json::json!({"filePath":"value.txt","content":"two"}),
+                    arguments: serde_json::json!({"path":"value.txt","content":"two"}),
                 },
             )
             .await
@@ -457,7 +458,7 @@ mod tests {
                 ToolCall {
                     id: ToolCallId::new_v7(),
                     name: "write".into(),
-                    arguments: serde_json::json!({"filePath":"a/b/value.txt","content":"value"}),
+                    arguments: serde_json::json!({"path":"a/b/value.txt","content":"value"}),
                 },
             )
             .await
@@ -541,7 +542,7 @@ mod tests {
                     ToolCall {
                         id: ToolCallId::new_v7(),
                         name: "write".into(),
-                        arguments: serde_json::json!({"filePath":requested,"content":"new"}),
+                        arguments: serde_json::json!({"path":requested,"content":"new"}),
                     },
                 )
                 .await
@@ -550,7 +551,7 @@ mod tests {
             assert_eq!(prepared.operation().resources().len(), 1);
             assert_eq!(prepared.policy_labels(), [Some(requested.to_owned())]);
             assert_eq!(
-                prepared.normalized_arguments()["filePath"],
+                prepared.normalized_arguments()["path"],
                 workspace.join(requested).to_string_lossy().as_ref()
             );
             assert_eq!(
@@ -592,7 +593,7 @@ mod tests {
                 ToolCall {
                     id: ToolCallId::new_v7(),
                     name: "write".into(),
-                    arguments: serde_json::json!({"filePath":"route","content":"created"}),
+                    arguments: serde_json::json!({"path":"route","content":"created"}),
                 },
             )
             .await
@@ -634,7 +635,7 @@ mod tests {
                 ToolCall {
                     id: ToolCallId::new_v7(),
                     name: "write".into(),
-                    arguments: serde_json::json!({"filePath":path,"content":"new"}),
+                    arguments: serde_json::json!({"path":path,"content":"new"}),
                 },
             )
         };
@@ -678,7 +679,7 @@ mod tests {
         ToolCall {
             id: ToolCallId::new_v7(),
             name: "write".into(),
-            arguments: serde_json::json!({"filePath": path, "content": content}),
+            arguments: serde_json::json!({"path": path, "content": content}),
         }
     }
 
@@ -803,7 +804,7 @@ mod tests {
         let tool = WriteTool::new(&crate::test_workspace(std::env::temp_dir()));
         let Err(error) = tool.get_permission_resource(
             "write",
-            &serde_json::json!({"filePath":"a.txt","content":"","mode":"append"}),
+            &serde_json::json!({"path":"a.txt","content":"","mode":"append"}),
         ) else {
             panic!("an unknown argument is refused");
         };

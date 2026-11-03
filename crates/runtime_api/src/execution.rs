@@ -158,6 +158,19 @@ pub trait ToolArtifacts: std::fmt::Debug + Send + Sync {
         target: ArtifactReadTarget,
         window: LineWindow,
     ) -> Result<ArtifactReadPage, ToolError>;
+
+    /// The digest of the one artifact of `session`'s tree that `artifact`
+    /// names: its digest, or the start of it as a file label shows it. The
+    /// default takes only a whole digest.
+    async fn resolve_artifact(
+        self: Arc<Self>,
+        _session: SessionId,
+        artifact: String,
+    ) -> Result<String, ToolError> {
+        cookie_agent_protocol::Sha256Digest::new(&artifact)
+            .map(|_| artifact)
+            .map_err(|_| ToolError::execution("an artifact is named here by its whole digest"))
+    }
 }
 
 /// One page of an artifact.

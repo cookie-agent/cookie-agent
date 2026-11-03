@@ -42,10 +42,10 @@ fn context(workspace: &Path) -> ToolPreparationContext {
 
 fn call(name: &str, path: &str) -> ToolCall {
     let arguments = match name {
-        "read" => serde_json::json!({"filePath": path}),
-        "write" => serde_json::json!({"filePath": path, "content": "original"}),
+        "read" => serde_json::json!({"path": path}),
+        "write" => serde_json::json!({"path": path, "content": "original"}),
         "edit" => {
-            serde_json::json!({"filePath": path, "oldString": "original", "newString": "edited"})
+            serde_json::json!({"path": path, "old_string": "original", "new_string": "edited"})
         }
         _ => unreachable!(),
     };
@@ -148,7 +148,7 @@ async fn home_path_subprocess_helper() {
                 .unwrap();
             let prepared = crate::identified(provider.as_ref(), name, &workspace, prepared);
             assert_eq!(
-                prepared.normalized_arguments()["filePath"],
+                prepared.normalized_arguments()["path"],
                 workspace.join("value").to_str().unwrap()
             );
             assert_eq!(prepared.policy_labels(), [Some("value".into())]);
@@ -221,7 +221,7 @@ async fn home_path_subprocess_helper() {
         .await
         .unwrap();
     assert_eq!(
-        prepared.normalized_arguments()["filePath"],
+        prepared.normalized_arguments()["path"],
         home.to_str().unwrap()
     );
     let result = prepared

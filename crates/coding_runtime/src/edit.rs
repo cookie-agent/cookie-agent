@@ -29,27 +29,28 @@ pub struct EditTool {
 #[serde(deny_unknown_fields)]
 struct EditArgs {
     #[serde(
-        rename = "filePath",
+        rename = "path",
+        alias = "path",
         deserialize_with = "crate::path_args::deserialize"
     )]
     /// Path to the file. Relative paths resolve against the session working directory.
     file_path: String,
     /// The exact text to replace, whitespace and indentation included; not
-    /// empty. It must occur exactly once in the file unless `replaceAll` is
+    /// empty. It must occur exactly once in the file unless `replace_all` is
     /// set.
-    #[serde(rename = "oldString")]
+    #[serde(alias = "old_string")]
     old_string: String,
     /// The text that replaces it.
-    #[serde(rename = "newString")]
+    #[serde(alias = "new_string")]
     new_string: String,
-    /// Replace every occurrence of `oldString` instead of exactly one.
+    /// Replace every occurrence of `old_string` instead of exactly one.
     /// Defaults to false.
-    #[serde(rename = "replaceAll", default)]
+    #[serde(alias = "replace_all", default)]
     replace_all: bool,
 }
 
 /// What the model reads about `edit`.
-const DESCRIPTION: &str = "Replace exact text in a UTF-8 text file, atomically. `oldString` is matched exactly, whitespace and indentation included, and must occur exactly once in the file: when it occurs zero or several times the edit fails before it is approved and changes nothing, so include more surrounding text to make it unique, or set `replaceAll` to replace every occurrence. The line numbers `read` shows are not part of the file. Text files only; use `write` to create a file or replace all of it.";
+const DESCRIPTION: &str = "Replace exact text in a UTF-8 text file, atomically. `old_string` is matched exactly, whitespace and indentation included, and must occur exactly once in the file: when it occurs zero or several times the edit fails before it is approved and changes nothing, so include more surrounding text to make it unique, or set `replace_all` to replace every occurrence. The line numbers `read` shows are not part of the file. Text files only; use `write` to create a file or replace all of it.";
 
 struct EditExecutor {
     target: fs_cap::PreparedExisting,
@@ -132,7 +133,7 @@ impl EditTool {
     ) -> Result<(EditArgs, fs_cap::PreparedExisting), ToolError> {
         let args: EditArgs = parse_args("edit", call.arguments)?;
         if args.old_string.is_empty() {
-            return Err(ToolError::execution("oldString must not be empty"));
+            return Err(ToolError::execution("`old_string` must not be empty"));
         }
         let target =
             fs_cap::prepare_existing(&self.workspace, std::path::Path::new(&args.file_path))?;
@@ -187,10 +188,10 @@ impl EditTool {
             display::fit_block(edit_diff(text, &args, &shown_path, DiffAsOf::Prepare), None)?;
         let presentation = self.presentation_of(&args, true).with_preview([preview]);
         let normalized_arguments = serde_json::json!({
-            "filePath": target.display_path,
-            "oldString": args.old_string,
-            "newString": args.new_string,
-            "replaceAll": args.replace_all,
+            "path": target.display_path,
+            "old_string": args.old_string,
+            "new_string": args.new_string,
+            "replace_all": args.replace_all,
         });
         let serialization_key = PreparedSerializationKey::new(target.serialization_key());
         Ok(PreparedTool::declared(
@@ -242,7 +243,7 @@ impl ToolProvider for EditTool {
         let permission_name = Self::get_permission_name(name)?;
         let args: EditArgs = parse_args("edit", arguments.clone())?;
         if args.file_path.is_empty() {
-            return Err(ToolError::execution("filePath must not be empty"));
+            return Err(ToolError::execution("`path` must not be empty"));
         }
         Ok((
             permission_name,
@@ -279,7 +280,7 @@ impl ToolProvider for EditTool {
         let tool = self.clone();
         crate::blocking(move || {
             let (args, target) = tool.prepare_target(call)?;
-            // Fail fast on an oldString that does not match the current content.
+            // Fail fast on an old_string that does not match the current content.
             let text = read_text(&target)?;
             match_count(&text, &args, &target.display_path)?;
             tool.prepare_edit(args, target, &text)
@@ -431,9 +432,9 @@ mod tests {
             tool.get_permission_resource(
                 "edit",
                 &serde_json::json!({
-                    "filePath":"value.txt",
-                    "oldString":"a",
-                    "newString":"b"
+                    "path":"value.txt",
+                    "old_string":"a",
+                    "new_string":"b"
                 })
             )
             .expect("permission resource"),
@@ -442,7 +443,7 @@ mod tests {
         assert!(matches!(
             tool.get_permission_resource(
                 "edit",
-                &serde_json::json!({"oldString":"a","newString":"b"})
+                &serde_json::json!({"old_string":"a","new_string":"b"})
             ),
             Err(ToolError::Failed(_))
         ));
@@ -453,9 +454,9 @@ mod tests {
         let workspace = tempfile::tempdir().expect("workspace");
         let tool = EditTool::new(&crate::test_workspace(workspace.path()));
         let args = serde_json::json!({
-            "filePath":workspace.path().join("value.txt"),
-            "oldString":"a",
-            "newString":"b"
+            "path":workspace.path().join("value.txt"),
+            "old_string":"a",
+            "new_string":"b"
         });
         assert_eq!(
             tool.get_display_argument("edit", &args).expect("workspace"),
@@ -466,9 +467,9 @@ mod tests {
             tool.get_display_argument(
                 "edit",
                 &serde_json::json!({
-                    "filePath": home.join("value.txt"),
-                    "oldString":"a",
-                    "newString":"b"
+                    "path": home.join("value.txt"),
+                    "old_string":"a",
+                    "new_string":"b"
                 })
             )
             .expect("home"),
@@ -492,9 +493,9 @@ mod tests {
                     id: ToolCallId::new_v7(),
                     name: "edit".into(),
                     arguments: serde_json::json!({
-                        "filePath":"value.txt",
-                        "oldString":"same",
-                        "newString":"new"
+                        "path":"value.txt",
+                        "old_string":"same",
+                        "new_string":"new"
                     }),
                 },
             )
@@ -579,9 +580,9 @@ mod tests {
                         id: ToolCallId::new_v7(),
                         name: "edit".into(),
                         arguments: serde_json::json!({
-                            "filePath":requested,
-                            "oldString":"old",
-                            "newString":"new"
+                            "path":requested,
+                            "old_string":"old",
+                            "new_string":"new"
                         }),
                     },
                 )
@@ -591,7 +592,7 @@ mod tests {
             assert_eq!(prepared.operation().resources().len(), 1);
             assert_eq!(prepared.policy_labels(), [Some(requested.to_owned())]);
             assert_eq!(
-                prepared.normalized_arguments()["filePath"],
+                prepared.normalized_arguments()["path"],
                 workspace.join(requested).to_string_lossy().as_ref()
             );
             assert_eq!(
@@ -638,9 +639,9 @@ mod tests {
                     id: ToolCallId::new_v7(),
                     name: "edit".into(),
                     arguments: serde_json::json!({
-                        "filePath":"dangling",
-                        "oldString":"old",
-                        "newString":"new"
+                        "path":"dangling",
+                        "old_string":"old",
+                        "new_string":"new"
                     }),
                 },
             )
@@ -688,9 +689,9 @@ mod tests {
                     id: ToolCallId::new_v7(),
                     name: "edit".into(),
                     arguments: serde_json::json!({
-                        "filePath":path,
-                        "oldString":"old",
-                        "newString":"new"
+                        "path":path,
+                        "old_string":"old",
+                        "new_string":"new"
                     }),
                 },
             )
@@ -715,9 +716,9 @@ mod tests {
             id: ToolCallId::new_v7(),
             name: "edit".into(),
             arguments: serde_json::json!({
-                "filePath": path,
-                "oldString": old,
-                "newString": new
+                "path": path,
+                "old_string": old,
+                "new_string": new
             }),
         }
     }
@@ -786,7 +787,7 @@ mod tests {
             .await;
         let mut prepared = prepared.into_iter();
         let first = prepared.next().expect("first").expect("first edit");
-        // The second edit's oldString only exists after the first edit ran.
+        // The second edit's old_string only exists after the first edit ran.
         let second = prepared.next().expect("second").expect("chained edit");
         first
             .execute_for_test(execution_context(root.path()))
@@ -973,20 +974,20 @@ mod tests {
         assert_eq!(
             error(edit_call("value.txt", "same", "new")).await,
             format!(
-                "`same` occurs 2 times in {}; include more context so it occurs once or set replaceAll",
+                "`same` occurs 2 times in {}; include more context so it occurs once or set `replace_all`",
                 path.display()
             )
         );
         assert_eq!(
             error(edit_call("value.txt", "other", "new")).await,
             format!(
-                "`other` occurs 0 times in {}; include more context so it occurs once or set replaceAll",
+                "`other` occurs 0 times in {}; include more context so it occurs once or set `replace_all`",
                 path.display()
             )
         );
-        // With replaceAll there is nothing to set.
+        // With replace_all there is nothing to set.
         let mut call = edit_call("value.txt", "other", "new");
-        call.arguments["replaceAll"] = true.into();
+        call.arguments["replace_all"] = true.into();
         assert_eq!(
             error(call).await,
             format!(
@@ -994,12 +995,12 @@ mod tests {
                 path.display()
             )
         );
-        // A long oldString is echoed cut.
+        // A long old_string is echoed cut.
         let long = "x".repeat(300);
         assert_eq!(
             error(edit_call("value.txt", &long, "new")).await,
             format!(
-                "`{}…` occurs 0 times in {}; include more context so it occurs once or set replaceAll",
+                "`{}…` occurs 0 times in {}; include more context so it occurs once or set `replace_all`",
                 "x".repeat(200),
                 path.display()
             )
@@ -1011,9 +1012,9 @@ mod tests {
                 crate::shown_root(root.path()).join("missing.txt").display()
             )
         );
-        // replaceAll replaces every occurrence and says how many.
+        // replace_all replaces every occurrence and says how many.
         let mut call = edit_call("value.txt", "same", "new");
-        call.arguments["replaceAll"] = true.into();
+        call.arguments["replace_all"] = true.into();
         let result = tool
             .prepare(context(root.path()), call)
             .await
@@ -1032,7 +1033,7 @@ mod tests {
         let tool = EditTool::new(&crate::test_workspace(std::env::temp_dir()));
         let Err(error) = tool.get_permission_resource(
             "edit",
-            &serde_json::json!({"filePath":"a.txt","oldString":"a","newString":"b","old":"a"}),
+            &serde_json::json!({"path":"a.txt","old_string":"a","new_string":"b","old":"a"}),
         ) else {
             panic!("an unknown argument is refused");
         };
@@ -1058,10 +1059,10 @@ mod tests {
                     id: ToolCallId::new_v7(),
                     name: "edit".into(),
                     arguments: serde_json::json!({
-                        "filePath": "big.txt",
-                        "oldString": "line",
-                        "newString": "LINE",
-                        "replaceAll": true
+                        "path": "big.txt",
+                        "old_string": "line",
+                        "new_string": "LINE",
+                        "replace_all": true
                     }),
                 },
             )

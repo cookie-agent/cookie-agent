@@ -38,8 +38,8 @@ pub(crate) const ATTACH_MACHINE: &str = "attach_machine";
 pub(crate) const DETACH_MACHINE: &str = "detach_machine";
 pub(crate) use transfer::TRANSFER;
 
-const ATTACH_DESCRIPTION: &str = "Attach a machine to this session: one runtime capability from list_runtimes, written `<runtime id>/<capability name>` (e.g. `labpc/coding`), at `workspace` when the capability takes one. Its tools join this session at once, and the result says where they run: the machine, its home, the workspace, and the workspace's AGENTS.md. A machine offers each tool once: a second directory on a machine already attached is reached by absolute path, or by detaching the first.";
-const DETACH_DESCRIPTION: &str = "Detach a machine's runtime capability from this session, written `<runtime id>/<capability name>` as attach_machine took it. Its tools leave the session; refused while one of its background calls still runs.";
+const ATTACH_DESCRIPTION: &str = "Attach a machine to this session: one runtime capability from `list_runtimes`, written `<runtime_id>/<capability_id>` (e.g. `labpc/coding`), at `workspace` when the capability takes one. Its tools join this session at once, and the result says where they run: the machine, its home, the workspace, and the workspace's AGENTS.md. A machine offers each tool once: a second directory on a machine already attached is reached by absolute path, or by detaching the first.";
+const DETACH_DESCRIPTION: &str = "Detach a machine's runtime capability from this session, written `<runtime_id>/<capability_id>` as `attach_machine` took it. Its tools leave the session; refused while one of its background calls still runs.";
 
 /// `attach_machine`'s arguments.
 #[derive(Debug, Deserialize, JsonSchema, Serialize)]
@@ -491,7 +491,7 @@ fn attached_text(attached: &crate::runtime::machines::attach::AttachedMachine) -
                     count => format!("{count} {word}s"),
                 };
                 text.push_str(&format!(
-                    "\nDeferred until tool_search finds them: {}, in {} {}.",
+                    "\nDeferred until `tool_search` finds them: {}, in {} {}.",
                     plural(deferred.len(), "tool"),
                     if groups.len() == 1 { "group" } else { "groups" },
                     groups.into_iter().collect::<Vec<_>>().join(", ")
@@ -501,8 +501,8 @@ fn attached_text(attached: &crate::runtime::machines::attach::AttachedMachine) -
     }
     if let Some(machine) = &attached.beyond_agent {
         text.push_str(&format!(
-            "\nYour harness's built-in tools do not reach `{machine}`: use the `cookie` MCP \
-             server's tools there, with `machine: \"{machine}\"`."
+            "\nYour harness's built-in tools do not reach `{machine}`: use the MCP tools that \
+             take a `machine` argument there, with `machine: \"{machine}\"`."
         ));
     }
     for entry in &attached.agent_md {
@@ -595,7 +595,7 @@ mod tests {
              Tools you can call there now:\n\
              - `bash` with `machine: \"labpc\"`: bash things.\n\
              - `read` with `machine: \"labpc\"`: read things.\n\
-             Deferred until tool_search finds them: 3 tools, in groups `chrome`, `github`."
+             Deferred until `tool_search` finds them: 3 tools, in groups `chrome`, `github`."
         );
     }
 
@@ -636,7 +636,7 @@ mod tests {
             Some("chrome"),
         )])));
         assert!(text.ends_with(
-            "/srv/api\nDeferred until tool_search finds them: 1 tool, in group `chrome`."
+            "/srv/api\nDeferred until `tool_search` finds them: 1 tool, in group `chrome`."
         ));
         assert!(
             attached_text(&attached(Some(Vec::new())))

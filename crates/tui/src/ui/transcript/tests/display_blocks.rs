@@ -457,7 +457,7 @@ fn arguments_leave_out_what_the_header_and_preview_already_show() {
     let mut state = shown(vec![DisplayBlock::text("done")]);
     let call_id = read_tool_id(&state);
     let tool = state.tools.get_mut(&call_id).unwrap();
-    tool.arguments = r#"{"filePath":"notes.txt"}"#.into();
+    tool.arguments = r#"{"path":"notes.txt"}"#.into();
     tool.presentation =
         hinted_presentation("Edit notes.txt", ToolHint::FILE_EDIT, Some("notes.txt"));
     // A key/value row that repeats the primary argument is left out; the
@@ -493,7 +493,7 @@ fn arguments_leave_out_what_the_header_and_preview_already_show() {
     tool.presentation.preview = vec![Open::Known(DisplayBlock::text("preview"))];
     let text = render(&state);
     assert!(!text.contains("arguments"), "{text}");
-    assert!(!text.contains("filePath"), "{text}");
+    assert!(!text.contains("path"), "{text}");
 }
 
 #[test]

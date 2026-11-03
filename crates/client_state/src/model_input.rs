@@ -324,7 +324,7 @@ mod tests {
         assert_eq!(
             text(&elided),
             "Left the model's context; the model reads instead:\n[tool output elided; 12 bytes \
-             retained; read it with read_artifact(artifact=\"abc\")] 1 tool-emitted message(s) \
+             retained; read it with `read_artifact(artifact=\"abc\")`] 1 tool-emitted message(s) \
              were elided with this result and are not recoverable."
         );
     }

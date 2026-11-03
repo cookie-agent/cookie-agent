@@ -1095,7 +1095,7 @@ fn every_announcement_is_kept_and_a_removal_leaves_the_groups() {
     let headers = again
         .deferred_announcements
         .iter()
-        .map(|text| text.lines().next().unwrap_or_default())
+        .map(|text| text.lines().nth(1).unwrap_or_default())
         .collect::<Vec<_>>();
     assert_eq!(
         headers,
@@ -1135,7 +1135,7 @@ fn a_changed_instructions_announcement_is_a_row_with_the_models_text() {
     let replayed = reduce_session_events(session, 0, &events);
     let text = cookie_agent_protocol::model_text::prompt_blocks_announcement(&blocks);
     assert!(
-        text.starts_with("[cookie: instructions changed]\n<instructions_changed>\n<block name=\"runtimes\">\nWorking directory: /srv/api\n</block>\n<block name=\"skills\" removed=\"true\"/>\n</instructions_changed>\n"),
+        text.starts_with("<system-reminder>\n<instructions_changed>\n<block name=\"runtimes\">\nWorking directory: /srv/api\n</block>\n<block name=\"skills\" removed=\"true\"/>\n</instructions_changed>\n"),
         "{text}"
     );
     assert_eq!(
@@ -1317,7 +1317,7 @@ fn a_tool_row_shows_what_its_result_sent_the_model_beyond_its_output() {
     );
     assert!(
         shown.contains(&format!(
-            "Left the model's context; the model reads instead:\n[tool output elided; 5 bytes retained; read it with read_artifact(artifact=\"{}\")] 1 tool-emitted message(s)",
+            "Left the model's context; the model reads instead:\n[tool output elided; 5 bytes retained; read it with `read_artifact(artifact=\"{}\")`] 1 tool-emitted message(s)",
             "a".repeat(64)
         )),
         "{shown}"

@@ -38,7 +38,8 @@ pub struct ReadTool {
 #[serde(deny_unknown_fields)]
 struct ReadArgs {
     #[serde(
-        rename = "filePath",
+        rename = "path",
+        alias = "path",
         deserialize_with = "crate::path_args::deserialize"
     )]
     /// Path to the file or directory. Relative paths resolve against the session working directory.
@@ -112,7 +113,7 @@ impl ToolProvider for ReadTool {
         let permission_name = Self::get_permission_name(name)?;
         let args: ReadArgs = parse_args("read", arguments.clone())?;
         if args.file_path.is_empty() {
-            return Err(ToolError::execution("filePath must not be empty"));
+            return Err(ToolError::execution("`path` must not be empty"));
         }
         Ok((
             permission_name,
@@ -133,7 +134,7 @@ impl ToolProvider for ReadTool {
         }
         let args: ReadArgs = parse_args("read", arguments.clone())?;
         if args.file_path.is_empty() {
-            return Err(ToolError::execution("filePath must not be empty"));
+            return Err(ToolError::execution("`path` must not be empty"));
         }
         let path = crate::permission_path_label(&args.file_path, &self.workspace);
         let mut display = crate::abbreviated_display_path(&path, &self.workspace);
@@ -188,7 +189,7 @@ impl ToolProvider for ReadTool {
             let target =
                 fs_cap::prepare_existing(&workspace, std::path::Path::new(&args.file_path))?;
             let normalized_arguments = serde_json::json!({
-                "filePath": target.display_path,
+                "path": target.display_path,
                 "offset": window.offset,
                 "limit": window.limit,
             });

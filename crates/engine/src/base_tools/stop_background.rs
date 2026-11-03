@@ -32,7 +32,7 @@ pub struct StopBackgroundTool {
 #[derive(Debug, Deserialize, JsonSchema, Serialize)]
 #[serde(deny_unknown_fields)]
 struct StopBackgroundArgs {
-    /// The job ID from the result that moved the call to the background, such as `job_1a2b3c4d`, or a subagent's handle.
+    /// The job ID from the result that moved the call to the background, such as `job_1a2b3c4d`, or a subagent's session ID, such as `explore_1a2b3c4d`.
     job: String,
 }
 
@@ -52,7 +52,7 @@ impl StopBackgroundTool {
             result_truncation: Default::default(),
             name: TOOL_NAME.into(),
             permission_name: None,
-            description: "Stop a call running in the background. It returns once the call has ended; its <background_result> still arrives, with status \"stopped\" and the output it produced. Given a subagent's handle, it cancels the turn the subagent is running; its <subagent_report> follows with status \"cancelled\", and the subagent can still be messaged or resumed.".into(),
+            description: "Stop a call running in the background. It returns once the call has ended; its <background_result> still arrives, with status \"stopped\" and the output it produced. Given a subagent's session ID, it cancels the turn the subagent is running; its <subagent_report> follows with status \"cancelled\", and the subagent can still be messaged or resumed.".into(),
             parameters: schema::<StopBackgroundArgs>(),
         }
     }

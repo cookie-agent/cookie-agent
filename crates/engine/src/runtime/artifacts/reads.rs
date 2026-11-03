@@ -81,27 +81,32 @@ fn target_digest(
 /// file label shows.
 pub(crate) const MIN_ARTIFACT_PREFIX: usize = 8;
 
-/// The blob a transfer's `from` names in `session`'s tree, and its length:
-/// `artifact` is a digest or a prefix of one, at least
-/// [`MIN_ARTIFACT_PREFIX`] lowercase hex digits, that names one artifact of
-/// the tree; `stream` one stream of retained tool output.
-pub(crate) fn transfer_source(
-    store: &ArtifactRouter,
-    session: SessionId,
-    artifact: &str,
-    stream: Option<&str>,
-) -> Result<(String, u64), ToolError> {
+/// Checks that `artifact` can name an artifact: its digest, or the first
+/// [`MIN_ARTIFACT_PREFIX`] or more lowercase hex digits of it.
+pub(crate) fn check_artifact_name(artifact: &str) -> Result<(), String> {
     if artifact.len() < MIN_ARTIFACT_PREFIX
         || artifact.len() > 64
         || !artifact
             .bytes()
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
     {
-        return Err(ToolError::execution(format!(
+        return Err(format!(
             "`{artifact}` is no artifact: give its digest, or the first {MIN_ARTIFACT_PREFIX} or \
              more lowercase hex digits of it, as a file label shows them"
-        )));
+        ));
     }
+    Ok(())
+}
+
+/// The digest of the one artifact of `session`'s tree that `artifact`
+/// names: its digest, or a prefix of one that [`check_artifact_name`]
+/// takes.
+pub(crate) fn resolve_artifact(
+    store: &ArtifactRouter,
+    session: SessionId,
+    artifact: &str,
+) -> Result<String, ToolError> {
+    check_artifact_name(artifact).map_err(ToolError::execution)?;
     let none = || {
         ToolError::execution(format!(
             "no artifact of this session starts with `{artifact}`"
@@ -114,16 +119,39 @@ pub(crate) fn transfer_source(
     let mut digests = store_of_tree
         .digests_with_prefix(artifact)
         .map_err(read_error)?;
-    let digest = match digests.len() {
-        0 => return Err(none()),
-        1 => digests.remove(0),
-        _ => {
-            return Err(ToolError::execution(format!(
-                "`{artifact}` starts several artifacts of this session: {}; give more digits",
-                digests.join(", ")
-            )));
-        }
-    };
+    match digests.len() {
+        0 => Err(none()),
+        1 => Ok(digests.remove(0)),
+        _ => Err(ToolError::execution(format!(
+            "`{artifact}` starts several artifacts of this session: {}; give more digits",
+            digests.join(", ")
+        ))),
+    }
+}
+
+/// [`resolve_artifact`] off the async runtime.
+pub(crate) async fn resolve_artifact_async(
+    store: Arc<ArtifactRouter>,
+    session: SessionId,
+    artifact: String,
+) -> Result<String, ToolError> {
+    blocking_io::run(move || resolve_artifact(&store, session, &artifact)).await?
+}
+
+/// The blob a transfer's `from` names in `session`'s tree, and its length:
+/// `artifact` names one artifact of the tree as [`resolve_artifact`] takes
+/// it; `stream` one stream of retained tool output.
+pub(crate) fn transfer_source(
+    store: &ArtifactRouter,
+    session: SessionId,
+    artifact: &str,
+    stream: Option<&str>,
+) -> Result<(String, u64), ToolError> {
+    let digest = resolve_artifact(store, session, artifact)?;
+    let store_of_tree = store
+        .read_store(session)
+        .map_err(read_error)?
+        .ok_or_else(|| ToolError::execution("the session's artifacts are gone"))?;
     let target = ArtifactReadTarget::parse(&digest, stream).map_err(ToolError::execution)?;
     let (digest, _) = target_digest(store, session, &target)?;
     let length = store_of_tree

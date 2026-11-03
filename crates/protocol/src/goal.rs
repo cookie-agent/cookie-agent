@@ -74,7 +74,7 @@ pub struct GoalUpdateParams {
 pub struct GoalSetParams {
     /// What the goal achieves, in a sentence or two.
     pub objective: String,
-    /// The first checklist; leave it out to set it later with goal_update.
+    /// The first checklist; leave it out to set it later with `goal_update`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub items: Vec<GoalItem>,
 }

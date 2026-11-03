@@ -33,13 +33,14 @@ pub(crate) const SKILLS_BLOCK: &str = "skills";
 pub(crate) fn attachments_block(machine: bool) -> String {
     let file = if machine {
         "`<attach src=\"runs/loss.png\"/>` for a file on a machine (add `machine=\"name\"` \
-         for another machine than the workspace's), "
+         for one on another machine than the default), "
     } else {
         ""
     };
     format!(
         "To give the user a file in your reply, write a tag where it should show: {file}\
-         `<attach artifact=\"<sha256>\"/>` for an artifact of this conversation, or \
+         `<attach artifact=\"5f2c81d0\"/>` for an artifact of this conversation, such as a file \
+         the user sent, by its digest or its first 8 or more digits, or \
          `<attach asset=\"asset_3f9a1c2e\"/>` to show an asset. Add `title=\"…\"` to name it. \
          Pictures, video, and audio play, an HTML page runs live, Markdown renders, and \
          anything else downloads. Tags written next to each other show as one row. A file is \

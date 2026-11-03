@@ -56,7 +56,7 @@ impl CapabilityArg {
             "additionalProperties":false,
             "required":["capability"],
             "properties":{
-                "capability":{"type":"string","description":"`<runtime_id>/<capability_id>`, from list_runtimes, e.g. `labpc/coding`"},
+                "capability":{"type":"string","description":"`<runtime_id>/<capability_id>`, from `list_runtimes`, e.g. `labpc/coding`"},
                 "workspace":{"type":"string","description":"Directory on that runtime's machine; required when the capability takes a workspace"}
             }
         })
@@ -70,13 +70,13 @@ pub(crate) fn parse_capability(
 ) -> Result<DelegatedCapability, String> {
     let (runtime, name) = capability.split_once('/').ok_or_else(|| {
         format!(
-            "`{capability}` is not `<runtime_id>/<capability_id>`; write the runtime and one of its capabilities as list_runtimes shows them, e.g. `labpc/coding`"
+            "`{capability}` is not `<runtime_id>/<capability_id>`; write the runtime and one of its capabilities as `list_runtimes` shows them, e.g. `labpc/coding`"
         )
     })?;
     let runtime_id = RuntimeId::new(runtime)
         .map_err(|_| format!("`{runtime}` in `{capability}` is not a runtime ID"))?;
     let capability_name = CapabilityName::new(name)
-        .map_err(|_| format!("`{name}` in `{capability}` is not a capability name"))?;
+        .map_err(|_| format!("`{name}` in `{capability}` is not a capability ID"))?;
     if runtime_id.as_str() == RuntimeId::GLOBAL {
         return Err(format!(
             "`{capability}` cannot be named: `global` follows this session's root, attached exactly when the root has it"
@@ -156,7 +156,7 @@ impl Engine {
                     return Err(offline);
                 }
                 return Err(format!(
-                    "there is no runtime `{}`; call list_runtimes for the runtimes this daemon has",
+                    "there is no runtime `{}`; call `list_runtimes` for the runtimes this daemon has",
                     requested.runtime_id
                 ));
             };
@@ -331,18 +331,7 @@ struct ListedRuntime {
 
 /// `value` escaped for an XML attribute.
 fn xml_escape(value: &str) -> String {
-    let mut escaped = String::with_capacity(value.len());
-    for character in value.chars() {
-        match character {
-            '&' => escaped.push_str("&amp;"),
-            '<' => escaped.push_str("&lt;"),
-            '>' => escaped.push_str("&gt;"),
-            '"' => escaped.push_str("&quot;"),
-            '\'' => escaped.push_str("&apos;"),
-            character => escaped.push(character),
-        }
-    }
-    escaped
+    cookie_agent_protocol::model_text::escape_xml_attribute(value)
 }
 
 /// ` name="value"` for each attribute that has a value.
@@ -400,7 +389,7 @@ fn write_runtime(text: &mut String, indent: &str, runtime: &ListedRuntime, platf
         text.push_str(&format!(
             "{indent}  <capability{}/>\n",
             attributes(&[
-                ("name", Some(capability.name.as_str())),
+                ("id", Some(capability.name.as_str())),
                 ("takes_workspace", Some(takes)),
                 (
                     "description",

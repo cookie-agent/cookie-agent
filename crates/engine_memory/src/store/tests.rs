@@ -331,7 +331,7 @@ fn a_model_replaces_only_what_its_session_saw() {
         panic!("{unseen:?}");
     };
     let message = error.to_string();
-    assert!(message.contains("this memory changed since you saw it, or you have not read it. Read it with memory_read"), "{message}");
+    assert!(message.contains("this memory changed since you saw it, or you have not read it. Read it with `memory_read`"), "{message}");
     assert!(
         !message.contains("- one"),
         "the refusal shows the memory's content: {message}"
@@ -584,7 +584,7 @@ fn a_project_overview_keeps_the_daemons_description() {
     );
 }
 
-/// An edit applies whenever its `oldString` occurs exactly once in the
+/// An edit applies whenever its `old_string` occurs exactly once in the
 /// current body, whatever else changed (section 16.9.8).
 #[test]
 fn an_edit_replaces_exactly_one_occurrence() {

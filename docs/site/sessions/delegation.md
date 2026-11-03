@@ -56,7 +56,7 @@ permissions:
 In a root session that has `global` attached, `delegate_subagent` takes
 `capabilities`, a list of the runtime capabilities the child works through.
 Each item is the full `<runtime_id>/<capability_id>`, as `list_runtimes`
-prints a `<runtime id=…>` and one of its `<capability name=…>`, with a
+prints a `<runtime id=…>` and one of its `<capability id=…>`, with a
 `workspace` when the capability takes one:
 
 ```json

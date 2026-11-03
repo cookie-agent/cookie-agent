@@ -347,9 +347,7 @@ Guidelines:
   call in its transcript, and other cookie agents can see the result.
 - Keep durable notes in cookie memory (memory_search, memory_read,
   memory_write), not in your harness's own memory or notes files.
-- Delegate with cookie's delegate_subagent (list_agents shows who), not
-  with your harness's own subagents; schedule follow-ups with cookie's cron
-  tools.
+- Schedule follow-ups with cookie's cron tools.
 - Your built-in file and shell tools work in this session's workspace;
   with several attachments, the first prompt says which one, and on which
   machine.

@@ -244,9 +244,7 @@ async fn an_mcp_tool_is_announced_loaded_and_called() {
     let announcement = first
         .iter()
         .filter_map(|message| message["content"].as_str())
-        .find(|content| {
-            content.starts_with(cookie_agent_protocol::model_text::DEFERRED_TOOLS_ADDED)
-        })
+        .find(|content| content.contains(cookie_agent_protocol::model_text::DEFERRED_TOOLS_ADDED))
         .expect("announcement turn");
     assert!(
         announcement.contains(
@@ -680,7 +678,7 @@ async fn a_deferred_built_in_group_is_announced_unless_always_loaded() {
             .iter()
             .filter_map(|message| message["content"].as_str())
             .find(|content| {
-                content.starts_with(cookie_agent_protocol::model_text::DEFERRED_TOOLS_ADDED)
+                content.contains(cookie_agent_protocol::model_text::DEFERRED_TOOLS_ADDED)
             })
             .expect("announcement turn")
             .to_owned();
@@ -761,7 +759,7 @@ fn instructions_changed(request: &serde_json::Value) -> Option<String> {
         .expect("messages")
         .iter()
         .filter_map(|message| message["content"].as_str())
-        .find(|content| content.starts_with("[cookie: instructions changed]"))
+        .find(|content| content.starts_with("<system-reminder>\n<instructions_changed>"))
         .map(str::to_owned)
 }
 
@@ -895,7 +893,7 @@ async fn a_deferred_tool_called_before_it_is_loaded_is_refused() {
         .expect("tool result")
         .to_owned();
     assert!(
-        result.contains("`write` is not loaded: load it with tool_search"),
+        result.contains("`write` is not loaded: load it with `tool_search`"),
         "{result}"
     );
     assert!(!executed.is_set(), "the unloaded tool never ran");

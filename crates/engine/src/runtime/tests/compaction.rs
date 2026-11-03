@@ -154,7 +154,7 @@ async fn compaction_uses_raw_context_when_it_fits_and_prunes_retry_without_persi
             (
                 (
                     "read",
-                    serde_json::json!({"filePath": "/tmp/ordinary-file.txt"}),
+                    serde_json::json!({"path": "/tmp/ordinary-file.txt"}),
                 ),
                 SMALL_MARKER.to_owned(),
             ),
@@ -175,10 +175,7 @@ async fn compaction_uses_raw_context_when_it_fits_and_prunes_retry_without_persi
             // The large group above stops the recent tail, so only this
             // group is retained verbatim when the test keeps a tail.
             (
-                (
-                    "read",
-                    serde_json::json!({"filePath": "/tmp/recent-file.txt"}),
-                ),
+                ("read", serde_json::json!({"path": "/tmp/recent-file.txt"})),
                 TAIL_MARKER.to_owned(),
             ),
         ] {

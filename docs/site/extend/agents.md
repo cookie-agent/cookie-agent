@@ -366,7 +366,7 @@ Background sessions move through `queued`, `running`, and a terminal
 
 A subagent reports **every turn it finishes** to its direct parent, whatever
 started the turn: the delegation, a resume, `send_message` mail, or its own
-background results. The report is a `<subagent_report handle="…"
+background results. The report is a `<subagent_report session_id="…"
 status="…">` message steered into the parent, carrying a preview of the turn's
 final assistant message (see
 [`[subagent_output]`](../engine/subagent_output.md)), the status, and the total

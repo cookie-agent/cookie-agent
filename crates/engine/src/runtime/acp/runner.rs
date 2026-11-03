@@ -2922,7 +2922,7 @@ fn echo_failure(fields: &ToolCallFields) -> Option<String> {
 /// The MCP result of a call through the bridge outside the agent's turn.
 fn bridge_refusal() -> Value {
     serde_json::json!({
-        "content": [{"type": "text", "text": "cookie's tools can be called only during the agent's turns"}],
+        "content": [{"type": "text", "text": "these tools can be called only during your turns"}],
         "isError": true,
     })
 }
@@ -3544,7 +3544,9 @@ impl Engine {
             live.agent.runtime.as_str(),
             &live.cwd,
         )?;
-        Some(format!("<machines_changed>\n{block}\n</machines_changed>"))
+        Some(cookie_agent_protocol::model_text::system_reminder(
+            &format!("<machines_changed>\n{block}\n</machines_changed>"),
+        ))
     }
 
     /// The context cookie gives an ACP session, as its system prompt or

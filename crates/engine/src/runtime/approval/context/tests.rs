@@ -429,7 +429,7 @@ fn golden_root_conversation_with_a_steer_and_two_reviews() {
     log.attach("local", "labpc", "/work");
     log.user(run, "client:tui", "Fix the failing parser test.");
     log.agents_md(run, "Run cargo test before you commit.");
-    let read = log.call(run, "read", json!({"filePath": "src/lib.rs"}));
+    let read = log.call(run, "read", json!({"path": "src/lib.rs"}));
     log.end(run, read, ToolTerminationOutcome::Completed, "");
     let first = log.call(run, "bash", json!({"command": "cargo test -p parser"}));
     let first_review = log.request(run, first, PermissionAction::BASH);
@@ -447,7 +447,7 @@ fn golden_root_conversation_with_a_steer_and_two_reviews() {
     let second = log.call(
         run,
         "write",
-        json!({"filePath": "Cargo.toml", "content": "[package]\nversion = \"0.2.0\"\n"}),
+        json!({"path": "Cargo.toml", "content": "[package]\nversion = \"0.2.0\"\n"}),
     );
     let second_review = log.request(run, second, PermissionAction::WRITE);
     log.review(
@@ -477,7 +477,7 @@ fn golden_root_conversation_with_a_steer_and_two_reviews() {
                     golden_request(
                         "write",
                         "write",
-                        "{\"content\":\"[package]\\nversion = \\\"0.2.0\\\"\\n\",\"filePath\":\"Cargo.toml\"}"
+                        "{\"content\":\"[package]\\nversion = \\\"0.2.0\\\"\\n\",\"path\":\"Cargo.toml\"}"
                     )
                 ),
                 "{\"decision\":\"ask\",\"reason\":\"Edits the manifest.\"}".to_owned()
@@ -584,11 +584,7 @@ fn an_aside_keeps_the_task_before_it() {
         "client:tui",
         "Also btw genesis has just released a new version. Feel free to update the pypi package whenever",
     );
-    let call = log.call(
-        run,
-        "write",
-        json!({"filePath": "render.py", "content": "x"}),
-    );
+    let call = log.call(run, "write", json!({"path": "render.py", "content": "x"}));
     let approval = log.request(run, call, PermissionAction::WRITE);
     let request = log.render(approval).request;
     let task = request.find("render one image per asset family").unwrap();
@@ -668,7 +664,7 @@ fn a_grandchild_inherits_the_root_task_and_each_delegation() {
     let call = grandchild.call(
         run,
         "edit",
-        json!({"filePath": "src/args.rs", "oldString": "a", "newString": "b"}),
+        json!({"path": "src/args.rs", "old_string": "a", "new_string": "b"}),
     );
     let approval = grandchild.request(run, call, PermissionAction::WRITE);
     let request = render(&grandchild.events, Some(&inherited), approval, ROOMY)
@@ -727,16 +723,12 @@ fn the_trajectory_summarises_calls_and_their_outcomes() {
     let long = (0..40)
         .map(|line| format!("line {line}\n"))
         .collect::<String>();
-    let write = log.call(
-        run,
-        "write",
-        json!({"filePath": "notes.txt", "content": long}),
-    );
+    let write = log.call(run, "write", json!({"path": "notes.txt", "content": long}));
     log.end(run, write, ToolTerminationOutcome::Completed, "");
     let edit = log.call(
         run,
         "edit",
-        json!({"filePath": "a.rs", "oldString": "x\n".repeat(12), "newString": "y"}),
+        json!({"path": "a.rs", "old_string": "x\n".repeat(12), "new_string": "y"}),
     );
     log.end(run, edit, ToolTerminationOutcome::Cancelled, "");
     let call = log.call(run, "bash", json!({"command": "ls"}));

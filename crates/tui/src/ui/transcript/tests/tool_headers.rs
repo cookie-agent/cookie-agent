@@ -75,7 +75,7 @@ fn tool_headers_cut_arguments_without_losing_expanded_content() {
         let id = read_tool_id(&state);
         let tool = state.tools.get_mut(&id).unwrap();
         tool.presentation = builtin_presentation(name, Some(&argument));
-        tool.arguments = serde_json::json!({"command": argument, "filePath": path}).to_string();
+        tool.arguments = serde_json::json!({"command": argument, "path": path}).to_string();
         let expanded = HashSet::from([BlockId::Tool(id)]);
         for width in [8, 12, 20, 40, 80, 160] {
             for blocks in [None, Some(&expanded)] {

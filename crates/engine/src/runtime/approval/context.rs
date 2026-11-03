@@ -765,7 +765,7 @@ fn request_call_json(facts: &LogFacts, request: &ApprovalRequest) -> String {
 fn cap_request_strings(name: &str, arguments: &Value) -> Value {
     let keys: &[&str] = match name {
         "write" => &["content"],
-        "edit" => &["oldString", "newString"],
+        "edit" => &["old_string", "new_string", "oldString", "newString"],
         _ => return arguments.clone(),
     };
     let mut arguments = arguments.clone();
@@ -1222,11 +1222,14 @@ fn trajectory_entry(
 /// A call's arguments as a trajectory entry keeps them (section 4.4): an
 /// MCP tool's, like any other tool's, are its canonical argument object,
 /// which the entry's cap cuts.
+/// `filePath`, `oldString`, and `newString` are the names `read`, `write`,
+/// and `edit` took before 2026-11, which a runtime not yet updated still
+/// publishes.
 fn summarize_arguments(name: &str, arguments: &Value) -> String {
     let string = |key: &str| arguments.get(key).and_then(Value::as_str);
     let path = || {
-        string("filePath")
-            .or_else(|| string("path"))
+        string("path")
+            .or_else(|| string("filePath"))
             .unwrap_or("?")
             .to_owned()
     };
@@ -1246,8 +1249,18 @@ fn summarize_arguments(name: &str, arguments: &Value) -> String {
         "edit" => format!(
             "path: {}\nold:\n{}\nnew:\n{}",
             path(),
-            first_lines(string("oldString").unwrap_or_default(), EDIT_LINES),
-            first_lines(string("newString").unwrap_or_default(), EDIT_LINES)
+            first_lines(
+                string("old_string")
+                    .or_else(|| string("oldString"))
+                    .unwrap_or_default(),
+                EDIT_LINES
+            ),
+            first_lines(
+                string("new_string")
+                    .or_else(|| string("newString"))
+                    .unwrap_or_default(),
+                EDIT_LINES
+            )
         ),
         _ => canonical_json(arguments).to_string(),
     }

@@ -144,7 +144,10 @@ pub(in crate::runtime) fn render_agent_message_envelope(
             "\n\n[reply in your final answer: it reaches `{sender_label}` when this turn ends]"
         ),
     };
-    format!("<agent_message from=\"{sender_label}\">\n{body}{reply_hint}\n</agent_message>")
+    format!(
+        "<agent_message from=\"{}\">\n{body}{reply_hint}\n</agent_message>",
+        cookie_agent_protocol::model_text::escape_xml_attribute(&sender_label)
+    )
 }
 
 /// Relationship label for one send: the recipient's relationship to the

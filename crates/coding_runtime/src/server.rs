@@ -2013,7 +2013,7 @@ impl ToolArtifacts for InlineArtifacts {
         _window: cookie_agent_runtime_api::text_tools::LineWindow,
     ) -> Result<cookie_agent_runtime_api::ArtifactReadPage, ToolError> {
         Err(ToolError::execution(
-            "artifact reads are unavailable inside a runtime; use read_artifact",
+            "artifact reads are unavailable inside a runtime; use `read_artifact`",
         ))
     }
 }

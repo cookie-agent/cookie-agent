@@ -31,7 +31,7 @@ pub struct ReadArtifactTool;
 #[derive(Debug, Deserialize, JsonSchema, Serialize)]
 #[serde(deny_unknown_fields)]
 struct ReadArtifactArgs {
-    /// The artifact's 64-character lowercase SHA-256 digest, as a truncation hint names it.
+    /// The artifact's lowercase hex SHA-256 digest, as a truncation hint names it, or its first 8 or more digits, as a file label shows them.
     artifact: String,
     /// Named stream of a multi-stream output, such as `stdout`, as a truncation hint names it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -43,12 +43,19 @@ struct ReadArtifactArgs {
 }
 
 /// What the model reads about `read_artifact`.
-const DESCRIPTION: &str = "Read retained tool output by line, as `read` reads a file. A truncated result or elided history names the artifact (and stream) to read in a read_artifact hint, with the 1-based `offset` of the first line it left out: read from there. Lines come back numbered, `N: text`, counting from 1. `offset` is the 1-based line to start at (default 1) and `limit` the most lines to return (default 2000). A line longer than 4 KiB is cut and ends with `... [line truncated: N more bytes]`, and a page stops before it passes the result size limit (about 2 MiB). A page that leaves lines out ends with a note such as `[120 more lines; continue with offset=2001]`: read again from that offset. An offset past the last line is an error.";
+const DESCRIPTION: &str = "Read retained tool output by line, as `read` reads a file. A truncated result names the artifact (and stream) to read in a `read_artifact` hint, with the 1-based `offset` of the first line it left out: read from there. Elided history names the artifact to read from its first line. `artifact` is the digest a hint names, or its first 8 or more hex digits. Lines come back numbered, `N: text`, counting from 1. `offset` is the 1-based line to start at (default 1) and `limit` the most lines to return (default 2000). A line longer than 4 KiB is cut and ends with `... [line truncated: N more bytes]`, and a page stops before it passes the result size limit (about 2 MiB). A page that leaves lines out ends with a note such as `[120 more lines; continue with offset=2001]`: read again from that offset. An offset past the last line is an error.";
 
 impl ReadArtifactArgs {
-    fn target(&self) -> Result<ArtifactReadTarget, ToolError> {
-        ArtifactReadTarget::parse(&self.artifact, self.stream.as_deref())
-            .map_err(ToolError::execution)
+    /// Checks the artifact and stream the call names; the executor finds
+    /// the artifact a shortened digest names.
+    fn check(&self) -> Result<(), ToolError> {
+        crate::runtime::artifacts::reads::check_artifact_name(&self.artifact)
+            .map_err(ToolError::execution)?;
+        if let Some(stream) = &self.stream {
+            cookie_agent_protocol::validate_tool_stream_name(stream)
+                .map_err(ToolError::execution)?;
+        }
+        Ok(())
     }
 
     /// `<digest>` or `<digest>/<stream>`: the permission resource and policy label.
@@ -62,9 +69,9 @@ impl ReadArtifactArgs {
 
 /// The artifact as titles and errors name it: the start of its digest,
 /// and its stream.
-fn shown(target: &ArtifactReadTarget) -> String {
-    let digest = &target.digest.as_str()[..DISPLAY_DIGEST_CHARS];
-    match &target.stream {
+fn shown(artifact: &str, stream: Option<&str>) -> String {
+    let digest = &artifact[..artifact.len().min(DISPLAY_DIGEST_CHARS)];
+    match stream {
         Some(stream) => format!("{digest}/{stream}"),
         None => digest.to_owned(),
     }
@@ -126,7 +133,7 @@ impl ToolProvider for ReadArtifactTool {
     ) -> Result<(Option<&'static str>, Option<String>), ToolError> {
         let permission_name = Self::get_permission_name(name)?;
         let args: ReadArtifactArgs = parse_args(TOOL_NAME, arguments.clone())?;
-        args.target()?;
+        args.check()?;
         Ok((permission_name, Some(args.label())))
     }
 
@@ -137,8 +144,8 @@ impl ToolProvider for ReadArtifactTool {
     ) -> Result<String, ToolError> {
         Self::get_permission_name(name)?;
         let args: ReadArtifactArgs = parse_args(TOOL_NAME, arguments.clone())?;
-        let target = args.target()?;
-        let mut display = shown(&target);
+        args.check()?;
+        let mut display = shown(&args.artifact, args.stream.as_deref());
         let window = match (args.offset, args.limit) {
             (Some(offset), Some(limit)) => Some(format!("offset={offset}, limit={limit}")),
             (Some(offset), None) => Some(format!("offset={offset}")),
@@ -164,12 +171,11 @@ impl ToolProvider for ReadArtifactTool {
         entries.extend(args.stream.clone().map(|stream| ("stream", stream)));
         entries.extend(args.offset.map(|offset| ("offset", offset.to_string())));
         entries.extend(args.limit.map(|limit| ("limit", limit.to_string())));
-        let shown = match &args.stream {
-            Some(stream) => format!("{}/{stream}", &args.artifact[..DISPLAY_DIGEST_CHARS]),
-            None => args.artifact[..DISPLAY_DIGEST_CHARS].to_owned(),
-        };
         base_presentation(
-            &format!("Read artifact {shown}"),
+            &format!(
+                "Read artifact {}",
+                shown(&args.artifact, args.stream.as_deref())
+            ),
             cookie_agent_protocol::ToolHint::FILE_READ,
             &primary,
             entries,
@@ -183,7 +189,7 @@ impl ToolProvider for ReadArtifactTool {
     ) -> Result<PreparedTool, ToolError> {
         Self::get_permission_name(&call.name)?;
         let mut args: ReadArtifactArgs = parse_args(TOOL_NAME, call.arguments)?;
-        let target = args.target()?;
+        args.check()?;
         let window = LineWindow::new(args.offset, args.limit)?;
         args.offset = Some(window.offset);
         args.limit = Some(window.limit);
@@ -210,7 +216,8 @@ impl ToolProvider for ReadArtifactTool {
             normalized,
             None,
             Box::new(ReadArtifactExecutor {
-                target,
+                artifact: args.artifact.clone(),
+                stream: args.stream.clone(),
                 window,
                 session: ctx.session,
             }),
@@ -220,7 +227,9 @@ impl ToolProvider for ReadArtifactTool {
 }
 
 struct ReadArtifactExecutor {
-    target: ArtifactReadTarget,
+    /// The digest, or its start, the call names.
+    artifact: String,
+    stream: Option<String>,
     window: LineWindow,
     session: SessionId,
 }
@@ -237,11 +246,15 @@ impl PreparedExecutor for ReadArtifactExecutor {
         if context.cancellation.is_cancelled() {
             return Err(ToolError::execution("artifact read cancelled"));
         }
-        let artifact = self.target.digest.to_string();
-        let stream = self.target.stream.clone();
-        let shown = shown(&self.target);
+        let artifact = std::sync::Arc::clone(&context.artifacts)
+            .resolve_artifact(self.session, self.artifact)
+            .await?;
+        let stream = self.stream;
+        let target = ArtifactReadTarget::parse(&artifact, stream.as_deref())
+            .map_err(ToolError::execution)?;
+        let shown = shown(&artifact, stream.as_deref());
         let window = self.window;
-        let read = context.read_artifact(self.target, window).await?;
+        let read = context.read_artifact(target, window).await?;
         let page = read.page;
         let display = cookie_agent_runtime_api::display::fit_block(
             page.excerpt_block(shown.clone(), None),
@@ -443,7 +456,7 @@ mod tests {
             serde_json::json!({"artifact": digest, "stream": "out/more"}),
             serde_json::json!({"artifact": digest, "limit": 0}),
             serde_json::json!({"artifact": digest, "offset": 0}),
-            serde_json::json!({"artifact": digest, "filePath": "x"}),
+            serde_json::json!({"artifact": digest, "path": "x"}),
         ] {
             assert!(
                 ReadArtifactTool

@@ -715,7 +715,7 @@ async fn permission_labels_come_from_prepared_permission_resource() {
     let provider = DivergentReadProvider {
         raw_resource: Some("canonical/src/lib.rs".into()),
     };
-    let raw = serde_json::json!({"filePath":"src/lib.rs"});
+    let raw = serde_json::json!({"path":"src/lib.rs"});
     assert_eq!(
         provider
             .get_permission_resource("read", &raw)
@@ -776,7 +776,7 @@ async fn permission_labels_come_from_prepared_permission_resource() {
             ToolCall {
                 id: ToolCallId::new_v7(),
                 name: "read".into(),
-                arguments: serde_json::json!({"filePath":"src/lib.rs"}),
+                arguments: serde_json::json!({"path":"src/lib.rs"}),
             },
         )
         .await

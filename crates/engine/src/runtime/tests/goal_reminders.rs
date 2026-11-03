@@ -359,10 +359,9 @@ async fn discarded_initial_reminder_and_fresh_replacement_are_both_started() {
         .expect("initial reminder record");
     assert!(stale_record.claims.is_empty());
     assert!(
-        stale_record
-            .body
-            .as_plain_text()
-            .contains("Establish the checklist with goal_update, then pursue its unfinished work.")
+        stale_record.body.as_plain_text().contains(
+            "Establish the checklist with `goal_update`, then pursue its unfinished work."
+        )
     );
 
     let revised = fixture
@@ -470,10 +469,9 @@ async fn discarded_initial_reminder_and_fresh_replacement_are_both_started() {
             .contains("Goal started.")
     );
     assert!(
-        revised_record
-            .body
-            .as_plain_text()
-            .contains("Establish the checklist with goal_update, then pursue its unfinished work.")
+        revised_record.body.as_plain_text().contains(
+            "Establish the checklist with `goal_update`, then pursue its unfinished work."
+        )
     );
     fixture
         .engine
@@ -616,7 +614,7 @@ async fn discarded_initial_reminder_and_fresh_replacement_are_both_started() {
     for request in &requests[1..] {
         assert!(request.contains("Goal started. Pursue the new root objective below."));
         assert!(request.contains(
-            "Establish the checklist with goal_update, then pursue its unfinished work."
+            "Establish the checklist with `goal_update`, then pursue its unfinished work."
         ));
         assert!(!request.contains("Continue the root goal."));
     }

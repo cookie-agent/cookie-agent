@@ -20,7 +20,7 @@ fn default_mode() -> ProducerDeliveryMode {
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct MessageArgs {
-    /// Handle or full UUID of the recipient.
+    /// The recipient's session ID, such as `explore_1a2b3c4d`, or full UUID.
     to: String,
     body: String,
     #[serde(default = "default_mode")]
@@ -51,7 +51,7 @@ impl MessageToolProvider {
             result_truncation: cookie_agent_runtime_api::ToolResultTruncationPolicy::Bounded,
             name: "send_message".into(),
             permission_name: Some("message".into()),
-            description: "Send a message to another agent in your session tree. Recipient accepts a subagent handle or a full UUID.".into(),
+            description: "Send a message to another agent in your session tree: `to` is its session ID, such as `explore_1a2b3c4d`, or its full UUID.".into(),
             parameters: serde_json::json!({
                 "type":"object","additionalProperties":false,
                 "properties":{

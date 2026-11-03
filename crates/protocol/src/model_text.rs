@@ -63,12 +63,29 @@ pub fn agent_md_turn(loaded: &[AgentMdSource<'_>]) -> String {
     format!("{AGENT_MD_PREAMBLE}\n\n{files}\n\n{AGENT_MD_FOOTNOTE}\n</system-reminder>")
 }
 
-fn escape_attribute(value: &str) -> String {
+/// `value` as an attribute of the elements the model reads: `&`, `"`,
+/// `<`, and `>` escaped, nothing else.
+#[must_use]
+pub fn escape_xml_attribute(value: &str) -> String {
     value
         .replace('&', "&amp;")
         .replace('"', "&quot;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
+}
+
+/// `value` as the text of an element the model reads: `&`, `<`, and `>`
+/// escaped, so quotes and apostrophes read as written.
+#[must_use]
+pub fn escape_xml_text(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
+fn escape_attribute(value: &str) -> String {
+    escape_xml_attribute(value)
 }
 
 /// What comes before a compaction summary in the turn the model reads.
@@ -130,7 +147,7 @@ pub fn tool_output_elision_marker(
     additional_message_count: usize,
 ) -> String {
     let mut marker = format!(
-        "[tool output elided; {original_bytes} bytes retained; read it with read_artifact(artifact=\"{artifact_id}\")]"
+        "[tool output elided; {original_bytes} bytes retained; read it with `read_artifact(artifact=\"{artifact_id}\")`]"
     );
     if additional_message_count > 0 {
         marker.push_str(&format!(
@@ -143,9 +160,55 @@ pub fn tool_output_elision_marker(
 /// The user turn a changed instructions announcement renders as in the
 /// model's history (stable prefix spec, section 6.3). A block's text is the
 /// system prompt's own, so it is not escaped.
+/// One of the engine's own notices to the model, such as changed
+/// instructions or a goal the user paused, as the model reads it: inside
+/// `<system-reminder>` tags. What other agents and jobs send keeps its own
+/// element (`<subagent_report>`, `<agent_message>`, ...).
+#[must_use]
+pub fn system_reminder(body: &str) -> String {
+    format!("<system-reminder>\n{}\n</system-reminder>", body.trim_end())
+}
+
+/// What opens the notice of a reply's tags that attached nothing: each
+/// follows on a line of its own, `- <what it named>: <why>`.
+pub const ATTACHMENT_FAILURES_LEAD: &str = "Attachments of your last reply that were not attached:";
+
+/// The notice of a reply's tags that attached nothing, one line of
+/// `notes` each.
+#[must_use]
+pub fn attachment_failures(notes: &[String]) -> String {
+    let mut text = String::from(ATTACHMENT_FAILURES_LEAD);
+    for note in notes {
+        text.push_str("\n- ");
+        text.push_str(note);
+    }
+    system_reminder(&text)
+}
+
+/// The lines of an [`attachment_failures`] notice, each `- …`, or of one
+/// that earlier builds wrote (lines of `[attachment not attached] …`
+/// after [`TOOL_EMITTED_SYSTEM_USER_MARKER`]); `None` for any other text.
+#[must_use]
+pub fn attachment_failure_lines(text: &str) -> Option<&str> {
+    if let Some(notes) = text
+        .strip_prefix("<system-reminder>\n")
+        .and_then(|rest| rest.strip_prefix(ATTACHMENT_FAILURES_LEAD))
+        .and_then(|rest| rest.strip_prefix('\n'))
+        .and_then(|rest| rest.strip_suffix("\n</system-reminder>"))
+    {
+        return Some(notes);
+    }
+    let notes = text
+        .strip_prefix(TOOL_EMITTED_SYSTEM_USER_MARKER)?
+        .trim_start_matches('\n');
+    notes
+        .starts_with("[attachment not attached]")
+        .then_some(notes)
+}
+
 #[must_use]
 pub fn prompt_blocks_announcement(blocks: &[AnnouncedPromptBlock]) -> String {
-    let mut text = String::from("[cookie: instructions changed]\n<instructions_changed>\n");
+    let mut text = String::from("<instructions_changed>\n");
     for block in blocks {
         let name = escape_attribute(&block.key);
         match &block.text {
@@ -160,20 +223,20 @@ pub fn prompt_blocks_announcement(blocks: &[AnnouncedPromptBlock]) -> String {
     text.push_str(
         "</instructions_changed>\nEach block replaces the part of the system prompt it names, and a removed block no longer applies: runtimes is where this session's tools work, attachments how to attach files to a reply, tool_instructions the <tool_instructions> sections, and skills the <available_skills> listing.",
     );
-    text
+    system_reminder(&text)
 }
 
 /// What opens the first announcement of deferred tools that became loadable
 /// since the latest checkpoint.
-pub const DEFERRED_TOOLS_ADDED: &str = "The following deferred tool groups are now available via tool_search. Their schemas are NOT loaded — calling them directly will fail. Use tool_search with query \"select:<name>[,<name>...]\" to load tool schemas before calling them, or with keywords to load the best matches (\"+word\" requires a word in the tool's name):";
+pub const DEFERRED_TOOLS_ADDED: &str = "The following deferred tool groups are now available via `tool_search`. Their schemas are NOT loaded — calling them directly will fail. Use `tool_search` with query \"select:<name>[,<name>...]\" to load tool schemas before calling them, or with keywords to load the best matches (\"+word\" requires a word in the tool's name):";
 
 /// What opens a later announcement of deferred tools that became loadable;
 /// the first one explained tool_search.
 pub const DEFERRED_TOOLS_ADDED_MORE: &str =
-    "More deferred tool groups are now available via tool_search:";
+    "More deferred tool groups are now available via `tool_search`:";
 
 /// What opens an announcement of deferred tools that left.
-pub const DEFERRED_TOOLS_REMOVED: &str = "The following deferred tool groups are no longer available in this session. Do not search for them — tool_search will return no match:";
+pub const DEFERRED_TOOLS_REMOVED: &str = "The following deferred tool groups are no longer available in this session. Do not search for them — `tool_search` will return no match:";
 
 /// The user turn a deferred tools announcement renders as in the model's
 /// history (deferred tools spec section 7.2): the groups that became
@@ -228,7 +291,7 @@ pub fn deferred_tools_announcement(
         }
         parts.push(text);
     }
-    parts.join("\n\n")
+    system_reminder(&parts.join("\n\n"))
 }
 
 fn source_label(source: ToolGroupSource) -> &'static str {

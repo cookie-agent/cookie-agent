@@ -1168,7 +1168,7 @@ async fn the_bridge_lists_cookies_tools_without_the_hidden_ones() {
     std::fs::write(&file, "bridged content\n").unwrap();
     let call = format!(
         "mcp call read {}",
-        serde_json::json!({"filePath": file.to_string_lossy()})
+        serde_json::json!({"path": file.to_string_lossy()})
     );
     let outcome = turn(engine, session, "call", &call).await;
     let answer = final_text(&outcome);
@@ -1551,7 +1551,7 @@ async fn the_bridge_tells_the_agent_once_when_its_tool_list_changes() {
     let outside = acp.workspace().parent().unwrap().join("outside.txt");
     let call = format!(
         "mcp ask write {}",
-        serde_json::json!({"filePath": outside.to_string_lossy(), "content": "x"})
+        serde_json::json!({"path": outside.to_string_lossy(), "content": "x"})
     );
     let run = start(engine, session, "call", &call).await;
     let approval = wait_for_escalated_approval(engine, session).await;
@@ -2024,7 +2024,7 @@ async fn the_first_prompt_carries_the_body_the_attachments_the_offered_tools_ins
     );
     assert_eq!(
         first[3],
-        "<tool_instructions provider=\"builtin.memory\">\nMemory related to this session is included automatically at the start of each session: the user's memory, your own agent memory, the session's project, and the machines its runtimes run on. Use memory_search for anything else, such as another project or a machine this session doesn't use.\n</tool_instructions>"
+        "<tool_instructions provider=\"builtin.memory\">\nMemory related to this session is included automatically at the start of each session: the user's memory, your own agent memory, the session's project, and the machines its runtimes run on. Use `memory_search` for anything else, such as another project or a machine this session doesn't use.\n</tool_instructions>"
     );
     assert!(
         first[4].starts_with("<system-reminder>\n# Memory\n"),
@@ -3540,7 +3540,7 @@ async fn an_acp_agents_reply_attaches_files_and_hears_of_failures() {
     assert!(
         second
             .iter()
-            .any(|part| part.contains("[attachment not attached] gone.txt")),
+            .any(|part| part.starts_with("<system-reminder>\nAttachments of your last reply that were not attached:\n- gone.txt: ")),
         "{second:#?}"
     );
 }

@@ -1118,8 +1118,8 @@ impl ToolProvider for TestMediaReadProvider {
             parameters: serde_json::json!({
                 "type":"object",
                 "additionalProperties":false,
-                "properties":{"filePath":{"type":"string"}},
-                "required":["filePath"]
+                "properties":{"path":{"type":"string"}},
+                "required":["path"]
             }),
         }])
     }
@@ -1137,9 +1137,9 @@ impl ToolProvider for TestMediaReadProvider {
         arguments: &serde_json::Value,
     ) -> Result<(Option<&'static str>, Option<String>), ToolError> {
         let path = arguments
-            .get("filePath")
+            .get("path")
             .and_then(serde_json::Value::as_str)
-            .ok_or_else(|| ToolError::execution("missing filePath"))?;
+            .ok_or_else(|| ToolError::execution("missing path"))?;
         Ok((Self::get_permission_name(name)?, Some(path.into())))
     }
 
@@ -1150,7 +1150,7 @@ impl ToolProvider for TestMediaReadProvider {
     ) -> Result<String, ToolError> {
         self.get_permission_resource(name, arguments)?
             .1
-            .ok_or_else(|| ToolError::execution("missing filePath"))
+            .ok_or_else(|| ToolError::execution("missing path"))
     }
 
     async fn prepare(
@@ -1160,9 +1160,9 @@ impl ToolProvider for TestMediaReadProvider {
     ) -> Result<PreparedTool, ToolError> {
         let display = call
             .arguments
-            .get("filePath")
+            .get("path")
             .and_then(serde_json::Value::as_str)
-            .ok_or_else(|| ToolError::execution("missing filePath"))?;
+            .ok_or_else(|| ToolError::execution("missing path"))?;
         let path = ctx
             .workspace()
             .expect("media read fixtures run on a coding runtime")
@@ -1616,8 +1616,8 @@ impl ToolProvider for DivergentReadProvider {
             parameters: serde_json::json!({
                 "type":"object",
                 "additionalProperties":false,
-                "properties":{"filePath":{"type":"string"}},
-                "required":["filePath"]
+                "properties":{"path":{"type":"string"}},
+                "required":["path"]
             }),
         }])
     }
@@ -1654,9 +1654,9 @@ impl ToolProvider for DivergentReadProvider {
     ) -> Result<PreparedTool, ToolError> {
         let raw = call
             .arguments
-            .get("filePath")
+            .get("path")
             .and_then(serde_json::Value::as_str)
-            .ok_or_else(|| ToolError::execution("missing filePath"))?;
+            .ok_or_else(|| ToolError::execution("missing path"))?;
         let prepared_path = format!("canonical/{raw}");
         let operation = PreparedOperationIdentity::new(
             Sha256Digest::of_bytes(prepared_path.as_bytes()),
@@ -1682,7 +1682,7 @@ impl ToolProvider for DivergentReadProvider {
         .map_err(|error| ToolError::execution(error.to_string()))?;
         PreparedTool::new(
             operation,
-            serde_json::json!({"filePath": prepared_path}),
+            serde_json::json!({"path": prepared_path}),
             None,
             Box::new(DivergentReadExecutor),
         )?

@@ -47,9 +47,9 @@ pub(crate) const UPDATE: &str = "cron_update";
 pub(crate) const DELETE: &str = "cron_delete";
 pub(crate) const RUN: &str = "cron_run";
 
-const SCHEDULE_NOTES: &str = "Schedules are in the daemon host's local time. Each fire arrives marked as a <scheduled_job>, never as the user, and is not user consent. Prefer cron_update on an existing job to creating a near duplicate. max_runs defaults to 1, so a job fires once unless told otherwise; 0 runs until the job is deleted or disabled.";
+const SCHEDULE_NOTES: &str = "Schedules are in the daemon host's local time. Each fire arrives marked as a <scheduled_job>, never as the user, and is not user consent. Prefer `cron_update` on an existing job to creating a near duplicate. max_runs defaults to 1, so a job fires once unless told otherwise; 0 runs until the job is deleted or disabled.";
 
-const TARGET_NOTES: &str = "`target`: \"self\" (the default) fires into this session; a subagent's handle (e.g. \"explore_1a2b3c4d\") fires into that subagent's session, which must be below this one; {\"new\": {...}} starts a new root session per fire, whose agent, capabilities, and project default to this session's. A new session's agent must be able to run as a root (call list_agents with for=\"cron\").";
+const TARGET_NOTES: &str = "`target`: \"self\" (the default) fires into this session; a subagent's session ID (e.g. \"explore_1a2b3c4d\") fires into that subagent's session, which must be below this one; {\"new\": {...}} starts a new root session per fire, whose agent, capabilities, and project default to this session's. A new session's agent must be able to run as a root (call `list_agents` with for=\"cron\").";
 
 fn create_description() -> String {
     format!(
@@ -59,13 +59,13 @@ fn create_description() -> String {
 
 fn update_description() -> String {
     format!(
-        "Change a cron job: any member of cron_create, and `enabled` to disable or re-enable it (enabling resets its failure count). A new schedule or target computes the next fire from now. {SCHEDULE_NOTES}"
+        "Change a cron job: any member of `cron_create`, and `enabled` to disable or re-enable it (enabling resets its failure count). A new schedule or target computes the next fire from now. {SCHEDULE_NOTES}"
     )
 }
 
 const LIST_DESCRIPTION: &str = "List the daemon's cron jobs your permissions let you see: id, name, schedule, next fire (local time and UTC), target, whether enabled, and the last fire's outcome. Pass `target` (session, subagent, or new) to list one kind.";
 const DELETE_DESCRIPTION: &str = "Delete a cron job. Sessions its fires started stay.";
-const RUN_DESCRIPTION: &str = "Run a cron job now. An in-session job fires into its session as a scheduled fire would. A new-session job runs as your subagent with the job's agent, rules, and runtimes and the prompt as its first input: in the foreground (default) the call waits for its first turn and returns the result; in the background it returns the subagent's handle at once and its turns arrive as <subagent_report>s. A run now counts toward neither max_runs nor the failure count.";
+const RUN_DESCRIPTION: &str = "Run a cron job now. An in-session job fires into its session as a scheduled fire would. A new-session job runs as your subagent with the job's agent, rules, and runtimes and the prompt as its first input: in the foreground (default) the call waits for its first turn and returns the result; in the background it returns the subagent's session ID at once and its turns arrive as <subagent_report>s. A run now counts toward neither max_runs nor the failure count.";
 
 /// `schedule` as a tool takes it.
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -198,7 +198,7 @@ fn target_schema(description: &str) -> serde_json::Value {
                                 "resource": {"type": "string"},
                                 "effect": {"type": "string", "enum": ["allow", "ask", "deny"]}
                             }}},
-                    "capabilities": {"type": "array", "description": "The runtime capabilities each new session works through, as delegate_subagent takes them; this session's when omitted. Each session also has `global` exactly when this one does.",
+                    "capabilities": {"type": "array", "description": "The runtime capabilities each new session works through, as `delegate_subagent` takes them; this session's when omitted. Each session also has `global` exactly when this one does.",
                         "items": CapabilityArg::item_schema()},
                     "project": {"type": "string", "description": "A project's name; this session's project when omitted"}
                 }
@@ -280,7 +280,7 @@ fn build_specs() -> Vec<ToolSpec> {
                     "schedule": schedule_schema(),
                     "max_runs": max_runs_schema(),
                     "name": {"type": "string", "description": "A short name, at most 80 characters"},
-                    "target": target_schema("\"self\" (the default), a subagent's handle, or {\"new\": {...}}"),
+                    "target": target_schema("\"self\" (the default), a subagent's session ID, or {\"new\": {...}}"),
                     "delivery": delivery,
                 }
             }),
@@ -311,7 +311,7 @@ fn build_specs() -> Vec<ToolSpec> {
                     "schedule": schedule_schema(),
                     "max_runs": max_runs_schema(),
                     "name": {"type": "string"},
-                    "target": target_schema("\"self\", a subagent's handle, or {\"new\": {...}}; unchanged when omitted"),
+                    "target": target_schema("\"self\", a subagent's session ID, or {\"new\": {...}}; unchanged when omitted"),
                     "delivery": delivery,
                     "enabled": {"type": "boolean"},
                 }

@@ -550,13 +550,13 @@ async fn the_memory_tools_write_read_edit_search_and_delete() {
             "read-1",
             "edit-1",
             "memory_edit",
-            serde_json::json!({"url": "project://web/build", "oldString": "cargo test", "newString": "cargo nextest"}),
+            serde_json::json!({"url": "project://web/build", "old_string": "cargo test", "new_string": "cargo nextest"}),
         ),
         (
             "edit-1",
             "edit-miss",
             "memory_edit",
-            serde_json::json!({"url": "project://web/build", "oldString": "cargo test", "newString": "x"}),
+            serde_json::json!({"url": "project://web/build", "old_string": "cargo test", "new_string": "x"}),
         ),
         (
             "edit-miss",
@@ -870,7 +870,7 @@ async fn the_memory_tools_write_read_edit_search_and_delete() {
     fixture.engine.shutdown().await;
 }
 
-/// An edit whose `oldString` does not occur once in the body fails as it
+/// An edit whose `old_string` does not occur once in the body fails as it
 /// is prepared: the user is never asked to approve a change that cannot
 /// apply.
 #[tokio::test]
@@ -885,12 +885,12 @@ async fn an_edit_that_cannot_apply_is_refused_before_approval() {
         (
             "start-edits",
             "several",
-            serde_json::json!({"url": "user://feedback", "oldString": "same", "newString": "x"}),
+            serde_json::json!({"url": "user://feedback", "old_string": "same", "new_string": "x"}),
         ),
         (
             "several",
             "missing",
-            serde_json::json!({"url": "user://nothing", "oldString": "a", "newString": "b"}),
+            serde_json::json!({"url": "user://nothing", "old_string": "a", "new_string": "b"}),
         ),
     ] {
         responses

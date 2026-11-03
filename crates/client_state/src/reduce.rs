@@ -1898,9 +1898,10 @@ pub(super) fn reduce_event_from(
         EventPayload::DeferredToolsAnnounced { added, removed } => {
             // Only the first announcement since the checkpoint that adds
             // groups explains tool_search, and it opens with that header.
-            let first = !state.deferred_announcements.iter().any(|text| {
-                text.starts_with(cookie_agent_protocol::model_text::DEFERRED_TOOLS_ADDED)
-            });
+            let first = !state
+                .deferred_announcements
+                .iter()
+                .any(|text| text.contains(cookie_agent_protocol::model_text::DEFERRED_TOOLS_ADDED));
             state.deferred_announcements.push(
                 cookie_agent_protocol::model_text::deferred_tools_announcement(
                     &added, &removed, first,
@@ -3204,14 +3205,9 @@ fn push_model_input(
 }
 
 /// The lines of a message the engine wrote to tell the model of failed
-/// attachments, without its marker; `None` for any other message.
+/// attachments, without its framing; `None` for any other message.
 fn attachment_notes(text: &str) -> Option<&str> {
-    let notes = text
-        .strip_prefix(cookie_agent_protocol::model_text::TOOL_EMITTED_SYSTEM_USER_MARKER)?
-        .trim_start_matches('\n');
-    notes
-        .starts_with("[attachment not attached]")
-        .then_some(notes)
+    cookie_agent_protocol::model_text::attachment_failure_lines(text)
 }
 
 pub(super) fn push_event(

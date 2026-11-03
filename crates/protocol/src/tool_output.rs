@@ -204,14 +204,14 @@ impl ArtifactReadTarget {
     /// `offset` is 1-based, as `read_artifact`'s is.
     #[must_use]
     pub fn read_hint(&self, next_line: Option<u64>) -> String {
-        let mut hint = format!("read_artifact(artifact=\"{}\"", self.digest);
+        let mut hint = format!("`read_artifact(artifact=\"{}\"", self.digest);
         if let Some(stream) = &self.stream {
             hint.push_str(&format!(", stream=\"{stream}\""));
         }
         if let Some(next_line) = next_line {
             hint.push_str(&format!(", offset={}", next_line.saturating_add(1)));
         }
-        hint.push(')');
+        hint.push_str(")`");
         hint
     }
 }
@@ -294,12 +294,12 @@ mod tests {
         let target = ArtifactReadTarget::parse(&digest, Some("stdout")).unwrap();
         assert_eq!(
             target.read_hint(Some(40)),
-            format!("read_artifact(artifact=\"{digest}\", stream=\"stdout\", offset=41)")
+            format!("`read_artifact(artifact=\"{digest}\", stream=\"stdout\", offset=41)`")
         );
         let target = ArtifactReadTarget::parse(&digest, None).unwrap();
         assert_eq!(
             target.read_hint(None),
-            format!("read_artifact(artifact=\"{digest}\")")
+            format!("`read_artifact(artifact=\"{digest}\")`")
         );
     }
 }

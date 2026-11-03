@@ -750,7 +750,7 @@ async fn scripted_read_media_attaches_when_capable_and_fails_cleanly_when_incapa
             anthropic_tool_body(
                 "read-image",
                 "read",
-                serde_json::json!({"filePath":"pixel.png"}),
+                serde_json::json!({"path":"pixel.png"}),
             ),
             anthropic_usage_body("continued after read", 1, 0, 0),
         ];
@@ -879,12 +879,12 @@ async fn history_media_over_the_model_count_limit_elides_oldest_and_proceeds() {
         anthropic_tool_body(
             "read-first",
             "read",
-            serde_json::json!({"filePath":"first.png"}),
+            serde_json::json!({"path":"first.png"}),
         ),
         anthropic_tool_body(
             "read-second",
             "read",
-            serde_json::json!({"filePath":"second.png"}),
+            serde_json::json!({"path":"second.png"}),
         ),
         anthropic_usage_body("read both", 1, 0, 0),
     ];

@@ -30,15 +30,15 @@ fn scripted_matchers_ignore_only_trailing_subagent_notifications() {
     // A report's wake carries the engine's announcement of instructions that
     // changed since the previous run, before or after the report.
     let announcement =
-        "[cookie: instructions changed]\n<instructions_changed>\n</instructions_changed>";
+        "<system-reminder>\n<instructions_changed>\n</instructions_changed>\n</system-reminder>";
     for wake in [
         [
-            serde_json::json!({"role":"user","content":"<subagent_report handle=\"h\" status=\"completed\">done</subagent_report>"}),
+            serde_json::json!({"role":"user","content":"<subagent_report session_id=\"h\" status=\"completed\">done</subagent_report>"}),
             serde_json::json!({"role":"user","content":announcement}),
         ],
         [
             serde_json::json!({"role":"user","content":announcement}),
-            serde_json::json!({"role":"user","content":"<subagent_report handle=\"h\" status=\"completed\">done</subagent_report>"}),
+            serde_json::json!({"role":"user","content":"<subagent_report session_id=\"h\" status=\"completed\">done</subagent_report>"}),
         ],
     ] {
         let wake = request(serde_json::json!([

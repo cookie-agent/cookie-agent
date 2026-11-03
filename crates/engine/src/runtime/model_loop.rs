@@ -1471,7 +1471,7 @@ impl Engine {
                         partial_output: None,
                         code: ToolCallFailureCode::ExecutionFailed,
                         message: format!(
-                            "`{tool}` is not loaded: load it with tool_search (query \"select:{tool}\") before calling it"
+                            "`{tool}` is not loaded: load it with `tool_search` (query \"select:{tool}\") before calling it"
                         ),
                     });
                 }

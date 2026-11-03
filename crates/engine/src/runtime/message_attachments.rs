@@ -77,7 +77,7 @@ fn failure_note(tag: &AttachTag, reason: &str) -> String {
         AttachSource::Artifact { sha256 } => format!("artifact {sha256}"),
         AttachSource::Asset { handle } => handle.clone(),
     };
-    format!("[attachment not attached] {named}: {reason}")
+    format!("{named}: {reason}")
 }
 
 impl Engine {
@@ -192,7 +192,7 @@ impl Engine {
     /// as one message, which they are forgotten for.
     pub(crate) fn take_attachment_notes(&self, session: SessionId) -> Option<String> {
         let notes = lock(&self.inner.message_attachments.notes).remove(&session)?;
-        (!notes.is_empty()).then(|| notes.join("\n"))
+        (!notes.is_empty()).then(|| cookie_agent_protocol::model_text::attachment_failures(&notes))
     }
 
     /// Records `note`, failures of attachments, as user history: the
@@ -203,10 +203,7 @@ impl Engine {
         run: Option<cookie_agent_protocol::RunId>,
         note: &str,
     ) -> Result<(), EngineError> {
-        let text = format!(
-            "{}\n{note}",
-            cookie_agent_protocol::model_text::TOOL_EMITTED_SYSTEM_USER_MARKER
-        );
+        let text = note.to_owned();
         self.append(
             session,
             run,
@@ -411,15 +408,21 @@ impl Engine {
         })
     }
 
-    /// The session tree's artifact `sha256`, attached as it is.
+    /// The session tree's artifact `sha256` names, its digest or the start
+    /// of it as a file label shows it, attached as it is.
     fn attach_artifact(
         &self,
         session: SessionId,
         tag: &AttachTag,
         sha256: &str,
     ) -> Result<AttachmentOutcome, String> {
-        let digest = Sha256Digest::new(sha256)
-            .map_err(|_| "an artifact is named by its 64-character hex SHA-256".to_owned())?;
+        let digest = crate::runtime::artifacts::reads::resolve_artifact(
+            &self.inner.artifacts,
+            session,
+            sha256,
+        )
+        .map_err(|error| error.to_string())?;
+        let digest = Sha256Digest::new(&digest).map_err(|error| error.to_string())?;
         let store = self
             .inner
             .artifacts
@@ -631,7 +634,7 @@ mod tests {
                 }),
                 "no such file"
             ),
-            "[attachment not attached] runs/loss.png on labpc: no such file"
+            "runs/loss.png on labpc: no such file"
         );
         assert_eq!(
             failure_note(
@@ -640,7 +643,7 @@ mod tests {
                 }),
                 "denied"
             ),
-            "[attachment not attached] asset_3f9a1c2e: denied"
+            "asset_3f9a1c2e: denied"
         );
     }
 }

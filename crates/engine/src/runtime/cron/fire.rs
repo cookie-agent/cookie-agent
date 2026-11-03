@@ -77,10 +77,7 @@ pub(crate) fn is_cron_owner(owner: &ProducerOwner) -> bool {
 }
 
 fn escape_attribute(text: &str) -> String {
-    text.replace('&', "&amp;")
-        .replace('"', "&quot;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
+    cookie_agent_protocol::model_text::escape_xml_attribute(text)
 }
 
 /// `fired_at` in the host's local time, with its offset.

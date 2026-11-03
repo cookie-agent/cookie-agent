@@ -253,7 +253,7 @@ async fn global_fallback_is_published_alone_and_hidden_behind_the_local_tool() {
                 ToolCall {
                     id: ToolCallId::new_v7(),
                     name: "write".into(),
-                    arguments: serde_json::json!({"filePath":"notes.txt","content":"x"}),
+                    arguments: serde_json::json!({"path":"notes.txt","content":"x"}),
                 },
                 Some(published),
             )],

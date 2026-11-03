@@ -354,7 +354,7 @@ fn a_snapshot_with_no_memory_to_show_renders_nothing() {
     let text = snapshot_turn(&listed).expect("a listed memory renders");
     assert!(
         text.contains(
-            "## About the user\n\nListed only, as reading asks first (memory_read):\n- user://preferences: How the user works"
+            "## About the user\n\nListed only, as reading asks first (`memory_read`):\n- user://preferences: How the user works"
         ),
         "{text}"
     );
@@ -367,7 +367,7 @@ fn a_snapshot_with_no_memory_to_show_renders_nothing() {
     .expect("a listed agent file renders");
     assert!(
         text.ends_with(
-            "## About this agent (reviewer)\n\nListed only, as reading asks first (memory_read):\n- agent://reviewer: How reviews go\n</system-reminder>"
+            "## About this agent (reviewer)\n\nListed only, as reading asks first (`memory_read`):\n- agent://reviewer: How reviews go\n</system-reminder>"
         ),
         "{text}"
     );
@@ -485,7 +485,7 @@ fn a_project_section_follows_the_machines() {
     };
     assert_eq!(
         project_section(&project, None),
-        "## Project cookie-agent\nThis session belongs to the cookie-agent project.\n\n<memory url=\"project://cookie-agent/overview\" description=\"Overview of the `cookie-agent` project, loaded in full into its sessions\">\nA coding agent in Rust.\n</memory>\n\nOther memories of this project (read with memory_read):\n- project://cookie-agent/release: How releases are cut [keywords: release]\n- 2 more; search with layer \"project\"."
+        "## Project cookie-agent\nThis session belongs to the cookie-agent project.\n\n<memory url=\"project://cookie-agent/overview\" description=\"Overview of the `cookie-agent` project, loaded in full into its sessions\">\nA coding agent in Rust.\n</memory>\n\nOther memories of this project (read with `memory_read`):\n- project://cookie-agent/release: How releases are cut [keywords: release]\n- 2 more; search with layer \"project\"."
     );
     let snapshot = MemorySnapshot {
         writable: false,
@@ -510,6 +510,6 @@ fn a_project_section_follows_the_machines() {
     };
     assert_eq!(
         project_section(&bare, None),
-        "## Project cookie-agent\nThis session belongs to the cookie-agent project.\n\nOther memories of this project (read with memory_read):\nNone."
+        "## Project cookie-agent\nThis session belongs to the cookie-agent project.\n\nOther memories of this project (read with `memory_read`):\nNone."
     );
 }

@@ -97,9 +97,9 @@ fn arguments_are_strict() {
         ),
         (
             "memory_edit",
-            json!({"url": "project://web/build", "oldString": "a", "newString": "b", "revision": "0123456789abcdef"}),
+            json!({"url": "project://web/build", "old_string": "a", "new_string": "b", "revision": "0123456789abcdef"}),
         ),
-        // The edit's arguments are `oldString` and `newString`, as `edit`'s.
+        // The edit's arguments are `old_string` and `new_string`, as `edit`'s.
         (
             "memory_edit",
             json!({"url": "project://web/build", "old": "a", "new": "b"}),
@@ -137,7 +137,7 @@ fn urls_and_memories_are_checked_before_the_call_runs() {
     assert!(matches!(
         check(
             "memory_edit",
-            json!({"url": "user://feedback", "oldString": "a", "newString": "b"})
+            json!({"url": "user://feedback", "old_string": "a", "new_string": "b"})
         ),
         Ok(MemoryCall::Edit { ref old, ref new, .. }) if old == "a" && new == "b"
     ));
@@ -166,7 +166,7 @@ fn urls_and_memories_are_checked_before_the_call_runs() {
             matches!(
                 check(
                     "memory_edit",
-                    json!({"url": url, "oldString": "a", "newString": "b"})
+                    json!({"url": url, "old_string": "a", "new_string": "b"})
                 ),
                 Ok(MemoryCall::Edit { .. })
             ),
@@ -528,7 +528,7 @@ fn the_memory_section_has_part_b_only_with_the_write_tools() {
     assert_eq!(
         delegated,
         format!(
-            "Your own agent memory is included automatically at the start of each run. Use memory_search for anything else.\n\n{PART_B}"
+            "Your own agent memory is included automatically at the start of each run. Use `memory_search` for anything else.\n\n{PART_B}"
         )
     );
     assert!(PART_B.contains("\n1. Could a later session re-derive it"));
@@ -702,7 +702,7 @@ async fn a_memory_edit_diff_is_the_edit_tools_diff() {
             cookie_agent_runtime_api::ToolCall {
                 id: cookie_agent_protocol::ToolCallId::new_v7(),
                 name: "edit".into(),
-                arguments: json!({"filePath": "build.md", "oldString": "line 10\n", "newString": "ten\n"}),
+                arguments: json!({"path": "build.md", "old_string": "line 10\n", "new_string": "ten\n"}),
             },
         )
         .await

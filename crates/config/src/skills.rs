@@ -736,12 +736,7 @@ pub fn render_available_skills<'a>(
 }
 
 fn escape_xml(value: &str) -> String {
-    value
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&apos;")
+    cookie_agent_protocol::model_text::escape_xml_text(value)
 }
 
 #[cfg(test)]

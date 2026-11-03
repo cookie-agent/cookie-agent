@@ -167,7 +167,7 @@ fn multibyte_characters_are_not_split_by_a_line_cut() {
 fn permission_resource_is_the_file_path() {
     let tool = ReadTool::new(&crate::test_workspace(std::env::temp_dir()));
     assert_eq!(
-        tool.get_permission_resource("read", &serde_json::json!({"filePath":"src/lib.rs"}))
+        tool.get_permission_resource("read", &serde_json::json!({"path":"src/lib.rs"}))
             .expect("permission resource"),
         (Some("read"), Some("src/lib.rs".into()))
     );
@@ -178,7 +178,7 @@ fn permission_resource_is_the_file_path() {
     assert!(matches!(
         tool.get_permission_resource(
             "read",
-            &serde_json::json!({"filePath":"src/lib.rs","byteOffset":0})
+            &serde_json::json!({"path":"src/lib.rs","byteOffset":0})
         ),
         Err(ToolError::Failed(_))
     ));
@@ -201,11 +201,11 @@ async fn offsets_are_one_based_and_checked_before_approval() {
     };
     for (arguments, message) in [
         (
-            serde_json::json!({"filePath":"value.txt","offset":0}),
+            serde_json::json!({"path":"value.txt","offset":0}),
             "offset is 1-based: the first line is offset=1",
         ),
         (
-            serde_json::json!({"filePath":"value.txt","limit":0}),
+            serde_json::json!({"path":"value.txt","limit":0}),
             "limit must be positive",
         ),
     ] {
@@ -214,7 +214,7 @@ async fn offsets_are_one_based_and_checked_before_approval() {
         };
         assert_eq!(error.message(), message);
     }
-    let prepared = prepare(serde_json::json!({"filePath":"value.txt","offset":2,"limit":1}))
+    let prepared = prepare(serde_json::json!({"path":"value.txt","offset":2,"limit":1}))
         .await
         .expect("prepare read");
     assert_eq!(prepared.normalized_arguments()["offset"], 2);
@@ -242,10 +242,9 @@ fn an_offset_past_the_last_line_is_an_error() {
 #[test]
 fn unknown_arguments_are_refused() {
     let tool = ReadTool::new(&crate::test_workspace(std::env::temp_dir()));
-    let Err(error) = tool.get_permission_resource(
-        "read",
-        &serde_json::json!({"filePath":"src/lib.rs","lines":10}),
-    ) else {
+    let Err(error) =
+        tool.get_permission_resource("read", &serde_json::json!({"path":"src/lib.rs","lines":10}))
+    else {
         panic!("an unknown argument is refused");
     };
     assert!(
@@ -260,33 +259,30 @@ fn display_argument_abbreviates_paths_and_includes_explicit_window() {
     let workspace = tempfile::tempdir().expect("workspace");
     let tool = ReadTool::new(&crate::test_workspace(workspace.path()));
     assert_eq!(
-        tool.get_display_argument("read", &serde_json::json!({"filePath":"src/lib.rs"}))
+        tool.get_display_argument("read", &serde_json::json!({"path":"src/lib.rs"}))
             .expect("relative"),
         "src/lib.rs"
     );
     assert_eq!(
-            tool.get_display_argument(
-                "read",
-                &serde_json::json!({"filePath":workspace.path().join("src/lib.rs"),"offset":1,"limit":100})
-            )
-            .expect("workspace"),
-            "src/lib.rs [offset=1, limit=100]"
-        );
+        tool.get_display_argument(
+            "read",
+            &serde_json::json!({"path":workspace.path().join("src/lib.rs"),"offset":1,"limit":100})
+        )
+        .expect("workspace"),
+        "src/lib.rs [offset=1, limit=100]"
+    );
     let home = cookie_agent_protocol::paths::home_dir().expect("home directory");
     assert_eq!(
         tool.get_display_argument(
             "read",
-            &serde_json::json!({"filePath": home.join(".bashrc"),"offset":4})
+            &serde_json::json!({"path": home.join(".bashrc"),"offset":4})
         )
         .expect("home"),
         "~/.bashrc [offset=4]"
     );
     assert_eq!(
-        tool.get_display_argument(
-            "read",
-            &serde_json::json!({"filePath":"src/lib.rs","limit":25})
-        )
-        .expect("limit"),
+        tool.get_display_argument("read", &serde_json::json!({"path":"src/lib.rs","limit":25}))
+            .expect("limit"),
         "src/lib.rs [limit=25]"
     );
     assert!(matches!(
@@ -296,7 +292,7 @@ fn display_argument_abbreviates_paths_and_includes_explicit_window() {
     let presentation = tool.presentation(&ToolCall {
         id: ToolCallId::new_v7(),
         name: "read".into(),
-        arguments: serde_json::json!({"filePath":workspace.path().join("src/lib.rs")}),
+        arguments: serde_json::json!({"path":workspace.path().join("src/lib.rs")}),
     });
     assert_eq!(presentation.title.as_str(), "Read src/lib.rs");
     assert_eq!(
@@ -316,7 +312,7 @@ fn display_argument_abbreviates_paths_and_includes_explicit_window() {
     let windowed = tool.presentation(&ToolCall {
         id: ToolCallId::new_v7(),
         name: "read".into(),
-        arguments: serde_json::json!({"filePath":"src/lib.rs","offset":10,"limit":5}),
+        arguments: serde_json::json!({"path":"src/lib.rs","offset":10,"limit":5}),
     });
     assert_eq!(
         windowed.arguments,
@@ -451,7 +447,7 @@ async fn prepared(root: &Path, path: &str) -> cookie_agent_runtime_api::Prepared
             ToolCall {
                 id: ToolCallId::new_v7(),
                 name: "read".into(),
-                arguments: serde_json::json!({"filePath":path}),
+                arguments: serde_json::json!({"path":path}),
             },
         )
         .await
@@ -470,7 +466,7 @@ async fn execute_media(
             ToolCall {
                 id: ToolCallId::new_v7(),
                 name: "read".into(),
-                arguments: serde_json::json!({"filePath":path}),
+                arguments: serde_json::json!({"path":path}),
             },
         )
         .await?;
@@ -702,7 +698,7 @@ async fn prepared_read_exposes_lexical_normalized_arguments_not_raw_traversal() 
     let prepared = prepared(root.path(), "safe/../.env").await;
     let normalized = prepared
         .normalized_arguments()
-        .get("filePath")
+        .get("path")
         .and_then(serde_json::Value::as_str)
         .expect("normalized file path");
     let expected = crate::shown_root(root.path()).join(".env");
@@ -732,7 +728,7 @@ async fn outside_workspace_read_has_one_absolute_labeled_resource() {
             ToolCall {
                 id: ToolCallId::new_v7(),
                 name: "read".into(),
-                arguments: serde_json::json!({"filePath":external.path()}),
+                arguments: serde_json::json!({"path":external.path()}),
             },
         )
         .await
@@ -856,7 +852,7 @@ async fn symlink_routes_keep_lexical_read_permissions_and_arguments() {
                 ToolCall {
                     id: ToolCallId::new_v7(),
                     name: "read".into(),
-                    arguments: serde_json::json!({"filePath":requested}),
+                    arguments: serde_json::json!({"path":requested}),
                 },
             )
             .await
@@ -866,7 +862,7 @@ async fn symlink_routes_keep_lexical_read_permissions_and_arguments() {
         assert_eq!(prepared.operation().resources().len(), 1);
         assert_eq!(prepared.policy_labels(), [Some(requested.to_owned())]);
         assert_eq!(
-            prepared.normalized_arguments()["filePath"],
+            prepared.normalized_arguments()["path"],
             expected_path.to_string_lossy().as_ref()
         );
         assert_eq!(
@@ -909,7 +905,7 @@ async fn dangling_symlink_read_errors_and_retargeted_routes_do_not_redirect() {
             ToolCall {
                 id: ToolCallId::new_v7(),
                 name: "read".into(),
-                arguments: serde_json::json!({"filePath":"dangling"}),
+                arguments: serde_json::json!({"path":"dangling"}),
             },
         )
         .await;
@@ -987,7 +983,7 @@ async fn a_text_read_shows_an_excerpt_with_file_line_numbers() {
     fs::write(root.path().join("src/lib.rs"), "one\ntwo\r\nthree\nfour\n").unwrap();
     let result = read(
         root.path(),
-        serde_json::json!({"filePath":"src/lib.rs","offset":2,"limit":2}),
+        serde_json::json!({"path":"src/lib.rs","offset":2,"limit":2}),
     )
     .await;
     assert_eq!(
@@ -1024,7 +1020,7 @@ async fn a_long_page_shows_the_excerpt_that_fits_and_counts_the_rest() {
         format!("{line}\n").repeat(2_000),
     )
     .unwrap();
-    let result = read(root.path(), serde_json::json!({"filePath":"long.txt"})).await;
+    let result = read(root.path(), serde_json::json!({"path":"long.txt"})).await;
     let [
         Open::Known(DisplayBlock::FileExcerpt {
             lines,
@@ -1046,7 +1042,7 @@ async fn a_directory_read_shows_a_table_of_entries() {
     let root = tempfile::tempdir().unwrap();
     fs::create_dir_all(root.path().join("tree/src")).unwrap();
     fs::write(root.path().join("tree/Cargo.toml"), "").unwrap();
-    let result = read(root.path(), serde_json::json!({"filePath":"tree"})).await;
+    let result = read(root.path(), serde_json::json!({"path":"tree"})).await;
     assert_eq!(
         result.display,
         [Open::Known(DisplayBlock::Table {
@@ -1076,7 +1072,7 @@ async fn a_directory_page_counts_entries_from_one_and_says_where_to_continue() {
     }
     let first = read(
         root.path(),
-        serde_json::json!({"filePath":"tree","offset":1,"limit":2}),
+        serde_json::json!({"path":"tree","offset":1,"limit":2}),
     )
     .await;
     assert!(
@@ -1089,7 +1085,7 @@ async fn a_directory_page_counts_entries_from_one_and_says_where_to_continue() {
     assert_eq!(first.metadata["next_offset"], 3);
     let last = read(
         root.path(),
-        serde_json::json!({"filePath":"tree","offset":3,"limit":2}),
+        serde_json::json!({"path":"tree","offset":3,"limit":2}),
     )
     .await;
     assert!(
@@ -1105,7 +1101,7 @@ async fn a_directory_page_counts_entries_from_one_and_says_where_to_continue() {
             ToolCall {
                 id: ToolCallId::new_v7(),
                 name: "read".into(),
-                arguments: serde_json::json!({"filePath":"tree","offset":4}),
+                arguments: serde_json::json!({"path":"tree","offset":4}),
             },
         )
         .await

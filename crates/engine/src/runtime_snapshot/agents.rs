@@ -1182,7 +1182,7 @@ fn runtime_agent_default_document(agent: &AcpOffers) -> Result<AgentDocument, En
 fn built_in_default_document(first: Option<&ModelSelection>) -> Result<AgentDocument, EngineError> {
     let id = IdentityAgentId::new(TEST_DEFAULT_AGENT_ID)
         .map_err(|_| EngineError::RuntimeCompileFailed)?;
-    let body = "You are Cookie Agent's built-in default coding agent. Help the user inspect, understand, and modify software safely and precisely.\n".to_owned();
+    let body = "You are a coding agent. Help the user inspect, understand, and modify software safely and precisely.\n".to_owned();
     let models = std::iter::once(AgentModelFallback {
         model: AgentModelRef::DefaultModel,
         variant: None,

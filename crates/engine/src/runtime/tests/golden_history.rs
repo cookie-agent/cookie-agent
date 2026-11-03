@@ -1279,11 +1279,11 @@ fn coding_rules() -> Rules {
             "explore",
             vec![
                 Reply::Tools(vec![
-                    ("read", json!({"filePath": "src/lib.rs"})),
-                    ("read", json!({"filePath": "src"})),
-                    ("read", json!({"filePath": "assets/pixel.png"})),
-                    ("read", json!({"filePath": "missing.txt"})),
-                    ("read", json!({"filePath": "CHANGELOG.md"})),
+                    ("read", json!({"path": "src/lib.rs"})),
+                    ("read", json!({"path": "src"})),
+                    ("read", json!({"path": "assets/pixel.png"})),
+                    ("read", json!({"path": "missing.txt"})),
+                    ("read", json!({"path": "CHANGELOG.md"})),
                 ]),
                 Reply::Tools(vec![
                     (
@@ -1306,14 +1306,14 @@ fn coding_rules() -> Rules {
                 tool(
                     "edit",
                     json!({
-                        "filePath": "src/lib.rs",
-                        "oldString": "    left - right\n",
-                        "newString": "    left.saturating_sub(right)\n",
+                        "path": "src/lib.rs",
+                        "old_string": "    left - right\n",
+                        "new_string": "    left.saturating_sub(right)\n",
                     }),
                 ),
                 tool(
                     "write",
-                    json!({"filePath": "notes.md", "content": "# Notes\n\nSubtraction saturates now.\n"}),
+                    json!({"path": "notes.md", "content": "# Notes\n\nSubtraction saturates now.\n"}),
                 ),
                 tool("webfetch", json!({"url": "$page"})),
                 tool("webfetch", json!({"url": "$page"})),
@@ -1416,10 +1416,7 @@ fn delegation_rules() -> Rules {
         (
             "hold",
             vec![
-                Reply::Slow(
-                    1_500,
-                    Box::new(tool("read", json!({"filePath": "src/lib.rs"}))),
-                ),
+                Reply::Slow(1_500, Box::new(tool("read", json!({"path": "src/lib.rs"})))),
                 text("Read the library."),
             ],
         ),

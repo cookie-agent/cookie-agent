@@ -35,22 +35,22 @@ struct DelegateArgs {
     description: String,
     prompt: String,
     agent_type: AgentId,
-    /// Handle or full UUID of an existing subagent to resume.
+    /// The session ID, such as `explore_1a2b3c4d`, or full UUID of an existing subagent to resume.
     resume_session_id: Option<String>,
     #[serde(default)]
     inherit_context: bool,
-    /// The runtime capabilities the child works through; a root only.
+    /// The runtime capabilities the subagent works through; a root only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     capabilities: Option<Vec<CapabilityArg>>,
 }
 
 /// What each `capabilities` item does and how to write it.
-const CAPABILITY_ITEMS: &str = "Each item gives the subagent one runtime capability to work through, at `workspace` when the capability takes one. These are runtime capabilities, where the subagent works, not its tools or permissions. Write each as the full `<runtime_id>/<capability_id>`, from a `<runtime id=…>` and one of its `<capability name=…>` in list_runtimes, e.g. `labpc/coding`. The subagent also has `global` whenever this session does. Cannot be combined with resume_session_id.";
+const CAPABILITY_ITEMS: &str = "Each item gives the subagent one runtime capability to work through, at `workspace` when the capability takes one. These are runtime capabilities, where the subagent works, not its tools or permissions. Write each as the full `<runtime_id>/<capability_id>`, from a `<runtime id=…>` and one of its `<capability id=…>` in `list_runtimes`, e.g. `labpc/coding`. The subagent also has `global` whenever this session does. Cannot be combined with `resume_session_id`.";
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct GetResultArgs {
-    /// Handle or full UUID of one of the caller's subagents.
+    /// The session ID, such as `explore_1a2b3c4d`, or full UUID of one of your subagents.
     session_id: String,
     /// The 1-based line to start at; 1 when left out.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -99,7 +99,7 @@ impl DelegateToolProvider {
             CapabilitiesParam::Required => {
                 required.push("capabilities");
                 Some(
-                    "Required: this session has only `global` attached and no workspace, so name where the work happens. Call list_runtimes to see the machines and runtimes.",
+                    "Required: this session has only `global` attached and no workspace, so name where the work happens. Call `list_runtimes` to see the machines and runtimes.",
                 )
             }
         };
@@ -121,7 +121,7 @@ impl DelegateToolProvider {
             result_truncation: result_truncation_policy("delegate_subagent"),
             name: "delegate_subagent".into(),
             permission_name: Some("delegate".into()),
-            description: "Delegate a self-contained task to a specialist agent. In the foreground (default) the call waits for the subagent's first turn and returns its result. In the background it returns at once with the subagent's handle. Every later turn of the subagent, and the first one when it runs in the background, arrives as a <subagent_report> that wakes this session, so to wait for one, tell the user and end your turn. To continue an existing subagent, pass its resume_session_id or send it a message.".into(),
+            description: "Delegate a self-contained task to a specialist agent. In the foreground (default) the call waits for the subagent's first turn and returns its result. In the background it returns at once with the subagent's session ID. Every later turn of the subagent, and the first one when it runs in the background, arrives as a <subagent_report> that wakes this session, so to wait for one, tell the user and end your turn. To continue an existing subagent, pass its session ID as `resume_session_id`, or send it a message.".into(),
             parameters: serde_json::json!({
                 "type":"object","additionalProperties":false,
                 "properties":properties,
@@ -137,7 +137,7 @@ impl DelegateToolProvider {
             result_truncation: result_truncation_policy("get_subagent_result"),
             name: "get_subagent_result".into(),
             permission_name: Some("delegate".into()),
-            description: "Read the current status and latest result of a subagent you delegated, such as the full output a <subagent_report> cut short. This call returns immediately; it never waits. Use the subagent's handle, e.g. \"explore_1a2b3c4d\". Only your own subagents are visible. The result comes back as numbered lines, `N: text`, counting from 1, as `read` returns a file: `offset` is the 1-based line to start at (default 1) and `limit` the most lines to return (default 2000); a line longer than 4 KiB is cut, and a page that leaves lines out ends with a note such as `[120 more lines; continue with offset=2001]`. A <subagent_report> cut short names the offset to continue from.".into(),
+            description: "Read the current status and latest result of a subagent you delegated, such as the full output a <subagent_report> cut short. This call returns immediately; it never waits. Name the subagent by its session ID, such as `explore_1a2b3c4d`. Only your own subagents are visible. The result comes back as numbered lines, `N: text`, counting from 1, as `read` returns a file: `offset` is the 1-based line to start at (default 1) and `limit` the most lines to return (default 2000); a line longer than 4 KiB is cut, and a page that leaves lines out ends with a note such as `[120 more lines; continue with offset=2001]`. A <subagent_report> cut short names the offset to continue from.".into(),
             parameters: serde_json::json!({
                 "type":"object","additionalProperties":false,
                 "properties":{
@@ -219,7 +219,7 @@ impl DelegateToolProvider {
         let Some(items) = &args.capabilities else {
             return if param == CapabilitiesParam::Required {
                 Err(ToolError::execution(
-                    "capabilities is required: this session has only `global` attached and no workspace, so name where the subagent works; call list_runtimes to see the runtimes",
+                    "capabilities is required: this session has only `global` attached and no workspace, so name where the subagent works; call `list_runtimes` to see the runtimes",
                 ))
             } else {
                 Ok(None)
@@ -296,14 +296,6 @@ impl ToolProvider for DelegateToolProvider {
             body.push_str(": ");
             body.push_str(description);
         }
-        body.push_str(
-            "\n\nDelegation behavior:\n\
-             - Foreground delegation waits for the child's first turn and returns its result.\n\
-             - background=true returns the child's handle immediately.\n\
-             - Every turn of a child that is not returned as a tool result arrives as a <subagent_report> that wakes this session; to wait for one, tell the user that you are waiting and end your turn.\n\
-             - stop_background with the child's handle stops its current turn.\n\
-             - Use get_subagent_result to read a child's full output; it does not wait.",
-        );
         // A session with only `global` hears how to reach a machine from the
         // runtimes block (`docs/site/specs/machines-on-demand.md` section
         // 2.4), whether or not it may delegate.
@@ -581,7 +573,7 @@ pub(crate) fn detach_note(
 ) -> String {
     let label = short_id.unwrap_or_else(|| child_session_id.to_string());
     format!(
-        "[subagent session {label}] Each time its turn ends you get a <subagent_report handle=\"{label}\">. Message it with send_message; read its full output with get_subagent_result (session_id \"{label}\"); stop its turn with stop_background({label})."
+        "[subagent session {label}] Each time its turn ends you get a <subagent_report session_id=\"{label}\">. Message it with `send_message(to=\"{label}\", ...)`; read its full output with `get_subagent_result(session_id=\"{label}\")`; stop its turn with `stop_background(job=\"{label}\")`."
     )
 }
 
@@ -761,8 +753,8 @@ mod tests {
             note.starts_with("[subagent session explore_1a2b3c4d]"),
             "{note}"
         );
-        assert!(note.contains(r#"get_subagent_result (session_id "explore_1a2b3c4d")"#));
-        assert!(note.contains("stop_background(explore_1a2b3c4d)"));
+        assert!(note.contains(r#"`get_subagent_result(session_id="explore_1a2b3c4d")`"#));
+        assert!(note.contains(r#"`stop_background(job="explore_1a2b3c4d")`"#));
         assert!(!note.contains(&session_id.to_string()));
         let legacy = detach_note(session_id, None);
         assert!(legacy.starts_with(&format!("[subagent session {session_id}]")));

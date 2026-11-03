@@ -3485,7 +3485,7 @@ pub(crate) fn render_delegate_teaser_body(
     let more = if preview.lines().any(is_omission_marker) {
         String::new()
     } else if preview_line_count(preview) < total_lines {
-        format!("; use get_subagent_result with session_id \"{handle}\" for the full output")
+        format!("; use `get_subagent_result(session_id=\"{handle}\")` for the full output")
     } else {
         "; full output shown".to_owned()
     };
@@ -3508,7 +3508,7 @@ pub(crate) fn render_delegate_teaser_body(
 
 /// Whether `line` is the marker [`preview_text`] puts where it cut a report.
 fn is_omission_marker(line: &str) -> bool {
-    line.starts_with("[… ") && line.contains(" omitted. Read more: get_subagent_result(")
+    line.starts_with("[… ") && line.contains(" omitted. Read more: `get_subagent_result(")
 }
 
 fn preview_line_count(preview: &str) -> u64 {
@@ -3717,7 +3717,7 @@ fn preview_text(text: &str, handle: &str, limits: PreviewLimits) -> String {
     let marker = preview::marker(
         &preview::omitted(preview::newlines(text), text.len() as u64, head, tail),
         &format!(
-            "get_subagent_result(session_id=\"{handle}\", offset={})",
+            "`get_subagent_result(session_id=\"{handle}\", offset={})`",
             // The 1-based number of the first line the preview left out.
             preview::newlines(head) + 1
         ),
@@ -4110,11 +4110,11 @@ mod concurrency_tests {
         insta::assert_snapshot!(
             render_background_completion(&teaser),
             @r###"
-<subagent_report handle="explore_1a2b3c4d" status="completed">
+<subagent_report session_id="explore_1a2b3c4d" status="completed">
 first line
 second line
 
-[subagent session explore_1a2b3c4d; completed; 79 lines; use get_subagent_result with session_id "explore_1a2b3c4d" for the full output]
+[subagent session explore_1a2b3c4d; completed; 79 lines; use `get_subagent_result(session_id="explore_1a2b3c4d")` for the full output]
 </subagent_report>
 "###
         );
@@ -4135,7 +4135,7 @@ second line
 first line
 second line
 
-[subagent session explore_1a2b3c4d; completed; 79 lines; use get_subagent_result with session_id "explore_1a2b3c4d" for the full output]
+[subagent session explore_1a2b3c4d; completed; 79 lines; use `get_subagent_result(session_id="explore_1a2b3c4d")` for the full output]
 "###
         );
     }
@@ -4245,8 +4245,8 @@ second line
             .map(|line| format!("line {line}\n"))
             .collect::<String>();
         expected.push_str(
-            "[… 110 lines omitted. Read more: get_subagent_result(session_id=\"explore_1a2b3c4d\", \
-             offset=21)]\n",
+            "[… 110 lines omitted. Read more: `get_subagent_result(session_id=\"explore_1a2b3c4d\", \
+             offset=21)`]\n",
         );
         expected.push_str(
             &(131..=150)

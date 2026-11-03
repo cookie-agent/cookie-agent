@@ -1478,7 +1478,7 @@ def asset_figures(browser):
     idle(browser, "the next reply")
     browser.wait(
         "the failure told to the model",
-        lambda: "[attachment not attached]" in browser.text("#transcript") and "gone.png" in browser.text("#transcript"),
+        lambda: "The agent was told:\n- gone.png" in browser.text("#transcript"),
         timeout=30,
     )
     print("a file attached from the machine shows, saves as an asset, and a failed one is told")
@@ -1833,13 +1833,13 @@ def session_depth(browser):
     idle(browser, "the goal run's end")
     # The pause's control message rode along with the goal's run.
     browser.wait("the goal control row", lambda: "Goal paused" in browser.text("#transcript"))
-    assert "[engine goal control]" not in browser.text("#transcript"), "a producer message shows unfolded"
+    assert "was paused by the user" not in browser.text("#transcript"), "a producer message shows unfolded"
     browser.script(
         "const rows = [...document.querySelectorAll('#transcript [data-action=toggle-block]')]"
         ".filter((row) => row.innerText.includes('Goal paused'));"
         "rows[rows.length - 1].click()"
     )
-    browser.wait("the opened goal control row", lambda: "[engine goal control]" in browser.text("#transcript"))
+    browser.wait("the opened goal control row", lambda: "was paused by the user" in browser.text("#transcript"))
     print("goal control messages fold under their summary and open on a click")
     # A cancelled goal leaves the title bar; its details stay in the goal
     # sheet.

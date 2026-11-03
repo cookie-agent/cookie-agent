@@ -416,7 +416,7 @@ pub fn occurrence_error(old: &str, count: usize, target: &str, replace_all: bool
         echo(old),
         if count == 1 { "time" } else { "times" },
         if replace_all {
-            " or set replaceAll"
+            " or set `replace_all`"
         } else {
             ""
         }

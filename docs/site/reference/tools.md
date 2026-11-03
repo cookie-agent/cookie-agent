@@ -192,16 +192,16 @@ cap, and continuation marker ([Memory tools](#memory-tools),
 
 `write` takes the file's complete `content` and says whether it
 `Created <path> (N bytes).` or `Replaced <path> (N bytes).`. `edit` requires
-`oldString` to occur exactly once, or at least once with `replaceAll`, and
+`old_string` to occur exactly once, or at least once with `replace_all`, and
 reports `Edited <path>: N replacement(s).`. When it occurs some other number
-of times, the call fails with `` `<oldString>` occurs N times in <path>;
-include more context so it occurs once or set replaceAll``, the echoed text
+of times, the call fails with `` `<old_string>` occurs N times in <path>;
+include more context so it occurs once or set `replace_all` ``, the echoed text
 cut to 200 characters. A path that is not there fails `read` and `edit` with
 `<path> does not exist`. All three refuse arguments they do not define.
 Preparation checks the replacement against the current
 content so a mismatch fails before approval, but the edit itself is applied to
 the file's content at execution: changes made while an approval was pending are
-kept, and an `oldString` that no longer matches fails the call. Both tools
+kept, and an `old_string` that no longer matches fails the call. Both tools
 publish through a staged file renamed over the target. Writes and edits that
 resolve to the same file share a serialization key and run one at a time, in
 call order, so same-file edits in one turn apply on top of each other.
@@ -215,7 +215,7 @@ than embedded in text output.
 <!-- generated: tool read -->
 
 ```text
-read(filePath: string, limit?: integer, offset?: integer)
+read(limit?: integer, offset?: integer, path: string)
 ```
 
 Description sent to the model:
@@ -226,9 +226,9 @@ Read a file or a directory. A text file comes back as numbered lines, `N: text`,
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `filePath` | `string` | yes | Path to the file or directory. Relative paths resolve against the session working directory. |
 | `limit` | `integer` | no | The most lines, or directory entries, to return. Defaults to 2000. |
 | `offset` | `integer` | no | The 1-based line, or directory entry, to start at. Defaults to 1. |
+| `path` | `string` | yes | Path to the file or directory. Relative paths resolve against the session working directory. |
 
 ??? note "Parameters JSON Schema"
 
@@ -237,10 +237,6 @@ Read a file or a directory. A text file comes back as numbered lines, `N: text`,
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
       "properties": {
-        "filePath": {
-          "description": "Path to the file or directory. Relative paths resolve against the session working directory.",
-          "type": "string"
-        },
         "limit": {
           "description": "The most lines, or directory entries, to return. Defaults to 2000.",
           "format": "uint",
@@ -258,10 +254,14 @@ Read a file or a directory. A text file comes back as numbered lines, `N: text`,
             "integer",
             "null"
           ]
+        },
+        "path": {
+          "description": "Path to the file or directory. Relative paths resolve against the session working directory.",
+          "type": "string"
         }
       },
       "required": [
-        "filePath"
+        "path"
       ],
       "title": "ReadArgs",
       "type": "object"
@@ -275,7 +275,7 @@ Read a file or a directory. A text file comes back as numbered lines, `N: text`,
 <!-- generated: tool write -->
 
 ```text
-write(content: string, filePath: string)
+write(content: string, path: string)
 ```
 
 Description sent to the model:
@@ -287,7 +287,7 @@ Write a whole file: create it, or replace everything it holds with `content`, ov
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `content` | `string` | yes | Everything the file will hold. |
-| `filePath` | `string` | yes | Path to the file. Relative paths resolve against the session working directory. |
+| `path` | `string` | yes | Path to the file. Relative paths resolve against the session working directory. |
 
 ??? note "Parameters JSON Schema"
 
@@ -300,13 +300,13 @@ Write a whole file: create it, or replace everything it holds with `content`, ov
           "description": "Everything the file will hold.",
           "type": "string"
         },
-        "filePath": {
+        "path": {
           "description": "Path to the file. Relative paths resolve against the session working directory.",
           "type": "string"
         }
       },
       "required": [
-        "filePath",
+        "path",
         "content"
       ],
       "title": "WriteArgs",
@@ -321,21 +321,21 @@ Write a whole file: create it, or replace everything it holds with `content`, ov
 <!-- generated: tool edit -->
 
 ```text
-edit(filePath: string, newString: string, oldString: string, replaceAll?: boolean)
+edit(new_string: string, old_string: string, path: string, replace_all?: boolean)
 ```
 
 Description sent to the model:
 
 ```text
-Replace exact text in a UTF-8 text file, atomically. `oldString` is matched exactly, whitespace and indentation included, and must occur exactly once in the file: when it occurs zero or several times the edit fails before it is approved and changes nothing, so include more surrounding text to make it unique, or set `replaceAll` to replace every occurrence. The line numbers `read` shows are not part of the file. Text files only; use `write` to create a file or replace all of it.
+Replace exact text in a UTF-8 text file, atomically. `old_string` is matched exactly, whitespace and indentation included, and must occur exactly once in the file: when it occurs zero or several times the edit fails before it is approved and changes nothing, so include more surrounding text to make it unique, or set `replace_all` to replace every occurrence. The line numbers `read` shows are not part of the file. Text files only; use `write` to create a file or replace all of it.
 ```
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `filePath` | `string` | yes | Path to the file. Relative paths resolve against the session working directory. |
-| `newString` | `string` | yes | The text that replaces it. |
-| `oldString` | `string` | yes | The exact text to replace, whitespace and indentation included; not empty. It must occur exactly once in the file unless `replaceAll` is set. |
-| `replaceAll` | `boolean` | no | Replace every occurrence of `oldString` instead of exactly one. Defaults to false. Default: `false`. |
+| `new_string` | `string` | yes | The text that replaces it. |
+| `old_string` | `string` | yes | The exact text to replace, whitespace and indentation included; not empty. It must occur exactly once in the file unless `replace_all` is set. |
+| `path` | `string` | yes | Path to the file. Relative paths resolve against the session working directory. |
+| `replace_all` | `boolean` | no | Replace every occurrence of `old_string` instead of exactly one. Defaults to false. Default: `false`. |
 
 ??? note "Parameters JSON Schema"
 
@@ -344,28 +344,28 @@ Replace exact text in a UTF-8 text file, atomically. `oldString` is matched exac
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
       "properties": {
-        "filePath": {
-          "description": "Path to the file. Relative paths resolve against the session working directory.",
-          "type": "string"
-        },
-        "newString": {
+        "new_string": {
           "description": "The text that replaces it.",
           "type": "string"
         },
-        "oldString": {
-          "description": "The exact text to replace, whitespace and indentation included; not\nempty. It must occur exactly once in the file unless `replaceAll` is\nset.",
+        "old_string": {
+          "description": "The exact text to replace, whitespace and indentation included; not\nempty. It must occur exactly once in the file unless `replace_all` is\nset.",
           "type": "string"
         },
-        "replaceAll": {
+        "path": {
+          "description": "Path to the file. Relative paths resolve against the session working directory.",
+          "type": "string"
+        },
+        "replace_all": {
           "default": false,
-          "description": "Replace every occurrence of `oldString` instead of exactly one.\nDefaults to false.",
+          "description": "Replace every occurrence of `old_string` instead of exactly one.\nDefaults to false.",
           "type": "boolean"
         }
       },
       "required": [
-        "filePath",
-        "oldString",
-        "newString"
+        "path",
+        "old_string",
+        "new_string"
       ],
       "title": "EditArgs",
       "type": "object"
@@ -393,15 +393,15 @@ the table does not know is passed on lowercased).
 |---|---|---|---|
 | Hint | `file_read` | `file_write` | `file_edit` |
 | Title | `Read <path>` | `Write <path>` | `Edit <path>` |
-| Arguments | `key_value` of `offset` and `limit` when the call gives them | – | `key_value` `replace all: yes` when set; `newString` as `code` in the path's language only when there is no preview (a call that failed to prepare) |
+| Arguments | `key_value` of `offset` and `limit` when the call gives them | – | `key_value` `replace all: yes` when set; `new_string` as `code` in the path's language only when there is no preview (a call that failed to prepare) |
 | Preview | – | `diff` against the file preparation finds (`created` when there is none) | `diff` of the edit applied to the content preparation read |
 | Result | `file_excerpt` of the page (`start_line` is the 1-based `offset`, `total_lines` the file's), `table` (`name`, `type`) of a directory page, or `media` of the retained attachment | `diff` against the text the write replaced | `diff` built from the ranges the edit replaced |
 
 - **`edit`'s diff** comes from the replaced byte ranges, not a diff
   algorithm. Each replacement covers the whole lines it touches;
   replacements whose lines overlap (several on one line, for example) are
-  one change, and lines `oldString` and `newString` share at either end are
-  context. With `replaceAll`, each replacement is its own change, and the
+  one change, and lines `old_string` and `new_string` share at either end are
+  context. With `replace_all`, each replacement is its own change, and the
   changes share hunks where their context overlaps.
 - **`write`'s diff** is a line diff of the old and new text when both are
   UTF-8 of at most 1 MiB. Otherwise the `diff` has no hunks and counts the
@@ -508,13 +508,13 @@ bash(command: string, timeout?: integer)
 Description sent to the model on Linux and macOS:
 
 ```text
-Execute one prepared shell command. The timeout applies in the background too: pass timeout 0 for commands that keep running, such as dev servers.
+Run one shell command in the working directory. Long output is cut, and a `read_artifact` hint names the rest. The timeout applies in the background too: pass `timeout` 0 for commands that keep running, such as dev servers.
 ```
 
 Description sent to the model on Windows, where commands run in Git Bash:
 
 ```text
-Execute one prepared Git Bash command. Single-quote native Windows paths (for example, 'C:\Users\name\file') or use C:/ paths. The timeout applies in the background too: pass timeout 0 for commands that keep running, such as dev servers.
+Run one Git Bash command in the working directory. Single-quote native Windows paths (for example, 'C:\Users\name\file') or use C:/ paths. Long output is cut, and a `read_artifact` hint names the rest. The timeout applies in the background too: pass `timeout` 0 for commands that keep running, such as dev servers.
 ```
 
 | Parameter | Type | Required | Description |
@@ -606,7 +606,7 @@ webfetch(raw?: boolean, url: string)
 Description sent to the model:
 
 ```text
-Fetch an HTTP or HTTPS URL. Output has final_url, status_code, content_type, and truncated header lines, a blank line, then the text body. Returns HTML as plaintext unless raw is true; other text passes through. Use read_artifact with the artifact a truncation hint names to page retained output, including the body.
+Fetch an HTTP or HTTPS URL. Output has final_url, status_code, content_type, and truncated header lines, a blank line, then the text body. Returns HTML as plaintext unless raw is true; other text passes through. Use `read_artifact` with the artifact a truncation hint names to page retained output, including the body.
 ```
 
 | Parameter | Type | Required | Description |
@@ -701,8 +701,8 @@ spec](../specs/background-tools.md) describes:
   finishes first returns as an ordinary result. Detaching commits an
   immediate result for the call, `Started in the background as job
   job_1a2b3c4d. …` or `User manually moved this call to the background; it
-  is still running as job job_1a2b3c4d. …`, ending with `Stop it with
-  stop_background(job_1a2b3c4d).` and followed by the tool's note, and
+  is still running as job job_1a2b3c4d. …`, ending with ``Stop it with
+  `stop_background(job="job_1a2b3c4d")`.`` and followed by the tool's note, and
   the run goes on. Cancelling the run no longer reaches the call.
 - **Reporting.** When the call ends, the engine accepts one producer message
   owned by `tool { tool_call_id }` that steers into the active run or wakes
@@ -721,7 +721,7 @@ spec](../specs/background-tools.md) describes:
 - **Subagents report themselves.** A `delegate_subagent` call in the
   background, or moved there, gets no job: its immediate result names the
   subagent's handle, and every turn the subagent finishes reports to the
-  parent as a `<subagent_report handle="…" status="…">` producer message
+  parent as a `<subagent_report session_id="…" status="…">` producer message
   owned by `subagent { session_id }`, keyed by the turn's run ID so it
   reports once. A foreground call's first turn is its tool result instead.
   The subagent's running turn lists among the parent's background calls
@@ -742,12 +742,12 @@ stop_background(job: string)
 Description sent to the model:
 
 ```text
-Stop a call running in the background. It returns once the call has ended; its <background_result> still arrives, with status "stopped" and the output it produced. Given a subagent's handle, it cancels the turn the subagent is running; its <subagent_report> follows with status "cancelled", and the subagent can still be messaged or resumed.
+Stop a call running in the background. It returns once the call has ended; its <background_result> still arrives, with status "stopped" and the output it produced. Given a subagent's session ID, it cancels the turn the subagent is running; its <subagent_report> follows with status "cancelled", and the subagent can still be messaged or resumed.
 ```
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `job` | `string` | yes | The job ID from the result that moved the call to the background, such as `job_1a2b3c4d`, or a subagent's handle. |
+| `job` | `string` | yes | The job ID from the result that moved the call to the background, such as `job_1a2b3c4d`, or a subagent's session ID, such as `explore_1a2b3c4d`. |
 
 ??? note "Parameters JSON Schema"
 
@@ -757,7 +757,7 @@ Stop a call running in the background. It returns once the call has ended; its <
       "additionalProperties": false,
       "properties": {
         "job": {
-          "description": "The job ID from the result that moved the call to the background, such as `job_1a2b3c4d`, or a subagent's handle.",
+          "description": "The job ID from the result that moved the call to the background, such as `job_1a2b3c4d`, or a subagent's session ID, such as `explore_1a2b3c4d`.",
           "type": "string"
         }
       },
@@ -883,14 +883,14 @@ read_artifact(artifact: string, limit?: integer, offset?: integer, stream?: stri
 Description sent to the model:
 
 ```text
-Read retained tool output by line, as `read` reads a file. A truncated result or elided history names the artifact (and stream) to read in a read_artifact hint, with the 1-based `offset` of the first line it left out: read from there. Lines come back numbered, `N: text`, counting from 1. `offset` is the 1-based line to start at (default 1) and `limit` the most lines to return (default 2000). A line longer than 4 KiB is cut and ends with `... [line truncated: N more bytes]`, and a page stops before it passes the result size limit (about 2 MiB). A page that leaves lines out ends with a note such as `[120 more lines; continue with offset=2001]`: read again from that offset. An offset past the last line is an error.
+Read retained tool output by line, as `read` reads a file. A truncated result names the artifact (and stream) to read in a `read_artifact` hint, with the 1-based `offset` of the first line it left out: read from there. Elided history names the artifact to read from its first line. `artifact` is the digest a hint names, or its first 8 or more hex digits. Lines come back numbered, `N: text`, counting from 1. `offset` is the 1-based line to start at (default 1) and `limit` the most lines to return (default 2000). A line longer than 4 KiB is cut and ends with `... [line truncated: N more bytes]`, and a page stops before it passes the result size limit (about 2 MiB). A page that leaves lines out ends with a note such as `[120 more lines; continue with offset=2001]`: read again from that offset. An offset past the last line is an error.
 ```
 
 Always, whatever the agent's permission rules: it reads only output retained by the session's own tree.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `artifact` | `string` | yes | The artifact's 64-character lowercase SHA-256 digest, as a truncation hint names it. |
+| `artifact` | `string` | yes | The artifact's lowercase hex SHA-256 digest, as a truncation hint names it, or its first 8 or more digits, as a file label shows them. |
 | `limit` | `integer` | no | The most lines to return. Defaults to 2000. |
 | `offset` | `integer` | no | The 1-based line to start at. Defaults to 1. |
 | `stream` | `string` | no | Named stream of a multi-stream output, such as `stdout`, as a truncation hint names it. |
@@ -903,7 +903,7 @@ Always, whatever the agent's permission rules: it reads only output retained by 
       "additionalProperties": false,
       "properties": {
         "artifact": {
-          "description": "The artifact's 64-character lowercase SHA-256 digest, as a truncation hint names it.",
+          "description": "The artifact's lowercase hex SHA-256 digest, as a truncation hint names it, or its first 8 or more digits, as a file label shows them.",
           "type": "string"
         },
         "limit": {
@@ -1165,7 +1165,7 @@ Only in a root session. An ACP agent's root session has them only while the user
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `items` | `object[]` | no | The first checklist; leave it out to set it later with goal_update. |
+| `items` | `object[]` | no | The first checklist; leave it out to set it later with `goal_update`. |
 | `objective` | `string` | yes | What the goal achieves, in a sentence or two. |
 
 ??? note "Parameters JSON Schema"
@@ -1195,7 +1195,7 @@ Only in a root session. An ACP agent's root session has them only while the user
       "description": "`goal_set` starts a goal on the agent's own initiative, as the user's\n`/goal` does, when the root session has no active or paused goal. It may\nset the first checklist in the same call.",
       "properties": {
         "items": {
-          "description": "The first checklist; leave it out to set it later with goal_update.",
+          "description": "The first checklist; leave it out to set it later with `goal_update`.",
           "items": {
             "$ref": "#/$defs/GoalItem"
           },
@@ -1302,15 +1302,16 @@ ceiling and enabled-target filtering as `delegate_subagent`; no section is added
 when no target is available.
 
 `delegate_subagent`, `get_subagent_result`, `stop_background`, and
-`send_message` address subagents by a short tree-unique **handle** (`<agent_type>_<8 hex>`, e.g.
-`explore_1a2b3c4d`) or a full session UUID. A handle is generated when the
-session is created and resolves only within the caller's tree; a partial handle,
-another tree's handle, or a fabricated value is rejected with a self-repairing
-error that lists the live candidates as
-`handle — description — status` plus their UUIDs. Detach notes and reports
-pre-wrap the handle, for example
-`[subagent session explore_1a2b3c4d] Each time its turn ends you get a <subagent_report handle="explore_1a2b3c4d">. …` and
-`[subagent session explore_1a2b3c4d; completed; 79 lines; use get_subagent_result with session_id "explore_1a2b3c4d" for the full output]`.
+`send_message` address subagents by a short tree-unique **session ID**
+(`<agent_type>_<8 hex>`, e.g. `explore_1a2b3c4d`; the tools' texts call it
+the session ID, the docs sometimes its handle) or a full session UUID. It is
+generated when the session is created and resolves only within the caller's
+tree; a partial ID, another tree's, or a fabricated value is rejected with a
+self-repairing error that lists the live candidates as
+`id — description — status` plus their UUIDs. Detach notes and reports
+pre-wrap it, for example
+``[subagent session explore_1a2b3c4d] Each time its turn ends you get a <subagent_report session_id="explore_1a2b3c4d">. …`` and
+``[subagent session explore_1a2b3c4d; completed; 79 lines; use `get_subagent_result(session_id="explore_1a2b3c4d")` for the full output]``.
 The report previews the turn's final message per
 [`[subagent_output]`](../engine/subagent_output.md), with its line breaks and
 tabs kept and other control characters folded to spaces. A report over the limit
@@ -1345,15 +1346,15 @@ skill(args?: string, name: string)
 Description sent to the model:
 
 ```text
-Load an available skill by name with optional arguments.
+Load a skill listed in `<available_skills>` by its name, with optional `args`. Its instructions come back as the result.
 ```
 
 Only when at least one skill is visible to the session.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `args` | `string` | no | Default: `""`. |
-| `name` | `string` | yes |  |
+| `args` | `string` | no | Arguments for the skill, as its instructions take them. Default: `""`. |
+| `name` | `string` | yes | The skill's name, as `<available_skills>` lists it. |
 
 ??? note "Parameters JSON Schema"
 
@@ -1364,9 +1365,11 @@ Only when at least one skill is visible to the session.
       "properties": {
         "args": {
           "default": "",
+          "description": "Arguments for the skill, as its instructions take them.",
           "type": "string"
         },
         "name": {
+          "description": "The skill's name, as `<available_skills>` lists it.",
           "type": "string"
         }
       },
@@ -1391,7 +1394,7 @@ delegate_subagent(agent_type: "<subagent id>", capabilities?: object[], descript
 Description sent to the model:
 
 ```text
-Delegate a self-contained task to a specialist agent. In the foreground (default) the call waits for the subagent's first turn and returns its result. In the background it returns at once with the subagent's handle. Every later turn of the subagent, and the first one when it runs in the background, arrives as a <subagent_report> that wakes this session, so to wait for one, tell the user and end your turn. To continue an existing subagent, pass its resume_session_id or send it a message.
+Delegate a self-contained task to a specialist agent. In the foreground (default) the call waits for the subagent's first turn and returns its result. In the background it returns at once with the subagent's session ID. Every later turn of the subagent, and the first one when it runs in the background, arrives as a <subagent_report> that wakes this session, so to wait for one, tell the user and end your turn. To continue an existing subagent, pass its session ID as `resume_session_id`, or send it a message.
 ```
 
 Only when the agent can delegate to at least one subagent at this depth. The `agent_type` enum lists those subagents; this page shows a placeholder. `capabilities` exists only in a root session with the `global` runtime attached: optional, as shown, when the root has other attachments too, and required when it has only `global`. Each runtime it names is checked as `delegate@<runtime>`.
@@ -1399,7 +1402,7 @@ Only when the agent can delegate to at least one subagent at this depth. The `ag
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `agent_type` | `"<subagent id>"` | yes |  |
-| `capabilities` | `object[]` | no | Optional. Leave it out and the subagent inherits this session's attachments. Each item gives the subagent one runtime capability to work through, at `workspace` when the capability takes one. These are runtime capabilities, where the subagent works, not its tools or permissions. Write each as the full `<runtime_id>/<capability_id>`, from a `<runtime id=…>` and one of its `<capability name=…>` in list_runtimes, e.g. `labpc/coding`. The subagent also has `global` whenever this session does. Cannot be combined with resume_session_id. |
+| `capabilities` | `object[]` | no | Optional. Leave it out and the subagent inherits this session's attachments. Each item gives the subagent one runtime capability to work through, at `workspace` when the capability takes one. These are runtime capabilities, where the subagent works, not its tools or permissions. Write each as the full `<runtime_id>/<capability_id>`, from a `<runtime id=…>` and one of its `<capability id=…>` in `list_runtimes`, e.g. `labpc/coding`. The subagent also has `global` whenever this session does. Cannot be combined with `resume_session_id`. |
 | `description` | `string` | yes | Short (3-5 words) summary of the task |
 | `inherit_context` | `boolean` | no | Default: `false`. |
 | `prompt` | `string` | yes | Full task brief with objective, context, and deliverable |
@@ -1418,12 +1421,12 @@ Only when the agent can delegate to at least one subagent at this depth. The `ag
           "type": "string"
         },
         "capabilities": {
-          "description": "Optional. Leave it out and the subagent inherits this session's attachments. Each item gives the subagent one runtime capability to work through, at `workspace` when the capability takes one. These are runtime capabilities, where the subagent works, not its tools or permissions. Write each as the full `<runtime_id>/<capability_id>`, from a `<runtime id=…>` and one of its `<capability name=…>` in list_runtimes, e.g. `labpc/coding`. The subagent also has `global` whenever this session does. Cannot be combined with resume_session_id.",
+          "description": "Optional. Leave it out and the subagent inherits this session's attachments. Each item gives the subagent one runtime capability to work through, at `workspace` when the capability takes one. These are runtime capabilities, where the subagent works, not its tools or permissions. Write each as the full `<runtime_id>/<capability_id>`, from a `<runtime id=…>` and one of its `<capability id=…>` in `list_runtimes`, e.g. `labpc/coding`. The subagent also has `global` whenever this session does. Cannot be combined with `resume_session_id`.",
           "items": {
             "additionalProperties": false,
             "properties": {
               "capability": {
-                "description": "`<runtime_id>/<capability_id>`, from list_runtimes, e.g. `labpc/coding`",
+                "description": "`<runtime_id>/<capability_id>`, from `list_runtimes`, e.g. `labpc/coding`",
                 "type": "string"
               },
               "workspace": {
@@ -1478,7 +1481,7 @@ get_subagent_result(limit?: integer, offset?: integer, session_id: string)
 Description sent to the model:
 
 ```text
-Read the current status and latest result of a subagent you delegated, such as the full output a <subagent_report> cut short. This call returns immediately; it never waits. Use the subagent's handle, e.g. "explore_1a2b3c4d". Only your own subagents are visible. The result comes back as numbered lines, `N: text`, counting from 1, as `read` returns a file: `offset` is the 1-based line to start at (default 1) and `limit` the most lines to return (default 2000); a line longer than 4 KiB is cut, and a page that leaves lines out ends with a note such as `[120 more lines; continue with offset=2001]`. A <subagent_report> cut short names the offset to continue from.
+Read the current status and latest result of a subagent you delegated, such as the full output a <subagent_report> cut short. This call returns immediately; it never waits. Name the subagent by its session ID, such as `explore_1a2b3c4d`. Only your own subagents are visible. The result comes back as numbered lines, `N: text`, counting from 1, as `read` returns a file: `offset` is the 1-based line to start at (default 1) and `limit` the most lines to return (default 2000); a line longer than 4 KiB is cut, and a page that leaves lines out ends with a note such as `[120 more lines; continue with offset=2001]`. A <subagent_report> cut short names the offset to continue from.
 ```
 
 Only when the agent can delegate to at least one subagent at this depth.
@@ -1562,7 +1565,7 @@ send_message(body: string, mode?: "steer" | "queue", to: string)
 Description sent to the model:
 
 ```text
-Send a message to another agent in your session tree. Recipient accepts a subagent handle or a full UUID.
+Send a message to another agent in your session tree: `to` is its session ID, such as `explore_1a2b3c4d`, or its full UUID.
 ```
 
 | Parameter | Type | Required | Description |
@@ -1670,13 +1673,13 @@ metadata header, the body's lines numbered from 1, a 1-based `offset`
 continuation marker, and error for an `offset` past the last body line.
 `memory_write` reports `Created <url> (N bytes).` or `Replaced <url> (N
 bytes).`, `memory_edit` `Edited <url>: 1 replacement.`, and a memory that is
-not there is `<url> does not exist`. `memory_edit` takes `oldString` and
-`newString`, as `edit` does, and preparation checks that `oldString` occurs
+not there is `<url> does not exist`. `memory_edit` takes `old_string` and
+`new_string`, as `edit` does, and preparation checks that `old_string` occurs
 exactly once in the body, so an edit that cannot apply fails before anyone is
-asked to approve it, with `` `<oldString>` occurs N times in the body of
+asked to approve it, with `` `<old_string>` occurs N times in the body of
 <url>; include more context so it occurs once`` (the echoed text cut to 200
 characters). What stays different on purpose: an edit matches the body only
-and has no `replaceAll`; a replacing write needs the session to have read the
+and has no `replace_all`; a replacing write needs the session to have read the
 memory as it is now, and is refused otherwise with an `operation_changed`
 error; a bad memory URL is an `invalid_url` error; a delete is final; the
 permission actions are `memory` and `memory_write` by URL; and the write
@@ -1834,7 +1837,7 @@ memory_write(body: string, description?: string, keywords?: string[] | string, n
 Description sent to the model:
 
 ```text
-Create or replace one memory, following the memory instructions in the system prompt. To replace a memory, read it first. A new memory like one that exists is refused with the near ones listed: edit one of those instead, or, if it is new, write it again with `new: true` and a one-line `reason`. Give each memory a one-line description that states its fact (agent:// memories and project overviews keep the daemon's: leave it out there) and the keywords a later search would use. A project:// memory needs a project that exists.
+Create or replace one memory, following the memory instructions you were given. To replace a memory, read it first. A new memory like one that exists is refused with the near ones listed: edit one of those instead, or, if it is new, write it again with `new: true` and a one-line `reason`. Give each memory a one-line description that states its fact (agent:// memories and project overviews keep the daemon's: leave it out there) and the keywords a later search would use. A project:// memory needs a project that exists.
 ```
 
 Only when `memory_read` is sent too and some memory URL is both readable and writable (an `allow` or `ask` rule matches it, or no rule does, which asks). A delegated run whose agent document has no memory keys gets its own agent's memory, `agent://<agent>`, without asking by default.
@@ -1912,21 +1915,21 @@ Only when `memory_read` is sent too and some memory URL is both readable and wri
 <!-- generated: tool memory_edit -->
 
 ```text
-memory_edit(newString: string, oldString: string, url: string)
+memory_edit(new_string: string, old_string: string, url: string)
 ```
 
 Description sent to the model:
 
 ```text
-Replace the one occurrence of `oldString` in a memory's body with `newString`, following the memory instructions in the system prompt. `oldString` is matched exactly against the body only, never the description or keywords, and must occur exactly once: when it occurs zero or several times the edit fails before it is approved and changes nothing, so include more surrounding text to make it unique. There is no replace-all. The line numbers memory_read shows are not part of the body.
+Replace the one occurrence of `old_string` in a memory's body with `new_string`, following the memory instructions you were given. `old_string` is matched exactly against the body only, never the description or keywords, and must occur exactly once: when it occurs zero or several times the edit fails before it is approved and changes nothing, so include more surrounding text to make it unique. There is no replace-all. The line numbers `memory_read` shows are not part of the body.
 ```
 
 Only when `memory_read` is sent too and some memory URL is both readable and writable (an `allow` or `ask` rule matches it, or no rule does, which asks). A delegated run whose agent document has no memory keys gets its own agent's memory, `agent://<agent>`, without asking by default.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `newString` | `string` | yes | The text that replaces it. |
-| `oldString` | `string` | yes | The exact text to replace; it must occur exactly once in the body. |
+| `new_string` | `string` | yes | The text that replaces it. |
+| `old_string` | `string` | yes | The exact text to replace; it must occur exactly once in the body. |
 | `url` | `string` | yes | The memory URL. |
 
 ??? note "Parameters JSON Schema"
@@ -1936,11 +1939,11 @@ Only when `memory_read` is sent too and some memory URL is both readable and wri
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
       "properties": {
-        "newString": {
+        "new_string": {
           "description": "The text that replaces it.",
           "type": "string"
         },
-        "oldString": {
+        "old_string": {
           "description": "The exact text to replace; it must occur exactly once in the body.",
           "type": "string"
         },
@@ -1951,8 +1954,8 @@ Only when `memory_read` is sent too and some memory URL is both readable and wri
       },
       "required": [
         "url",
-        "oldString",
-        "newString"
+        "old_string",
+        "new_string"
       ],
       "title": "EditArgs",
       "type": "object"
@@ -2018,7 +2021,7 @@ on every save, as the memory editors show it.
 |---|---|---|---|---|---|
 | Hint | `search` | `file_read` | `file_write` | `file_edit` | `file_write` |
 | Title | `Search memory` | `Read memory <url>` | `Write memory <url>` | `Edit memory <url>` | `Delete memory <url>` |
-| Arguments | `key_value` of `query`, `layer`, and `limit` | `key_value` of `offset` and `limit` when the call gives them | `key_value` of `reason` when given; without a preview, also `description`, `keywords`, and `body` | – ; without a preview, `key_value` of `oldString` and `newString` | – |
+| Arguments | `key_value` of `query`, `layer`, and `limit` | `key_value` of `offset` and `limit` when the call gives them | `key_value` of `reason` when given; without a preview, also `description`, `keywords`, and `body` | – ; without a preview, `key_value` of `old_string` and `new_string` | – |
 | Preview | – | – | `diff` against the memory preparation finds (`created` when there is none) | `diff` of the replacement applied to the memory preparation read | `diff` of the memory's removed text (`deleted`), when it exists |
 | Result | a `link` per memory found, its URL with its description as the label, or `No memories match.` | `file_excerpt` of the body's page, as `read` shows a file's: `path` the URL, `language` `markdown`, `start_line` the 1-based `offset`, `total_lines` the body's | `diff` against the memory the write replaced (`created` for a new one) | `diff` built from the range the edit replaced, or a line diff of the whole file when the daemon also rewrote its frontmatter (an `agent://` file, a project's overview) | `diff` of the text the memory held (`deleted`) |
 
@@ -2038,7 +2041,7 @@ list_runtimes()
 Description sent to the model:
 
 ```text
-List the daemon's machines and runtimes, as they are now: each runtime's capabilities, whether it is connected or starts when used, its home directory, the ACP agents it offers (external agents such as Claude Code), and this session's own attachments on it. Name a runtime capability from here, as `<runtime id>/<capability name>`, in attach_machine to work on it in this session, or in delegate_subagent's `capabilities` to start a subagent there. A runtime that connects later shows up on the next call.
+List the daemon's machines and runtimes, as they are now: each runtime's capabilities, whether it is connected or starts when used, its home directory, the ACP agents it offers (external agents such as Claude Code), and this session's own attachments on it. Name a runtime capability from here, as `<runtime_id>/<capability_id>`, in `attach_machine` to work on it in this session, or in `delegate_subagent`'s `capabilities` to start a subagent there. A runtime that connects later shows up on the next call.
 ```
 
 Only when the session has the `global` runtime attached and no `"*": deny` for `list_runtimes` hides it. `primary` and `all` agents are allowed it by default; any other agent asks.
@@ -2073,13 +2076,13 @@ is never truncated.
   <global/>
   <machine name="laptop" platform="linux">
     <runtime id="local" connected="true" home="/home/u">
-      <capability name="coding" takes_workspace="true" description="Read, write, edit, and run commands in a workspace"/>
+      <capability id="coding" takes_workspace="true" description="Read, write, edit, and run commands in a workspace"/>
       <attachment name="local_web" capability="coding" workspace="/home/u/web" status="ready"/>
     </runtime>
   </machine>
   <machine name="labpc" platform="linux">
     <runtime id="labpc" connected="false" starts_on_use="true" home="/home/u">
-      <capability name="coding" takes_workspace="true" description="Read, write, edit, and run commands in a workspace"/>
+      <capability id="coding" takes_workspace="true" description="Read, write, edit, and run commands in a workspace"/>
     </runtime>
   </machine>
 </runtimes>
@@ -2096,7 +2099,7 @@ list_agents(for?: "delegate" | "cron")
 Description sent to the model:
 
 ```text
-List the agents you can pick: for `delegate` the subagents delegate_subagent can start from here, for `cron` the agents a new-session cron job can run. Each shows its mode, description, presets, models, and the permission rules its document declares, with the actions left to the daemon's defaults on one `defaults:` line; the defaults themselves are listed once at the end. An ACP agent (an external agent such as Claude Code, marked `acp`) shows the runtimes that offer it and whether it runs here, on the one attached runtime that offers it. Leave `for` out to list both.
+List the agents you can pick: for `delegate` the subagents `delegate_subagent` can start from here, for `cron` the agents a new-session cron job can run. Each shows its mode, description, presets, models, and the permission rules its document declares, with the actions left to the daemon's defaults on one `defaults:` line; the defaults themselves are listed once at the end. An ACP agent (an external agent such as Claude Code, marked `acp`) shows the runtimes that offer it and whether it runs here, on the one attached runtime that offers it. Leave `for` out to list both.
 ```
 
 Only when the session has the `global` runtime attached and the run is offered `delegate_subagent` or a cron tool. It has no permission of its own.
@@ -2162,7 +2165,7 @@ attach_machine(capability: string, workspace?: string)
 Description sent to the model:
 
 ```text
-Attach a machine to this session: one runtime capability from list_runtimes, written `<runtime id>/<capability name>` (e.g. `labpc/coding`), at `workspace` when the capability takes one. Its tools join this session at once, and the result says where they run: the machine, its home, the workspace, and the workspace's AGENTS.md. A machine offers each tool once: a second directory on a machine already attached is reached by absolute path, or by detaching the first.
+Attach a machine to this session: one runtime capability from `list_runtimes`, written `<runtime_id>/<capability_id>` (e.g. `labpc/coding`), at `workspace` when the capability takes one. Its tools join this session at once, and the result says where they run: the machine, its home, the workspace, and the workspace's AGENTS.md. A machine offers each tool once: a second directory on a machine already attached is reached by absolute path, or by detaching the first.
 ```
 
 Only when the session has the `global` runtime attached and no `"*": deny` for `attach` hides them. A root run of any agent but an internal one is allowed them by default; a delegated run asks. Each call is checked as `attach@<runtime>`, with the workspace as resource.
@@ -2222,7 +2225,7 @@ detach_machine(capability: string)
 Description sent to the model:
 
 ```text
-Detach a machine's runtime capability from this session, written `<runtime id>/<capability name>` as attach_machine took it. Its tools leave the session; refused while one of its background calls still runs.
+Detach a machine's runtime capability from this session, written `<runtime_id>/<capability_id>` as `attach_machine` took it. Its tools leave the session; refused while one of its background calls still runs.
 ```
 
 Only when the session has the `global` runtime attached and no `"*": deny` for `attach` hides them. A root run of any agent but an internal one is allowed them by default; a delegated run asks. Each call is checked as `attach@<runtime>`, with the workspace as resource.
@@ -2268,7 +2271,7 @@ transfer(from: object | object, overwrite?: boolean, to: object)
 Description sent to the model:
 
 ```text
-Copy a file or folder to a machine of this session: from another of its machines, or from an artifact of this session, such as a file the user sent, whose label names it (`[file report.zip, 3.2 MB, artifact 5f2c81d0]`). `from` is `{"machine": "labpc", "path": "~/data"}` or `{"artifact": "5f2c81d0"}` (with `stream` for one stream of retained tool output); `to` is `{"machine": "laptop", "path": "~/Downloads/data"}`, the path the copy will have, not a folder to put it in. Machines are named as the machines block and list_runtimes name them; a relative path resolves against that machine's working directory, and `~` against its home. A folder is copied with everything below it. An existing destination is an error unless `overwrite` is true, which replaces a file or merges into a folder. The daemon relays the bytes, so the machines need not reach each other. The source is checked as `read` on its machine and the destination as `write` on its own. The result gives the bytes and files copied and, for a file, its SHA-256.
+Copy a file or folder to a machine of this session: from another of its machines, or from an artifact of this session, such as a file the user sent, whose label names it (`[file report.zip, 3.2 MB, artifact 5f2c81d0]`). `from` is `{"machine": "labpc", "path": "~/data"}` or `{"artifact": "5f2c81d0"}` (with `stream` for one stream of retained tool output); `to` is `{"machine": "laptop", "path": "~/Downloads/data"}`, the path the copy will have, not a folder to put it in. Machines are named as the machines block and `list_runtimes` name them; a relative path resolves against that machine's working directory, and `~` against its home. A folder is copied with everything below it. An existing destination is an error unless `overwrite` is true, which replaces a file or merges into a folder. The daemon relays the bytes, so the machines need not reach each other. The source is checked as `read` on its machine and the destination as `write` on its own. The result gives the bytes and files copied and, for a file, its SHA-256.
 ```
 
 Only when the session has the `global` runtime and a machine whose runtime takes transfers (runtime protocol 1.13.0) attached, and no `"*": deny` for `write` hides it. The source is checked as `read@<its runtime>` on its path and the destination as `write@<its runtime>` on its own; an artifact source needs no rule. Both machines must be attached to the session.
@@ -2399,7 +2402,7 @@ cron_create(delivery?: "queue" | "steer", max_runs?: integer, name?: string, pro
 Description sent to the model:
 
 ```text
-Schedule a prompt: once after a delay ({"in": "20m"}) or on a five-field cron schedule ({"cron": "0 3 * * *"}). `target`: "self" (the default) fires into this session; a subagent's handle (e.g. "explore_1a2b3c4d") fires into that subagent's session, which must be below this one; {"new": {...}} starts a new root session per fire, whose agent, capabilities, and project default to this session's. A new session's agent must be able to run as a root (call list_agents with for="cron"). `delivery` (in-session jobs): "queue" (default) waits for the current turn, "steer" joins it. Schedules are in the daemon host's local time. Each fire arrives marked as a <scheduled_job>, never as the user, and is not user consent. Prefer cron_update on an existing job to creating a near duplicate. max_runs defaults to 1, so a job fires once unless told otherwise; 0 runs until the job is deleted or disabled.
+Schedule a prompt: once after a delay ({"in": "20m"}) or on a five-field cron schedule ({"cron": "0 3 * * *"}). `target`: "self" (the default) fires into this session; a subagent's session ID (e.g. "explore_1a2b3c4d") fires into that subagent's session, which must be below this one; {"new": {...}} starts a new root session per fire, whose agent, capabilities, and project default to this session's. A new session's agent must be able to run as a root (call `list_agents` with for="cron"). `delivery` (in-session jobs): "queue" (default) waits for the current turn, "steer" joins it. Schedules are in the daemon host's local time. Each fire arrives marked as a <scheduled_job>, never as the user, and is not user consent. Prefer `cron_update` on an existing job to creating a near duplicate. max_runs defaults to 1, so a job fires once unless told otherwise; 0 runs until the job is deleted or disabled.
 ```
 
 Only when the session has the `global` runtime attached and no `"*": deny` for `cron` hides them. A root run of any agent but an internal one is allowed them by default; a delegated run asks.
@@ -2411,7 +2414,7 @@ Only when the session has the `global` runtime attached and no `"*": deny` for `
 | `name` | `string` | no | A short name, at most 80 characters |
 | `prompt` | `string` | yes | What to do at each fire |
 | `schedule` | `object \| object` | yes | {"cron": "<minute hour day-of-month month day-of-week>"} in host local time, or {"in": "<n>s\|m\|h\|d"} to fire once after a delay (1s to 365d) |
-| `target` | `string \| object` | no | "self" (the default), a subagent's handle, or {"new": {...}} |
+| `target` | `string \| object` | no | "self" (the default), a subagent's session ID, or {"new": {...}} |
 
 ??? note "Parameters JSON Schema"
 
@@ -2469,7 +2472,7 @@ Only when the session has the `global` runtime attached and no `"*": deny` for `
           ]
         },
         "target": {
-          "description": "\"self\" (the default), a subagent's handle, or {\"new\": {...}}",
+          "description": "\"self\" (the default), a subagent's session ID, or {\"new\": {...}}",
           "oneOf": [
             {
               "type": "string"
@@ -2485,12 +2488,12 @@ Only when the session has the `global` runtime attached and no `"*": deny` for `
                       "type": "string"
                     },
                     "capabilities": {
-                      "description": "The runtime capabilities each new session works through, as delegate_subagent takes them; this session's when omitted. Each session also has `global` exactly when this one does.",
+                      "description": "The runtime capabilities each new session works through, as `delegate_subagent` takes them; this session's when omitted. Each session also has `global` exactly when this one does.",
                       "items": {
                         "additionalProperties": false,
                         "properties": {
                           "capability": {
-                            "description": "`<runtime_id>/<capability_id>`, from list_runtimes, e.g. `labpc/coding`",
+                            "description": "`<runtime_id>/<capability_id>`, from `list_runtimes`, e.g. `labpc/coding`",
                             "type": "string"
                           },
                           "workspace": {
@@ -2614,7 +2617,7 @@ cron_update(delivery?: "queue" | "steer", enabled?: boolean, id: string, max_run
 Description sent to the model:
 
 ```text
-Change a cron job: any member of cron_create, and `enabled` to disable or re-enable it (enabling resets its failure count). A new schedule or target computes the next fire from now. Schedules are in the daemon host's local time. Each fire arrives marked as a <scheduled_job>, never as the user, and is not user consent. Prefer cron_update on an existing job to creating a near duplicate. max_runs defaults to 1, so a job fires once unless told otherwise; 0 runs until the job is deleted or disabled.
+Change a cron job: any member of `cron_create`, and `enabled` to disable or re-enable it (enabling resets its failure count). A new schedule or target computes the next fire from now. Schedules are in the daemon host's local time. Each fire arrives marked as a <scheduled_job>, never as the user, and is not user consent. Prefer `cron_update` on an existing job to creating a near duplicate. max_runs defaults to 1, so a job fires once unless told otherwise; 0 runs until the job is deleted or disabled.
 ```
 
 Only when the session has the `global` runtime attached and no `"*": deny` for `cron` hides them. A root run of any agent but an internal one is allowed them by default; a delegated run asks.
@@ -2628,7 +2631,7 @@ Only when the session has the `global` runtime attached and no `"*": deny` for `
 | `name` | `string` | no |  |
 | `prompt` | `string` | no |  |
 | `schedule` | `object \| object` | no | {"cron": "<minute hour day-of-month month day-of-week>"} in host local time, or {"in": "<n>s\|m\|h\|d"} to fire once after a delay (1s to 365d) |
-| `target` | `string \| object` | no | "self", a subagent's handle, or {"new": {...}}; unchanged when omitted |
+| `target` | `string \| object` | no | "self", a subagent's session ID, or {"new": {...}}; unchanged when omitted |
 
 ??? note "Parameters JSON Schema"
 
@@ -2691,7 +2694,7 @@ Only when the session has the `global` runtime attached and no `"*": deny` for `
           ]
         },
         "target": {
-          "description": "\"self\", a subagent's handle, or {\"new\": {...}}; unchanged when omitted",
+          "description": "\"self\", a subagent's session ID, or {\"new\": {...}}; unchanged when omitted",
           "oneOf": [
             {
               "type": "string"
@@ -2707,12 +2710,12 @@ Only when the session has the `global` runtime attached and no `"*": deny` for `
                       "type": "string"
                     },
                     "capabilities": {
-                      "description": "The runtime capabilities each new session works through, as delegate_subagent takes them; this session's when omitted. Each session also has `global` exactly when this one does.",
+                      "description": "The runtime capabilities each new session works through, as `delegate_subagent` takes them; this session's when omitted. Each session also has `global` exactly when this one does.",
                       "items": {
                         "additionalProperties": false,
                         "properties": {
                           "capability": {
-                            "description": "`<runtime_id>/<capability_id>`, from list_runtimes, e.g. `labpc/coding`",
+                            "description": "`<runtime_id>/<capability_id>`, from `list_runtimes`, e.g. `labpc/coding`",
                             "type": "string"
                           },
                           "workspace": {
@@ -2834,7 +2837,7 @@ cron_run(id: string)
 Description sent to the model:
 
 ```text
-Run a cron job now. An in-session job fires into its session as a scheduled fire would. A new-session job runs as your subagent with the job's agent, rules, and runtimes and the prompt as its first input: in the foreground (default) the call waits for its first turn and returns the result; in the background it returns the subagent's handle at once and its turns arrive as <subagent_report>s. A run now counts toward neither max_runs nor the failure count.
+Run a cron job now. An in-session job fires into its session as a scheduled fire would. A new-session job runs as your subagent with the job's agent, rules, and runtimes and the prompt as its first input: in the foreground (default) the call waits for its first turn and returns the result; in the background it returns the subagent's session ID at once and its turns arrive as <subagent_report>s. A run now counts toward neither max_runs nor the failure count.
 ```
 
 Only when the session has the `global` runtime attached and no `"*": deny` for `cron` hides them. A root run of any agent but an internal one is allowed them by default; a delegated run asks.
@@ -2889,7 +2892,7 @@ write_asset(asset?: string, machine?: string, path: string, scope?: "session" | 
 Description sent to the model:
 
 ```text
-Save a file as an asset, a file you give the user, or replace an asset you saved before. The file is read from a machine of this session: `path` resolves as `read` resolves it, against the machine's working directory or under `~`, and `machine` names the machine as the machines block and list_runtimes do; omitted, it is the machine of this session's workspace. Any file up to 25 MiB works. Images, SVG, video, and audio are shown as they are, and a Markdown file (`.md`) as a rendered document, for reports and notes. An HTML page is rendered live, with its scripts and network access, and must be one self-contained file. Anything else is offered as a download. Without `asset` this saves a new asset and returns its handle, such as `asset_3f9a1c2e`. With a handle it replaces that asset's content, and every place it was shown updates, so revise something you saved before by its handle rather than saving it again. `scope` is `session` by default: the asset belongs to this conversation and its subagents, and is deleted with it. Use `project` for something to keep after this conversation, which every session of the project can use. Saving does not show the asset: write `<attach asset="asset_3f9a1c2e"/>` in your reply where it should show.
+Save a file as an asset, a file you give the user, or replace an asset you saved before. The file is read from a machine of this session: `path` resolves as `read` resolves it, against the machine's working directory or under `~`, and `machine` names the machine as the machines block and `list_runtimes` do; omitted, it is the default machine the machines block marks. Any file up to 25 MiB works. Images, SVG, video, and audio are shown as they are, and a Markdown file (`.md`) as a rendered document, for reports and notes. An HTML page is rendered live, with its scripts and network access, and must be one self-contained file. Anything else is offered as a download. Without `asset` this saves a new asset and returns its handle, such as `asset_3f9a1c2e`. With a handle it replaces that asset's content, and every place it was shown updates, so revise something you saved before by its handle rather than saving it again. `scope` is `session` by default: the asset belongs to this conversation and its subagents, and is deleted with it. Use `project` for something to keep after this conversation, which every session of the project can use. Saving does not show the asset: write `<attach asset="asset_3f9a1c2e"/>` in your reply where it should show.
 ```
 
 Only when the session has the `global` runtime attached and no `"*": deny` for `asset` hides them. A root run of any agent but an internal one is allowed them by default; a delegated run is denied them. `write_asset` also checks its file as `read` on the machine it reads it from.
@@ -2897,7 +2900,7 @@ Only when the session has the `global` runtime attached and no `"*": deny` for `
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `asset` | `string` | no | The handle of an asset to replace. Omit it to save a new asset |
-| `machine` | `string` | no | A machine of this session, as the machines block names it. Defaults to the machine of this session's workspace |
+| `machine` | `string` | no | A machine of this session, as the machines block names it. Defaults to the default machine the machines block marks |
 | `path` | `string` | yes | The file to save: relative to the machine's working directory, absolute, or under `~` |
 | `scope` | `"session" \| "project"` | no | `session` (default): this conversation's, deleted with it. `project`: kept in the project's assets. Only for a new asset |
 | `title` | `string` | no | Shown with the asset. Defaults to the file name for a new asset, and to the current title when replacing |
@@ -2913,7 +2916,7 @@ Only when the session has the `global` runtime attached and no `"*": deny` for `
           "type": "string"
         },
         "machine": {
-          "description": "A machine of this session, as the machines block names it. Defaults to the machine of this session's workspace",
+          "description": "A machine of this session, as the machines block names it. Defaults to the default machine the machines block marks",
           "type": "string"
         },
         "path": {

@@ -29,7 +29,9 @@ impl SkillTool {
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct SkillArgs {
+    /// The skill's name, as `<available_skills>` lists it.
     name: String,
+    /// Arguments for the skill, as its instructions take them.
     #[serde(default)]
     args: String,
 }
@@ -104,7 +106,7 @@ impl SkillTool {
             result_truncation: Default::default(),
             name: "skill".into(),
             permission_name: Some("skill".into()),
-            description: "Load an available skill by name with optional arguments.".into(),
+            description: "Load a skill listed in `<available_skills>` by its name, with optional `args`. Its instructions come back as the result.".into(),
             parameters: schema::<SkillArgs>(),
         }
     }

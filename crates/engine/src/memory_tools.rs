@@ -3,7 +3,7 @@
 //! `memory_read` under the `memory` action, `memory_write`, `memory_edit`,
 //! and `memory_delete` under `memory_write`, each with the memory URL as
 //! resource. `memory_search` is checked per result instead (section 9.3),
-//! so it declares no permission. An edit applies when its `oldString`
+//! so it declares no permission. An edit applies when its `old_string`
 //! occurs once in the body, which preparation checks before the call is
 //! approved; a replacing write needs the session to have seen the memory as
 //! it is (section 16.9.8), and the store refuses it otherwise. A delete
@@ -78,10 +78,10 @@ const DEFAULT_LIMIT: u32 = 10;
 const MAX_REASON_CHARS: usize = 200;
 
 /// Part A of the memory section for a root run (section 16.9.1).
-const PART_A_ROOT: &str = "Memory related to this session is included automatically at the start of each session: the user's memory, your own agent memory, the session's project, and the machines its runtimes run on. Use memory_search for anything else, such as another project or a machine this session doesn't use.";
+const PART_A_ROOT: &str = "Memory related to this session is included automatically at the start of each session: the user's memory, your own agent memory, the session's project, and the machines its runtimes run on. Use `memory_search` for anything else, such as another project or a machine this session doesn't use.";
 
 /// Part A of the memory section for a delegated run.
-const PART_A_DELEGATED: &str = "Your own agent memory is included automatically at the start of each run. Use memory_search for anything else.";
+const PART_A_DELEGATED: &str = "Your own agent memory is included automatically at the start of each run. Use `memory_search` for anything else.";
 
 /// Part B of the memory section, the rubric, for a run offered the write
 /// tools. The approval reviewer gets it too (section 16.9.12).
@@ -183,8 +183,8 @@ pub fn memory_tool_specs() -> Vec<ToolSpec> {
 
 const SEARCH_DESCRIPTION: &str = "Search memory: notes saved in earlier sessions about the user, agents, machines, and projects. Terms are matched case-insensitively against each memory's keywords, description, and URL segments (user, agent, machine, or project, then the names after it), never its body; results are ranked by keyword hits first. Each result shows a memory's URL and description, whether it is related to this session, whether you may change it, and its age, then its keywords; a result you need approval to read shows only its first two lines. `layer` narrows the search to `user`, `agent`, `machine`, or `project` memories.";
 const READ_DESCRIPTION: &str = "Read one memory by its URL (user://<category>, agent://<agent>, machine://<machine>/<name>, or project://<project>/<name>). Returns whether it is related to this session and whether you may change it, when it was created and modified, its size and its size limit, its description and keywords, and then its body as numbered lines, `N: text`, counting from 1. `offset` is the 1-based body line to start at (default 1) and `limit` the most lines to return (default 2000). A line longer than 4 KiB is cut and ends with `... [line truncated: N more bytes]`, and a page that leaves lines out ends with a note such as `[120 more lines; continue with offset=2001]`: read again from that offset. An offset past the last body line is an error. The line numbers are not part of the memory.";
-const WRITE_DESCRIPTION: &str = "Create or replace one memory, following the memory instructions in the system prompt. To replace a memory, read it first. A new memory like one that exists is refused with the near ones listed: edit one of those instead, or, if it is new, write it again with `new: true` and a one-line `reason`. Give each memory a one-line description that states its fact (agent:// memories and project overviews keep the daemon's: leave it out there) and the keywords a later search would use. A project:// memory needs a project that exists.";
-const EDIT_DESCRIPTION: &str = "Replace the one occurrence of `oldString` in a memory's body with `newString`, following the memory instructions in the system prompt. `oldString` is matched exactly against the body only, never the description or keywords, and must occur exactly once: when it occurs zero or several times the edit fails before it is approved and changes nothing, so include more surrounding text to make it unique. There is no replace-all. The line numbers memory_read shows are not part of the body.";
+const WRITE_DESCRIPTION: &str = "Create or replace one memory, following the memory instructions you were given. To replace a memory, read it first. A new memory like one that exists is refused with the near ones listed: edit one of those instead, or, if it is new, write it again with `new: true` and a one-line `reason`. Give each memory a one-line description that states its fact (agent:// memories and project overviews keep the daemon's: leave it out there) and the keywords a later search would use. A project:// memory needs a project that exists.";
+const EDIT_DESCRIPTION: &str = "Replace the one occurrence of `old_string` in a memory's body with `new_string`, following the memory instructions you were given. `old_string` is matched exactly against the body only, never the description or keywords, and must occur exactly once: when it occurs zero or several times the edit fails before it is approved and changes nothing, so include more surrounding text to make it unique. There is no replace-all. The line numbers `memory_read` shows are not part of the body.";
 const DELETE_DESCRIPTION: &str = "Delete one memory. Nothing is kept: the deletion is final.";
 
 fn spec(
@@ -347,10 +347,10 @@ struct EditArgs {
     /// The memory URL.
     url: String,
     /// The exact text to replace; it must occur exactly once in the body.
-    #[serde(rename = "oldString")]
+    #[serde(alias = "oldString")]
     old_string: String,
     /// The text that replaces it.
-    #[serde(rename = "newString")]
+    #[serde(alias = "newString")]
     new_string: String,
 }
 
@@ -839,8 +839,16 @@ fn call_presentation(
         ),
         EDIT => {
             let mut entries = vec![("url", primary.clone())];
-            entries.extend(text("oldString").map(|value| ("oldString", value)));
-            entries.extend(text("newString").map(|value| ("newString", value)));
+            entries.extend(
+                text("old_string")
+                    .or_else(|| text("oldString"))
+                    .map(|value| ("old_string", value)),
+            );
+            entries.extend(
+                text("new_string")
+                    .or_else(|| text("newString"))
+                    .map(|value| ("new_string", value)),
+            );
             (
                 format!("Edit memory {primary}"),
                 cookie_agent_protocol::ToolHint::FILE_EDIT,

@@ -40,7 +40,8 @@ pub enum AttachSource {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         machine: Option<String>,
     },
-    /// An artifact of the session tree, by its hex SHA-256.
+    /// An artifact of the session tree, by its hex SHA-256 or the start of
+    /// it (8 or more digits) as a file label shows it.
     Artifact { sha256: String },
     /// An asset, by its handle.
     Asset { handle: String },

@@ -2176,7 +2176,7 @@ mod tests {
                 None,
             )
             .with_preview([cookie_agent_protocol::DisplayBlock::text("the preview")]),
-            r#"{"filePath":"a.rs","newString":"raw-marker"}"#,
+            r#"{"path":"a.rs","new_string":"raw-marker"}"#,
         );
         let expanded = Expanded::from_iter([plain.id.to_string(), previewed.id.to_string()]);
         let view = |minimum_level| TranscriptView {

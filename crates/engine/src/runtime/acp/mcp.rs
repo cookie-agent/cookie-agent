@@ -759,7 +759,7 @@ impl Engine {
             return failed(format!("tool `{name}` is not offered to this agent"));
         }
         let outside_turns =
-            || failed("cookie's tools can be called only during the agent's turns".to_owned());
+            || failed("these tools can be called only during your turns".to_owned());
         let Some(bridge) = self.live_session(binding.session) else {
             return outside_turns();
         };

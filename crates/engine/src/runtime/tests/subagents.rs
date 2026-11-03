@@ -1026,7 +1026,7 @@ async fn unchanged_instructions_are_not_announced_on_a_report_wake_or_after_a_re
     assert!(
         requests
             .iter()
-            .all(|request| !request.contains("[cookie: instructions changed]"))
+            .all(|request| !request.contains("<instructions_changed>"))
     );
     assert_eq!(announced(&engine, parent), 0);
     engine.shutdown().await;

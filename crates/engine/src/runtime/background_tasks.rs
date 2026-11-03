@@ -596,7 +596,7 @@ pub(crate) enum Stopped {
 fn stop_reason(by: BackgroundActor) -> Option<String> {
     Some(
         match by {
-            BackgroundActor::Model => "stopped by its parent with stop_background",
+            BackgroundActor::Model => "stopped by its parent with `stop_background`",
             BackgroundActor::User => "stopped by the user",
         }
         .into(),
@@ -627,7 +627,7 @@ fn immediate_result(job: &str, by: BackgroundActor, note: Option<&str>) -> Persi
     };
     let mut output = format!(
         "{lead} You will get a <background_result job=\"{job}\"> with its result when it \
-         finishes; do not wait for it or run it again. Stop it with stop_background({job})."
+         finishes; do not wait for it or run it again. Stop it with `stop_background(job=\"{job}\")`."
     );
     if let Some(note) = note.filter(|note| !note.trim().is_empty()) {
         output.push('\n');
@@ -696,19 +696,14 @@ fn render_background_result(
     result: Option<&PersistedToolResult>,
     error: Option<&str>,
 ) -> String {
-    let escape = |value: &str| {
-        value
-            .replace('&', "&amp;")
-            .replace('"', "&quot;")
-            .replace('<', "&lt;")
-    };
+    let escape = cookie_agent_protocol::model_text::escape_xml_attribute;
     let mut body = format!(
         "<background_result job=\"{}\" tool=\"{}\" status=\"{status}\">\n",
         escape(job),
         escape(tool)
     );
     match stopped_by {
-        Some(BackgroundActor::Model) => body.push_str("Stopped with stop_background.\n"),
+        Some(BackgroundActor::Model) => body.push_str("Stopped with `stop_background`.\n"),
         Some(BackgroundActor::User) => body.push_str("User stopped this background call.\n"),
         None => {}
     }
@@ -908,7 +903,7 @@ mod tests {
         assert!(
             model
                 .output
-                .contains("Stop it with stop_background(job_1a2b3c4d).\nProcess 42")
+                .contains("Stop it with `stop_background(job=\"job_1a2b3c4d\")`.\nProcess 42")
         );
         assert_eq!(
             model.background,

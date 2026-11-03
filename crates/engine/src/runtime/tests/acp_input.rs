@@ -600,7 +600,7 @@ async fn a_live_agent_hears_of_machines_that_came_between_its_turns_once() {
     assert_eq!(received[1], ["say again"]);
     assert_eq!(received[2].len(), 2, "{:?}", received[2]);
     assert!(
-        received[2][0].starts_with("<machines_changed>\n"),
+        received[2][0].starts_with("<system-reminder>\n<machines_changed>\n"),
         "{:?}",
         received[2]
     );

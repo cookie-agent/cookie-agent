@@ -426,7 +426,7 @@ impl Engine {
                 .any(|message| pending(message) && message.reminder.is_some())
         {
             let kind = projection.next_reminder_kind(goal.goal_id);
-            let body = format!(
+            let body = cookie_agent_protocol::model_text::system_reminder(&format!(
                 "{} Verify evidence directly or through subagents before marking items finished.\n{}\n{}",
                 match kind {
                     GoalReminderKind::Started =>
@@ -434,12 +434,12 @@ impl Engine {
                     GoalReminderKind::Continuation => "Continue the root goal.",
                 },
                 if goal.items.is_empty() {
-                    "Establish the checklist with goal_update, then pursue its unfinished work."
+                    "Establish the checklist with `goal_update`, then pursue its unfinished work."
                 } else {
                     "Continue unfinished checklist work; unchanged revision is not completion."
                 },
                 serde_json::to_string(goal).expect("goal state serializes")
-            );
+            ));
             let authority = ProducerAuthority {
                 owner: ProducerOwner::Goal {
                     goal_id: goal.goal_id,
@@ -1232,12 +1232,12 @@ impl Engine {
     ) -> Result<(), EngineError> {
         let objective = serde_json::to_string(&goal.objective).expect("goal objective serializes");
         let body = match status {
-            GoalStatus::Paused => format!(
-                "[engine goal control]\nThe goal {objective} was paused by the user. Stop pursuing it autonomously. Wrap up current work and report status, or follow new user directions."
-            ),
-            GoalStatus::Cancelled => format!(
-                "[engine goal control]\nThe goal {objective} was cancelled by the user. Stop pursuing this cancelled goal and do not call goal_update to maintain it. Follow new user directions."
-            ),
+            GoalStatus::Paused => cookie_agent_protocol::model_text::system_reminder(&format!(
+                "The goal {objective} was paused by the user. Stop pursuing it autonomously. Wrap up current work and report status, or follow new user directions."
+            )),
+            GoalStatus::Cancelled => cookie_agent_protocol::model_text::system_reminder(&format!(
+                "The goal {objective} was cancelled by the user. Stop pursuing this cancelled goal and do not call `goal_update` to maintain it. Follow new user directions."
+            )),
             _ => return Ok(()),
         };
         let authority = ProducerAuthority {

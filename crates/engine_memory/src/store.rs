@@ -122,7 +122,7 @@ pub enum StoreError {
     /// it is now. The message leaves the memory's content out: following
     /// a write, it would read as what the write left.
     #[error(
-        "{url} was not written: this memory changed since you saw it, or you have not read it. Read it with memory_read, then write it again, or change it with memory_edit."
+        "{url} was not written: this memory changed since you saw it, or you have not read it. Read it with `memory_read`, then write it again, or change it with `memory_edit`."
     )]
     Unseen { url: MemoryUrl },
     /// The change would leave the memory over its limit. The message
@@ -172,11 +172,11 @@ fn too_large_message(url: &MemoryUrl, size: usize, max: usize, current: Option<u
             "{url} was not created: it would be {size_text}, over its limit of {max_text}. Make it shorter."
         ),
         Some(current) if current > max => format!(
-            "{url} was not written: it is {}, already over its limit of {max_text}, and only a change that makes it smaller is accepted until it fits; this one would leave it at {size_text}. Condense it first: read it with memory_read, then write a shorter version.",
+            "{url} was not written: it is {}, already over its limit of {max_text}, and only a change that makes it smaller is accepted until it fits; this one would leave it at {size_text}. Condense it first: read it with `memory_read`, then write a shorter version.",
             format::size(current as u64)
         ),
         Some(_) => format!(
-            "{url} was not written: it would be {size_text}, over its limit of {max_text}. Condense it first: read it with memory_read, then merge or drop what it holds."
+            "{url} was not written: it would be {size_text}, over its limit of {max_text}. Condense it first: read it with `memory_read`, then merge or drop what it holds."
         ),
     }
 }

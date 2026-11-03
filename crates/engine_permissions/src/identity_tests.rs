@@ -169,7 +169,7 @@ fn commands_and_paths_bind_to_the_process_and_other_resources_survive_restarts()
             b"/work/repo",
             Some(&action),
             Some("src/main.rs"),
-            &json!({"filePath": "/work/repo/src/main.rs"}),
+            &json!({"path": "/work/repo/src/main.rs"}),
         )
         .unwrap();
         assert_eq!(operation.resources()[0].boundary, ApprovalBoundary::Exact);

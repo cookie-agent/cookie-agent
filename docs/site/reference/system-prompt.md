@@ -218,6 +218,27 @@ from: its block leaves out the `src` form and names only artifacts and
 assets. Attaching a machine changes the block for the next run. An ACP agent
 gets the block in its first prompt, after the machines block.
 
+## Notices and envelopes
+
+What the engine tells the model during a session follows one of three
+forms:
+
+- **The engine's own notices** come inside `<system-reminder>` tags:
+  changed instructions (`<instructions_changed>`), deferred tools that
+  became loadable or left, a goal's reminders and the user pausing or
+  cancelling it, attachments of a reply that failed, an ACP agent's
+  `<machines_changed>`, and the repeated-call warning after a tool result.
+- **What other agents and jobs send** keeps its own element:
+  `<subagent_report session_id=…>`, `<background_result job=…>`,
+  `<agent_message from=…>`, and `<scheduled_job id=…>`.
+- **Markers that stand in for content** in the history stay in brackets:
+  `[file report.zip, 3.2 MB, artifact 5f2c81d0]`, `[tool output elided; …]`,
+  and `[Response interrupted — …]`.
+
+Attribute values escape `&`, `"`, `<`, and `>`; element text escapes `&`,
+`<`, and `>`. A call the text suggests is written in backticks with named
+arguments, such as `` `stop_background(job="job_1a2b3c4d")` ``.
+
 ## AGENTS.md context turn
 
 At a root run start where AGENTS.md loading is on (the run agent's
@@ -474,7 +495,7 @@ the model in place, before the next request, as a user turn, and the clients
 show it word for word:
 
 ```text
-[cookie: instructions changed]
+<system-reminder>
 <instructions_changed>
 <block name="runtimes">
 Working directory: /srv/api
@@ -482,6 +503,7 @@ Machine: labpc (linux)
 </block>
 </instructions_changed>
 Each block replaces the part of the system prompt it names, and a removed block no longer applies: runtimes is where this session's tools work, attachments how to attach files to a reply, tool_instructions the <tool_instructions> sections, and skills the <available_skills> listing.
+</system-reminder>
 ```
 
 A plugin's system-prompt hook changes take effect at the next point the

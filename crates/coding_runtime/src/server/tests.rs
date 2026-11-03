@@ -469,10 +469,10 @@ async fn an_edit_carries_its_preview_and_its_cut_diff_names_media_it_sends() {
                     id: ToolCallId::new_v7(),
                     name: "edit".into(),
                     arguments: json!({
-                        "filePath": "big.txt",
-                        "oldString": "line",
-                        "newString": "LINE",
-                        "replaceAll": true
+                        "path": "big.txt",
+                        "old_string": "line",
+                        "new_string": "LINE",
+                        "replace_all": true
                     }),
                 }],
             },
@@ -537,7 +537,7 @@ async fn calls_are_prepared_executed_and_released_by_prepared_id() {
                     WireToolCall {
                         id: ToolCallId::new_v7(),
                         name: "read".into(),
-                        arguments: json!({"filePath": "notes.txt"}),
+                        arguments: json!({"path": "notes.txt"}),
                     },
                     WireToolCall {
                         id: ToolCallId::new_v7(),
@@ -655,7 +655,7 @@ async fn calls_are_prepared_executed_and_released_by_prepared_id() {
                 calls: vec![WireToolCall {
                     id: ToolCallId::new_v7(),
                     name: "read".into(),
-                    arguments: json!({"filePath": "notes.txt"}),
+                    arguments: json!({"path": "notes.txt"}),
                 }],
             },
         )

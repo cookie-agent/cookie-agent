@@ -45,7 +45,7 @@ expression: history
               "provider_item_id": null,
               "name": "read",
               "input": {
-                "filePath": "README.md"
+                "path": "README.md"
               },
               "raw_input": null,
               "metadata": null

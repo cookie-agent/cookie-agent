@@ -658,7 +658,7 @@ async fn cancelled_finalized_opt_out_reads_preserve_pages_without_retention() {
         } else {
             let path = fixture.workspace.join("page.txt");
             fs::write(&path, "zero\none\ntwo\n").unwrap();
-            serde_json::json!({"filePath":path.to_str().unwrap(),"offset":2,"limit":1})
+            serde_json::json!({"path":path.to_str().unwrap(),"offset":2,"limit":1})
         };
         let data_root = fixture._root.path().join("data");
         let before = artifact_blobs(&data_root);

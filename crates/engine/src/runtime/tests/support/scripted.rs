@@ -795,7 +795,7 @@ pub(crate) fn scripted_effective_last_message(request: &[u8]) -> Option<serde_js
 /// request follows the change, a subagent report's wake included.
 pub(crate) fn scripted_message_is_instructions_announcement(message: &serde_json::Value) -> bool {
     scripted_user_text(message)
-        .is_some_and(|text| text.starts_with("[cookie: instructions changed]"))
+        .is_some_and(|text| text.starts_with("<system-reminder>\n<instructions_changed>"))
 }
 
 /// Whether `request` is a wake for subagent notifications after an answer:

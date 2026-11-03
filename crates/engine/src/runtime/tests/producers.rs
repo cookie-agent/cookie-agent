@@ -1325,7 +1325,8 @@ async fn goal_reminders_include_full_state_repeat_with_fresh_ids_and_pause_quies
             .body
             .as_plain_text()
             .lines()
-            .last()
+            .rev()
+            .nth(1)
             .expect("serialized goal reminder"),
     )
     .expect("goal reminder JSON");
@@ -1335,7 +1336,7 @@ async fn goal_reminders_include_full_state_repeat_with_fresh_ids_and_pause_quies
         first_record
             .body
             .as_plain_text()
-            .starts_with("Goal started.")
+            .starts_with("<system-reminder>\nGoal started.")
     );
     assert!(
         first_record
@@ -1411,20 +1412,20 @@ async fn goal_reminders_include_full_state_repeat_with_fresh_ids_and_pause_quies
         second_record
             .body
             .as_plain_text()
-            .starts_with("Continue the root goal.")
+            .starts_with("<system-reminder>\nContinue the root goal.")
     );
     assert_eq!(
         second_record
             .body
             .as_plain_text()
             .lines()
-            .skip(1)
+            .skip(2)
             .collect::<Vec<_>>(),
         first_record
             .body
             .as_plain_text()
             .lines()
-            .skip(1)
+            .skip(2)
             .collect::<Vec<_>>()
     );
 
@@ -1763,7 +1764,7 @@ async fn active_goal_cancel_notifies_once_and_preserves_other_producer_work() {
         control
             .body
             .as_plain_text()
-            .contains("do not call goal_update")
+            .contains("do not call `goal_update`")
     );
     assert!(
         control
@@ -2655,7 +2656,7 @@ async fn goal_tools_run_without_approval_under_an_agent_that_denies_or_asks_ever
     let open_item = |finished| serde_json::json!({"items": [{"description": "Draft the plan", "finished": finished}]});
     for (matcher, body) in [
         (
-            "Establish the checklist with goal_update",
+            "Establish the checklist with `goal_update`",
             scripted_tool_body("goal-update-open", "goal_update", open_item(false)),
         ),
         (

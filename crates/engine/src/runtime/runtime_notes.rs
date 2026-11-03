@@ -371,13 +371,13 @@ fn routed_runtimes_prompt(
     );
     match (reach.lists, reach.attaches) {
         (true, true) => block.push_str(
-            " To see every machine and runtime you could attach, call list_runtimes; attach \
+            " To see every machine and runtime you could attach, call `list_runtimes`; attach \
              one with attach_machine.",
         ),
         (true, false) => {
-            block.push_str(" To see every machine and runtime there is, call list_runtimes.")
+            block.push_str(" To see every machine and runtime there is, call `list_runtimes`.")
         }
-        (false, true) => block.push_str(" Attach another machine with attach_machine."),
+        (false, true) => block.push_str(" Attach another machine with `attach_machine`."),
         (false, false) => {}
     }
     block.push('\n');
@@ -532,8 +532,8 @@ fn routed_builtin_note(
                 note.push_str(&format!(" Prefer them for work on `{own}`."));
             }
             note.push_str(
-                " To work on another machine, use the tools of the `cookie` MCP server and name \
-                 the machine in their `machine` argument",
+                " To work on another machine, use the MCP tools that take a `machine` argument \
+                 and name the machine in it",
             );
             if let Some(example) = builtin.example {
                 note.push_str(&format!(
@@ -552,8 +552,8 @@ fn routed_builtin_note(
             note.push('.');
             if reach.attaches {
                 note.push_str(
-                    " A machine you attach is reached through the `cookie` MCP server's tools, \
-                     with its `machine` argument.",
+                    " A machine you attach is reached through the MCP tools that take a \
+                     `machine` argument.",
                 );
             }
         }
@@ -586,14 +586,14 @@ pub(super) fn machine_reach_text(lists: bool, attaches: bool, delegates: bool) -
     let mut text =
         String::from("No machine is attached: you have no files or shell of your own yet.");
     if lists {
-        text.push_str(" list_runtimes shows the user's machines.");
+        text.push_str(" `list_runtimes` shows the user's machines.");
     }
     match (attaches, delegates) {
         (true, true) => text.push_str(
-            " To work on one yourself, call attach_machine; to hand a task to a subagent \
+            " To work on one yourself, call `attach_machine`; to hand a task to a subagent \
              there, delegate with `capabilities`.",
         ),
-        (true, false) => text.push_str(" To work on one, call attach_machine."),
+        (true, false) => text.push_str(" To work on one, call `attach_machine`."),
         (false, true) => text.push_str(
             " Work that needs files or commands goes to a subagent there: delegate with \
              `capabilities` naming the machine's runtime and the directory to work in.",
@@ -773,11 +773,7 @@ fn push_machine(block: &mut String, machine: &MachineGroup<'_>) {
 }
 
 fn escape_xml_attribute(value: &str) -> String {
-    value
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
+    cookie_agent_protocol::model_text::escape_xml_attribute(value)
 }
 
 #[cfg(test)]

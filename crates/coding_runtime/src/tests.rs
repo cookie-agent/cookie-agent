@@ -122,18 +122,18 @@ async fn builtin_relative_paths_stay_on_the_prepared_cwd_route() {
     let tools = BuiltinTools::new(&crate::test_workspace(&cwd));
     let mut prepared = Vec::new();
     for (name, arguments) in [
-        ("read", serde_json::json!({"filePath":"value.txt"})),
+        ("read", serde_json::json!({"path":"value.txt"})),
         (
             "edit",
             serde_json::json!({
-                "filePath":"value.txt",
-                "oldString":"old",
-                "newString":"edited"
+                "path":"value.txt",
+                "old_string":"old",
+                "new_string":"edited"
             }),
         ),
         (
             "write",
-            serde_json::json!({"filePath":"created.txt","content":"new"}),
+            serde_json::json!({"path":"created.txt","content":"new"}),
         ),
     ] {
         prepared.push(
@@ -200,7 +200,7 @@ async fn builtin_parallel_edits_to_the_same_file_chain() {
     let call = |old: &str, new: &str| ToolCall {
         id: ToolCallId::new_v7(),
         name: "edit".into(),
-        arguments: serde_json::json!({"filePath":"value.txt","oldString":old,"newString":new}),
+        arguments: serde_json::json!({"path":"value.txt","old_string":old,"new_string":new}),
     };
     // The production wiring registers BuiltinTools as one provider, so
     // batch preparation must route through it to reach the edit chain.
@@ -391,7 +391,7 @@ async fn windows_short_workspace_spelling_roundtrips_prepared_resources() {
             ToolCall {
                 id: ToolCallId::new_v7(),
                 name: "read".into(),
-                arguments: serde_json::json!({"filePath":"value.txt"}),
+                arguments: serde_json::json!({"path":"value.txt"}),
             },
         )
         .await
