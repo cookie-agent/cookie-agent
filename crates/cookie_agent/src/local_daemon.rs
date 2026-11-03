@@ -269,6 +269,7 @@ mod tests {
             features: Vec::new(),
             status: None,
             page_url: None,
+            page_ticket: None,
         }
     }
 

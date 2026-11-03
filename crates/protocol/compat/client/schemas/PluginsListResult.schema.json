@@ -67,6 +67,13 @@
             "type": "string"
           },
           "type": "array"
+        },
+        "ui_path": {
+          "description": "Where the daemon serves the plugin's pages, `/plugins/<name>/` with\nthe name percent-encoded, relative to the daemon's web page (client\nprotocol 1.80.0). Present while the plugin is connected and has\ndeclared pages.",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [

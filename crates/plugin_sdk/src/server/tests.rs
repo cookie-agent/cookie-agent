@@ -45,6 +45,7 @@ fn initialize_params(producer_messaging: bool) -> ExtensionInitializeParams {
             .into_iter()
             .collect(),
         interception_timeout_ms: 2_000,
+        ui_base_url: None,
     }
 }
 

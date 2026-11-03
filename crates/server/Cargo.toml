@@ -24,6 +24,8 @@ cookie_agent_protocol_transport = { version = "=0.4.0", path = "../protocol_tran
 cookie_agent_web_assets = { version = "=0.4.0", path = "../web_assets" }
 futures-util.workspace = true
 getrandom.workspace = true
+hyper = { version = "1.11", features = ["client", "http1"] }
+hyper-util = { version = "0.1.20", features = ["tokio"] }
 jiff.workspace = true
 reqwest.workspace = true
 rustls.workspace = true

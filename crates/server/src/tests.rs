@@ -128,6 +128,19 @@ fn harness_on(
     mcp_servers: BTreeMap<String, LoadedMcpServer>,
     listener: Option<&crate::DaemonListener>,
 ) -> Harness {
+    harness_built(mcp_servers, listener, |_| {})
+}
+
+/// A harness whose configuration `customize` changed first.
+pub(crate) fn harness_configured(customize: impl FnOnce(&mut LoadedConfiguration)) -> Harness {
+    harness_built(BTreeMap::new(), None, customize)
+}
+
+fn harness_built(
+    mcp_servers: BTreeMap<String, LoadedMcpServer>,
+    listener: Option<&crate::DaemonListener>,
+    customize: impl FnOnce(&mut LoadedConfiguration),
+) -> Harness {
     let directory = private_tempdir();
     let project = directory.path().join(".cookie-agent");
     create_private_test_dir(&project);
@@ -165,7 +178,7 @@ fn harness_on(
         .filter(|(_, server)| server.source == McpServerSource::UserFile)
         .map(|(name, server)| (name.clone(), server.config.clone()))
         .collect();
-    let config = LoadedConfiguration {
+    let mut config = LoadedConfiguration {
         official_agent_diagnostics: Vec::new(),
         templates: Default::default(),
         preset_templates: Default::default(),
@@ -214,6 +227,7 @@ fn harness_on(
             .unwrap(),
         skills: cookie_agent_config::SkillRegistry::default(),
     };
+    customize(&mut config);
     let engine = Engine::open_reporting(
         EngineOptions {
             data_dir: directory.path().join("data"),

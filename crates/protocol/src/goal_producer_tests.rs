@@ -789,6 +789,7 @@ fn recovery_handshake_has_only_explicit_completion_outcomes() {
         engine_version: "phase1".into(),
         features: vec![FEATURE_PRODUCER_MESSAGING.into()],
         interception_timeout_ms: 2_000,
+        ui_base_url: None,
     };
     let wire = serde_json::to_value(&params).unwrap();
     assert_eq!(

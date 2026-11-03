@@ -1120,6 +1120,7 @@ impl RuntimeClient {
         interception_timeout: Duration,
         shutdown_grace: Duration,
         extension: Arc<dyn ClientExtension>,
+        ui_base_url: Option<String>,
     ) -> Result<PluginHandshake, String> {
         let (peer, incoming) = Peer::start(connection.transport);
         let source = cookie_agent_protocol::ProducerSource::plugin(name)
@@ -1171,6 +1172,7 @@ impl RuntimeClient {
                         .collect(),
                     interception_timeout_ms: u64::try_from(interception_timeout.as_millis())
                         .unwrap_or(u64::MAX),
+                    ui_base_url,
                 },
             )
             .await

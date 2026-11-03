@@ -126,6 +126,7 @@ impl ServerContext {
             status: status
                 .filter(|_| cookie_agent_protocol::reads_daemon_status(hello.protocol_version)),
             page_url: about.page_url.clone(),
+            page_ticket: about.page_ticket.clone(),
         }
     }
 
@@ -319,11 +320,19 @@ pub trait ServerProtocol: Send + Sync + 'static {
         None
     }
 
+    /// What the web page stores in its `cookie_page_ticket` cookie to open
+    /// plugin pages (client protocol 1.80.0); `None` when the daemon does
+    /// not serve them.
+    fn page_ticket(&self) -> Option<String> {
+        None
+    }
+
     /// What the handshake says about the daemon.
     fn about(&self) -> About {
         About {
             engine_version: self.engine_version(),
             page_url: self.page_url(),
+            page_ticket: self.page_ticket(),
         }
     }
 
@@ -1168,6 +1177,9 @@ pub struct About {
     pub engine_version: String,
     /// Where its web page can be reached, when that is configured.
     pub page_url: Option<String>,
+    /// What the web page stores to open plugin pages, when the daemon
+    /// serves them on this connection's listener.
+    pub page_ticket: Option<String>,
 }
 
 /// [`serve`] for a daemon that may still be starting. Until its server is

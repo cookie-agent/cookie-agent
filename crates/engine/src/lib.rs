@@ -61,7 +61,10 @@ pub use delegation_api::{DelegateAwait, DelegateHandle, DelegateInvocation, Dele
 pub use machines::MachineError;
 pub use machines_tool::machines_tool_specs;
 pub use memory_tools::memory_tool_specs;
-pub use plugin::{EngineEvent, PluginHookFailure, PluginRegistry};
+pub use plugin::{
+    EngineEvent, PluginHookFailure, PluginRegistry,
+    pages::{PluginPage, PluginPageTarget, percent_decode},
+};
 pub use projects::ProjectError;
 pub use runtime::agent_documents::{AgentDocumentEntry, AgentDocumentKind, AgentDocumentOrigin};
 pub use runtime::artifacts::uploads::{MAX_UPLOADS_PER_CONNECTION, MediaError};

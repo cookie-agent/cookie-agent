@@ -1331,7 +1331,10 @@ impl Engine {
         reserve_provider_id(&mut provider_ids, agents_tool.as_ref())?;
         mcp.reserve_provider(agents_tool.as_ref())
             .map_err(|error| EngineError::ToolFailed(error.to_string()))?;
-        let plugins = Arc::new(crate::PluginRegistry::new(options.config.plugins.clone()));
+        let plugins = Arc::new(crate::PluginRegistry::new(
+            options.config.plugins.clone(),
+            options.config.runtime.server.page_url.clone(),
+        ));
         let mut global_providers: Vec<Arc<dyn ToolProvider>> = vec![mcp.clone()];
         global_providers.extend(options.runtimes.global_tools.iter().cloned());
         global_providers.push(memory_tools.clone());
@@ -2066,6 +2069,13 @@ impl Engine {
     #[must_use]
     pub fn plugin_statuses(&self) -> Vec<cookie_agent_protocol::PluginInfo> {
         self.inner.plugins.statuses()
+    }
+
+    /// What the daemon serves at `/plugins/<name>/` now
+    /// (`docs/site/specs/plugin-web-ui.md` section 3).
+    #[must_use]
+    pub fn plugin_page(&self, name: &str) -> crate::plugin::pages::PluginPage {
+        self.inner.plugins.page(name)
     }
 
     /// Starts plugin `name` again now: a failed one retries, and a connected

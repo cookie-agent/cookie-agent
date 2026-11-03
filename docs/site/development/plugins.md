@@ -156,34 +156,38 @@ and sends `plugin/initialize` within `startup_timeout_ms`:
 
 ```json
 {"jsonrpc":"2.0","id":1,"method":"plugin/initialize","params":{
-  "protocol_version":"1.39.0","engine_version":"0.3.0",
-  "features":["producer_messaging"],"interception_timeout_ms":2000}}
+  "protocol_version":"1.40.0","engine_version":"0.3.0",
+  "features":["producer_messaging"],"interception_timeout_ms":2000,
+  "ui_base_url":"https://box.example/plugins/issues/"}}
 ```
 
 `features` lists what the plugin's configuration enables: today only
 `producer_messaging`, sent when `producer_messaging = true`. A version never
 implies a feature. `interception_timeout_ms` is the plugin's
-`interception_timeout_ms`: how long the daemon waits for a hook's answer. The
+`interception_timeout_ms`: how long the daemon waits for a hook's answer.
+`ui_base_url` (since 1.40.0) is where the plugin's [pages](#pages) are
+reached, sent when the daemon's `[server] page_url` is set. The
 plugin answers with its own protocol version, its configured name, its own
 version, its features, its capabilities, and its tools:
 
 ```json
 {"jsonrpc":"2.0","id":1,"result":{
-  "protocol_version":"1.39.0","name":"issues","version":"1.2.0","features":[],
+  "protocol_version":"1.40.0","name":"issues","version":"1.2.0","features":[],
   "capabilities":{"producer_messaging":false,"subscribe_events":["run_*","tool_call_*"],
     "subscribe_bus":false,"publish_bus":false,
     "intercept":[{"hook":"tool_before_call","on_error":"block"}]},
   "tools":{"tools":[],"prompt_sections":[]}}}
 ```
 
-The protocol version is a semver string, currently `1.39.0`
+The protocol version is a semver string, currently `1.40.0`
 (`PLUGIN_PROTOCOL_VERSION`, which the SDK re-exports). Each end reads the
 other's `protocol_version` from the raw JSON before anything else, and refuses
 an incompatible one with `unsupported_protocol` naming both versions: the
 majors must be equal, so no `0.x` build from before the freeze connects. A
 minor only adds, so the two ends use what the lower minor includes and the
 patch never matters (see [Compatibility](../reference/compatibility.md)). A
-different name also fails the start. No plugin feature is defined
+different name also fails the start. An optional `ui` (since 1.40.0)
+declares the plugin's [pages](#pages). No plugin feature is defined
 yet; the daemon ignores one it does not know and shows it in the plugin's
 status. Capabilities are fixed for the connection; `tools` is the runtime
 protocol's `RuntimeTools`. An optional `summary` (since 1.25.0) says in a
@@ -202,6 +206,52 @@ lines, at most 4 KiB) that clients see in plugin status.
 
 At shutdown the daemon sends the `plugin/shutdown` notification, waits
 `shutdown_grace_ms`, and kills the process group.
+
+## Pages
+
+A plugin may serve web pages: settings, a sign-in, a view of its data. It
+runs an HTTP server on loopback in its own process, usually on a port the
+system picks (`127.0.0.1:0`), and declares it in its initialize result
+(since 1.40.0):
+
+```json
+"ui": {"url": "http://127.0.0.1:43117", "public_paths": ["/oauth/callback"]}
+```
+
+The daemon serves the pages at `/plugins/<name>/` on its own listener, the
+name percent-encoded as one path segment, and the web client opens them from
+its plugins view. `url` must be `http://` to a loopback address or
+`localhost`, with a port and nothing after it; the daemon refuses any other
+`url`, and a malformed public path, with a note in the plugin's status, and
+the plugin runs without pages. A restarted plugin declares its port again.
+
+- **Requests.** The prefix is stripped: `/plugins/issues/settings?tab=keys`
+  reaches the plugin as `/settings?tab=keys`, with every method, the body
+  streamed both ways, and WebSocket upgrades joined end to end. `Host` is
+  the plugin's own. The daemon adds `X-Forwarded-Prefix` (where the plugin's
+  root is, such as `/plugins/issues`), `X-Forwarded-Host`,
+  `X-Forwarded-Proto`, and `X-Forwarded-For`, from the daemon's `[server]
+  page_url` when it is set, else from a front's own headers, else from the
+  request. Build absolute URLs, such as an OAuth redirect, from them, and
+  use relative URLs elsewhere.
+- **Responses** pass through unchanged. The daemon adds no
+  Content-Security-Policy or framing headers; the web client shows pages in
+  a frame, so do not forbid framing by the page's own origin.
+- **Access.** A request needs the web page's ticket cookie or the daemon
+  token in `Authorization`; without either it gets `401`, whatever plugin it
+  names. The daemon removes its ticket cookie, and `Authorization` when it
+  carries the daemon token, before forwarding. A plugin may set cookies of
+  its own; scope them to `Path=/plugins/<name>/`.
+- **Public paths** skip the access check. Each starts with `/` and covers
+  itself and every path below it, but never a path with `.` or `..`
+  segments or encoded slashes. Use them for what arrives from elsewhere,
+  such as an OAuth provider's redirect back, which may land in a browser
+  without the cookie; protect them yourself, with OAuth `state`.
+- **Same origin.** The pages share the web page's origin: their scripts can
+  read its storage, the daemon token included, and call the daemon. An XSS
+  in a plugin page therefore gives shell access to the daemon's machine, so
+  escape everything that comes from elsewhere, such as event titles or
+  email subjects.
 
 ## Compatibility
 

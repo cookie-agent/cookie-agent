@@ -35,6 +35,7 @@ impl Starting {
                 about: crate::server::About {
                     engine_version: "0.4.0".into(),
                     page_url: Some("https://cookie.example/".into()),
+                    page_ticket: None,
                 },
             },
             ChannelTransport { incoming, outgoing },

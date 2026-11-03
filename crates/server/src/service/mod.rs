@@ -1,4 +1,5 @@
 mod page;
+mod plugin_pages;
 mod routes;
 mod runtime_notifications;
 mod websocket;
@@ -65,6 +66,9 @@ pub(crate) struct Shared {
     /// The daemon's `[server] page_url`, which handshakes report while the
     /// daemon starts; once ready, the server reads its configuration.
     pub(crate) page_url: std::sync::RwLock<Option<String>>,
+    /// The page ticket of the token the daemon's listener serves with,
+    /// which handshakes report once the daemon is ready.
+    pub(crate) page_ticket: std::sync::RwLock<Option<String>>,
 }
 
 impl DaemonListener {
@@ -80,6 +84,7 @@ impl DaemonListener {
                 restarting: Arc::new(AtomicBool::new(false)),
                 connections: Arc::new(tokio::sync::watch::Sender::new(())),
                 page_url: std::sync::RwLock::new(None),
+                page_ticket: std::sync::RwLock::new(None),
             }),
         }
     }

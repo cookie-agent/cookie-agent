@@ -416,6 +416,12 @@ pub struct ServerHello {
     /// page from it, and otherwise from the URL they reached the daemon at.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub page_url: Option<String>,
+    /// What the web page stores in its `cookie_page_ticket` cookie to open
+    /// the daemon's plugin pages (client protocol 1.80.0): derived from the
+    /// daemon token, so rotating the token revokes it. Absent when the
+    /// daemon does not serve plugin pages on this connection's listener.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub page_ticket: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
@@ -1081,6 +1087,12 @@ pub struct PluginInfo {
     /// What the plugin last wrote to standard error.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stderr: Option<String>,
+    /// Where the daemon serves the plugin's pages, `/plugins/<name>/` with
+    /// the name percent-encoded, relative to the daemon's web page (client
+    /// protocol 1.80.0). Present while the plugin is connected and has
+    /// declared pages.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ui_path: Option<String>,
 }
 
 crate::open_enum! {

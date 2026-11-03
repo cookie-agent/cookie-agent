@@ -119,10 +119,12 @@ for line in sys.stdin:
             sys.stdout.write("{malformed\n")
             sys.stdout.flush()
             continue
-        send({
-            "jsonrpc": "2.0",
-            "id": request_id,
-            "result": {
+        params_file = os.environ.get("FIXTURE_INITIALIZE_PARAMS_FILE")
+        if params_file:
+            with open(params_file + ".tmp", "w", encoding="utf-8") as output:
+                json.dump(message.get("params", {}), output)
+            os.replace(params_file + ".tmp", params_file)
+        result = {
                 "protocol_version": protocol_version(message.get("params", {})),
                 "name": os.environ.get("FIXTURE_NAME", "fixture"),
                 "version": "1.0.0",
@@ -132,8 +134,10 @@ for line in sys.stdin:
                     '{"producer_messaging":false,"subscribe_events":[],"subscribe_bus":false,"publish_bus":false,"intercept":[]}',
                 )),
                 "tools": {"tools": declarations(), "prompt_sections": []},
-            },
-        })
+        }
+        # Members a newer plugin adds to its result, such as `ui`.
+        result.update(json.loads(os.environ.get("FIXTURE_RESULT_EXTRA", "{}")))
+        send({"jsonrpc": "2.0", "id": request_id, "result": result})
         # Frames to send once connected, such as messages a newer or a
         # misbehaving plugin would send.
         for frame in json.loads(os.environ.get("FIXTURE_AFTER_INITIALIZE", "[]")):

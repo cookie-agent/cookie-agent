@@ -73,11 +73,20 @@ fn config(name: &str, env: &[(&str, &str)]) -> PluginConfig {
 
 /// Starts `plugins` with fast reconnects and waits for each first attempt.
 async fn start(plugins: Vec<(&str, PluginConfig)>) -> PluginRegistry {
+    start_with_page_url(plugins, None).await
+}
+
+/// [`start`] for a daemon whose `[server] page_url` is `page_url`.
+async fn start_with_page_url(
+    plugins: Vec<(&str, PluginConfig)>,
+    page_url: Option<&str>,
+) -> PluginRegistry {
     let registry = PluginRegistry::new(
         plugins
             .into_iter()
             .map(|(name, config)| (name.to_owned(), config))
             .collect::<IndexMap<_, _>>(),
+        page_url.map(str::to_owned),
     );
     registry.set_reconnect_policy(ReconnectPolicy::with_delays([Duration::from_millis(1); 2]));
     registry.start_eager(&tokio::runtime::Handle::current());
@@ -541,10 +550,10 @@ async fn an_emit_spends_the_context_it_was_delivered_with() {
 
 #[tokio::test]
 async fn contexts_are_one_shot_per_session_and_expire() {
-    let registry = PluginRegistry::new(IndexMap::from([(
-        "fixture".to_owned(),
-        config("fixture", &[]),
-    )]));
+    let registry = PluginRegistry::new(
+        IndexMap::from([("fixture".to_owned(), config("fixture", &[]))]),
+        None,
+    );
     let runtime = registry
         .inner
         .plugins
@@ -782,5 +791,90 @@ async fn event_patterns_select_what_each_plugin_receives() {
     // Each plugin's queue is in order, so by now the others would have had
     // theirs; the plugin that subscribes to nothing got none.
     assert!(!files[3].exists());
+    registry.shutdown().await;
+}
+
+#[tokio::test]
+async fn declared_pages_are_served_while_the_plugin_is_connected() {
+    let directory = tempfile::tempdir().unwrap();
+    let params = directory.path().join("initialize.json");
+    let ui = r#"{"ui":{"url":"http://127.0.0.1:43117","public_paths":["/oauth/callback"]}}"#;
+    let registry = start_with_page_url(
+        vec![(
+            "my pages",
+            config(
+                "my pages",
+                &[
+                    ("FIXTURE_RESULT_EXTRA", ui),
+                    ("FIXTURE_INITIALIZE_PARAMS_FILE", params.to_str().unwrap()),
+                ],
+            ),
+        )],
+        Some("https://box.example/"),
+    )
+    .await;
+    wait_for(&registry, "my pages", PluginState::Connected).await;
+    let super::pages::PluginPage::Serving(target) = registry.page("my pages") else {
+        panic!("the pages are not served: {:?}", registry.page("my pages"));
+    };
+    assert_eq!(target.authority, "127.0.0.1:43117");
+    assert!(target.is_public("/oauth/callback"));
+    assert!(!target.is_public("/settings"));
+    assert_eq!(
+        registry.statuses()[0].ui_path.as_deref(),
+        Some("plugins/my%20pages/")
+    );
+    let sent: Value = serde_json::from_str(&std::fs::read_to_string(&params).unwrap()).unwrap();
+    assert_eq!(
+        sent["ui_base_url"],
+        "https://box.example/plugins/my%20pages/"
+    );
+    assert_eq!(registry.page("other"), super::pages::PluginPage::Unknown);
+    registry.shutdown().await;
+    assert_eq!(
+        registry.page("my pages"),
+        super::pages::PluginPage::Unavailable(PluginState::Stopped)
+    );
+    assert_eq!(registry.statuses()[0].ui_path, None);
+}
+
+#[tokio::test]
+async fn pages_the_daemon_cannot_serve_are_refused_with_a_reason() {
+    let directory = tempfile::tempdir().unwrap();
+    let params = directory.path().join("initialize.json");
+    let registry = start(vec![
+        (
+            "remote",
+            config(
+                "remote",
+                &[
+                    (
+                        "FIXTURE_RESULT_EXTRA",
+                        r#"{"ui":{"url":"http://10.0.0.1:80"}}"#,
+                    ),
+                    ("FIXTURE_INITIALIZE_PARAMS_FILE", params.to_str().unwrap()),
+                ],
+            ),
+        ),
+        ("plain", config("plain", &[])),
+    ])
+    .await;
+    wait_for(&registry, "remote", PluginState::Connected).await;
+    wait_for(&registry, "plain", PluginState::Connected).await;
+    assert_eq!(registry.page("remote"), super::pages::PluginPage::Unknown);
+    assert_eq!(registry.page("plain"), super::pages::PluginPage::Unknown);
+    let statuses = registry.statuses();
+    assert_eq!(statuses[0].ui_path, None);
+    assert!(
+        statuses[0]
+            .reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("ui.url")),
+        "{:?}",
+        statuses[0].reason
+    );
+    // Without `[server] page_url` no address is sent.
+    let sent: Value = serde_json::from_str(&std::fs::read_to_string(&params).unwrap()).unwrap();
+    assert!(sent.get("ui_base_url").is_none());
     registry.shutdown().await;
 }

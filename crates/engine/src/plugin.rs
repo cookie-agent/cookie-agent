@@ -57,6 +57,7 @@ use tokio_util::sync::CancellationToken;
 use crate::runtimes::{ClientExtension, ProcessConnector, RuntimeClient};
 
 pub(crate) mod hook_views;
+pub mod pages;
 
 pub(crate) const MAX_PLUGIN_EVENT_PAYLOAD_BYTES: usize = 256 * 1024;
 pub(crate) const MAX_PLUGIN_EVENT_NAME_CHARS: usize = 128;
@@ -304,6 +305,9 @@ struct Connected {
     /// What the daemon ignored in its handshake, shown as the plugin's
     /// reason once it is connected.
     notes: Vec<String>,
+    /// Where its pages are forwarded, when it declared pages the daemon
+    /// can serve.
+    ui: Option<pages::PluginPageTarget>,
 }
 
 /// One configured plugin.
@@ -332,6 +336,9 @@ struct PluginRegistryInner {
     changes: watch::Sender<u64>,
     shutdown: CancellationToken,
     reconnect: Mutex<ReconnectPolicy>,
+    /// The daemon's `[server] page_url`, from which each plugin learns
+    /// where its pages are reached.
+    page_url: Option<String>,
 }
 
 impl PluginRegistryInner {
@@ -362,7 +369,7 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 }
 
 impl PluginRegistry {
-    pub(crate) fn new(plugins: IndexMap<String, PluginConfig>) -> Self {
+    pub(crate) fn new(plugins: IndexMap<String, PluginConfig>, page_url: Option<String>) -> Self {
         let (changes, _) = watch::channel(0);
         let inner = Arc::new_cyclic(|registry: &Weak<PluginRegistryInner>| {
             let plugins = plugins
@@ -398,6 +405,7 @@ impl PluginRegistry {
                 changes,
                 shutdown: CancellationToken::new(),
                 reconnect: Mutex::new(ReconnectPolicy::default()),
+                page_url,
             }
         });
         Self { inner }
@@ -445,6 +453,21 @@ impl PluginRegistry {
             .values()
             .map(|plugin| plugin.info())
             .collect()
+    }
+
+    /// What the daemon serves at `/plugins/<name>/` now.
+    #[must_use]
+    pub fn page(&self, name: &str) -> pages::PluginPage {
+        let Some(plugin) = self.inner.plugins.get(name) else {
+            return pages::PluginPage::Unknown;
+        };
+        match lock(&plugin.connection).as_ref() {
+            Some(connected) => connected
+                .ui
+                .clone()
+                .map_or(pages::PluginPage::Unknown, pages::PluginPage::Serving),
+            None => pages::PluginPage::Unavailable(*lock(&plugin.state)),
+        }
     }
 
     /// Restarts plugin `name` now.
@@ -885,6 +908,10 @@ impl PluginRuntime {
             stderr: connection
                 .as_ref()
                 .and_then(|connected| connected.client.diagnostics()),
+            ui_path: connection
+                .as_ref()
+                .and_then(|connected| connected.ui.as_ref())
+                .map(|_| cookie_agent_protocol::plugin_page_path(&self.name)),
         }
     }
 
@@ -990,6 +1017,12 @@ impl PluginRuntime {
         let name = self.name.clone();
         let producer_messaging = self.config.producer_messaging;
         let interception_timeout = Duration::from_millis(self.config.interception_timeout_ms);
+        let ui_base_url = self.registry().and_then(|registry| {
+            registry
+                .page_url
+                .as_deref()
+                .map(|page_url| pages::ui_base_url(page_url, &self.name))
+        });
         let attempt = async move {
             let connection = connector.connect().await?;
             RuntimeClient::initialize_plugin(
@@ -999,6 +1032,7 @@ impl PluginRuntime {
                 interception_timeout,
                 grace,
                 extension,
+                ui_base_url,
             )
             .await
         };
@@ -1010,14 +1044,23 @@ impl PluginRuntime {
                     startup.as_millis()
                 ))
             });
-        result.map(|handshake| Connected {
-            client: handshake.client,
-            capabilities: handshake.result.capabilities,
-            summary: handshake
-                .result
-                .summary
-                .filter(|summary| !summary.trim().is_empty()),
-            notes: handshake.notes,
+        result.map(|handshake| {
+            let mut notes = handshake.notes;
+            let ui = handshake.result.ui.as_ref().and_then(|ui| {
+                pages::PluginPageTarget::from_declaration(ui)
+                    .map_err(|reason| notes.push(reason))
+                    .ok()
+            });
+            Connected {
+                client: handshake.client,
+                capabilities: handshake.result.capabilities,
+                summary: handshake
+                    .result
+                    .summary
+                    .filter(|summary| !summary.trim().is_empty()),
+                notes,
+                ui,
+            }
         })
     }
 

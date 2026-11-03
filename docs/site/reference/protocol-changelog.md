@@ -5,6 +5,14 @@ The client protocol's version is `MAJOR.MINOR.PATCH`
 adds and a major breaks; before it, every minor could break the wire (see the
 [compatibility spec](../specs/compatibility-v1.md) section 3).
 
+## 1.80.0
+
+- Plugin pages ([Plugin web pages](../specs/plugin-web-ui.md)):
+  `ServerHello` gains an optional `page_ticket`, which the web page keeps in
+  its `cookie_page_ticket` cookie to open the plugin pages the daemon serves
+  at `/plugins/<name>/`; `PluginInfo` gains an optional `ui_path`, where a
+  connected plugin's pages are (`plugins/<name>/`, relative to the page).
+
 ## 1.79.0
 
 - `session.fork` cuts as `session.revert` does: a run the prefix would

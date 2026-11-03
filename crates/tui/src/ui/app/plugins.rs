@@ -183,6 +183,7 @@ mod tests {
             producer_messaging: false,
             dropped_events: 0,
             stderr: None,
+            ui_path: None,
         }
     }
 

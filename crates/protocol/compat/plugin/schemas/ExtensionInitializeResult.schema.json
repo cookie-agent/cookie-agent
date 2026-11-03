@@ -76,6 +76,26 @@
       ],
       "type": "object"
     },
+    "PluginUi": {
+      "description": "The pages a plugin serves (plugin protocol 1.40.0), which the daemon\nserves at `/plugins/<name>/` on its own address\n(`docs/site/specs/plugin-web-ui.md`).",
+      "properties": {
+        "public_paths": {
+          "description": "Paths below the plugin's root, each starting with `/`, that skip the\ndaemon's access check, such as an OAuth callback. Each matches\nitself and everything below it.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "url": {
+          "description": "The plugin's HTTP server: `http://` to a loopback IP address or\n`localhost`, with a port and no user info, query, or fragment.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "url"
+      ],
+      "type": "object"
+    },
     "PromptSectionDeclaration": {
       "properties": {
         "body": {
@@ -279,6 +299,17 @@
         "tools": []
       },
       "description": "The plugin's tools and their prompt sections, declared as a runtime\ndeclares them; it runs them with the runtime protocol's `tool/*`\nmessages."
+    },
+    "ui": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/PluginUi"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "The pages the plugin serves (plugin protocol 1.40.0). The daemon\nrefuses a declaration it cannot use with a diagnostic, and the\nplugin runs without pages."
     },
     "version": {
       "type": "string"

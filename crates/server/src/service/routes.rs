@@ -66,6 +66,14 @@ impl ServerProtocol for Server {
         self.engine.page_url()
     }
 
+    fn page_ticket(&self) -> Option<String> {
+        self.shared
+            .page_ticket
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
     async fn create_session(&self, params: SessionCreateParams) -> Result<SessionCreateResult> {
         let runtimes = cookie_agent_engine::SessionRuntimes {
             runtimes: params.runtimes.map(|requests| {

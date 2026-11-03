@@ -187,6 +187,28 @@ pub struct ExtensionInitializeParams {
     /// How long the daemon waits for a hook's answer, and for the plugin's
     /// `plugin/emit` to be answered with `plugin/emit_result`.
     pub interception_timeout_ms: u64,
+    /// Where the plugin's pages can be reached (plugin protocol 1.40.0):
+    /// the daemon's `[server] page_url` joined with `plugins/<name>/`, so a
+    /// tool can send the user there. Absent when `page_url` is not set.
+    /// While serving a request, its `X-Forwarded-*` headers say where that
+    /// request came from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ui_base_url: Option<String>,
+}
+
+/// The pages a plugin serves (plugin protocol 1.40.0), which the daemon
+/// serves at `/plugins/<name>/` on its own address
+/// (`docs/site/specs/plugin-web-ui.md`).
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct PluginUi {
+    /// The plugin's HTTP server: `http://` to a loopback IP address or
+    /// `localhost`, with a port and no user info, query, or fragment.
+    pub url: String,
+    /// Paths below the plugin's root, each starting with `/`, that skip the
+    /// daemon's access check, such as an OAuth callback. Each matches
+    /// itself and everything below it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub public_paths: Vec<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
@@ -209,6 +231,11 @@ pub struct ExtensionInitializeResult {
     /// deferred tool announcements (plugin protocol 1.25.0), cut to 4 KiB.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary: Option<String>,
+    /// The pages the plugin serves (plugin protocol 1.40.0). The daemon
+    /// refuses a declaration it cannot use with a diagnostic, and the
+    /// plugin runs without pages.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ui: Option<PluginUi>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
@@ -709,9 +736,41 @@ pub fn extension_shutdown_notification() -> crate::Notification {
     crate::Notification::new(PLUGIN_SHUTDOWN_METHOD, Some(serde_json::json!({})))
 }
 
+/// Where the daemon serves plugin `name`'s pages, relative to its web page:
+/// `plugins/<name>/`, the name percent-encoded as one path segment
+/// (`docs/site/specs/plugin-web-ui.md` section 3).
+#[must_use]
+pub fn plugin_page_path(name: &str) -> String {
+    use std::fmt::Write as _;
+    // A segment of only dots would be read as `.` or `..` and removed.
+    let dots = name.bytes().all(|byte| byte == b'.');
+    let mut path = String::from("plugins/");
+    for byte in name.bytes() {
+        if byte.is_ascii_alphanumeric()
+            || matches!(byte, b'-' | b'_' | b'~')
+            || byte == b'.' && !dots
+        {
+            path.push(char::from(byte));
+        } else {
+            let _ = write!(path, "%{byte:02X}");
+        }
+    }
+    path.push('/');
+    path
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn plugin_page_paths_encode_the_name_as_one_segment() {
+        assert_eq!(plugin_page_path("gcal"), "plugins/gcal/");
+        assert_eq!(plugin_page_path("gcal.v2"), "plugins/gcal.v2/");
+        assert_eq!(plugin_page_path("my plugin/x"), "plugins/my%20plugin%2Fx/");
+        assert_eq!(plugin_page_path(".."), "plugins/%2E%2E/");
+        assert_eq!(plugin_page_path("é"), "plugins/%C3%A9/");
+    }
 
     #[test]
     fn producer_discard_is_strict_and_registration_independent() {

@@ -1124,6 +1124,8 @@ dependencies = [
  "cookie_agent_web_assets",
  "futures-util",
  "getrandom 0.2.17",
+ "hyper",
+ "hyper-util",
  "jiff",
  "rcgen",
  "reqwest",

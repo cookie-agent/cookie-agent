@@ -269,6 +269,7 @@ async fn plugin_handshake(result: Value) -> PluginHandshake {
         Duration::from_secs(2),
         Duration::from_secs(1),
         Arc::new(Reported::default()),
+        None,
     )
     .await
     .unwrap_or_else(|error| panic!("the plugin handshake: {error}"));

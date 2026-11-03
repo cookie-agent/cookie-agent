@@ -13,7 +13,7 @@ A client must call `handshake` before any other method:
 
 ```json
 { "jsonrpc": "2.0", "id": 1, "method": "handshake", "params": {
-    "protocol_version": "1.79.0",
+    "protocol_version": "1.80.0",
     "client": { "kind": "web", "instance_id": "<uuid>" },
     "token": "<the daemon's token>",
     "features": [] } }
@@ -22,7 +22,7 @@ A client must call `handshake` before any other method:
 The reply:
 
 ```json
-{ "protocol_version": "1.79.0", "engine_version": "0.3.0",
+{ "protocol_version": "1.80.0", "engine_version": "0.3.0",
   "origin": "client:web-<id>", "machine_id": "<opaque>", "features": [],
   "status": { "phase": "ready" } }
 ```
@@ -61,6 +61,11 @@ The reply:
   into the page from it, such as the TUI's links to an asset, and
   otherwise from the URL they reached the daemon at (`ws` becomes `http`,
   `wss` becomes `https`, and `/ws` is dropped).
+- **`page_ticket`** (since 1.80.0) opens the plugin pages the daemon serves
+  at `/plugins/<name>/` ([plugin pages](../development/plugins.md#pages)).
+  A web page keeps it in its `cookie_page_ticket` cookie, on the page's own
+  path. It is derived from the daemon token, so rotating the token revokes
+  it, and it opens plugin pages only, never `/ws` or `/runtime`.
 
 **Authentication.** A client authenticates with the daemon's bearer token
 (`[server] token`) in one of two places:
@@ -1000,12 +1005,15 @@ upgraded on disk. Any client holding the token may call it.
 `plugins.list` returns every configured [plugin](../extend/plugins.md) in the
 order its hooks run. A `PluginInfo` is `{ name, state, reason?, tools,
 hooks, subscribe_events, subscribe_bus, publish_bus, producer_messaging,
-dropped_events, stderr? }`: its `state` (`disabled`, `starting`,
+dropped_events, stderr?, ui_path? }`: its `state` (`disabled`, `starting`,
 `connected`, `reconnecting`, `failed`, or `stopped`), why it failed or last
 disconnected, the tools it declares and the names of the hooks it
 intercepts, what it streams and
 publishes, whether its producer messaging is open, how many notifications it
-dropped for falling behind, and the tail of its standard error.
+dropped for falling behind, the tail of its standard error, and, while it is
+connected with [pages](../development/plugins.md#pages), where they are
+(`ui_path`, since 1.80.0: `plugins/<name>/` with the name percent-encoded,
+relative to the daemon's web page).
 
 `plugins.restart` starts a plugin again now: a `failed` or reconnecting
 plugin is started at once, and a `connected` one is stopped and started. An

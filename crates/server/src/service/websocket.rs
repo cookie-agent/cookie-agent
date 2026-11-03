@@ -313,15 +313,30 @@ pub fn load_tls(cert: &Path, key: &Path) -> Result<TlsConfig, ServerError> {
 /// The daemon's routes: clients on `/ws`, dial-in runtimes on `/runtime`,
 /// and the web page on every other path. `server` may still be empty while
 /// the daemon starts.
-fn router(shared: Arc<Shared>, server: ServerSlot, token: Arc<Zeroizing<String>>) -> Router {
+fn router(
+    shared: Arc<Shared>,
+    server: ServerSlot,
+    token: Arc<Zeroizing<String>>,
+    tls: bool,
+) -> Router {
+    *shared
+        .page_ticket
+        .write()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+        Some(super::plugin_pages::page_ticket(token.as_str()));
     Router::new()
         .route("/ws", get(websocket_upgrade))
         .route("/runtime", get(runtime_upgrade))
+        .route(
+            "/plugins/{*path}",
+            axum::routing::any(super::plugin_pages::plugin_pages),
+        )
         .fallback(super::page::page)
         .with_state(WebSocketState {
             shared,
             server,
             token,
+            tls,
         })
 }
 
@@ -340,16 +355,22 @@ async fn listen(
     let shutdown = shared.shutdown.clone();
     let task = match tls {
         None => tokio::spawn(async move {
-            let _ = axum::serve(listener, router.into_make_service())
-                .with_graceful_shutdown(shutdown.cancelled_owned())
-                .await;
+            let _ = axum::serve(
+                listener,
+                router.into_make_service_with_connect_info::<PeerAddress>(),
+            )
+            .with_graceful_shutdown(shutdown.cancelled_owned())
+            .await;
         }),
         Some(tls) => {
             let listener = TlsListener::start(listener, tls, shutdown.clone());
             tokio::spawn(async move {
-                let _ = axum::serve(listener, router.into_make_service())
-                    .with_graceful_shutdown(shutdown.cancelled_owned())
-                    .await;
+                let _ = axum::serve(
+                    listener,
+                    router.into_make_service_with_connect_info::<PeerAddress>(),
+                )
+                .with_graceful_shutdown(shutdown.cancelled_owned())
+                .await;
             })
         }
     };
@@ -375,6 +396,7 @@ impl DaemonListener {
             Arc::clone(&self.shared),
             Arc::clone(&self.server),
             Arc::new(token),
+            tls.is_some(),
         );
         listen(router, address, tls, &self.shared).await
     }
@@ -410,7 +432,7 @@ impl Server {
         let slot = Arc::new(std::sync::OnceLock::new());
         let _ = slot.set(self);
         listen(
-            router(Arc::clone(&shared), slot, Arc::new(token)),
+            router(Arc::clone(&shared), slot, Arc::new(token), tls.is_some()),
             address,
             tls,
             &shared,
@@ -481,11 +503,33 @@ impl axum::serve::Listener for TlsListener {
     }
 }
 
+/// The address a request's connection came from, for `X-Forwarded-For`.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct PeerAddress(pub(super) SocketAddr);
+
+impl axum::extract::connect_info::Connected<axum::serve::IncomingStream<'_, TcpListener>>
+    for PeerAddress
+{
+    fn connect_info(stream: axum::serve::IncomingStream<'_, TcpListener>) -> Self {
+        Self(*stream.remote_addr())
+    }
+}
+
+impl axum::extract::connect_info::Connected<axum::serve::IncomingStream<'_, TlsListener>>
+    for PeerAddress
+{
+    fn connect_info(stream: axum::serve::IncomingStream<'_, TlsListener>) -> Self {
+        Self(*stream.remote_addr())
+    }
+}
+
 #[derive(Clone)]
-struct WebSocketState {
-    shared: Arc<Shared>,
-    server: ServerSlot,
-    token: Arc<Zeroizing<String>>,
+pub(super) struct WebSocketState {
+    pub(super) shared: Arc<Shared>,
+    pub(super) server: ServerSlot,
+    pub(super) token: Arc<Zeroizing<String>>,
+    /// The listener serves TLS.
+    pub(super) tls: bool,
 }
 
 /// Refuses a runtime's request that carries a browser `Origin` or lacks the
@@ -573,6 +617,7 @@ async fn websocket_upgrade(
                     about: cookie_agent_protocol_transport::About {
                         engine_version: cookie_agent_engine::release::version().to_owned(),
                         page_url,
+                        page_ticket: Some(super::plugin_pages::page_ticket(state.token.as_str())),
                     },
                 },
                 stream,
