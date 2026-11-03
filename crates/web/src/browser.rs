@@ -223,6 +223,36 @@ fn window_value(name: &str) -> wasm_bindgen::JsValue {
         .unwrap_or(wasm_bindgen::JsValue::UNDEFINED)
 }
 
+/// Keeps the daemon's page ticket in the `cookie_page_ticket` cookie, on
+/// the page's own directory, so the plugin pages the daemon serves below
+/// it open (`docs/site/specs/plugin-web-ui.md` section 4). `SameSite=Lax`
+/// lets an OAuth provider's redirect back carry it.
+pub fn set_page_ticket(ticket: &str) {
+    let Some(window) = window() else {
+        return;
+    };
+    let location = window.location();
+    let path = location.pathname().unwrap_or_default();
+    let directory = match path.rfind('/') {
+        Some(slash) => &path[..=slash],
+        None => "/",
+    };
+    let secure = location
+        .protocol()
+        .is_ok_and(|protocol| protocol == "https:");
+    let cookie = format!(
+        "{}={ticket}; Path={directory}; SameSite=Lax; Max-Age=34560000{}",
+        cookie_agent_client_state::plugins::PAGE_TICKET_COOKIE,
+        if secure { "; Secure" } else { "" },
+    );
+    if let Some(document) = window
+        .document()
+        .and_then(|document| document.dyn_into::<web_sys::HtmlDocument>().ok())
+    {
+        let _ = document.set_cookie(&cookie);
+    }
+}
+
 /// Whether the page is a secure context (HTTPS, or `localhost` and
 /// `127.0.0.1`), which installing it and its service worker need.
 pub fn is_secure_context() -> bool {

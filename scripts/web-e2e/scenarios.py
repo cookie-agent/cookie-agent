@@ -2555,6 +2555,20 @@ def management(browser):
     browser.wait("the plugin", lambda: count(browser, '#page [data-plugin="reference"]') == 1)
     browser.wait("its start", lambda: browser.text('#page [data-plugin="reference"] .plugin-state') == "connected", timeout=40)
     browser.shot("plugins")
+    # Its page opens in the frame, carried by the page ticket's cookie; a
+    # request without the cookie is refused.
+    browser.click('#page [data-plugin="reference"] [data-plugin-open]')
+    browser.wait("the plugin page", lambda: browser.script(
+        "return document.querySelector('#plugin-page-frame')?.contentDocument"
+        "?.querySelector('h1')?.textContent ?? null") == "Reference plugin")
+    assert "cookie_page_ticket=" in browser.script("return document.cookie")
+    refused = browser.script_async(
+        "const done = arguments[arguments.length - 1];"
+        "fetch('plugins/reference/', {credentials: 'omit'}).then((r) => done(r.status), () => done(0));")
+    assert refused == 401, refused
+    browser.click("#page [data-plugin-page-back]")
+    browser.wait("the plugin list", lambda: count(browser, '#page [data-plugin="reference"] [data-plugin-restart]') == 1)
+    print("opened the reference plugin's page in its frame")
     browser.click('#page [data-plugin="reference"] [data-plugin-restart]')
     close_sheet(browser)
     browser.wait("the restart", lambda: "is restarting" in browser.text("#status"))

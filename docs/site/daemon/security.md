@@ -227,6 +227,23 @@ The capture keeps them in the runtime's memory only; it never writes, logs, or
 sends them to the daemon. `[shell_environment] capture = "off"` keeps every
 process on the runtime's own environment.
 
+## Plugin pages
+
+The daemon serves each plugin's own pages at `/plugins/<name>/` on its
+listener, forwarded to the plugin's HTTP server on loopback
+([plugin pages](../extend/plugins.md#pages)). A request needs the web page's
+ticket cookie, `HMAC-SHA256` of the daemon token, which the handshake hands
+to an authenticated client, or the token itself in `Authorization`; without
+either it gets `401`, whatever plugin it names. Public paths a plugin
+declares skip the check, never for a path with `.` or `..` segments or
+encoded slashes. The cookie opens plugin pages only, never `/ws` or
+`/runtime`, and the daemon removes it and its token before forwarding.
+
+Plugin pages share the web page's origin and are not sandboxed, so a
+plugin's page script, or an XSS in it, can read the daemon token the web
+page keeps. This is the same trust a plugin already has: it runs as your
+user.
+
 ## Web fetching
 
 `webfetch` requests run with the Cookie Agent process's network access and

@@ -991,7 +991,12 @@ download, or delete it (after asking).
 - **Scheduled prompts.** See [Scheduled prompts](#scheduled-prompts).
 - **Plugins.** Settings › Plugins lists each plugin with its state, tools, hooks,
   and why it last failed, and restarts one. A plugin's events show in the
-  bottom bar.
+  bottom bar. A plugin with its own pages, such as settings or a sign-in,
+  has **Open**, which shows them in a frame of the page (**Plugins** goes
+  back, **Reload** loads them again), and **Open in new tab**. The frame
+  keeps working in an installed app on iOS, whose new tabs open in Safari
+  without the page's sign-in. Pages open only from the daemon that serves
+  the page (see [plugin pages](../extend/plugins.md#pages)).
 - **Notifications.** Settings › Notifications turns push notifications on
   in this browser and lists every device the daemon pushes to; see
   [Notifications](#notifications).

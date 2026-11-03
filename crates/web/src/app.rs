@@ -247,6 +247,14 @@ impl Connection {
 
     /// Makes `client` the page's connection and watches it for a drop.
     fn adopt(self, generation: u64, url: &str, client: Client, hello: &ServerHello) {
+        // Only the daemon that serves this page serves plugin pages below
+        // it; another daemon's ticket would replace this one's.
+        let serves_page = crate::browser::page_origin()
+            .is_some_and(|origin| cookie_agent_client_state::plugins::serves_page(url, &origin));
+        self.workspace.plugin_pages_here.set(serves_page);
+        if let Some(ticket) = hello.page_ticket.as_deref().filter(|_| serves_page) {
+            crate::browser::set_page_ticket(ticket);
+        }
         // The page waited for the daemon to be ready; what it is busy with
         // comes in its notifications from here on.
         self.daemon.set(

@@ -457,6 +457,12 @@ pub struct Workspace {
     pub media_group: RwSignal<Vec<crate::media::Viewing>>,
     /// The asset the side panel shows beside the chat.
     pub asset_panel: RwSignal<Option<crate::assets::OpenAsset>>,
+    /// Whether the connected daemon serves this page, so its plugin pages
+    /// open below it (`docs/site/specs/plugin-web-ui.md` section 7).
+    pub plugin_pages_here: RwSignal<bool>,
+    /// The plugin whose pages Settings › Plugins shows in its frame: its
+    /// name and `ui_path`.
+    pub plugin_page: RwSignal<Option<(String, String)>>,
     /// A restart the daemon scheduled, as the page says it, until the
     /// connection closes.
     pub restarting: RwSignal<Option<String>>,
@@ -686,6 +692,8 @@ impl Workspace {
             media_viewer: RwSignal::new(None),
             media_group: RwSignal::new(Vec::new()),
             asset_panel: RwSignal::new(None),
+            plugin_pages_here: RwSignal::new(false),
+            plugin_page: RwSignal::new(None),
             restarting: RwSignal::new(None),
             onboarding: Onboarding::default(),
         }

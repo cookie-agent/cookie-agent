@@ -11,6 +11,8 @@ plugin is likely to use, in plain Python with no dependencies.
 - An event subscription by pattern (`run_*` and `tool_call_*`).
 - A producer: once a `word_count` call has finished, it queues a message for
   the session's next run.
+- A page, which the daemon serves at `/plugins/reference/`: the words it
+  counted, escaped, since they come from elsewhere.
 
 Configure it as a plugin named `reference` (docs/site/extend/plugins.md):
 
@@ -22,6 +24,8 @@ With `REFERENCE_PLUGIN_LOG` set to a file, it appends one JSON line per event
 and hook call it receives.
 """
 
+import html
+import http.server
 import json
 import os
 import sys
@@ -87,6 +91,8 @@ def word_count(call, arguments):
     lines = len(text.splitlines())
     call.progress("counted", display={"type": "append", "index": 0, "text": " done."})
     counted[call.tool_call_id] = {"session_id": call.session_id, "words": words}
+    recent.insert(0, arguments.get("label") or text[:80])
+    del recent[20:]
     return cookie_plugin.tool_result(
         "%d words, %d lines" % (words, lines),
         title="Counted %d words" % words,
@@ -137,6 +143,33 @@ def on_event(params):
 
 plugin.on_event(["run_*", "tool_call_*"], on_event)
 plugin.enable_producers()
+
+
+# --- the page ------------------------------------------------------------------
+
+# The last texts counted, newest first, for the page.
+recent = []
+
+
+class Page(http.server.BaseHTTPRequestHandler):
+    def log_message(self, format, *args):
+        pass  # Standard error is the plugin's status in the daemon.
+
+    def do_GET(self):
+        if self.path.split("?")[0] != "/":
+            self.send_error(404)
+            return
+        items = "".join("<li>%s</li>" % html.escape(text) for text in recent) or "<li>none yet</li>"
+        body = ("<!doctype html><meta charset=utf-8><title>Reference plugin</title>"
+                "<h1>Reference plugin</h1><p>Texts counted:</p><ul>%s</ul>" % items).encode()
+        self.send_response(200)
+        self.send_header("content-type", "text/html; charset=utf-8")
+        self.send_header("content-length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+
+plugin.pages(Page)
 
 if __name__ == "__main__":
     plugin.run()

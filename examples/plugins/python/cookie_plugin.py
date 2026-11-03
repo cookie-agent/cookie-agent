@@ -3,23 +3,32 @@
 The daemon starts a plugin and speaks JSON-RPC 2.0 with it over standard
 input and output, one message per line (see docs/site/development/plugins.md).
 This module handles the framing, the handshake, tool preparation and
-execution, hooks, event delivery, and producer requests, so that a plugin is
-a few declarations and handlers (see reference_plugin.py). It follows the
+execution, hooks, event delivery, producer requests, and the plugin's web
+pages, so that a plugin is a few declarations and handlers (see
+reference_plugin.py and google_calendar.py). It follows the
 protocol's compatibility rules: it ignores members it does not know in what
 the daemon sends, and sends only what the daemon's version includes.
 
 It is single-threaded: while a handler waits for the daemon to answer one of
 its requests (a progress report, a producer request), messages the daemon
-sends meanwhile are kept and handled once the handler returns.
+sends meanwhile are kept and handled once the handler returns. Page
+requests are served on threads of their own; their handlers must not call
+the methods that talk to the daemon.
 """
 
 import collections
+import http.server
 import json
 import sys
+import threading
 
 # The plugin protocol version this module speaks. A daemon is compatible when
 # its major is the same; the two use what the lower minor includes.
-PROTOCOL_VERSION = "1.0.0"
+PROTOCOL_VERSION = "1.40.0"
+
+# The first plugin protocol version with pages (`ui` in the initialize
+# result, `ui_base_url` in its params).
+PAGES_VERSION = (1, 40, 0)
 
 # JSON-RPC error codes the protocol uses (docs/site/specs/compatibility-v1.md
 # section 6).
@@ -67,6 +76,18 @@ def _version(text):
     if len(parts) != 3 or not all(part.isdigit() for part in parts):
         return None
     return tuple(int(part) for part in parts)
+
+
+def external_url(request, path=""):
+    """The address the user's browser reaches `path` (relative to the
+    plugin's root, such as `oauth/callback`) at, from the `X-Forwarded-*`
+    headers the daemon sends with each page request. `request` is the
+    `http.server.BaseHTTPRequestHandler` serving the request."""
+    headers = request.headers
+    proto = headers.get("x-forwarded-proto") or "http"
+    host = headers.get("x-forwarded-host") or headers.get("host") or "localhost"
+    prefix = (headers.get("x-forwarded-prefix") or "").rstrip("/")
+    return "%s://%s%s/%s" % (proto, host, prefix, path.lstrip("/"))
 
 
 def compatible(ours, theirs):
@@ -131,6 +152,7 @@ class Plugin:
         self._backlog = collections.deque()
         self._cancelled = set()
         self._running = True
+        self._pages = None
 
     # --- registration -----------------------------------------------------
 
@@ -146,6 +168,21 @@ class Plugin:
             "execute": execute,
             "resource": resource,
             "presentation": presentation,
+        }
+
+    def pages(self, handler, public_paths=()):
+        """Serves the plugin's web pages with `handler`, an
+        `http.server.BaseHTTPRequestHandler` subclass, on a loopback port,
+        and declares them so the daemon serves them at `/plugins/<name>/`
+        (docs/site/development/plugins.md, "Pages"). Paths reach `handler`
+        below the plugin's root. `public_paths` skip the daemon's access
+        check, such as an OAuth callback; protect them yourself."""
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        server.daemon_threads = True
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self._pages = {
+            "url": "http://127.0.0.1:%d" % server.server_address[1],
+            "public_paths": list(public_paths),
         }
 
     def hook(self, name, handler, on_error="allow"):
@@ -306,7 +343,7 @@ class Plugin:
             )
         self.daemon = params
         producing = self._producing and "producer_messaging" in params.get("features", [])
-        return {
+        result = {
             "protocol_version": PROTOCOL_VERSION,
             "name": self.name,
             "version": self.version,
@@ -326,6 +363,10 @@ class Plugin:
                 "prompt_sections": [],
             },
         }
+        # Only what the daemon's version includes is sent.
+        if self._pages is not None and (_version(daemon_version) or (0,)) >= PAGES_VERSION:
+            result["ui"] = self._pages
+        return result
 
     def _prepare(self, call):
         tool = self._tools.get(call.get("name"))

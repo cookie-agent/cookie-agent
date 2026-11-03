@@ -109,6 +109,40 @@ plugin's standard error is kept as a short tail (the last 32 lines, at most
 At shutdown, the daemon asks each plugin to stop, waits `shutdown_grace_ms`,
 and then kills its process group.
 
+## Pages
+
+A plugin may serve its own web pages, such as its settings, a sign-in to
+another service, or a view of its data. The daemon serves them at
+`/plugins/<name>/` on its web address, and the web client opens them from
+Settings › Plugins (**Open**). The TUI's `/plugins` shows their address.
+
+- **Access.** A page opens only with the web page's sign-in: the web client
+  keeps a cookie derived from the daemon token, so a browser that has
+  connected to the daemon opens them and one that has not gets *401*.
+  Rotating the token revokes it. A plugin may name public paths, such as an
+  OAuth callback, that open without it; it protects those itself.
+- **Same origin.** Plugin pages are served on the web page's own origin and
+  are not sandboxed: their scripts can read what the page keeps, the daemon
+  token included, and use the daemon. Install only plugins you trust, as
+  for everything else a plugin does.
+- **OAuth.** A plugin that signs in to another service registers a redirect
+  under its pages, such as
+  `https://<your web address>/plugins/<name>/oauth/callback`. Most services
+  accept only `https` redirects, or plain `http` at `localhost`; reach the
+  web client over HTTPS, for example with `tailscale serve`, when it is not
+  on `localhost`.
+
+`examples/plugins/python/google_calendar.py` is a complete example: a
+settings page for a Google OAuth client, a Google sign-in through a public
+callback, an agenda page, and tools to list and create events.
+
+```toml
+[plugins.google-calendar]
+command = ["python3", "/path/to/cookie-agent/examples/plugins/python/google_calendar.py"]
+```
+
+To write one, see [Plugin development](../development/plugins.md#pages).
+
 ## Producer messages
 
 A plugin with `producer_messaging = true` can send messages to any session:

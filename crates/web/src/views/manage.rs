@@ -1567,26 +1567,89 @@ pub fn plugins_sheet(workspace: Workspace) -> impl IntoView {
             "No plugins are configured. Add one under [plugins.<name>] in the config.",
         )
         .into_any(),
+        Some(Ok(_)) if workspace.plugin_page.with(Option::is_some) => {
+            plugin_page_frame(workspace).into_any()
+        }
         Some(Ok(plugins)) => plugins
             .into_iter()
             .map(|plugin| {
                 let name = plugin.name.clone();
+                // Pages open below the page only from the daemon serving it.
+                let pages = plugin
+                    .ui_path
+                    .clone()
+                    .filter(|_| workspace.plugin_pages_here.get());
+                let open = pages.clone().map(|path| {
+                    let name = plugin.name.clone();
+                    view! {
+                        <button type="button" class=BUTTON data-plugin-open on:click=move |_| workspace.plugin_page.set(Some((name.clone(), path.clone())))>
+                            <Glyph icon=icondata::LuAppWindow />
+                            "Open"
+                        </button>
+                        <a class=BUTTON href=pages.clone() target="_blank" data-plugin-open-tab>
+                            <Glyph icon=icondata::LuExternalLink />
+                            "Open in new tab"
+                        </a>
+                    }
+                });
                 view! {
                     <div class="plugin flex flex-col gap-1 border-b border-line py-2" data-plugin=plugin.name.clone()>
                         <div class="flex items-center gap-2">
                             <span class="min-w-0 flex-1 truncate font-mono text-sm font-bold">{plugin.name.clone()}</span>
                             <span class=format!("plugin-state {STATE}")>{plugin_state_label(plugin.state)}</span>
                         </div>
-                        <pre class=format!("{NOTE} whitespace-pre-wrap font-mono")>{plugin_detail(&plugin)}</pre>
-                        <button type="button" class=format!("{BUTTON} self-start") data-plugin-restart on:click=move |_| workspace.restart_plugin(name.clone())>
-                            <Glyph icon=icondata::LuRefreshCw />
-                            "Restart"
-                        </button>
+                        <pre class=format!("{NOTE} whitespace-pre-wrap font-mono")>{plugin_detail(&plugin, crate::browser::page_href().filter(|_| workspace.plugin_pages_here.get()).as_deref())}</pre>
+                        <div class="flex flex-wrap gap-2">
+                            {open}
+                            <button type="button" class=BUTTON data-plugin-restart on:click=move |_| workspace.restart_plugin(name.clone())>
+                                <Glyph icon=icondata::LuRefreshCw />
+                                "Restart"
+                            </button>
+                        </div>
                     </div>
                 }
             })
             .collect_view()
             .into_any(),
     }
+    }
+}
+
+/// A plugin's pages in a frame of this page, which keeps the page's
+/// cookie where a new tab may not have it (an installed app on iOS opens
+/// one in Safari): *Back*, *Reload*, and *Open in new tab* above it.
+fn plugin_page_frame(workspace: Workspace) -> impl IntoView {
+    let frame = NodeRef::<leptos::html::Iframe>::new();
+    let open = move || workspace.plugin_page.get().unwrap_or_default();
+    let reload = move |_| {
+        if let Some(frame) = frame.get() {
+            frame.set_src(&open().1);
+        }
+    };
+    view! {
+        <div class="flex min-h-0 flex-1 flex-col gap-2" data-plugin-page=move || open().0>
+            <div class="flex flex-wrap items-center gap-2">
+                <button type="button" class=BUTTON data-plugin-page-back on:click=move |_| workspace.plugin_page.set(None)>
+                    <Glyph icon=icondata::LuArrowLeft />
+                    "Plugins"
+                </button>
+                <span class="min-w-0 flex-1 truncate font-mono text-sm font-bold">{move || open().0}</span>
+                <button type="button" class=BUTTON data-plugin-page-reload on:click=reload>
+                    <Glyph icon=icondata::LuRefreshCw />
+                    "Reload"
+                </button>
+                <a class=BUTTON href=move || open().1 target="_blank">
+                    <Glyph icon=icondata::LuExternalLink />
+                    "Open in new tab"
+                </a>
+            </div>
+            <iframe
+                node_ref=frame
+                id="plugin-page-frame"
+                class="min-h-[70vh] w-full flex-1 rounded-md border border-line bg-surface"
+                title=move || format!("{} plugin", open().0)
+                src=move || open().1
+            ></iframe>
+        </div>
     }
 }

@@ -112,7 +112,11 @@ impl App {
                     .to_owned()
             }
             (Some(plugins), Some(index)) => {
-                plugins.get(index).map(plugin_detail).unwrap_or_default()
+                let page_url = self.page_url.as_deref();
+                plugins
+                    .get(index)
+                    .map(|plugin| plugin_detail(plugin, page_url))
+                    .unwrap_or_default()
             }
             (Some(_), None) => String::new(),
         };
@@ -199,7 +203,7 @@ mod tests {
         ];
         failed.dropped_events = 3;
         failed.stderr = Some("token missing".into());
-        let detail = plugin_detail(&failed);
+        let detail = plugin_detail(&failed, None);
         for expected in [
             "state: failed",
             "reason: exited with status 1",
@@ -215,9 +219,22 @@ mod tests {
             );
         }
 
-        let quiet = plugin_detail(&plugin(PluginState::Connected));
+        let quiet = plugin_detail(&plugin(PluginState::Connected), None);
         assert!(quiet.contains("tools: none"));
         assert!(!quiet.contains("reason:"));
         assert!(!quiet.contains("dropped"));
+        assert!(!quiet.contains("pages:"));
+
+        let mut pages = plugin(PluginState::Connected);
+        pages.ui_path = Some("plugins/issues/".into());
+        assert!(plugin_detail(&pages, None).contains("pages: /plugins/issues/"));
+        assert!(
+            plugin_detail(&pages, Some("https://box.example/#session=x"))
+                .contains("pages: https://box.example/plugins/issues/")
+        );
+        assert!(
+            plugin_detail(&pages, Some("https://box.example/cookie"))
+                .contains("pages: https://box.example/cookie/plugins/issues/")
+        );
     }
 }
