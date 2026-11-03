@@ -1495,7 +1495,7 @@ pub fn config_sheet(workspace: Workspace) -> impl IntoView {
             {move || workspace.config_error.get().map(|error| view! { <p class=ERROR id="config-error">{error}</p> })}
             {config.status.error.clone().map(|error| view! { <p class=ERROR>{format!("The running configuration has an error: {error}")}</p> })}
             {(!config.status.diagnostics.is_empty() || !config.status.native_compaction.is_empty() || !config.status.deferred_tools.is_empty()).then(|| view! {
-                <ul class="flex flex-col gap-1 text-sm text-accent" id="config-diagnostics">
+                <ul class="flex flex-col gap-1 text-sm text-accent wrap-anywhere" id="config-diagnostics">
                     {config.status.diagnostics.iter().cloned().chain(cookie_agent_client_state::config::record_lines(&config.status)).map(|line| view! { <li>{line}</li> }).collect_view()}
                 </ul>
             })}
