@@ -66,7 +66,7 @@ use drafts::ComposerSlot;
 pub use attachments::DownscaleOffer;
 pub use cards::CardSet;
 pub use cron::CronForm;
-pub use history::UserMenu;
+pub use history::{MenuAnchor, PointAction, UserMenu};
 pub use manage::{ConfigEdit, MemoryChoice, MemoryEdit, MemoryPending, PANEL_POLL, RUNTIMES_POLL};
 pub(crate) use notifications::release_push;
 pub use onboarding::Onboarding;

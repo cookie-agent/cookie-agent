@@ -1732,13 +1732,9 @@ def session_depth(browser):
     browser.wait("the second answer", lambda: answers(browser) >= 2)
     idle(browser, "the second run's end")
     first = browser.text("#session-title")
-    browser.script(
-        "const menus = document.querySelectorAll('#transcript [data-action=user-menu]');"
-        "menus[menus.length - 1].click()"
-    )
-    browser.wait("the message menu", lambda: "Fork" in browser.text("#sheet"))
-    browser.shot("message-menu")
-    browser.click("#message-fork")
+    # The newest message's icons show without a hover.
+    browser.shot("message-icons")
+    browser.click("#transcript [data-latest] [data-action=message-fork]")
     browser.wait(
         "the fork",
         lambda: browser.text("#session-title") not in (first, "New session")
@@ -1755,13 +1751,20 @@ def session_depth(browser):
     browser.wait("the third answer", lambda: answers(browser) > sent)
     idle(browser, "the third run's end")
 
-    # Revert to the end of the first reply, from its footer's menu.
+    # Revert to the end of the first reply, from the icon under it, which
+    # shows once the mouse is over the reply; it asks at the icon.
     close_sheet(browser)
-    browser.click("#transcript [data-action=reply-menu]")
-    browser.wait("the reply menu", lambda: "Revert" in browser.text("#sheet"))
-    browser.shot("reply-menu")
-    browser.click("#message-revert")
+    hover(browser, "#transcript [data-action=reply-revert]")
+    browser.wait(
+        "the first reply's icons",
+        lambda: browser.script(
+            "return getComputedStyle(document.querySelector('#transcript [data-message-actions]:has([data-action=reply-revert])')).opacity"
+        ) == "1",
+    )
+    browser.click("#transcript [data-action=reply-revert]")
     browser.wait("the revert guard", lambda: "end of this reply" in browser.text("#sheet"))
+    assert browser.script("return document.querySelector('#sheet').dataset.anchored") == "true", "the guard is not at its icon"
+    browser.shot("reply-revert")
     browser.click("#revert-confirm")
     browser.wait("the revert", lambda: "third message" not in browser.text("#transcript"))
     assert browser.script("return document.querySelector('#composer').value") == ""
@@ -1772,12 +1775,7 @@ def session_depth(browser):
     idle(browser, "the third run's end")
 
     close_sheet(browser)
-    browser.script(
-        "const menus = document.querySelectorAll('#transcript [data-action=user-menu]');"
-        "menus[menus.length - 1].click()"
-    )
-    browser.wait("the message menu", lambda: "Revert" in browser.text("#sheet"))
-    browser.click("#message-revert")
+    browser.click("#transcript [data-latest] [data-action=message-revert]")
     browser.wait("the revert guard", lambda: "Revert to before" in browser.text("#sheet"))
     browser.click("#revert-confirm")
     browser.wait(
@@ -2255,52 +2253,59 @@ def hover_at(browser, selector, dx=0):
     }])
 
 
-# The opacity of the newest user message's ⋯, and whether the bubble moved
-# since `arguments[0]` (its left edge then).
-MESSAGE_MENU = """
+# The display and opacity of the icons under the oldest and the newest user
+# message, how many messages there are, and the oldest bubble's left edge.
+MESSAGE_ICONS = """
 const rows = document.querySelectorAll('#transcript .user-row');
-const row = rows[rows.length - 1];
-const button = row.querySelector('[data-action=user-menu]');
-const style = getComputedStyle(button);
-return [style.display, parseFloat(style.opacity), Math.round(row.querySelector('[data-bubble]').getBoundingClientRect().left)];
+const icons = (row) => {
+  const style = getComputedStyle(row.querySelector('[data-message-actions]'));
+  return [style.display, parseFloat(style.opacity)];
+};
+return [icons(rows[0]), icons(rows[rows.length - 1]), rows.length,
+  Math.round(rows[0].querySelector('[data-bubble]').getBoundingClientRect().left)];
 """
 
 
 def message_menu(browser):
-    """A user message's ⋯ shows only while a mouse is over its row, the
-    whole band at the bubble's height, or the keyboard is in it; the bubble
-    never moves for it."""
+    """The icons under a user message show while a mouse is over its row
+    or the keyboard is in it, and always under the newest; the bubble never
+    moves for them."""
     browser.wait("a user message", lambda: count(browser, "#transcript .user-row") > 0)
-    rows = "#transcript .user-row"
-    newest = "document.querySelectorAll('%s')[document.querySelectorAll('%s').length - 1]" % (rows, rows)
-    browser.script("%s.scrollIntoView({block: 'center'})" % newest)
     hover(browser, "#composer")
-    browser.wait("the hidden ⋯", lambda: browser.script(MESSAGE_MENU)[1] == 0)
-    display, _, left = browser.script(MESSAGE_MENU)
-    assert display != "none", "the ⋯ takes no room"
-    browser.shot("message-menu-hidden")
+    _, newest, rows, _ = browser.script(MESSAGE_ICONS)
+    assert newest == ["flex", 1], "the newest message's icons are hidden: %s" % newest
+    if rows < 2:
+        send(browser, "another message")
+        browser.wait("the second message", lambda: browser.script(MESSAGE_ICONS)[2] >= 2)
+        idle(browser, "the second run's end")
+        hover(browser, "#composer")
+    oldest = "document.querySelectorAll('#transcript .user-row')[0]"
+    browser.script("%s.scrollIntoView({block: 'center'}); %s.id = 'oldest-user-row'" % (oldest, oldest))
+    browser.wait("the oldest message's hidden icons", lambda: browser.script(MESSAGE_ICONS)[0][1] == 0)
+    assert browser.script(MESSAGE_ICONS)[0][0] != "none", "the icons take no room"
+    left = browser.script(MESSAGE_ICONS)[3]
+    browser.shot("message-icons-hidden")
     # The far left of the row's band, well away from the bubble.
-    width = browser.script("return %s.getBoundingClientRect().width" % newest)
-    browser.script("%s.id = 'newest-user-row'" % newest)
-    hover_at(browser, "#newest-user-row", -round(width / 2) + 8)
-    browser.wait("the ⋯ over the row's band", lambda: browser.script(MESSAGE_MENU)[1] == 1)
-    assert browser.script(MESSAGE_MENU)[2] == left, "the bubble moved for the ⋯"
-    browser.shot("message-menu-hovered")
-    hover(browser, "#newest-user-row [data-action=user-menu]")
-    assert browser.script(MESSAGE_MENU)[1] == 1, "the ⋯ hid on the way to it"
+    width = browser.script("return document.querySelector('#oldest-user-row').getBoundingClientRect().width")
+    hover_at(browser, "#oldest-user-row", -round(width / 2) + 8)
+    browser.wait("the icons over the row's band", lambda: browser.script(MESSAGE_ICONS)[0][1] == 1)
+    assert browser.script(MESSAGE_ICONS)[3] == left, "the bubble moved for the icons"
+    browser.shot("message-icons-hovered")
+    hover(browser, "#oldest-user-row [data-action=message-fork]")
+    assert browser.script(MESSAGE_ICONS)[0][1] == 1, "the icons hid on the way to them"
     hover(browser, "#composer")
-    browser.wait("the hidden ⋯ again", lambda: browser.script(MESSAGE_MENU)[1] == 0)
-    # Keyboard focus in the row shows it too.
-    browser.script("document.querySelector('#newest-user-row [data-action=user-menu]').focus()")
-    browser.wait("the focused ⋯", lambda: browser.script(MESSAGE_MENU)[1] == 1)
-    browser.script("document.activeElement.blur(); document.querySelector('#newest-user-row').removeAttribute('id')")
-    browser.wait("the blurred ⋯", lambda: browser.script(MESSAGE_MENU)[1] == 0)
-    print("a message's ⋯ shows only over its row or with focus in it, and the bubble stays put")
+    browser.wait("the hidden icons again", lambda: browser.script(MESSAGE_ICONS)[0][1] == 0)
+    # Keyboard focus in the row shows them too.
+    browser.script("document.querySelector('#oldest-user-row [data-action=message-copy]').focus()")
+    browser.wait("the focused icons", lambda: browser.script(MESSAGE_ICONS)[0][1] == 1)
+    browser.script("document.activeElement.blur(); document.querySelector('#oldest-user-row').removeAttribute('id')")
+    browser.wait("the blurred icons", lambda: browser.script(MESSAGE_ICONS)[0][1] == 0)
+    print("a message's icons show over its row, with focus in it, or under the newest message; the bubble stays put")
 
 
 def touch_message_menu():
-    """On a touch screen the ⋯ is gone: a long press on the bubble opens
-    the message's menu."""
+    """On a touch screen the icons are gone: a long press on the bubble
+    opens the message's menu."""
     # A coarse pointer that cannot hover: a phone's.
     phone = Browser(touch=True)
     try:
@@ -2320,7 +2325,7 @@ def touch_message_menu():
             "const rows = document.querySelectorAll('#transcript .user-row');"
             "const row = rows[rows.length - 1]; row.id = 'pressed-row'; row.scrollIntoView({block: 'center'})"
         )
-        assert phone.script(MESSAGE_MENU)[0] == "none", "a touch screen shows the ⋯"
+        assert phone.script(MESSAGE_ICONS)[1][0] == "none", "a touch screen shows the icons"
         # A scroll cancels the press; a held finger opens the menu.
         long_press(phone, "#pressed-row [data-bubble]", drag=40)
         time.sleep(0.3)
@@ -2330,7 +2335,7 @@ def touch_message_menu():
         phone.shot("phone-message-long-press")
         small = phone.script(SMALL_TARGETS)
         assert not small, "small targets in the message menu: %s" % small
-        print("phone: no ⋯ on a touch screen; a long press on the bubble opens the message menu")
+        print("phone: no icons on a touch screen; a long press on the bubble opens the message menu")
     finally:
         phone.close()
 

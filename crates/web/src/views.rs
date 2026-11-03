@@ -2480,12 +2480,30 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
                     workspace.toggle_expanded(key);
                 }
             }
-            "user-menu" => {
-                if let Some(seq) = target
-                    .get_attribute("data-seq")
-                    .and_then(|seq| seq.parse().ok())
+            // The icons under a message or a reply.
+            action
+                if matches!(
+                    action.split_once('-'),
+                    Some(("message" | "reply", "copy" | "revert" | "fork"))
+                ) =>
+            {
+                let (kind, name) = action.split_once('-').unwrap_or_default();
+                let anchor = crate::workspace::MenuAnchor::of(&target);
+                let Some(action) = crate::workspace::PointAction::parse(name) else {
+                    return;
+                };
+                if kind == "message" {
+                    if let Some(seq) = target
+                        .get_attribute("data-seq")
+                        .and_then(|seq| seq.parse().ok())
+                    {
+                        workspace.message_action(seq, action, anchor);
+                    }
+                } else if let Some(item) = target
+                    .get_attribute("data-item")
+                    .and_then(|item| item.parse().ok())
                 {
-                    workspace.open_user_menu(seq);
+                    workspace.reply_action(item, action, anchor);
                 }
             }
             "reply-menu" => {
@@ -2501,7 +2519,8 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
                     .get_attribute("data-seq")
                     .and_then(|seq| seq.parse().ok())
                 {
-                    workspace.open_compaction_revert(seq);
+                    workspace
+                        .open_compaction_revert(seq, crate::workspace::MenuAnchor::of(&target));
                 }
             }
             "background" => {
@@ -2543,7 +2562,7 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
             _ => {}
         }
     };
-    // The user message row the pointer is over, whose ⋯ shows.
+    // The row the pointer is over, whose icons show.
     let marked_row = StoredValue::new_local(None::<web_sys::Element>);
     let message_press = MessagePress {
         workspace,
@@ -2592,6 +2611,8 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
             node_ref=container
             id="transcript"
             class="min-h-0 flex-1 overflow-y-auto px-3 py-2 sm:px-6"
+            // A session another client owns offers no revert or fork.
+            data-read-only=move || (!workspace.writable()).then_some("")
             on:click=on_click
             on:scroll=move |_| {
                 if let Some((_, at)) = metrics() {
@@ -3145,8 +3166,9 @@ fn draw_blocks(element: &web_sys::Element, drawn: &mut Vec<(Arc<str>, u32)>, blo
     }
 }
 
-/// Shows the ⋯ of the user message row a mouse or pen is over (the class
-/// `pointer-over`, which style/main.css follows), and of no other row.
+/// Shows the icons under the message or reply a mouse or pen is over (the
+/// class `pointer-over` on its row, which style/main.css follows), and
+/// under no other.
 fn mark_message_row(
     event: &ev::PointerEvent,
     marked: StoredValue<Option<web_sys::Element>, LocalStorage>,
@@ -3160,8 +3182,8 @@ fn mark_message_row(
     else {
         return;
     };
-    let row = target.closest(".user-row").ok().flatten();
-    // Only the row marked before can show its ⋯: no other is looked for.
+    let row = target.closest(".transcript-item").ok().flatten();
+    // Only the row marked before can show its icons: no other is looked for.
     if !marked.with_value(|marked| *marked == row) {
         unmark_message_row(marked);
     }
@@ -3172,7 +3194,7 @@ fn mark_message_row(
     marked.set_value(row);
 }
 
-/// Hides the ⋯ of the user message row the pointer was over.
+/// Hides the icons of the row the pointer was over.
 fn unmark_message_row(marked: StoredValue<Option<web_sys::Element>, LocalStorage>) {
     if let Some(row) = marked.try_update_value(Option::take).flatten() {
         let _ = row.class_list().remove_1("pointer-over");
@@ -3887,6 +3909,48 @@ fn Sheet(workspace: Workspace) -> impl IntoView {
     // the composer, instead of a sheet: where, as CSS (D7).
     let anchor = RwSignal::new(None::<String>);
     Effect::new(move |_| {
+        // A revert asked from an icon under a message opens at the icon,
+        // below it when there is room, else above it.
+        let icon = (workspace.panel.get() == Some(Panel::Message) && !workspace.narrow.get())
+            .then(|| {
+                workspace
+                    .user_menu
+                    .with(|menu| menu.as_ref().and_then(|menu| menu.anchor))
+            })
+            .flatten();
+        if let Some(icon) = icon {
+            let (width, height) = window()
+                .inner_width()
+                .ok()
+                .zip(window().inner_height().ok())
+                .and_then(|(width, height)| width.as_f64().zip(height.as_f64()))
+                .unwrap_or((0.0, 0.0));
+            // The sheet is 22rem wide: it starts at the icon (a reply's, at
+            // the left), or where there is no room for that, ends at it (a
+            // message's, at the right), inside the window.
+            let sheet = 352.0;
+            let left = if icon.left - 6.0 + sheet <= width - 12.0 {
+                icon.left - 6.0
+            } else {
+                icon.right + 6.0 - sheet
+            }
+            .min(width - sheet - 12.0)
+            .max(12.0);
+            anchor.set(Some(if height - icon.bottom >= 220.0 {
+                format!(
+                    "left: {left:.0}px; top: {:.0}px; max-height: {:.0}px",
+                    icon.bottom + 6.0,
+                    height - icon.bottom - 24.0,
+                )
+            } else {
+                format!(
+                    "left: {left:.0}px; bottom: {:.0}px; max-height: {:.0}px",
+                    height - icon.top + 6.0,
+                    (icon.top - 24.0).max(160.0),
+                )
+            }));
+            return;
+        }
         let at = workspace
             .panel
             .get()

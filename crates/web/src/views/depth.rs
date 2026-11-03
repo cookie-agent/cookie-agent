@@ -817,6 +817,9 @@ pub fn message_sheet(workspace: Workspace) -> impl IntoView {
         };
         let writable = workspace.writable();
         let point = menu.point.clone();
+        // Opened from an icon, the confirmation is all there is: Cancel
+        // closes it, and the message it acts on is right there.
+        let direct = menu.anchor.is_some();
         let actions = if menu.confirming_revert {
             let (question, note) = match &point {
                 CutPoint::UserMessage { .. } => (
@@ -841,7 +844,7 @@ pub fn message_sheet(workspace: Workspace) -> impl IntoView {
                         "Revert"
                     </button>
                     <button type="button" class=BUTTON on:click=move |_| workspace.confirm_revert(false)>
-                        "Back"
+                        {if direct { "Cancel" } else { "Back" }}
                     </button>
                 </div>
             }
@@ -894,7 +897,7 @@ pub fn message_sheet(workspace: Workspace) -> impl IntoView {
             }
                 .into_any()
         };
-        let text = point.text().map(str::to_owned);
+        let text = point.text().filter(|_| !direct).map(str::to_owned);
         view! {
             {text.map(|text| view! {
                 <textarea id="message-text" readonly rows="4" class=FIELD>{text}</textarea>

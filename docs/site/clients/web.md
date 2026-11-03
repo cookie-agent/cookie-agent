@@ -561,19 +561,23 @@ refreshes no longer change). Reset and Replace ask once more.
     `.`), five seconds back or forward (Left and Right), a seek bar, its
     speed, and its sound. Escape, ✕, or a click beside the file closes it.
   - **Cut output** offers its complete content.
-  - **Your messages** show the files they attached. Their **⋯** shows while
-    the mouse is over the message's row (or the keyboard is in it); on a
-    touch screen a long press on the message (about half a second; moving
-    or scrolling cancels it) opens the same menu. The menu copies the
-    message, **reverts** to before it (it and every later turn are
-    removed, and its text comes back into the composer), or **forks** a new
-    session that ends before it, with its text in the fork's composer. A
-    revert is refused when another client added to the session since the
-    menu opened.
-  - **A finished reply** ends in a **⋯** beside its footer: it **reverts**
-    to the end of the reply (every later turn is removed) or **forks** a new
-    session that ends with it. A **compaction** row's **Revert** reverts to
-    before the compaction. See [Revert](../sessions/index.md#revert).
+  - **Your messages** show the files they attached. Under each, icons
+    **copy** it, **revert** to before it (it and every later turn are
+    removed, and its text comes back into the composer), or **fork** a new
+    session that ends before it, with its text in the fork's composer.
+  - **A finished reply** has the same icons under its footer: **copy** the
+    reply's text, **revert** to the end of the reply (every later turn is
+    removed; the last reply has nothing after it), or **fork** a new
+    session that ends with it.
+  - The icons show while the mouse is over the message or reply (or the
+    keyboard is in it), and always under the newest of each. A revert asks
+    first, in a popover at its icon, and is refused when another client
+    added to the session since. A **compaction** row's **Revert** reverts
+    to before the compaction. A session another client owns offers no
+    revert or fork. On a touch screen there are no icons: a long press on
+    a message (about half a second; moving or scrolling cancels it), or a
+    reply's **⋯**, opens the same actions in a menu. See
+    [Revert](../sessions/index.md#revert).
 - **An ACP agent's commands.** In a session of an
   [ACP agent](../extend/acp-agents.md), typing `/` in the composer lists the
   slash commands the agent offers above it, marked **agent**, narrowed as

@@ -101,6 +101,36 @@ impl SessionState {
         })
     }
 
+    /// The text of the reply that ends with the assistant block `item_id`:
+    /// the markdown of every text part of its run's blocks, in transcript
+    /// order, a blank line between them. `None` when it has none.
+    #[must_use]
+    pub fn reply_text(&self, item_id: u64) -> Option<String> {
+        let run = self.assistant_runs.get(&item_id);
+        let texts = self
+            .transcript
+            .iter()
+            .filter(|item| match item {
+                TranscriptItem::Assistant { id, .. } => {
+                    *id == item_id || (run.is_some() && self.assistant_runs.get(id) == run)
+                }
+                _ => false,
+            })
+            .flat_map(|item| match item {
+                TranscriptItem::Assistant { children, .. } => children.as_slice(),
+                _ => &[],
+            })
+            .filter_map(|child| match child {
+                crate::AssistantChild::Text { markdown, .. } => {
+                    Some(markdown.as_str().trim().to_owned())
+                }
+                _ => None,
+            })
+            .filter(|text| !text.is_empty())
+            .collect::<Vec<_>>();
+        (!texts.is_empty()).then(|| texts.join("\n\n"))
+    }
+
     /// The [`CutPoint::ReplyEnd`] of the reply that ends with the
     /// assistant block `item_id`, by [`Self::reply_cut`].
     #[must_use]

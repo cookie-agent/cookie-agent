@@ -109,22 +109,34 @@ html.dark {
   right: min(0px, calc((100% - 2.75rem) / 2));
 }
 
-/* A user message's ⋯ shows while a mouse or pen is over its row (the
-   page marks it `pointer-over`) or the keyboard is in it; its room stays,
-   so the bubble never moves. A touch screen has no ⋯: a long press on the
-   bubble opens the same menu, without the browser's callout or a text
-   selection. */
-.user-row [data-action="user-menu"] {
+/* The copy, revert, and fork icons under a user message or a reply show
+   while a mouse or pen is over its row (the page marks it `pointer-over`)
+   or the keyboard is in it, and always under the newest message and reply;
+   their room stays, so nothing moves. A touch screen has none: a long press
+   on a message's bubble, or a reply's ⋯, opens the same actions in a menu,
+   without the browser's callout or a text selection. A session another
+   client owns offers no revert or fork. */
+[data-message-actions] {
   opacity: 0;
   transition: opacity 120ms;
 }
-.user-row.pointer-over [data-action="user-menu"],
-.user-row:focus-within [data-action="user-menu"] {
+.transcript-item.pointer-over [data-message-actions],
+.transcript-item:focus-within [data-message-actions],
+[data-message-actions][data-latest] {
   opacity: 1;
 }
+[data-reply-footer] [data-action="reply-menu"] {
+  display: none;
+}
+#transcript[data-read-only] :is([data-action$="-revert"], [data-action$="-fork"]) {
+  display: none;
+}
 @media (pointer: coarse) {
-  .user-row [data-action="user-menu"] {
+  [data-message-actions] {
     display: none;
+  }
+  [data-reply-footer] [data-action="reply-menu"] {
+    display: inline-flex;
   }
   .user-row [data-bubble] {
     -webkit-touch-callout: none;

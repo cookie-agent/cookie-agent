@@ -169,6 +169,10 @@ struct Pass<'a, 'v> {
     /// name, and a hash of them.
     handles: HashMap<String, cookie_agent_protocol::AssetBlock>,
     handles_key: u64,
+    /// The newest user message's sequence and the newest finished reply's
+    /// block, whose icons always show.
+    latest_user: Option<u64>,
+    latest_reply: Option<u64>,
 }
 
 impl<'a, 'v> Pass<'a, 'v> {
@@ -189,6 +193,26 @@ impl<'a, 'v> Pass<'a, 'v> {
             },
             handles: HashMap::new(),
             handles_key: 0,
+            latest_user: view
+                .state
+                .transcript
+                .iter()
+                .rev()
+                .find_map(|item| match item {
+                    TranscriptItem::User { seq, .. } => Some(*seq),
+                    _ => None,
+                }),
+            latest_reply: view
+                .state
+                .transcript
+                .iter()
+                .rev()
+                .find_map(|item| match item {
+                    TranscriptItem::Assistant { id, .. } if view.state.reply_cut(*id).is_some() => {
+                        Some(*id)
+                    }
+                    _ => None,
+                }),
         }
         .with_handles()
     }
@@ -401,9 +425,14 @@ fn item_key_in(pass: &Pass<'_, '_>, item: &TranscriptItem) -> u64 {
             }
         }
         // The footer's inputs: metrics can land after the reply settles,
-        // and its menu once the run finishes.
+        // its icons once the run finishes, its revert once something comes
+        // after it, and whether it is the newest.
         view.state.assistant_metrics.get(id).hash(&mut hasher);
-        view.state.reply_cut(*id).is_some().hash(&mut hasher);
+        view.state
+            .reply_point(*id)
+            .map(|point| point.revertible())
+            .hash(&mut hasher);
+        (pass.latest_reply == Some(*id)).hash(&mut hasher);
         view.state
             .interrupted_assistant_items
             .contains(id)
@@ -421,6 +450,9 @@ fn item_key_in(pass: &Pass<'_, '_>, item: &TranscriptItem) -> u64 {
             }
         }
     }
+    if let TranscriptItem::User { seq, .. } = item {
+        (pass.latest_user == Some(*seq)).hash(&mut hasher);
+    }
     if let Some(key) = block_key(item) {
         view.expanded.block(&key).hash(&mut hasher);
     }
@@ -437,6 +469,15 @@ fn item_key_in(pass: &Pass<'_, '_>, item: &TranscriptItem) -> u64 {
 /// and for a row of history not loaded, which the page, loading sessions
 /// whole, never holds.
 pub fn item_html(view: &TranscriptView<'_>, item: &TranscriptItem) -> Option<String> {
+    item_html_in(view, item, None)
+}
+
+/// [`item_html`], knowing the newest user message's sequence.
+fn item_html_in(
+    view: &TranscriptView<'_>,
+    item: &TranscriptItem,
+    latest_user: Option<u64>,
+) -> Option<String> {
     Some(match item {
         TranscriptItem::History { .. } => return None,
         TranscriptItem::User { markdown, seq, .. } => {
@@ -459,12 +500,22 @@ pub fn item_html(view: &TranscriptView<'_>, item: &TranscriptItem) -> Option<Str
                 })
                 .unwrap_or_default();
             format!(
-                // The row is the whole band at the bubble's height: a mouse
-                // over it shows the ⋯ (style/main.css), whose room stays;
-                // a touch screen long-presses the bubble instead.
-                "<div class=\"user-row flex justify-end\" data-seq=\"{seq}\"><div class=\"user-message group ml-auto flex w-fit max-w-[80%] items-start justify-end gap-1\" data-seq=\"{seq}\"><button type=\"button\" data-action=\"user-menu\" data-seq=\"{seq}\" aria-label=\"Message actions\" title=\"Message actions\" class=\"inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-md text-muted hover:bg-hover active:bg-press\">{}</button><div class=\"min-w-0 rounded-2xl rounded-tr-sm bg-sunken px-3 py-2\" data-bubble><div class=\"markdown\">{}</div>{files}</div></div></div>",
-                svg(icondata::LuEllipsis, ""),
-                document_html(markdown)
+                // Under the bubble, its icons, which show while a mouse is
+                // over the row (style/main.css) and keep their room; a
+                // touch screen long-presses the bubble instead.
+                "<div class=\"user-row flex flex-col items-end\" data-seq=\"{seq}\"><div class=\"user-message ml-auto flex w-fit max-w-[80%] justify-end\" data-seq=\"{seq}\"><div class=\"min-w-0 rounded-2xl rounded-tr-sm bg-sunken px-3 py-2\" data-bubble><div class=\"markdown\">{}</div>{files}</div></div>{}</div>",
+                document_html(markdown),
+                point_actions_html(
+                    "message",
+                    &format!("data-seq=\"{seq}\""),
+                    "-mr-1 justify-end",
+                    latest_user == Some(*seq),
+                    [
+                        ("Copy message", true),
+                        ("Revert to before this message, then edit it", true),
+                        ("Edit in a new session from here", true),
+                    ],
+                ),
             )
         }
         TranscriptItem::Assistant {
@@ -477,7 +528,7 @@ pub fn item_html(view: &TranscriptView<'_>, item: &TranscriptItem) -> Option<Str
             for child in children {
                 html.push_str(&child_html(view, *id, child));
             }
-            html.push_str(&reply_footer_html(view.state, *id).unwrap_or_default());
+            html.push_str(&reply_footer_html(view.state, *id, false).unwrap_or_default());
             format!("<div class=\"flex flex-col gap-1\">{html}</div>")
         }
         TranscriptItem::Event {
@@ -1098,7 +1149,7 @@ pub fn transcript_rows(
                             parts: keys,
                         }
                     }
-                    _ => match item_html(view, item) {
+                    _ => match item_html_in(view, item, pass.latest_user) {
                         Some(html) => CachedRow {
                             // A row shown inside an open fold's work is
                             // part of it, for the pinned row.
@@ -1212,7 +1263,7 @@ fn reply_parts(
     // fold's last block.
     if let Some(footer) = fold
         .is_none_or(|fold| fold.last)
-        .then(|| reply_footer_html(pass.view.state, item_id))
+        .then(|| reply_footer_html(pass.view.state, item_id, pass.latest_reply == Some(item_id)))
         .flatten()
     {
         parts.push((
@@ -1332,28 +1383,76 @@ fn agent_header_html(header: &str) -> String {
 
 /// The line that closes a reply, as the TUI's footer reads: its generation
 /// speed, the context it left, its cost, and whether it was interrupted.
-/// The last block of a finished run always has one, with the ⋯ that opens
-/// the reply's revert/fork menu.
-fn reply_footer_html(state: &SessionState, item_id: u64) -> Option<String> {
+/// The last block of a finished run always has one, with the icons that
+/// copy, revert to, and fork from the reply (`latest`: the newest reply's,
+/// which always show), and for a touch screen the ⋯ of its menu instead.
+fn reply_footer_html(state: &SessionState, item_id: u64, latest: bool) -> Option<String> {
     let footer = cookie_agent_client_state::reply::assistant_footer(state, item_id);
-    let menu = state.reply_cut(item_id).is_some();
-    if footer.is_none() && !menu {
+    let point = state.reply_point(item_id);
+    if footer.is_none() && point.is_none() {
         return None;
     }
     let text = footer
         .map(|footer| format!("<span>{}</span>", escape(&footer)))
         .unwrap_or_default();
-    let button = if menu {
-        format!(
-            "<button type=\"button\" data-action=\"reply-menu\" data-item=\"{item_id}\" aria-label=\"Reply actions\" title=\"Reply actions\" class=\"-my-3 inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-md text-muted hover:bg-hover active:bg-press\">{}</button>",
-            svg(icondata::LuEllipsis, ""),
-        )
-    } else {
-        String::new()
+    let Some(point) = point else {
+        return Some(format!(
+            "<div class=\"text-xs text-faint tabular-nums\" data-reply-footer>{text}</div>"
+        ));
     };
+    let touch_menu = format!(
+        "<button type=\"button\" data-action=\"reply-menu\" data-item=\"{item_id}\" aria-label=\"Reply actions\" title=\"Reply actions\" class=\"-my-3 inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-md text-muted hover:bg-hover active:bg-press\">{}</button>",
+        svg(icondata::LuEllipsis, ""),
+    );
+    let revertible = point.revertible();
     Some(format!(
-        "<div class=\"flex items-center gap-1 text-xs text-faint tabular-nums\" data-reply-footer>{text}{button}</div>"
+        "<div class=\"flex flex-col items-start\" data-reply-footer><div class=\"flex min-h-5 items-center gap-1 text-xs text-faint tabular-nums\">{text}{touch_menu}</div>{}</div>",
+        point_actions_html(
+            "reply",
+            &format!("data-item=\"{item_id}\""),
+            "-ml-1.5",
+            latest,
+            [
+                ("Copy reply", true),
+                (
+                    if revertible {
+                        "Revert to the end of this reply"
+                    } else {
+                        "Nothing after this reply to revert"
+                    },
+                    revertible,
+                ),
+                ("Fork a new session from this reply", true),
+            ],
+        ),
     ))
+}
+
+/// The copy, revert, and fork icons under a user message or a reply
+/// (`kind`: `message` or `reply`, their `data-action` prefix), each with
+/// its tooltip and whether it is enabled. `target` names what they act on
+/// as attributes; `latest` keeps them showing.
+fn point_actions_html(
+    kind: &str,
+    target: &str,
+    class: &str,
+    latest: bool,
+    [copy, revert, fork]: [(&str, bool); 3],
+) -> String {
+    let button = |action: &str, icon: Icon, (tip, enabled): (&str, bool)| {
+        format!(
+            "<button type=\"button\" data-action=\"{kind}-{action}\" {target} aria-label=\"{tip}\" title=\"{tip}\"{} class=\"hit-area inline-flex h-7 min-w-7 items-center justify-center rounded-md text-muted hover:bg-hover hover:text-fg active:bg-press disabled:cursor-default disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-muted\">{}</button>",
+            if enabled { "" } else { " disabled" },
+            svg(icon, ""),
+        )
+    };
+    format!(
+        "<div class=\"mt-0.5 flex items-center gap-0.5 {class}\" data-message-actions{}>{}{}{}</div>",
+        if latest { " data-latest" } else { "" },
+        button("copy", icondata::LuCopy, copy),
+        button("revert", icondata::LuRotateCcw, revert),
+        button("fork", icondata::LuGitBranch, fork),
+    )
 }
 
 /// What a thinking block's header says: `thinking…` while it streams,
@@ -1947,6 +2046,88 @@ mod tests {
     static NO_DELEGATES: std::sync::LazyLock<
         std::collections::HashMap<cookie_agent_protocol::ToolCallId, Delegate>,
     > = std::sync::LazyLock::new(Default::default);
+
+    #[test]
+    fn messages_and_finished_replies_carry_their_icons_and_the_newest_keep_them_shown() {
+        // The `coding` golden history: four user messages, five finished
+        // runs, the last the session's end.
+        let mut store = cookie_agent_client_state::StateStore::default();
+        let mut session_id = None;
+        for line in include_str!(
+            "../../../engine/tests/fixtures/history/1/coding/01a152fa-2785-7822-b056-5a3ad818855f/events.jsonl"
+        )
+        .lines()
+        {
+            let event: cookie_agent_protocol::StoredEvent = serde_json::from_str(line).unwrap();
+            session_id = Some(event.session_id);
+            store.apply_event(event);
+        }
+        let session_id = session_id.unwrap();
+        let state = &store.sessions[&session_id];
+        let names = ModelDisplayNames::default();
+        let expanded = Expanded::default();
+        let view = TranscriptView {
+            session_id,
+            state,
+            names: &names,
+            minimum_level: EventLevel::Warning,
+            expanded: &expanded,
+            delegates: &NO_DELEGATES,
+            homes: &NO_HOMES,
+            transcript: TranscriptMode::Full,
+            now: jiff::Timestamp::UNIX_EPOCH,
+        };
+        let rows = super::transcript_rows(&view, None, &mut super::RowCache::default());
+        let html = rows
+            .order
+            .iter()
+            .map(|id| match &rows.html[id] {
+                super::RowHtml::Html(html) => html.to_string(),
+                super::RowHtml::Reply { parts, .. } => parts
+                    .iter()
+                    .map(|(_, part)| match part {
+                        super::PartHtml::Html(part) => part.to_string(),
+                        super::PartHtml::Markdown(blocks) => blocks.concat(),
+                    })
+                    .collect(),
+            })
+            .collect::<String>();
+        let users = state
+            .transcript
+            .iter()
+            .filter(|item| matches!(item, TranscriptItem::User { .. }))
+            .count();
+        let replies = state
+            .transcript
+            .iter()
+            .filter(|item| state.reply_cut(item.id()).is_some())
+            .count();
+        assert_eq!((users, replies), (4, 5));
+        for action in ["copy", "revert", "fork"] {
+            assert_eq!(
+                html.matches(&format!("data-action=\"message-{action}\""))
+                    .count(),
+                users
+            );
+            assert_eq!(
+                html.matches(&format!("data-action=\"reply-{action}\""))
+                    .count(),
+                replies
+            );
+        }
+        // The newest message's and reply's always show.
+        assert_eq!(html.matches("data-message-actions data-latest").count(), 2);
+        // Only the last reply has nothing after it to revert.
+        assert_eq!(html.matches(" disabled ").count(), 1);
+        let last = html.rfind("data-action=\"reply-revert\"").unwrap();
+        assert!(
+            html[last..]
+                .split('>')
+                .next()
+                .unwrap()
+                .contains(" disabled")
+        );
+    }
 
     /// A completed call with raw `arguments`, presented with `presentation`.
     fn tool(

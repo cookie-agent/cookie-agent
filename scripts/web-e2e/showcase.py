@@ -231,7 +231,7 @@ COMMANDS = [
 ]
 CLICKS = [
     ("commands", "button[aria-label=Commands]"),
-    ("message-menu", "#transcript [data-action=user-menu]"),
+    ("message-revert", "#transcript [data-latest] [data-action=message-revert]"),
     ("connection", "#sidebar button[aria-haspopup=dialog]"),
     ("sessions", "main [data-sidebar-toggle]"),
 ]

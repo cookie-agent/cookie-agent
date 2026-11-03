@@ -566,6 +566,9 @@ fn a_reply_has_its_cut_once_its_run_finishes_and_keeps_later_settings() {
     assert!(store.apply_event((*events[49]).clone()));
     let state = &store.sessions[&session_id];
     assert_eq!(state.reply_cut(item), Some(50));
+    // Its text is every text part of the run, whichever block holds it.
+    let text = state.reply_text(item).expect("reply text");
+    assert!(!text.is_empty() && !text.starts_with('\n'));
     assert_eq!(
         state.reply_point(item),
         Some(crate::cut_points::CutPoint::ReplyEnd {

@@ -172,9 +172,10 @@ The clients revert, and fork, at three points:
 
 In the TUI, click a past user message, or the `⋯` that ends a reply's
 footer, choose **Revert** or **Fork**, and confirm a revert; a compaction's
-row ends in a `[revert]` button. In the web client, a message's or a
-reply's **⋯** opens the same menu, and a compaction's row has a **Revert**
-button.
+row ends in a `[revert]` button. In the web client, icons under each
+message and finished reply copy, revert, and fork (on a touch screen, a long
+press on a message or a reply's **⋯** opens them as a menu), and a
+compaction's row has a **Revert** button.
 
 ## Delete
 
