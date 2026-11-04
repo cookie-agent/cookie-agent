@@ -30,8 +30,7 @@ attaching clients to it.
 | [`cookie skills`](#cookie-skills) | List the daemon's skills, refresh the official ones, and check skills |
 | [`cookie agents`](#cookie-agents) | List the daemon's agents, refresh the official ones, and check agent documents |
 | [`cookie update`](#cookie-update) | Replace this binary with the newest stable or nightly release |
-| [`cookie sessions upgrade`](#cookie-sessions-upgrade) | Convert stored sessions to this build's history format |
-| [`cookie sessions tools`](#cookie-sessions-tools) | Print a session's tool groups and skills with their states |
+| [`cookie sessions`](#cookie-sessions) | Convert stored sessions to this build's history format, or print a session's tool groups and skills |
 | [`cookie mcp`](#cookie-mcp) | List MCP servers and authorize a remote one |
 
 `cookie --help`, and `--help` after any subcommand, prints clap's usage;
@@ -803,7 +802,21 @@ when nothing you care about is running. Runtimes on other machines run their
 own binary: run `cookie update` there too. See
 [Updating](../install.md#updating).
 
-### `cookie sessions upgrade`
+### `cookie sessions`
+
+```text
+cookie sessions <COMMAND> [--url <URL>] [--token <TOKEN>]
+```
+
+Works on the session history this machine stores (`upgrade`, without a
+daemon), or asks a daemon about a session (`tools`).
+
+| Option | Default | Meaning |
+|---|---|---|
+| `--url <URL>` | `[server] url`, else the local daemon | The daemon's client URL (`tools`). |
+| `--token <TOKEN>` | `[server] token` | The daemon's bearer token (`tools`; `COOKIE_DAEMON_TOKEN`). |
+
+#### `cookie sessions upgrade`
 
 ```text
 cookie sessions upgrade
@@ -817,10 +830,10 @@ files directly, without a daemon. It prints a line per tree it converted or
 could not convert and a summary, and exits `1` when any session could not be
 converted. See [Sessions](../sessions/index.md).
 
-### `cookie sessions tools`
+#### `cookie sessions tools`
 
 ```text
-cookie sessions tools [--url <URL>] [--token <TOKEN>] <SESSION_ID>
+cookie sessions tools <SESSION_ID>
 ```
 
 Asks a daemon (`session.tools.get`) for a session's tool groups and skills
@@ -829,11 +842,6 @@ and prints them tab-separated: each group's selector, state (`on`,
 `agent`, `project`, or `session`), tool count, and token estimate; then each
 skill's name, state, and who set it. See
 [Tool groups and skills](../sessions/index.md#tool-groups-and-skills).
-
-| Option | Default | Meaning |
-|---|---|---|
-| `--url <URL>` | `[server] url`, else the local daemon | The daemon's client URL. |
-| `--token <TOKEN>` | `[server] token` | The daemon's bearer token (`COOKIE_DAEMON_TOKEN`). |
 
 ### `cookie mcp`
 
