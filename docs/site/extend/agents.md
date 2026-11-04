@@ -964,7 +964,7 @@ skills:
   a tool that is offered, and a tool the rules hide stays hidden whatever
   its group's state.
 - **Skills take no permission.** A skill that is on loads without asking;
-  one that is off is left out of `<available_skills>` and refused by the
+  one that is off is left out of the skill listing and refused by the
   `skill` tool, though the user can still run it. A `skill` key in
   `permissions` fails the document, naming `skills`.
 

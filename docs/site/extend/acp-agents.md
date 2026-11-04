@@ -383,8 +383,8 @@ out when it is empty:
    after the tool groups and the rules (`<tool_instructions provider=...>`
    sections, such as memory's: how memory is included, and the rubric for
    writing it when a write tool is offered);
-5. the skills a model would see (`<available_skills>`: each skill's name,
-   description, and file), when the agent is offered cookie's `skill` tool
+5. the skills a model would see (one `- name: description` line each, under
+   a line saying cookie's `skill` tool loads them), when the agent is offered that tool
    over the bridge, with the same rules a model's listing follows (a
    skill that is off, or one that opts out of model invocation, is left
    out);

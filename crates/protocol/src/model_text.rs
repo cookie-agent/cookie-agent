@@ -223,7 +223,7 @@ pub fn prompt_blocks_announcement(blocks: &[AnnouncedPromptBlock]) -> String {
         }
     }
     text.push_str(
-        "</instructions_changed>\nEach block replaces the part of the system prompt it names, and a removed block no longer applies: runtimes is where this session's tools work, attachments how to attach files to a reply, tool_instructions the <tool_instructions> sections, and skills the <available_skills> listing.",
+        "</instructions_changed>\nEach block replaces the part of the system prompt it names, and a removed block no longer applies: runtimes is where this session's tools work, attachments how to attach files to a reply, tool_instructions the <tool_instructions> sections, and skills the skill listing.",
     );
     system_reminder(&text)
 }

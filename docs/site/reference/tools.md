@@ -1348,7 +1348,7 @@ skill(args?: string, name: string)
 Description sent to the model:
 
 ```text
-Load a skill listed in `<available_skills>` by its name, with optional `args`. Its instructions come back as the result.
+Load a skill from the skill listing by its name, with optional `args`. Its instructions come back as the result.
 ```
 
 Only when at least one skill is visible to the session.
@@ -1356,7 +1356,7 @@ Only when at least one skill is visible to the session.
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `args` | `string` | no | Arguments for the skill, as its instructions take them. Default: `""`. |
-| `name` | `string` | yes | The skill's name, as `<available_skills>` lists it. |
+| `name` | `string` | yes | The skill's name, as the skill listing gives it. |
 
 ??? note "Parameters JSON Schema"
 
@@ -1371,7 +1371,7 @@ Only when at least one skill is visible to the session.
           "type": "string"
         },
         "name": {
-          "description": "The skill's name, as `<available_skills>` lists it.",
+          "description": "The skill's name, as the skill listing gives it.",
           "type": "string"
         }
       },

@@ -163,7 +163,7 @@ session's state:
 |---|---|
 | `runtimes` | The runtimes block: working directory, machine, and project, or the attachments list |
 | `tool_instructions:<provider>` | One provider's `<tool_instructions>` section, keyed by the provider label `prompt_groups` uses |
-| `skills` | The `<available_skills>` listing |
+| `skills` | The skill listing |
 
 - **`AgentSnapshot` gains `prompt_blocks: Vec<PromptBlockSpan { key, start,
   len }>`,** defaulted: where each block sits in `composed_prompt`, in

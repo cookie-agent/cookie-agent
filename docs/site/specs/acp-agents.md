@@ -843,7 +843,7 @@ protocol 1.14.0; history format unchanged):
   session's roots.)*
 - **Skills.** When the agent is offered cookie's `skill` tool over the
   bridge (after `hide_tools` and the merged rules), the first prompt's
-  context carries the `<available_skills>` listing a model run's system
+  context carries the skill listing a model run's system
   prompt would, right after the tool instruction sections: the session's
   skills with the native visibility rules (`Engine::skill_listing`, which
   `compose_skill_listing` now uses too), sized for a 200k-token context

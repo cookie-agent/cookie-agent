@@ -57,7 +57,7 @@ pub use skills::{
     OFFICIAL_SKILLS_DIRECTORY, SkillAllowedTool, SkillContext, SkillDiagnostic, SkillDiscovery,
     SkillDocument, SkillFrontmatter, SkillRegistry, load_project_skills, load_skill_roots,
     load_skill_roots_with_official, load_user_skills, load_user_skills_with_official,
-    official_skills_root, parse_skill_document, render_available_skills,
+    official_skills_root, parse_skill_document, render_skill_listing,
 };
 pub use tree::{
     CONFIG_FILE, ConfigDocument, ConfigPath, ConfigTree, OFFICIAL_AGENTS_RECORD, template_name,

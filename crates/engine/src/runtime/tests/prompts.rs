@@ -229,14 +229,14 @@ async fn tool_prompt_sections_precede_skills_and_plugin_addenda() {
         .find("This session is attached to the following machines.")
         .unwrap();
     let provider = prompt.find("Provider section.").unwrap();
-    let skills = prompt.find("<available_skills>").unwrap();
+    let skills = prompt.find("- order-skill: ").unwrap();
     let plugin = prompt.find("Plugin tail.").unwrap();
     assert!(agent < directory && directory < provider && provider < skills && skills < plugin);
     // Every appended block is introduced by the markdown horizontal-rule
     // separator, so block boundaries are visible in the assembled prompt.
     assert!(prompt.contains("---\n\nThis session is attached to the following machines."));
     assert!(prompt.contains("---\n\n<tool_instructions provider=\"test.order\">"));
-    assert!(prompt.contains("---\n\n<available_skills>"));
+    assert!(prompt[provider..skills].contains("---\n\n"));
     assert!(prompt.contains("---\n\nPlugin tail."));
     assert_eq!(
         Sha256Digest::of_bytes(prompt.as_bytes()),

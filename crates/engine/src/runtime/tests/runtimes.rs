@@ -1155,6 +1155,74 @@ async fn same_named_project_skills_of_two_attachments_are_prefixed() {
     fixture.engine.shutdown().await;
 }
 
+#[tokio::test]
+async fn a_loaded_skill_with_files_says_where_they_are() {
+    let (mut fixture, selection) = custom_fixture();
+    let root = fixture._directory.path().to_owned();
+    write_skill(&root, "bare", "Only a SKILL.md.");
+    let api = workspace_dir(&root, "api");
+    write_skill(&api, "packed", "Run go.sh.");
+    let packed = api.join(".cookie-agent/skills/packed");
+    write_private_test_file(&packed.join("go.sh"), "true\n");
+    let user = root.join("user-skills");
+    create_private_test_dir(&user);
+    let mine = user.join("mine");
+    std::fs::create_dir_all(&mine).expect("user skill directory");
+    write_private_test_file(
+        &mine.join("SKILL.md"),
+        "---\nname: mine\ndescription: Mine.\n---\nMine.\n",
+    );
+    write_private_test_file(&mine.join("notes.md"), "notes\n");
+    fixture.config.skills =
+        cookie_agent_config::load_skill_roots(None, Some(&user), &[]).expect("user skills");
+    fixture.engine.shutdown().await;
+    fixture.engine = reopen_engine(&fixture);
+    fixture
+        .engine
+        .register_runtime_template(FakeRuntimeTemplate::with_workspace(
+            "labpc",
+            probe_tools(ToolCollision::Prefix),
+        ))
+        .expect("register labpc");
+    let session = fixture
+        .engine
+        .create_session(selection)
+        .expect("session")
+        .session_id;
+    fixture
+        .engine
+        .attach_runtime(session, "labpc", None, Some(api), origin())
+        .await
+        .expect("attach labpc");
+    let rendered = |name: &str| {
+        fixture
+            .engine
+            .get_skill(session, name, "")
+            .expect("skill")
+            .rendered
+    };
+    // A skill that is only its SKILL.md has no directory to give.
+    assert_eq!(rendered("bare").trim(), "Only a SKILL.md.");
+    // A project skill is on the machine of the attachment that offers it.
+    let project = rendered("packed");
+    assert!(project.contains(&packed.display().to_string()), "{project}");
+    let labpc = fixture
+        .engine
+        .runtime_machine("labpc")
+        .expect("labpc's machine");
+    assert!(project.contains(labpc.as_str()), "{project}");
+    // A user skill is on the daemon's machine, whatever the session attaches.
+    let user = rendered("mine");
+    assert!(user.contains(&mine.display().to_string()), "{user}");
+    assert!(!user.contains(labpc.as_str()), "{user}");
+    let daemon = fixture
+        .engine
+        .runtime_machine(cookie_agent_protocol::RuntimeId::GLOBAL)
+        .expect("the daemon's machine");
+    assert!(user.contains(daemon.as_str()), "{user}");
+    fixture.engine.shutdown().await;
+}
+
 /// A runtime that offers `coding`, which takes a workspace, and `notes`,
 /// which takes none.
 struct TwoCapabilityTemplate;

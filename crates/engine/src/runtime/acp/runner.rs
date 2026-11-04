@@ -3570,6 +3570,8 @@ impl Engine {
             context.extend(self.skill_listing(
                 session,
                 policy,
+                // The harness may have its own skills and its own tool for them.
+                "cookie's `skill` tool",
                 super::prompt::SKILL_LISTING_CONTEXT_TOKENS,
             )?);
         }

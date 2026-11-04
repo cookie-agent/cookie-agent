@@ -114,7 +114,17 @@ Arguments replace `$ARGUMENTS` and positional `$1`, `$2`, and later forms.
 `${COOKIE_SKILL_DIR}` expands to the skill directory. Expansion is textual and
 does not execute a shell.
 
+A skill with files besides its `SKILL.md` ends its loaded text with its
+directory, and the machine it is on when the daemon can name it, so relative
+paths such as `scripts/check.sh` resolve without `${COOKIE_SKILL_DIR}`. The
+skill listing itself gives no paths.
+
 ## Invocation and permissions
+
+The model sees a listing with one `- name: description` line per skill, in the
+system prompt or an ACP agent's first prompt. It has room for about 1% of the
+context window: every `when_to_use` is dropped first, then the longest
+descriptions are cut.
 
 The model uses `skill({"name":"release-check","args":"v1.2.0"})`. The tool is
 absent when no skill is on for the agent, and skills with

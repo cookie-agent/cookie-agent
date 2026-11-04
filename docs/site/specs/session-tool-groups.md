@@ -19,7 +19,7 @@ Let each session choose:
    `memory`, or `cron`, each MCP server, each plugin, and a runtime's own
    groups, separately for each machine (`coding` off on `labpc`, on on
    `local`), and whether each is sent up front or deferred;
-2. **which skills it loads**: listed in `<available_skills>` and callable
+2. **which skills it loads**: listed in the skill listing and callable
    through `skill`.
 
 The aim is a smaller, focused tool list and skill listing per session.
@@ -327,7 +327,7 @@ skills:
   allow`), its row in `/permissions`, and `cookie run --allowed-tools
   skill:<name>`.
 - **The layer decides:** a skill that is off is left out of
-  `<available_skills>`, and the `skill` tool refuses it:
+  the skill listing, and the `skill` tool refuses it:
   `` skill `release-check` is off in this session ``. With no skill on, the
   `skill` tool goes away (D8).
 - **Loading never asks** (S1). The skill's own frontmatter still applies:

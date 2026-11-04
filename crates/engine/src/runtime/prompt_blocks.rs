@@ -22,7 +22,7 @@ pub(crate) const RUNTIMES_BLOCK: &str = "runtimes";
 pub(crate) const ATTACHMENTS_BLOCK: &str = "attachments";
 /// The prompt block of the tool providers' `<tool_instructions>` sections.
 pub(crate) const TOOL_INSTRUCTIONS_BLOCK: &str = "tool_instructions";
-/// The prompt block of the `<available_skills>` listing.
+/// The prompt block of the skill listing.
 pub(crate) const SKILLS_BLOCK: &str = "skills";
 
 /// How to attach files to a reply

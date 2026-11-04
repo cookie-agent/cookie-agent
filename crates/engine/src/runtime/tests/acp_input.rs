@@ -512,6 +512,12 @@ async fn session_with_a_skill(acp: &AcpFixture) -> cookie_agent_protocol::Sessio
         .session_id
 }
 
+/// Whether a prompt part is the skill listing: it has `session_with_a_skill`'s
+/// line.
+fn is_skill_listing(part: &str) -> bool {
+    part.lines().any(|line| line.starts_with("- review:"))
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn the_first_prompt_lists_the_skills_when_the_skill_tool_is_offered() {
     let document = "---\ndescription: Fixture\nmode: all\nacp: {}\n---\n";
@@ -523,17 +529,16 @@ async fn the_first_prompt_lists_the_skills_when_the_skill_tool_is_offered() {
     let prompts = prompts(&acp);
     let listing = prompts[0]
         .iter()
-        .find(|part| part.starts_with("<available_skills>"))
+        .find(|part| is_skill_listing(part))
         .expect("the skill listing");
-    assert!(listing.contains("<name>review</name>"), "{listing}");
-    assert!(listing.contains("Review a change"), "{listing}");
+    assert!(listing.contains("- review: Review a change"), "{listing}");
+    // The harness has its own skills: the listing says whose tool loads these.
+    assert!(listing.contains("cookie's `skill` tool"), "{listing}");
     // It follows the tool instructions, and only the first prompt has it.
     let tools = prompts[0]
         .iter()
         .position(|part| part.starts_with("<tool_instructions"));
-    let skills = prompts[0]
-        .iter()
-        .position(|part| part.starts_with("<available_skills>"));
+    let skills = prompts[0].iter().position(|part| is_skill_listing(part));
     assert!(
         tools.is_none_or(|tools| Some(tools) < skills),
         "{prompts:?}"
@@ -553,11 +558,7 @@ async fn the_first_prompt_lists_the_skills_when_the_skill_tool_is_offered() {
         memory.is_none_or(|memory| skills < Some(memory)),
         "{prompts:?}"
     );
-    assert!(
-        !prompts[1]
-            .iter()
-            .any(|part| part.starts_with("<available_skills>"))
-    );
+    assert!(!prompts[1].iter().any(|part| is_skill_listing(part)));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -567,11 +568,7 @@ async fn a_hidden_skill_tool_lists_no_skills() {
     let engine = acp.engine();
     let session = session_with_a_skill(&acp).await;
     turn(engine, session, "first", "say hi").await;
-    assert!(
-        !prompts(&acp)[0]
-            .iter()
-            .any(|part| part.contains("<available_skills>"))
-    );
+    assert!(!prompts(&acp)[0].iter().any(|part| is_skill_listing(part)));
 }
 
 #[tokio::test(flavor = "multi_thread")]

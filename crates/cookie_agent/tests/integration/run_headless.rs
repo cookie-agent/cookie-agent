@@ -1657,11 +1657,7 @@ async fn prospective_chained_skill_listing_preserves_a_grants_after_b_loads() {
     let result = fixture.run(args, "").await;
     assert_eq!(result.code, 0, "{}", result.stderr);
     let requests = fixture.server.requests();
-    assert!(
-        requests[0].contains("<name>grant-b</name>"),
-        "{}",
-        requests[0]
-    );
+    assert!(requests[0].contains("- grant-b: "), "{}", requests[0]);
     assert!(
         requests
             .iter()

@@ -675,10 +675,14 @@ fn skill_document(path: &Path, message: impl Into<String>) -> ConfigError {
     }
 }
 
-/// Renders the `<available_skills>` listing of `skills`, each under the name
-/// the session knows it by.
-pub fn render_available_skills<'a>(
+/// Renders the listing of `skills`, each under the name the session knows it
+/// by: an intro saying that `tool` loads them, then one `- name: description`
+/// line per skill. The lines fit in 1% of `context_tokens`, at about four
+/// bytes a token: every `when_to_use` goes first, then the longest
+/// descriptions are cut.
+pub fn render_skill_listing<'a>(
     skills: impl IntoIterator<Item = (&'a str, &'a SkillDocument)>,
+    tool: &str,
     context_tokens: u64,
 ) -> Result<String, ConfigError> {
     let skills = skills.into_iter().collect::<Vec<_>>();
@@ -688,41 +692,26 @@ pub fn render_available_skills<'a>(
     let budget = usize::try_from(context_tokens / 100)
         .unwrap_or(usize::MAX)
         .saturating_mul(4);
-    let render = |include_when: bool, descriptions: &[String]| {
-        let mut output = String::from("<available_skills>");
-        for ((name, skill), description) in skills.iter().zip(descriptions) {
-            output.push_str("<skill><name>");
-            output.push_str(&escape_xml(name));
-            output.push_str("</name><description>");
-            output.push_str(&escape_xml(description));
-            if include_when && let Some(when) = &skill.frontmatter.when_to_use {
-                output.push(' ');
-                output.push_str(&escape_xml(when));
-            }
-            output.push_str("</description><location>");
-            output.push_str(&escape_xml(&skill.path.to_string_lossy()));
-            output.push_str("</location></skill>");
-        }
-        output.push_str("</available_skills>");
-        output
-    };
     let mut descriptions = skills
         .iter()
         .map(|(_, skill)| skill.frontmatter.description.clone())
         .collect::<Vec<_>>();
-    let full = render(true, &descriptions);
-    if full.len() <= budget {
-        return Ok(full);
+    let names = skills.iter().map(|(name, _)| *name).collect::<Vec<_>>();
+    let with_when = skills
+        .iter()
+        .zip(&descriptions)
+        .map(
+            |((_, skill), description)| match &skill.frontmatter.when_to_use {
+                Some(when) => format!("{description} {}", one_line(when)),
+                None => description.clone(),
+            },
+        )
+        .collect::<Vec<_>>();
+    let mut lines = skill_lines(&names, &with_when);
+    if lines.len() > budget {
+        lines = skill_lines(&names, &descriptions);
     }
-    let without_when = render(false, &descriptions);
-    if without_when.len() <= budget {
-        return Ok(without_when);
-    }
-    loop {
-        let current = render(false, &descriptions);
-        if current.len() <= budget {
-            return Ok(current);
-        }
+    while lines.len() > budget {
         let Some((index, _)) = descriptions
             .iter()
             .enumerate()
@@ -732,11 +721,34 @@ pub fn render_available_skills<'a>(
             return Err(ConfigError::SkillListingBudget);
         };
         descriptions[index].pop();
+        lines = skill_lines(&names, &descriptions);
     }
+    Ok(format!(
+        "The following skills are available. When a task matches a skill's description, \
+         load it by name with {tool} before starting.\n\n{lines}"
+    ))
 }
 
-fn escape_xml(value: &str) -> String {
-    cookie_agent_protocol::model_text::escape_xml_text(value)
+/// One `- name: description` line for each name, without a trailing newline.
+fn skill_lines(names: &[&str], descriptions: &[String]) -> String {
+    names
+        .iter()
+        .zip(descriptions)
+        .map(|(name, description)| {
+            let description = description.trim_end();
+            if description.is_empty() {
+                format!("- {name}")
+            } else {
+                format!("- {name}: {description}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// `text` on one line, so it cannot start a line of its own in the listing.
+fn one_line(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 #[cfg(test)]
@@ -745,7 +757,7 @@ mod tests {
 
     use cookie_agent_protocol::PermissionAction;
 
-    use super::{load_skill_roots, parse_allowed_tools, render_available_skills, validate_name};
+    use super::{load_skill_roots, parse_allowed_tools, render_skill_listing, validate_name};
     use crate::simple_wildcard_match;
 
     #[test]
@@ -1046,15 +1058,86 @@ mod tests {
         )
         .expect("skill document");
         let registry = load_skill_roots(None, None, &[temp.path().to_owned()]).expect("registry");
-        let rendered = render_available_skills(
+        let rendered = render_skill_listing(
             registry
                 .skills()
                 .map(|(name, skill)| (name.as_str(), skill)),
+            "the `skill` tool",
             10_000,
         )
         .expect("bounded listing");
-        assert!(rendered.len() <= 400);
-        assert!(rendered.contains("<name>budget</name>"));
+        let lines = rendered.lines().last().expect("the skill's line");
+        assert!(lines.len() <= 400);
+        assert!(lines.starts_with("- budget: "));
         assert!(!rendered.contains(&"w".repeat(100)));
+    }
+
+    fn skill_at(root: &std::path::Path, name: &str, frontmatter: &str) {
+        let directory = root.join(".cookie-agent/skills").join(name);
+        fs::create_dir_all(&directory).expect("skill directory");
+        fs::write(
+            directory.join("SKILL.md"),
+            format!("---\nname: {name}\n{frontmatter}---\nbody\n"),
+        )
+        .expect("skill document");
+    }
+
+    #[test]
+    fn the_listing_gives_each_skill_one_line_of_what_its_author_wrote() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        skill_at(
+            temp.path(),
+            "first",
+            "description: Handles <tags> & more.\nwhen_to_use: |\n  Use often.\n  - forged: entry\n",
+        );
+        skill_at(temp.path(), "second", "description: Plain.\n");
+        let registry = load_skill_roots(None, None, &[temp.path().to_owned()]).expect("registry");
+        let rendered = render_skill_listing(
+            registry
+                .skills()
+                .map(|(name, skill)| (name.as_str(), skill)),
+            "cookie's `skill` tool",
+            200_000,
+        )
+        .expect("listing");
+        assert!(
+            rendered
+                .lines()
+                .next()
+                .unwrap()
+                .contains("cookie's `skill` tool")
+        );
+        let entries = rendered
+            .lines()
+            .filter(|line| line.starts_with("- "))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            entries,
+            [
+                "- first: Handles <tags> & more. Use often. - forged: entry",
+                "- second: Plain."
+            ]
+        );
+        assert!(!rendered.contains("SKILL.md"), "{rendered}");
+    }
+
+    #[test]
+    fn a_listing_with_no_room_for_descriptions_keeps_the_names_or_fails() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        skill_at(temp.path(), "only", "description: Long enough to be cut.\n");
+        let registry = load_skill_roots(None, None, &[temp.path().to_owned()]).expect("registry");
+        let render = |context_tokens| {
+            render_skill_listing(
+                registry
+                    .skills()
+                    .map(|(name, skill)| (name.as_str(), skill)),
+                "the `skill` tool",
+                context_tokens,
+            )
+        };
+        // 200 tokens leave 8 bytes: just `- only`.
+        let rendered = render(200).expect("the name fits");
+        assert_eq!(rendered.lines().last(), Some("- only"));
+        assert!(render(100).is_err(), "4 bytes hold not even the name");
     }
 }

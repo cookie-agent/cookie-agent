@@ -6,7 +6,7 @@ use std::{
 
 use cookie_agent_config::{SkillContext, SkillDocument, SkillRegistry};
 use cookie_agent_protocol::{
-    AttachmentName, EventPayload, PermissionEffect, PermissionRule, RunId, SessionId,
+    AttachmentName, EventPayload, PermissionEffect, PermissionRule, RunId, RuntimeId, SessionId,
     SessionPermissionOverlay, SkillDescriptor, SkillsGetResult, SkillsListResult, ToolCallId,
 };
 
@@ -52,6 +52,8 @@ pub(crate) struct SessionSkill {
     /// The attachment that contributed a project skill; `None` for a user
     /// skill.
     attachment: Option<AttachmentName>,
+    /// The runtime that reported the skill, whose machine holds its files.
+    runtime: RuntimeId,
 }
 
 impl SessionSkill {
@@ -174,13 +176,13 @@ impl Engine {
             // The daemon's own global runtime carries the user skills; every
             // other attachment's skills are its project skills.
             if attachment.runtime_id.as_str() == cookie_agent_protocol::RuntimeId::GLOBAL {
-                user.push(registry);
+                user.push((attachment.runtime_id, registry));
             } else {
-                project.push((attachment.name, registry));
+                project.push((attachment.name, attachment.runtime_id, registry));
             }
         }
         let mut offered = HashMap::<String, usize>::new();
-        for (_, registry) in &project {
+        for (_, _, registry) in &project {
             for (name, _) in registry.skills() {
                 *offered.entry(name.clone()).or_default() += 1;
             }
@@ -194,7 +196,7 @@ impl Engine {
         };
         let mut skills = BTreeMap::new();
         let mut discoveries = Vec::new();
-        for (attachment, registry) in &project {
+        for (attachment, runtime, registry) in &project {
             for (name, _) in registry.skills() {
                 skills.insert(
                     published(attachment, name),
@@ -202,6 +204,7 @@ impl Engine {
                         registry: Arc::clone(registry),
                         key: name.clone(),
                         attachment: Some(attachment.clone()),
+                        runtime: runtime.clone(),
                     },
                 );
             }
@@ -214,7 +217,7 @@ impl Engine {
                 }
             }));
         }
-        for registry in &user {
+        for (runtime, registry) in &user {
             for (name, _) in registry.skills() {
                 if offered.contains_key(name) {
                     continue;
@@ -225,6 +228,7 @@ impl Engine {
                         registry: Arc::clone(registry),
                         key: name.clone(),
                         attachment: None,
+                        runtime: runtime.clone(),
                     },
                 );
             }
@@ -380,7 +384,7 @@ impl Engine {
         let skill = session_skill(&view, name)?;
         Ok(SkillsGetResult {
             skill: skill_descriptor(name, skill.document(), true, true),
-            rendered: render_skill(skill.document(), args),
+            rendered: self.loaded_skill_text(skill, args),
         })
     }
 
@@ -429,7 +433,7 @@ impl Engine {
         };
         Ok(SkillsGetResult {
             skill: skill_descriptor(name, skill.document(), true, true),
-            rendered: render_skill(skill.document(), args),
+            rendered: self.loaded_skill_text(skill, args),
         })
     }
 
@@ -445,7 +449,7 @@ impl Engine {
     ) -> Result<SkillInvocation, EngineError> {
         let view = self.session_skills(session)?;
         let skill = session_skill(&view, name)?;
-        let plan = prepared_skill_invocation(name, skill, args);
+        let plan = self.prepared_skill_invocation(name, skill, args);
         self.install_prepared_skill(session, run, &plan).await
     }
 
@@ -719,11 +723,7 @@ impl Engine {
         args: &str,
     ) -> Result<PreparedSkillInvocation, EngineError> {
         let view = self.session_skills(session)?;
-        Ok(prepared_skill_invocation(
-            name,
-            session_skill(&view, name)?,
-            args,
-        ))
+        Ok(self.prepared_skill_invocation(name, session_skill(&view, name)?, args))
     }
 
     pub(super) fn prepare_user_skill_invocation(
@@ -739,7 +739,7 @@ impl Engine {
                 "skill `{name}` is not user-invocable"
             )));
         }
-        Ok(prepared_skill_invocation(name, skill, args))
+        Ok(self.prepared_skill_invocation(name, skill, args))
     }
 
     pub(crate) fn stage_child_skill_from_event(
@@ -820,14 +820,15 @@ impl Engine {
             .remove(&session);
     }
 
-    /// The `<available_skills>` listing of the skills a run of `policy` in
-    /// `session` may see, sized for a context of `context_tokens`; `None`
+    /// The listing of the skills a run of `policy` in `session` may see,
+    /// loaded with `tool` and sized for a context of `context_tokens`; `None`
     /// when it sees none. The model loop puts it in the system prompt, and
     /// an ACP agent's first prompt carries it.
     pub(crate) fn skill_listing(
         &self,
         session: SessionId,
         policy: &FrozenRunPolicy,
+        tool: &str,
         context_tokens: u64,
     ) -> Result<Option<String>, EngineError> {
         let projection = self.inner.store.get(session)?;
@@ -841,9 +842,68 @@ impl Engine {
         if visible.is_empty() {
             return Ok(None);
         }
-        cookie_agent_config::render_available_skills(visible, context_tokens)
+        cookie_agent_config::render_skill_listing(visible, tool, context_tokens)
             .map(Some)
             .map_err(|error| EngineError::Config(Box::new(error)))
+    }
+
+    /// The plan for invoking `skill`, known to the session as `name`. A
+    /// project skill's `allowed-tools` grants carry the attachment that
+    /// contributed it.
+    fn prepared_skill_invocation(
+        &self,
+        name: &str,
+        skill: &SessionSkill,
+        args: &str,
+    ) -> PreparedSkillInvocation {
+        let document = skill.document();
+        PreparedSkillInvocation {
+            name: name.to_owned(),
+            attachment: skill.attachment.clone(),
+            args: args.to_owned(),
+            rendered: self.loaded_skill_text(skill, args),
+            source_path: document.path.to_string_lossy().into_owned(),
+            base_dir: document.base_dir.to_string_lossy().into_owned(),
+            supporting_files: document
+                .supporting_files
+                .iter()
+                .map(|path| path.to_string_lossy().into_owned())
+                .collect(),
+            grants: document
+                .frontmatter
+                .allowed_tools
+                .iter()
+                .map(|grant| PermissionRule {
+                    action: grant.action.clone(),
+                    runtime: None,
+                    resource: grant.pattern.clone(),
+                    effect: PermissionEffect::Allow,
+                })
+                .collect(),
+            model: document.frontmatter.model.clone(),
+            context: document.frontmatter.context,
+        }
+    }
+
+    /// What loading `skill` gives the model: its rendered instructions, and
+    /// where its files are when it has any besides `SKILL.md`. The machine
+    /// is named whenever the daemon can: the text outlives the attachments
+    /// of the moment, since a loaded skill stays pinned across compaction.
+    fn loaded_skill_text(&self, skill: &SessionSkill, args: &str) -> String {
+        let document = skill.document();
+        let rendered = render_skill(document, args);
+        if document.supporting_files.is_empty() {
+            return rendered;
+        }
+        let directory = document.base_dir.to_string_lossy();
+        let machine = self
+            .runtime_machine(skill.runtime.as_str())
+            .map_or_else(String::new, |machine| format!(" (machine: {machine})"));
+        format!(
+            "{}\n\nSkill directory: {directory}{machine}\n\
+             Relative paths in this skill are relative to this directory.\n",
+            rendered.trim_end()
+        )
     }
 
     /// The `skills` prompt block a run of `policy` composes now, sized for
@@ -859,7 +919,7 @@ impl Engine {
             .limits
             .context
             .unwrap_or(8_192);
-        self.skill_listing(session, policy, context_tokens)
+        self.skill_listing(session, policy, "the `skill` tool", context_tokens)
     }
 
     pub(crate) fn compose_skill_listing(
@@ -918,42 +978,6 @@ fn skill_descriptor(
 /// the agent in `layers`, and does not opt out of model invocation.
 fn model_sees(layers: &Layers<'_>, name: &str, skill: &SessionSkill) -> bool {
     layers.skill_on(name) && !skill.document().frontmatter.disable_model_invocation
-}
-
-/// The plan for invoking `skill`, known to the session as `name`. A project
-/// skill's `allowed-tools` grants carry the attachment that contributed it.
-fn prepared_skill_invocation(
-    name: &str,
-    skill: &SessionSkill,
-    args: &str,
-) -> PreparedSkillInvocation {
-    let document = skill.document();
-    PreparedSkillInvocation {
-        name: name.to_owned(),
-        attachment: skill.attachment.clone(),
-        args: args.to_owned(),
-        rendered: render_skill(document, args),
-        source_path: document.path.to_string_lossy().into_owned(),
-        base_dir: document.base_dir.to_string_lossy().into_owned(),
-        supporting_files: document
-            .supporting_files
-            .iter()
-            .map(|path| path.to_string_lossy().into_owned())
-            .collect(),
-        grants: document
-            .frontmatter
-            .allowed_tools
-            .iter()
-            .map(|grant| PermissionRule {
-                action: grant.action.clone(),
-                runtime: None,
-                resource: grant.pattern.clone(),
-                effect: PermissionEffect::Allow,
-            })
-            .collect(),
-        model: document.frontmatter.model.clone(),
-        context: document.frontmatter.context,
-    }
 }
 
 fn prepared_skill_from_payload(
