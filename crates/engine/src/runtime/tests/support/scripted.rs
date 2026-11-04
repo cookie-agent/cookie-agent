@@ -790,12 +790,16 @@ pub(crate) fn scripted_effective_last_message(request: &[u8]) -> Option<serde_js
         .find(|message| !scripted_message_is_subagent_notification(message))
 }
 
-/// Whether `message` is the engine's announcement of changed prompt blocks
-/// (frozen context spec, section 6.2), which the engine adds to whatever
-/// request follows the change, a subagent report's wake included.
+/// Whether `message` is one of the engine's announcements that it adds to
+/// whatever request follows a change, a subagent report's wake included:
+/// changed prompt blocks (frozen context spec, section 6.2), or tools the
+/// round declared that left or came back (session tool groups spec,
+/// section 8.2).
 pub(crate) fn scripted_message_is_instructions_announcement(message: &serde_json::Value) -> bool {
-    scripted_user_text(message)
-        .is_some_and(|text| text.starts_with("<system-reminder>\n<instructions_changed>"))
+    scripted_user_text(message).is_some_and(|text| {
+        text.starts_with("<system-reminder>\n<instructions_changed>")
+            || text.starts_with("<system-reminder>\nThe following tool groups are ")
+    })
 }
 
 /// Whether `request` is a wake for subagent notifications after an answer:
