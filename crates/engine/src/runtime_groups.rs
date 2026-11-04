@@ -19,6 +19,9 @@ const MAX_WORKSPACES: usize = 16;
 /// How often one instance's groups are taken again while it runs.
 const RETAKE: std::time::Duration = std::time::Duration::from_secs(60);
 
+/// One running instance: runtime, capability, workspace, and generation.
+type InstanceKey = (String, String, Option<String>, u64);
+
 /// What one capability of one runtime offered at one workspace.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub(crate) struct Entry {
@@ -44,7 +47,7 @@ pub(crate) struct RuntimeGroupsCache {
     entries: Mutex<Vec<Entry>>,
     /// When each instance's groups were last taken, by (runtime,
     /// capability, workspace, generation).
-    taken: Mutex<HashMap<(String, String, Option<String>, u64), std::time::Instant>>,
+    taken: Mutex<HashMap<InstanceKey, std::time::Instant>>,
 }
 
 impl RuntimeGroupsCache {
