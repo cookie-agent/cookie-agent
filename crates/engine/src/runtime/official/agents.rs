@@ -527,8 +527,18 @@ fn install(
         .map(|config_root| cookie_agent_config::ConfigTree::read(Some(config_root)))
         .transpose()
         .map_err(|error| format!("the configuration does not read: {error}"))?;
+    // What the configuration already says with the official agents kept
+    // now, so a download answers only for what it adds.
+    let base = base_tree.as_ref().and_then(|tree| {
+        cookie_agent_config::load_from_tree(tree)
+            .ok()
+            .map(|loaded| (tree, loaded.official_agent_diagnostics))
+    });
     for (id, bytes) in downloads {
-        if let Err(reason) = loads(base_tree.as_ref(), &id, &bytes) {
+        let checked = base
+            .as_ref()
+            .map(|(tree, diagnostics)| (*tree, diagnostics.as_slice()));
+        if let Err(reason) = loads(checked, &id, &bytes) {
             refusals.push(format!("`{id}` does not load: {reason}"));
             now_kept.remove(&id);
             continue;
@@ -581,9 +591,13 @@ fn install(
 }
 
 /// Whether the official document `id` loads with this build, beside the
-/// user's configuration `tree` when there is one.
+/// user's configuration `base` when there is one that loads: its tree, with
+/// the official agents kept now, and the diagnostics it already has. The
+/// document replaces only the kept one of its ID, so a document of the
+/// user's that inherits another official agent still finds it, and only a
+/// diagnostic the document adds refuses it.
 fn loads(
-    tree: Option<&cookie_agent_config::ConfigTree>,
+    base: Option<(&cookie_agent_config::ConfigTree, &[String])>,
     id: &str,
     bytes: &[u8],
 ) -> Result<(), String> {
@@ -601,26 +615,30 @@ fn loads(
         }
         Ok(())
     };
-    let mut tree = tree.cloned().unwrap_or_default();
-    tree.clear_official_agents();
+    let Some((tree, before)) = base else {
+        // No configuration, or one that does not load, which is not the
+        // official document's fault: check the document alone.
+        let mut alone = cookie_agent_config::ConfigTree::default();
+        put(&mut alone)?;
+        return first_diagnostic(cookie_agent_config::load_from_tree(&alone), &[]);
+    };
+    let mut tree = tree.clone();
     put(&mut tree)?;
-    match cookie_agent_config::load_from_tree(&tree) {
-        // The user's own configuration may not load; that is not the
-        // official document's fault, so check it alone.
-        Err(_) => {
-            let mut alone = cookie_agent_config::ConfigTree::default();
-            put(&mut alone)?;
-            first_diagnostic(cookie_agent_config::load_from_tree(&alone))
-        }
-        loaded => first_diagnostic(loaded),
-    }
+    first_diagnostic(cookie_agent_config::load_from_tree(&tree), before)
 }
 
+/// The first official-agent diagnostic of `loaded` that `before` does not
+/// already have.
 fn first_diagnostic(
     loaded: Result<cookie_agent_config::LoadedConfiguration, cookie_agent_config::ConfigError>,
+    before: &[String],
 ) -> Result<(), String> {
     let loaded = loaded.map_err(|error| error.to_string())?;
-    match loaded.official_agent_diagnostics.into_iter().next() {
+    match loaded
+        .official_agent_diagnostics
+        .into_iter()
+        .find(|diagnostic| !before.contains(diagnostic))
+    {
         Some(diagnostic) => Err(diagnostic),
         None => Ok(()),
     }

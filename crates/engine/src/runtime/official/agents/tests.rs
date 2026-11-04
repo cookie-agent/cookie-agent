@@ -367,3 +367,62 @@ async fn templates_and_presets_arrive_with_the_agents() {
     assert_eq!(report.presets.acp.len(), 1);
     assert!(root.join("_acp.md").exists());
 }
+
+/// Publishes `primary` and the `_acp` template, both as version `version`.
+fn publish_with_template(routes: &Routes, version: &str, primary: &[u8], template: &[u8]) {
+    let mut routes = routes.lock().unwrap();
+    routes.clear();
+    routes.insert("/skills/primary.md".into(), primary.to_vec());
+    routes.insert("/skills/_acp.md".into(), template.to_vec());
+    let index = serde_json::json!({
+        "version": 1,
+        "agents": [{"id": "primary", "version": version, "requires_cookie": ">=0.1.0", "sha256": sha(primary)}],
+        "templates": [{"id": "acp", "version": version, "requires_cookie": ">=0.1.0", "sha256": sha(template)}],
+    });
+    routes.insert(
+        "/skills/index.json".into(),
+        serde_json::to_vec(&index).unwrap(),
+    );
+}
+
+#[tokio::test]
+async fn a_user_document_inheriting_one_official_document_does_not_hold_back_another() {
+    let fixture = fixture("");
+    let routes = Routes::default();
+    let url = serve(Arc::clone(&routes)).await;
+    fixture.engine.set_official_agents_url(&url);
+    let template =
+        b"---\ndescription: An ACP agent\nmode: all\nacp: {}\n---\nYou run inside cookie.\n"
+            .to_vec();
+    // The user's template inherits the official one before it has arrived.
+    let agents = fixture._directory.path().join(".cookie-agent/agents");
+    std::fs::create_dir_all(&agents).unwrap();
+    write_private_test_file(
+        &agents.join("_acp.md"),
+        b"---\ninherit: ../official_agents/_acp.md\nacp:\n  hide_tools: [bash]\n---\n",
+    );
+    fixture.engine.reload_configuration().await.expect("reload");
+
+    publish_with_template(&routes, "1.0.0", &agent_md("the assistant"), &template);
+    let report = fixture.engine.refresh_official_agents().await;
+    assert_eq!(report.error, None);
+    assert_eq!(ids(&report.updated), ["_acp", "primary"]);
+
+    // primary changes; the user's template still inherits the official one.
+    publish_with_template(
+        &routes,
+        "1.1.0",
+        &agent_md("the revised assistant"),
+        &template,
+    );
+    let report = fixture.engine.refresh_official_agents().await;
+    assert_eq!(report.error, None);
+    assert_eq!(ids(&report.updated), ["primary"]);
+    assert_eq!(
+        listed(&fixture, "primary")
+            .and_then(|agent| agent.official_version)
+            .as_deref(),
+        Some("1.1.0")
+    );
+    fixture.engine.shutdown().await;
+}
