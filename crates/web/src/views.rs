@@ -3897,6 +3897,7 @@ fn session_tabs(workspace: Workspace) -> impl IntoView {
 #[component]
 fn Sheet(workspace: Workspace) -> impl IntoView {
     let close = move |_| workspace.close_panel();
+    let open_panel = Memo::new(move |_| workspace.panel.get());
     let session_tab = move || {
         workspace
             .panel
@@ -4069,7 +4070,16 @@ fn Sheet(workspace: Workspace) -> impl IntoView {
                         </Show>
                     </div>
                     <div class=move || if anchored() { "flex flex-col gap-1 p-1.5" } else { "flex flex-col gap-2 p-3" }>
-                        {move || match workspace.panel.get() {
+                        {move || {
+                            // Built again only for another sheet: what a
+                            // builder reads to build it (the store, which
+                            // changes with every event of a working session)
+                            // must not build it again, or every row starts
+                            // over un-hovered and its hover blinks. A sheet
+                            // that shows live data reads it in a closure of
+                            // its own, or through `built_on`.
+                            let panel = open_panel.get();
+                            untrack(|| match panel {
                             Some(Panel::Agents) => agents_sheet(workspace).into_any(),
                             Some(Panel::Models) => models_sheet(workspace).into_any(),
                             Some(Panel::AgentOptions) => agent_options_sheet(workspace).into_any(),
@@ -4091,11 +4101,34 @@ fn Sheet(workspace: Workspace) -> impl IntoView {
                             Some(Panel::MoveSession) => projects::move_sheet(workspace).into_any(),
                             Some(Panel::Project) => projects::editor_sheet(workspace).into_any(),
                             None => ().into_any(),
+                            })
                         }}
                     </div>
                 </section>
             </div>
         </Show>
+    }
+}
+
+/// What `build` builds, built again only when what `key` reads comes out
+/// different, not on whatever else `build` reads: a sheet over the session
+/// store would otherwise be built again on each of its revisions, every
+/// event of a working session, its rows starting over un-hovered each time,
+/// so that their hover blinks.
+pub(super) fn built_on<K, V>(
+    key: impl Fn() -> K + Send + Sync + 'static,
+    build: impl Fn() -> V + Send + Sync + 'static,
+) -> impl IntoView
+where
+    K: PartialEq + Send + Sync + 'static,
+    V: IntoView + 'static,
+{
+    let key = Memo::new(move |_| key());
+    move || {
+        // Read, not tracked: `track` subscribes without running the memo,
+        // which then never reads, nor follows, what it is made of.
+        key.with(|_| ());
+        untrack(&build)
     }
 }
 
@@ -4129,7 +4162,22 @@ const DOC_ID_ROW: &str = "block w-full truncate font-mono text-xs text-muted";
 /// A chip's document ID, beside its name.
 const DOC_ID_CHIP: &str = "min-w-0 max-w-[10rem] truncate font-mono text-xs text-muted";
 
+/// The agents to start the session with, built again as they or their
+/// runtimes change.
 fn agents_sheet(workspace: Workspace) -> impl IntoView {
+    built_on(
+        move || {
+            (
+                workspace.picker_agents(),
+                workspace.agent_runtimes(),
+                workspace.agent_host(),
+            )
+        },
+        move || agents_sheet_rows(workspace),
+    )
+}
+
+fn agents_sheet_rows(workspace: Workspace) -> impl IntoView {
     let current = workspace.draft.get_untracked().map(|draft| draft.agent);
     let agents = workspace.picker_agents();
     if agents.is_empty() {
@@ -4285,94 +4333,97 @@ const NO_AGENT_OPTIONS: &str =
 /// The ACP agent's options: each with its values, the current one pressed;
 /// choosing a value sets it on the agent, or on a new session's draft.
 fn agent_options_sheet(workspace: Workspace) -> impl IntoView {
-    move || {
-        let options = workspace.acp_options();
-        if options.is_empty() {
-            let message = if workspace.acp().is_some() {
-                "The agent offers no options."
-            } else {
-                NO_AGENT_OPTIONS
-            };
-            return empty_state(icondata::LuSlidersHorizontal, message).into_any();
-        }
-        options
-            .into_iter()
-            .map(|option| {
-                // A boolean is a switch that sets the other value.
-                if option.kind == cookie_agent_protocol::AcpConfigOptionKind::Boolean {
-                    let on = option.current_value == "true";
-                    let option_id = option.id.clone();
-                    let label = format!("{}: {}", option.name, if on { "off" } else { "on" });
-                    return view! {
-                        <div class="flex items-center gap-2 border-b border-line px-3 pb-2" data-agent-option=option.id.clone()>
-                            <span class="flex min-w-0 flex-1 flex-col">
-                                <span class="text-sm font-bold">{option.name.clone()}</span>
-                                {option.description.clone().map(|description| view! { <span class=NOTE>{description}</span> })}
-                            </span>
-                            <button
-                                type="button"
-                                role="switch"
-                                class=BUTTON
-                                class:bg-sel=on
-                                aria-checked=on.to_string()
-                                aria-label=option.name.clone()
-                                data-option-toggle=on.to_string()
-                                on:click=move |_| {
-                                    workspace.set_agent_option(
-                                        option_id.clone(),
-                                        (!on).to_string(),
-                                        label.clone(),
-                                    );
-                                }
-                            >
-                                {if on { "On" } else { "Off" }}
-                            </button>
-                        </div>
-                    }
-                    .into_any();
-                }
-                let values = option
-                    .values
-                    .iter()
-                    .map(|value| {
-                        let chosen = value.value == option.current_value;
-                        let (option_id, value_id) = (option.id.clone(), value.value.clone());
-                        let label = format!("{}: {}", option.name, value.name);
-                        view! {
-                            <button
-                                type="button"
-                                class=BUTTON
-                                class:bg-sel=chosen
-                                aria-pressed=chosen.to_string()
-                                data-option-value=value.value.clone()
-                                title=value.description.clone().unwrap_or_default()
-                                on:click=move |_| {
-                                    if !chosen {
-                                        workspace.choose_agent_option(
+    built_on(
+        move || (workspace.acp_options(), workspace.acp().is_some()),
+        move || {
+            let options = workspace.acp_options();
+            if options.is_empty() {
+                let message = if workspace.acp().is_some() {
+                    "The agent offers no options."
+                } else {
+                    NO_AGENT_OPTIONS
+                };
+                return empty_state(icondata::LuSlidersHorizontal, message).into_any();
+            }
+            options
+                .into_iter()
+                .map(|option| {
+                    // A boolean is a switch that sets the other value.
+                    if option.kind == cookie_agent_protocol::AcpConfigOptionKind::Boolean {
+                        let on = option.current_value == "true";
+                        let option_id = option.id.clone();
+                        let label = format!("{}: {}", option.name, if on { "off" } else { "on" });
+                        return view! {
+                            <div class="flex items-center gap-2 border-b border-line px-3 pb-2" data-agent-option=option.id.clone()>
+                                <span class="flex min-w-0 flex-1 flex-col">
+                                    <span class="text-sm font-bold">{option.name.clone()}</span>
+                                    {option.description.clone().map(|description| view! { <span class=NOTE>{description}</span> })}
+                                </span>
+                                <button
+                                    type="button"
+                                    role="switch"
+                                    class=BUTTON
+                                    class:bg-sel=on
+                                    aria-checked=on.to_string()
+                                    aria-label=option.name.clone()
+                                    data-option-toggle=on.to_string()
+                                    on:click=move |_| {
+                                        workspace.set_agent_option(
                                             option_id.clone(),
-                                            value_id.clone(),
+                                            (!on).to_string(),
                                             label.clone(),
                                         );
                                     }
-                                }
-                            >
-                                {value.name.clone()}
-                            </button>
+                                >
+                                    {if on { "On" } else { "Off" }}
+                                </button>
+                            </div>
                         }
-                    })
-                    .collect_view();
-                view! {
-                    <div class="flex flex-col gap-1 border-b border-line pb-2" data-agent-option=option.id.clone()>
-                        <span class="px-3 text-sm font-bold">{option.name.clone()}</span>
-                        {option.description.clone().map(|description| view! { <span class=format!("px-3 {NOTE}")>{description}</span> })}
-                        <div class="flex flex-wrap gap-2 px-3">{values}</div>
-                    </div>
-                }
+                        .into_any();
+                    }
+                    let values = option
+                        .values
+                        .iter()
+                        .map(|value| {
+                            let chosen = value.value == option.current_value;
+                            let (option_id, value_id) = (option.id.clone(), value.value.clone());
+                            let label = format!("{}: {}", option.name, value.name);
+                            view! {
+                                <button
+                                    type="button"
+                                    class=BUTTON
+                                    class:bg-sel=chosen
+                                    aria-pressed=chosen.to_string()
+                                    data-option-value=value.value.clone()
+                                    title=value.description.clone().unwrap_or_default()
+                                    on:click=move |_| {
+                                        if !chosen {
+                                            workspace.choose_agent_option(
+                                                option_id.clone(),
+                                                value_id.clone(),
+                                                label.clone(),
+                                            );
+                                        }
+                                    }
+                                >
+                                    {value.name.clone()}
+                                </button>
+                            }
+                        })
+                        .collect_view();
+                    view! {
+                        <div class="flex flex-col gap-1 border-b border-line pb-2" data-agent-option=option.id.clone()>
+                            <span class="px-3 text-sm font-bold">{option.name.clone()}</span>
+                            {option.description.clone().map(|description| view! { <span class=format!("px-3 {NOTE}")>{description}</span> })}
+                            <div class="flex flex-wrap gap-2 px-3">{values}</div>
+                        </div>
+                    }
+                    .into_any()
+                })
+                .collect_view()
                 .into_any()
-            })
-            .collect_view()
-            .into_any()
-    }
+        },
+    )
 }
 
 /// The model sheet of an ACP agent (`docs/site/specs/acp-agents.md`
@@ -4380,109 +4431,125 @@ fn agent_options_sheet(workspace: Workspace) -> impl IntoView {
 /// its effort option's as the variants, and the rest of its options a tap
 /// away.
 fn acp_models_sheet(workspace: Workspace) -> impl IntoView {
-    move || {
-        let options = workspace.acp_options();
-        let model = cookie_agent_client_state::acp::model_option(&options).cloned();
-        let effort = cookie_agent_client_state::acp::effort_option(&options).cloned();
-        let choose = move |option: &cookie_agent_protocol::AcpConfigOption,
-                           value: &cookie_agent_protocol::AcpConfigValue| {
-            let (option_id, value_id) = (option.id.clone(), value.value.clone());
-            let label = format!("{}: {}", option.name, value.name);
-            move |_| {
-                workspace.choose_agent_option(option_id.clone(), value_id.clone(), label.clone());
-                workspace.panel.set(None);
-            }
-        };
-        let models = model.map(|option| {
-            option
-                .values
-                .iter()
-                .map(|value| {
-                    let chosen = value.value == option.current_value;
-                    view! {
+    built_on(
+        move || workspace.acp_options(),
+        move || {
+            let options = workspace.acp_options();
+            let model = cookie_agent_client_state::acp::model_option(&options).cloned();
+            let effort = cookie_agent_client_state::acp::effort_option(&options).cloned();
+            let choose =
+                move |option: &cookie_agent_protocol::AcpConfigOption,
+                      value: &cookie_agent_protocol::AcpConfigValue| {
+                    let (option_id, value_id) = (option.id.clone(), value.value.clone());
+                    let label = format!("{}: {}", option.name, value.name);
+                    move |_| {
+                        workspace.choose_agent_option(
+                            option_id.clone(),
+                            value_id.clone(),
+                            label.clone(),
+                        );
+                        workspace.panel.set(None);
+                    }
+                };
+            let models = model.map(|option| {
+                option
+                    .values
+                    .iter()
+                    .map(|value| {
+                        let chosen = value.value == option.current_value;
+                        view! {
+                            <button
+                                type="button"
+                                class=ROW
+                                class:bg-sel=chosen
+                                data-acp-model=value.value.clone()
+                                on:click=choose(&option, value)
+                            >
+                                {choice_line(value.name.clone(), chosen, "text-sm font-bold")}
+                                {document_id(&value.name, &value.value, DOC_ID_ROW)}
+                                {value.description.clone().map(|description| view! { <span class=NOTE>{description}</span> })}
+                            </button>
+                        }
+                    })
+                    .collect_view()
+            });
+            let efforts = effort.map(|option| {
+                let values = option
+                    .values
+                    .iter()
+                    .map(|value| {
+                        let chosen = value.value == option.current_value;
+                        view! {
+                            <button
+                                type="button"
+                                class=BUTTON
+                                class:bg-sel=chosen
+                                aria-pressed=chosen.to_string()
+                                data-acp-effort=value.value.clone()
+                                title=value.description.clone().unwrap_or_default()
+                                on:click=choose(&option, value)
+                            >
+                                <span class="min-w-0 truncate">{value.name.clone()}</span>
+                                {document_id(&value.name, &value.value, DOC_ID_CHIP)}
+                            </button>
+                        }
+                    })
+                    .collect_view();
+                view! {
+                    <div class="flex flex-col gap-1 border-b border-line pb-2">
+                        <span class="px-3 text-sm font-bold">{option.name.clone()}</span>
+                        <div class="flex flex-wrap gap-2 px-3">{values}</div>
+                    </div>
+                }
+            });
+            if models.is_none() && efforts.is_none() {
+                let message = if options.is_empty() {
+                    NO_AGENT_OPTIONS
+                } else {
+                    "The agent offers no model option."
+                };
+                return view! {
+                    {empty_state(icondata::LuCpu, message)}
+                    {(!options.is_empty()).then(|| view! {
                         <button
                             type="button"
                             class=ROW
-                            class:bg-sel=chosen
-                            data-acp-model=value.value.clone()
-                            on:click=choose(&option, value)
+                            id="agent-options-more"
+                            on:click=move |_| workspace.panel.set(Some(Panel::AgentOptions))
                         >
-                            {choice_line(value.name.clone(), chosen, "text-sm font-bold")}
-                            {document_id(&value.name, &value.value, DOC_ID_ROW)}
-                            {value.description.clone().map(|description| view! { <span class=NOTE>{description}</span> })}
+                            {choice_line("All agent options".to_owned(), false, "text-sm")}
                         </button>
-                    }
-                })
-                .collect_view()
-        });
-        let efforts = effort.map(|option| {
-            let values = option
-                .values
-                .iter()
-                .map(|value| {
-                    let chosen = value.value == option.current_value;
-                    view! {
-                        <button
-                            type="button"
-                            class=BUTTON
-                            class:bg-sel=chosen
-                            aria-pressed=chosen.to_string()
-                            data-acp-effort=value.value.clone()
-                            title=value.description.clone().unwrap_or_default()
-                            on:click=choose(&option, value)
-                        >
-                            <span class="min-w-0 truncate">{value.name.clone()}</span>
-                            {document_id(&value.name, &value.value, DOC_ID_CHIP)}
-                        </button>
-                    }
-                })
-                .collect_view();
+                    })}
+                }
+                .into_any();
+            }
             view! {
-                <div class="flex flex-col gap-1 border-b border-line pb-2">
-                    <span class="px-3 text-sm font-bold">{option.name.clone()}</span>
-                    <div class="flex flex-wrap gap-2 px-3">{values}</div>
-                </div>
+                <div class="flex flex-col gap-1 border-b border-line pb-2">{models}</div>
+                {efforts}
+                <button
+                    type="button"
+                    class=ROW
+                    id="agent-options-more"
+                    on:click=move |_| workspace.panel.set(Some(Panel::AgentOptions))
+                >
+                    {choice_line("All agent options".to_owned(), false, "text-sm")}
+                    <span class=NOTE>"Mode and the agent's other settings"</span>
+                </button>
             }
-        });
-        if models.is_none() && efforts.is_none() {
-            let message = if options.is_empty() {
-                NO_AGENT_OPTIONS
-            } else {
-                "The agent offers no model option."
-            };
-            return view! {
-                {empty_state(icondata::LuCpu, message)}
-                {(!options.is_empty()).then(|| view! {
-                    <button
-                        type="button"
-                        class=ROW
-                        id="agent-options-more"
-                        on:click=move |_| workspace.panel.set(Some(Panel::AgentOptions))
-                    >
-                        {choice_line("All agent options".to_owned(), false, "text-sm")}
-                    </button>
-                })}
-            }
-            .into_any();
-        }
-        view! {
-            <div class="flex flex-col gap-1 border-b border-line pb-2">{models}</div>
-            {efforts}
-            <button
-                type="button"
-                class=ROW
-                id="agent-options-more"
-                on:click=move |_| workspace.panel.set(Some(Panel::AgentOptions))
-            >
-                {choice_line("All agent options".to_owned(), false, "text-sm")}
-                <span class=NOTE>"Mode and the agent's other settings"</span>
-            </button>
-        }
-        .into_any()
-    }
+            .into_any()
+        },
+    )
 }
 
+/// The models to start the session with, built again as they change.
 fn models_sheet(workspace: Workspace) -> impl IntoView {
+    built_on(
+        move || (workspace.draft_is_acp(), workspace.models()),
+        move || models_sheet_rows(workspace),
+    )
+}
+
+fn models_sheet_rows(workspace: Workspace) -> impl IntoView {
     if workspace.draft_is_acp() {
         return acp_models_sheet(workspace).into_any();
     }
@@ -4553,7 +4620,15 @@ fn models_sheet(workspace: Workspace) -> impl IntoView {
         .into_any()
 }
 
+/// The presets to start the session with, built again as they change.
 fn presets_sheet(workspace: Workspace) -> impl IntoView {
+    built_on(
+        move || workspace.presets(),
+        move || presets_sheet_rows(workspace),
+    )
+}
+
+fn presets_sheet_rows(workspace: Workspace) -> impl IntoView {
     let current = workspace.preset.get_untracked();
     std::iter::once(None)
         .chain(workspace.presets().into_iter().map(Some))
@@ -5007,11 +5082,23 @@ fn commands_sheet(workspace: Workspace) -> impl IntoView {
     let matches = |query: &str, texts: [&str; 2]| {
         query.is_empty() || texts.iter().any(|text| text.to_lowercase().contains(query))
     };
+    // The agent's commands and which of cookie's they stand in for, as
+    // values: read from the store, which changes with every event of a
+    // working session, they would build every row again with each, and
+    // the hover of the one under the pointer would blink.
+    let replaced = Memo::new(move |_| {
+        MENU.iter()
+            .filter(|entry| workspace.agent_replaces(entry.id))
+            .map(|entry| entry.id)
+            .collect::<Vec<_>>()
+    });
+    let commands = Memo::new(move |_| workspace.agent_commands());
     let own = move || {
         let query = query();
+        let replaced = replaced.get();
         MENU.iter()
             .filter(|entry| crate::commands::offered(entry.command, has_crons))
-            .filter(|entry| !workspace.agent_replaces(entry.id))
+            .filter(|entry| !replaced.contains(&entry.id))
             .filter(|entry| matches(&query, [entry.label, entry.description]))
             .map(|entry| {
                 let command = entry.command;
@@ -5037,10 +5124,9 @@ fn commands_sheet(workspace: Workspace) -> impl IntoView {
             })
             .collect_view()
     };
-    let commands = StoredValue::new(workspace.agent_commands());
     let agent = move || {
         let query = query();
-        let rows = commands.with_value(|commands| {
+        let rows = commands.with(|commands| {
             commands
                 .iter()
                 .filter(|command| {
@@ -5156,7 +5242,16 @@ fn agent_command_sheet(workspace: Workspace) -> impl IntoView {
 
 /// The permission mode picker: every mode with its shield and what it
 /// does, the current one checked; a click sets it.
+/// The permission modes, or the ACP agent's own modes, built again as
+/// the agent's change.
 fn modes_sheet(workspace: Workspace) -> impl IntoView {
+    built_on(
+        move || cookie_agent_client_state::acp::mode_option(&workspace.acp_options()).cloned(),
+        move || modes_sheet_rows(workspace),
+    )
+}
+
+fn modes_sheet_rows(workspace: Workspace) -> impl IntoView {
     if let Some(option) =
         cookie_agent_client_state::acp::mode_option(&workspace.acp_options()).cloned()
     {

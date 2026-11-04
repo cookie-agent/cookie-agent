@@ -3751,6 +3751,31 @@ def rows_stay_put(browser):
     print("the opened row stayed at", before)
 
 
+def sheet_stays_put(browser):
+    """A sheet open while a reply streams keeps its rows and what is typed
+    in it: the session's events must not build it again, or the row under
+    the pointer starts over un-hovered with each and its hover blinks."""
+    new_session(browser)
+    send(browser, "stream only, label gamma, lines 600")
+    browser.wait("the reply", lambda: "gamma 20 " in browser.text("#transcript"), timeout=30)
+    browser.script("document.querySelector('main button[aria-label=Commands]').click()")
+    browser.wait("the session menu", lambda: count(browser, "#sheet [data-command=goal]") == 1)
+    set_text(browser, "#command-filter", "goal")
+    browser.wait("the filtered menu", lambda: count(browser, "#sheet [data-command=rename]") == 0)
+    browser.script("document.querySelector('#sheet [data-command=goal]').dataset.marked = '1'")
+    before = len(browser.text("#transcript"))
+    time.sleep(1.5)
+    assert len(browser.text("#transcript")) > before, "the reply stopped streaming"
+    kept = browser.script(
+        "const row = document.querySelector('#sheet [data-command=goal]');"
+        "return [row && row.dataset.marked, document.querySelector('#command-filter').value]"
+    )
+    assert kept == ["1", "goal"], "the streaming reply built the sheet again: %s" % kept
+    print("the session menu kept its rows and its filter through the stream")
+    close_sheet(browser)
+    idle(browser, "the reply's end", text="gamma 599 ")
+
+
 def open_session_id(browser):
     return browser.script(
         "return document.querySelector('aside [data-session-row] [aria-current=true]').dataset.session"
@@ -6812,6 +6837,7 @@ SCENARIOS = [
     ("opens_on_sessions", opens_on_sessions, "chat", ["basics"]),
     ("skills_view", skills_view, "chat", []),
     ("rows_stay_put", rows_stay_put, "chat", []),
+    ("sheet_stays_put", sheet_stays_put, "chat", []),
     ("reduced_transcript", reduced_transcript, "chat", []),
     ("asset_figures", asset_figures, "chat", []),
     ("assets_tab", assets_tab, "chat", []),

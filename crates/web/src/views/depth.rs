@@ -14,8 +14,8 @@ use leptos::{ev, prelude::*};
 
 use super::{
     BUTTON, EFFECTS, GoalCommand, ICON_BUTTON, NOTE, PRIMARY, PermissionEffect,
-    PermissionRuleSource, ROW, action_label, effect_label, empty_state, goal_actions, loading,
-    permission_actions, permission_rows, source_label, status_name,
+    PermissionRuleSource, ROW, action_label, built_on, effect_label, empty_state, goal_actions,
+    loading, permission_actions, permission_rows, source_label, status_name,
 };
 use crate::{
     attach::{accept_attribute, accepts_images, camera_accept_attribute},
@@ -216,120 +216,129 @@ pub fn compact_sheet(workspace: Workspace) -> impl IntoView {
     }
 }
 
+/// The selected session's deferred tools prompt, when it has one.
+fn deferred_prompt(workspace: Workspace) -> Option<String> {
+    let session_id = workspace.selected.get()?;
+    workspace.with_store(|store| {
+        store
+            .sessions
+            .get(&session_id)
+            .and_then(cookie_agent_client_state::rows::deferred_tools_prompt)
+    })
+}
+
 /// The selected session's deferred tools prompt, as the model reads it.
 pub fn deferred_prompt_sheet(workspace: Workspace) -> impl IntoView {
-    move || {
-        let prompt = workspace.selected.get().and_then(|session_id| {
-            workspace.with_store(|store| {
-                store
-                    .sessions
-                    .get(&session_id)
-                    .and_then(cookie_agent_client_state::rows::deferred_tools_prompt)
-            })
-        });
-        match prompt {
-            Some(prompt) => view! {
-                <pre
-                    class="max-h-[70vh] overflow-auto whitespace-pre-wrap break-words rounded-md bg-surface-2 p-2 font-mono text-xs"
-                    data-deferred-prompt
-                >
-                    {prompt}
-                </pre>
+    built_on(
+        move || deferred_prompt(workspace),
+        move || {
+            match deferred_prompt(workspace) {
+                Some(prompt) => view! {
+                    <pre
+                        class="max-h-[70vh] overflow-auto whitespace-pre-wrap break-words rounded-md bg-surface-2 p-2 font-mono text-xs"
+                        data-deferred-prompt
+                    >
+                        {prompt}
+                    </pre>
+                }
+                .into_any(),
+                None => view! { <p class=NOTE>"Nothing is deferred in this session."</p> }.into_any(),
             }
-            .into_any(),
-            None => view! { <p class=NOTE>"Nothing is deferred in this session."</p> }.into_any(),
-        }
-    }
+        },
+    )
 }
 
 pub fn goal_sheet(workspace: Workspace) -> impl IntoView {
-    move || {
-        let goal = workspace.goal();
-        let current = match &goal {
-            Some(goal) => {
-                let items = goal
-                    .items
+    built_on(
+        move || (workspace.goal(), workspace.writable()),
+        move || {
+            let goal = workspace.goal();
+            let current = match &goal {
+                Some(goal) => {
+                    let items = goal
+                        .items
+                        .iter()
+                        .map(|item| {
+                            view! {
+                                <li class="flex items-start gap-2">
+                                    <Glyph
+                                        icon=if item.finished { icondata::LuSquareCheck } else { icondata::LuSquare }
+                                        class="mt-0.5"
+                                    />
+                                    <span class="sr-only">{if item.finished { "finished: " } else { "open: " }}</span>
+                                    <span>{item.description.clone()}</span>
+                                </li>
+                            }
+                        })
+                        .collect_view();
+                    view! {
+                        <p class="flex items-center gap-2 text-sm font-bold">
+                            <Glyph icon=icondata::LuTarget class="text-accent" />
+                            {format!("Goal ({})", status_name(goal.status))}
+                        </p>
+                        <p id="goal-objective" class="text-sm whitespace-pre-wrap">{goal.objective.clone()}</p>
+                        <ul class="flex list-none flex-col gap-1 text-xs">{items}</ul>
+                    }
+                        .into_any()
+                }
+                None => empty_state(icondata::LuTarget, "No goal is set.").into_any(),
+            };
+            let controls = goal.map(|goal| {
+                goal_actions(goal.status, !workspace.writable())
                     .iter()
-                    .map(|item| {
+                    .map(|action| {
+                        let action = *action;
                         view! {
-                            <li class="flex items-start gap-2">
-                                <Glyph
-                                    icon=if item.finished { icondata::LuSquareCheck } else { icondata::LuSquare }
-                                    class="mt-0.5"
-                                />
-                                <span class="sr-only">{if item.finished { "finished: " } else { "open: " }}</span>
-                                <span>{item.description.clone()}</span>
-                            </li>
+                            <button
+                                type="button"
+                                class=BUTTON
+                                data-goal-action=action_label(action).to_lowercase()
+                                on:click=move |_| workspace.goal_command(GoalCommand::Lifecycle(action))
+                            >
+                                {action_label(action)}
+                            </button>
                         }
                     })
-                    .collect_view();
-                view! {
-                    <p class="flex items-center gap-2 text-sm font-bold">
-                        <Glyph icon=icondata::LuTarget class="text-accent" />
-                        {format!("Goal ({})", status_name(goal.status))}
-                    </p>
-                    <p id="goal-objective" class="text-sm whitespace-pre-wrap">{goal.objective.clone()}</p>
-                    <ul class="flex list-none flex-col gap-1 text-xs">{items}</ul>
-                }
-                    .into_any()
-            }
-            None => empty_state(icondata::LuTarget, "No goal is set.").into_any(),
-        };
-        let controls = goal.map(|goal| {
-            goal_actions(goal.status, !workspace.writable())
-                .iter()
-                .map(|action| {
-                    let action = *action;
-                    view! {
-                        <button
-                            type="button"
-                            class=BUTTON
-                            data-goal-action=action_label(action).to_lowercase()
-                            on:click=move |_| workspace.goal_command(GoalCommand::Lifecycle(action))
-                        >
-                            {action_label(action)}
-                        </button>
-                    }
-                })
-                .collect_view()
-        });
-        view! {
-            {current}
-            <div class="flex flex-wrap gap-2">{controls}</div>
-            <Show when=move || workspace.viewing_root() && workspace.writable()>
-                <label class="mt-3 flex flex-col gap-1 text-sm">
-                    <span>"New objective"</span>
-                    <textarea
-                        id="goal-input"
-                        rows="3"
-                        class=FIELD
-                        prop:value=move || workspace.goal_draft.get()
-                        on:input=move |event| workspace.goal_draft.set(event_target_value(&event))
-                    ></textarea>
-                </label>
-                <button
-                    type="button"
-                    id="goal-set"
-                    class=PRIMARY
-                    on:click=move |_| {
-                        let objective = workspace.goal_draft.get_untracked();
-                        if objective.trim().is_empty() {
-                            workspace.status.set("goal objective must not be empty".into());
-                            return;
+                    .collect_view()
+            });
+            view! {
+                {current}
+                <div class="flex flex-wrap gap-2">{controls}</div>
+                <Show when=move || workspace.viewing_root() && workspace.writable()>
+                    <label class="mt-3 flex flex-col gap-1 text-sm">
+                        <span>"New objective"</span>
+                        <textarea
+                            id="goal-input"
+                            rows="3"
+                            class=FIELD
+                            prop:value=move || workspace.goal_draft.get()
+                            on:input=move |event| workspace.goal_draft.set(event_target_value(&event))
+                        ></textarea>
+                    </label>
+                    <button
+                        type="button"
+                        id="goal-set"
+                        class=PRIMARY
+                        on:click=move |_| {
+                            let objective = workspace.goal_draft.get_untracked();
+                            if objective.trim().is_empty() {
+                                workspace.status.set("goal objective must not be empty".into());
+                                return;
+                            }
+                            workspace.goal_draft.set(String::new());
+                            workspace.panel.set(None);
+                            workspace.goal_command(GoalCommand::Objective(objective.trim().to_owned()));
                         }
-                        workspace.goal_draft.set(String::new());
-                        workspace.panel.set(None);
-                        workspace.goal_command(GoalCommand::Objective(objective.trim().to_owned()));
-                    }
-                >
-                    "Set the goal"
-                </button>
-            </Show>
-            <Show when=move || !workspace.viewing_root()>
-                <p class=NOTE>"Goals belong to root sessions."</p>
-            </Show>
-        }
-    }
+                    >
+                        "Set the goal"
+                    </button>
+                </Show>
+                <Show when=move || !workspace.viewing_root()>
+                    <p class=NOTE>"Goals belong to root sessions."</p>
+                </Show>
+            }
+        },
+    )
 }
 
 pub fn background_sheet(workspace: Workspace) -> impl IntoView {
