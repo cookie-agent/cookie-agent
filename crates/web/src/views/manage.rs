@@ -493,6 +493,10 @@ pub fn mcp_sheet(workspace: Workspace) -> impl IntoView {
             .map(|server| {
                 let refusal = Workspace::mcp_refusal(&server);
                 let needs_auth = server.state == McpServerState::NeedsAuth;
+                // Not running: never started, or stopped as no session uses
+                // it. Connecting it is also how a server that wants OAuth
+                // comes to ask for the sign-in.
+                let idle = matches!(server.state, McpServerState::Disconnected | McpServerState::Stopped);
                 let name = server.name.clone();
                 let edited = server.clone();
                 let removed = server.clone();
@@ -514,8 +518,9 @@ pub fn mcp_sheet(workspace: Workspace) -> impl IntoView {
                             )}
                         </span>
                         <span class=format!("{NOTE} font-mono whitespace-pre-wrap break-all")>{server_definition_display(&server)}</span>
-                        {server.message.clone().map(|message| if needs_auth {
-                            // Why it waits for a sign-in, not a failure.
+                        {server.message.clone().map(|message| if needs_auth || idle {
+                            // Why it waits for a sign-in or stopped, not a
+                            // failure.
                             view! { <span class=format!("{NOTE} whitespace-pre-wrap break-words") data-mcp-message>{message}</span> }.into_any()
                         } else {
                             view! { <span class=ERROR data-mcp-message>{message}</span> }.into_any()
@@ -547,7 +552,7 @@ pub fn mcp_sheet(workspace: Workspace) -> impl IntoView {
                                 </button>
                             </Show>
                             <button type="button" class=BUTTON data-mcp-reconnect on:click=move |_| workspace.reconnect_mcp(&reconnected)>
-                                "Reconnect"
+                                {if idle { "Connect" } else { "Reconnect" }}
                             </button>
                         </div>
                     </div>

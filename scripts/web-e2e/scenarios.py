@@ -5666,8 +5666,8 @@ def sign_in_shots(browser):
 
 
 def mcp_sign_in(browser):
-    """Signing in to MCP servers that want OAuth, with the page as the
-    redirect: through a new tab that hands the callback back over the
+    """Signing in to MCP servers that want OAuth, once connected from their
+    rows, with the page as the redirect: through a new tab that hands the callback back over the
     BroadcastChannel and closes, in the same tab when the browser blocks
     the new one, and by pasting the address the browser landed on, with a
     cancel. A callback is cleaned out of the address bar at once, and one
@@ -5676,7 +5676,14 @@ def mcp_sign_in(browser):
     redirect = page + "?oauth=callback"
     browser.resize(1280, 900)
     open_section(browser, "mcp")
+    # No session wants them yet, so they have not started (MCP servers on
+    # demand); connecting one from its row is how it comes to ask for the
+    # sign-in.
     for server in ("oauth-tab", "oauth-same", "oauth-paste"):
+        browser.wait("%s not started" % server, lambda: mcp_state(browser, server) == "disconnected")
+    browser.shot("mcp-not-started")
+    for server in ("oauth-tab", "oauth-same", "oauth-paste"):
+        browser.click('#page [data-server="%s"] [data-mcp-reconnect]' % server)
         browser.wait("%s to need a sign-in" % server, lambda: mcp_state(browser, server) == "needs_auth", timeout=40)
     browser.wait("the sign-in buttons", lambda: count(browser, "#page [data-mcp-sign-in]") == 3)
     assert count(browser, "#page [data-https-warning]") == 0, "a loopback page warned about http"

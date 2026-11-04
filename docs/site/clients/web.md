@@ -960,7 +960,8 @@ See [Share links](../sessions/sharing.md).
   runtime's come from its template. The form takes the tool filters as
   comma-separated patterns (see
   [choosing a server's tools](../extend/mcp.md#choosing-a-servers-tools)).
-  **Reconnect** works for any server.
+  **Reconnect** works for any server; it reads **Connect** on one that
+  is not running yet, or stopped as no session uses it.
   - A server that needs authorization offers **Sign in** (see
     [Signing in to MCP servers](#signing-in-to-mcp-servers)).
 - **Providers.** Settings › Providers lists the catalog's providers, each
@@ -1310,7 +1311,11 @@ the daemon makes its own key, kept in `push/` in its data directory.
 ## Signing in to MCP servers
 
 A remote MCP server that wants OAuth shows `needs_auth` in the MCP servers
-view, with **Sign in**. The page is its own redirect: the authorization
+view, with **Sign in**. It finds that out when it connects, and servers
+connect only when a session uses them
+([connection lifecycle](../extend/mcp.md#connection-lifecycle)): until
+then a server shows `disconnected` (or `stopped`) with **Connect**, which
+starts it, and one that wants OAuth then asks for the sign-in. The page is its own redirect: the authorization
 server sends the browser back to the page's address with `?oauth=callback`,
 for example `https://<host>.<tailnet>.ts.net/?oauth=callback`. The daemon
 keeps the PKCE verifier and exchanges the code; the tokens never reach the
