@@ -600,7 +600,7 @@ pub fn permissions_sheet(workspace: Workspace) -> impl IntoView {
         None => loading("Reading permissions…").into_any(),
         Some(Err(error)) => view! { <p class=super::ERROR>{error}</p> }.into_any(),
         Some(Ok(permissions)) => {
-            let editable = workspace.writable();
+            let editable = workspace.configurable();
             let rows = permission_rows(&permissions)
                 .into_iter()
                 .map(|row| {
@@ -711,11 +711,14 @@ pub fn permissions_sheet(workspace: Workspace) -> impl IntoView {
     };
     let takes = move || takes_runtime(&form.action.get());
     view! {
+        <Show when=move || workspace.is_guest()>
+            <p class=NOTE data-owner-only>"Only the owner can change this."</p>
+        </Show>
         <Show when=move || workspace.permissions_draft()>
             <p class=NOTE>"Rules for the new session, previewed against its agent; the first message creates the session with them."</p>
         </Show>
         {table}
-        <Show when=move || workspace.writable()>
+        <Show when=move || workspace.configurable()>
             <div id="permission-form" class="mt-3 flex flex-col gap-2 border-t border-line pt-3">
                 <p class="text-sm font-bold">
                     {move || if form.editing.get().is_some() { "Edit the rule" } else { "New rule" }}
@@ -832,6 +835,7 @@ pub fn message_sheet(workspace: Workspace) -> impl IntoView {
             return ().into_any();
         };
         let writable = workspace.writable();
+        let guest = workspace.is_guest();
         let point = menu.point.clone();
         // Opened from an icon, the confirmation is all there is: Cancel
         // closes it, and the message it acts on is right there.
@@ -900,7 +904,7 @@ pub fn message_sheet(workspace: Workspace) -> impl IntoView {
                             <span class=format!("pl-6 {NOTE}")>{revert_note}</span>
                         </button>
                     </Show>
-                    <Show when=move || forkable>
+                    <Show when=move || forkable && !guest>
                         <button type="button" id="message-fork" class=ROW on:click=move |_| workspace.fork()>
                             <span class="flex items-center gap-2 text-sm font-bold">
                                 <Glyph icon=icondata::LuGitBranch />

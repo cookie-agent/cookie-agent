@@ -652,7 +652,8 @@ cookie share <COMMAND> [--url <URL>] [--token <TOKEN>]
 ```
 
 Lists, makes, and revokes the daemon's [share links](../sessions/sharing.md):
-public URLs for assets, which anyone can open without a token. It connects
+public URLs for assets and conversations, which anyone can open without a
+token. It connects
 to the daemon at `--url`, or `[server] url` of this machine's `config.toml`,
 or the local daemon, with `--token` or `[server] token`. A link the daemon
 has no `[share] url` or `[server] page_url` for is printed on the address of
@@ -660,7 +661,9 @@ the daemon's web page.
 
 #### `cookie share list`
 
-Prints one line per live link: its ID, title, expiry, views, and address.
+Prints one line per live link: its ID, title, expiry, views, and address, or
+for a conversation its ID, session title, label, whether it can send, expiry,
+how many guests are connected, and address.
 
 #### `cookie share create`
 
@@ -673,6 +676,18 @@ UUID, and prints it. Without `--session` or `--project`, the handle is looked
 up in every store, and a handle more than one store holds asks for one of
 them. `--expires` is `7d` when omitted. An asset that already has a live link
 prints that link, unless `--new` makes another.
+
+#### `cookie share session`
+
+```text
+cookie share session <SESSION_ID> [--label <NAME>] [--watch-only] [--expires 1d|7d|30d|never]
+```
+
+Makes a link that lets whoever opens it use the root session `<SESSION_ID>` as
+a guest, and prints it: its tools, machines, and approvals, on your provider
+account. `--label` names who it is for, shown on the messages sent through it.
+`--watch-only` lets its guests read and not act. `--expires` is `7d` when
+omitted.
 
 #### `cookie share revoke`
 

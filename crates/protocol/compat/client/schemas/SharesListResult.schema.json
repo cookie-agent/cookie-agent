@@ -56,6 +56,90 @@
         }
       ]
     },
+    "SessionShare": {
+      "description": "One conversation share: a link that lets whoever opens it use one root\nsession as a guest (client protocol 1.88.0).",
+      "properties": {
+        "can_send": {
+          "description": "Whether its guests may act in the session. Off, they only watch.",
+          "type": "boolean"
+        },
+        "connected": {
+          "description": "How many guests are connected now.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "created": {
+          "$ref": "#/$defs/ShareCreated"
+        },
+        "expires_at": {
+          "description": "When the link stops working; never when absent.",
+          "format": "date-time",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "description": "A share link's ID: 22 base64url characters.",
+          "maxLength": 22,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9_-]{22}$",
+          "type": "string"
+        },
+        "label": {
+          "description": "Who the link is for; the messages sent through it show it.",
+          "type": "string"
+        },
+        "last_viewed": {
+          "format": "date-time",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "path": {
+          "description": "The guest page's path relative to the share base, `s/<id>`.",
+          "type": "string"
+        },
+        "session_id": {
+          "description": "The root session it opens.",
+          "format": "uuid",
+          "type": "string"
+        },
+        "title": {
+          "description": "The session's title now, when it has one.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "url": {
+          "description": "The guest page's full URL, as [`Share::url`].",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "views": {
+          "description": "How many guest connections it has had.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "path",
+        "session_id",
+        "label",
+        "can_send",
+        "created",
+        "views",
+        "connected"
+      ],
+      "type": "object"
+    },
     "Share": {
       "description": "One share link (section 3).",
       "properties": {
@@ -171,6 +255,13 @@
     "enabled": {
       "description": "Whether the daemon serves links (`[share] enabled`).",
       "type": "boolean"
+    },
+    "sessions": {
+      "description": "The conversation shares (client protocol 1.88.0).",
+      "items": {
+        "$ref": "#/$defs/SessionShare"
+      },
+      "type": "array"
     },
     "shares": {
       "items": {

@@ -4,6 +4,11 @@
 //! download. No token, ticket, or origin is checked: the ID is the only
 //! key. Every failure answers the same 404 page, so nobody learns whether
 //! a link ever existed.
+//!
+//! A conversation share's `/s/<id>` is the guest page
+//! (`docs/site/specs/conversation-shares.md` section 6): the web client's own
+//! page, whose files are at `/s/_app/`, in a sandbox that gives it an opaque
+//! origin, so it cannot touch what the daemon's page keeps on this origin.
 
 use axum::{
     body::Body,
@@ -11,6 +16,7 @@ use axum::{
     http::{HeaderMap, HeaderValue, Method, StatusCode, header},
     response::{IntoResponse, Response},
 };
+use cookie_agent_engine::{Engine, GuestLink, OpenedLink};
 use cookie_agent_protocol::ShareId;
 
 use super::{share_landing, websocket::WebSocketState};
@@ -33,6 +39,13 @@ const PLAIN_POLICY: &str = "sandbox; default-src 'none'; img-src 'self'; media-s
      style-src 'unsafe-inline'; frame-ancestors 'self'";
 const PDF_POLICY: &str = "frame-ancestors 'self'";
 
+/// The directory below `/s/` the guest page's files are in: no ID is this
+/// short.
+const APP_PREFIX: &str = "_app/";
+/// The sandbox of the guest page. Links it opens are ordinary tabs.
+const GUEST_SANDBOX: &str = "sandbox allow-scripts allow-forms allow-modals allow-downloads \
+     allow-popups allow-popups-to-escape-sandbox";
+
 /// What a path below `/s/` asks for.
 #[derive(Debug, Eq, PartialEq)]
 enum Wanted {
@@ -42,12 +55,19 @@ enum Wanted {
     Raw(ShareId),
     Download(ShareId),
     Font,
+    /// A file of the guest page.
+    App(String),
+    /// A guest's connection.
+    Socket(ShareId),
 }
 
 fn wanted(path: &str) -> Option<Wanted> {
     let below = path.strip_prefix(PREFIX)?;
     if below == FONT_PATH {
         return Some(Wanted::Font);
+    }
+    if let Some(file) = below.strip_prefix(APP_PREFIX) {
+        return Some(Wanted::App(file.to_owned()));
     }
     let (id, rest) = match below.find('/') {
         Some(slash) => (&below[..slash], &below[slash..]),
@@ -65,6 +85,7 @@ fn wanted(path: &str) -> Option<Wanted> {
             match kind {
                 "raw" => Some(Wanted::Raw(id)),
                 "download" => Some(Wanted::Download(id)),
+                "ws" if rest == "/ws" => Some(Wanted::Socket(id)),
                 _ => None,
             }
         }
@@ -83,6 +104,12 @@ pub(crate) async fn share_pages(State(state): State<WebSocketState>, request: Re
     if wanted == Wanted::Font {
         return font();
     }
+    if let Wanted::App(file) = &wanted {
+        return app_file(file, request.headers());
+    }
+    if let Wanted::Socket(id) = wanted {
+        return super::guest::guest_upgrade(state, id, request).await;
+    }
     let Some(server) = state.server.get() else {
         return gone();
     };
@@ -91,10 +118,18 @@ pub(crate) async fn share_pages(State(state): State<WebSocketState>, request: Re
         Wanted::Landing(id) | Wanted::Slash(id) | Wanted::Raw(id) | Wanted::Download(id) => {
             id.clone()
         }
-        Wanted::Font => unreachable!("answered above"),
+        Wanted::Font | Wanted::App(_) | Wanted::Socket(_) => unreachable!("answered above"),
     };
-    let Ok(Some(open)) = engine.open_share(id.clone()).await else {
-        return gone();
+    let open = match engine.open_share(id.clone()).await {
+        Ok(Some(OpenedLink::Asset(open))) => *open,
+        Ok(Some(OpenedLink::Session(link))) => {
+            return match wanted {
+                Wanted::Slash(id) => redirect(&format!("../{id}")),
+                Wanted::Landing(_) => guest_page(engine, &link),
+                _ => gone(),
+            };
+        }
+        _ => return gone(),
     };
     match wanted {
         Wanted::Slash(id) => redirect(&format!("../{id}")),
@@ -137,8 +172,96 @@ pub(crate) async fn share_pages(State(state): State<WebSocketState>, request: Re
                 bytes,
             )
         }
-        Wanted::Font => unreachable!("answered above"),
+        Wanted::Font | Wanted::App(_) | Wanted::Socket(_) => unreachable!("answered above"),
     }
+}
+
+/// A file of the guest page. Its page has an opaque origin, so every file it
+/// loads is another origin's and answers to any.
+fn app_file(file: &str, headers: &HeaderMap) -> Response {
+    // A frame of `viewer.html` is framed by the guest page, whose opaque
+    // origin is never `'self'`; nothing is in it until the page hands it over.
+    let framed = cookie_agent_web_assets::VIEWER_POLICY
+        .replace("frame-ancestors 'self'", "frame-ancestors *");
+    let policy = if file == cookie_agent_web_assets::VIEWER_PATH {
+        framed.as_str()
+    } else {
+        cookie_agent_web_assets::content_security_policy()
+    };
+    // `index.html` is the page itself, which is only served in its sandbox.
+    let served = (file != "index.html")
+        .then(|| super::page::file(file, headers, policy))
+        .flatten();
+    let Some(mut response) = served else {
+        return gone();
+    };
+    response.headers_mut().insert(
+        header::ACCESS_CONTROL_ALLOW_ORIGIN,
+        HeaderValue::from_static("*"),
+    );
+    response
+}
+
+/// The guest page: the web client's page, reading its files from
+/// [`APP_PREFIX`], in its sandbox. The first thing a link preview sees of it
+/// is the session's title.
+fn guest_page(engine: &Engine, link: &GuestLink) -> Response {
+    let Some(index) = cookie_agent_web_assets::get("index.html") else {
+        return gone();
+    };
+    let title = engine
+        .get_session(link.session)
+        .ok()
+        .and_then(|meta| meta.title)
+        .map_or_else(
+            || "A shared conversation".to_owned(),
+            |title| title.as_str().to_owned(),
+        );
+    let page = guest_page_html(&String::from_utf8_lossy(index.bytes), &title);
+    let mut headers = common_headers();
+    headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("text/html; charset=utf-8"),
+    );
+    if let Ok(policy) = HeaderValue::from_str(&guest_policy()) {
+        headers.insert(header::CONTENT_SECURITY_POLICY, policy);
+    }
+    headers.insert(
+        header::ACCESS_CONTROL_ALLOW_ORIGIN,
+        HeaderValue::from_static("*"),
+    );
+    (StatusCode::OK, headers, page).into_response()
+}
+
+/// The page's own policy with the sandbox, and a `<base>` for its files.
+fn guest_policy() -> String {
+    let policy = cookie_agent_web_assets::content_security_policy()
+        .replace("base-uri 'none'", "base-uri 'self'");
+    format!("{GUEST_SANDBOX}; {policy}")
+}
+
+/// `index` as the guest page: its relative URLs read below [`APP_PREFIX`],
+/// its stylesheet loads across origins as its integrity check needs, and it
+/// carries `title` for link previews.
+fn guest_page_html(index: &str, title: &str) -> String {
+    let title = share_landing::escape(title);
+    let head = format!(
+        "<head><base href=\"{APP_PREFIX}\" />\
+         <meta property=\"og:title\" content=\"{title}\" />\
+         <meta property=\"og:type\" content=\"website\" />\
+         <meta property=\"og:description\" content=\"A conversation shared from cookie agent\" />"
+    );
+    index
+        .replacen("<head>", &head, 1)
+        .replace(
+            "<link rel=\"stylesheet\"",
+            "<link crossorigin=\"anonymous\" rel=\"stylesheet\"",
+        )
+        .replacen(
+            "<title>Cookie Agent</title>",
+            &format!("<title>{title}</title>"),
+            1,
+        )
 }
 
 /// Serves only `/s/…`; anything else on the share-only listener is 404.
@@ -165,9 +288,14 @@ fn common_headers() -> HeaderMap {
     headers
 }
 
-/// The one answer to every link that does not work.
+/// The one answer to every link that does not work. Any page may read it: a
+/// guest page, whose origin is opaque, asks after its own link.
 fn gone() -> Response {
     let mut headers = common_headers();
+    headers.insert(
+        header::ACCESS_CONTROL_ALLOW_ORIGIN,
+        HeaderValue::from_static("*"),
+    );
     headers.insert(
         header::CONTENT_TYPE,
         HeaderValue::from_static("text/html; charset=utf-8"),
@@ -329,6 +457,8 @@ fn byte_range(value: &str, total: u64) -> Option<(u64, u64)> {
 
 #[cfg(test)]
 mod daemon_tests;
+#[cfg(test)]
+mod guest_tests;
 
 #[cfg(test)]
 mod tests {

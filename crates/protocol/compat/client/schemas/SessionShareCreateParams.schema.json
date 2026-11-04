@@ -1,0 +1,69 @@
+{
+  "$defs": {
+    "ShareExpiry": {
+      "description": "When a link stops working.",
+      "oneOf": [
+        {
+          "properties": {
+            "type": {
+              "const": "never",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "at": {
+              "format": "date-time",
+              "type": "string"
+            },
+            "type": {
+              "const": "at",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "at"
+          ],
+          "type": "object"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Makes a conversation share of a root session.",
+  "properties": {
+    "can_send": {
+      "type": "boolean"
+    },
+    "expiry": {
+      "$ref": "#/$defs/ShareExpiry"
+    },
+    "label": {
+      "description": "Who the link is for; [`SHARE_DEFAULT_LABEL`] when absent.",
+      "maxLength": 30,
+      "minLength": 1,
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "session_id": {
+      "format": "uuid",
+      "type": "string"
+    }
+  },
+  "required": [
+    "session_id",
+    "can_send",
+    "expiry"
+  ],
+  "title": "SessionShareCreateParams",
+  "type": "object"
+}

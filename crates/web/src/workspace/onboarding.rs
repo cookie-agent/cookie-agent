@@ -78,6 +78,9 @@ impl Workspace {
     /// daemon is not set up, unless this browser said "Not now". A daemon
     /// without onboarding answers with an error, which leaves it closed.
     pub(super) fn refresh_onboarding(self, on_connect: bool) {
+        if self.is_guest() {
+            return;
+        }
         let Some(client) = self.client() else {
             return;
         };

@@ -131,6 +131,10 @@ html.dark {
 #transcript[data-read-only] :is([data-action$="-revert"], [data-action$="-fork"]) {
   display: none;
 }
+/* A guest stays in the one session its link opens. */
+#transcript[data-guest] [data-action$="-fork"] {
+  display: none;
+}
 @media (pointer: coarse) {
   [data-message-actions] {
     display: none;

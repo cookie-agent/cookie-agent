@@ -271,6 +271,7 @@ mod tests {
             page_url: None,
             page_ticket: None,
             share_url: None,
+            guest: None,
         }
     }
 

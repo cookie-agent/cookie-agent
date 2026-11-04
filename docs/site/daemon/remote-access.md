@@ -72,8 +72,8 @@ port forwards both. The page then finds the daemon at its own address.
 
 ## Public share links
 
-A [share link](../sessions/sharing.md) is meant for people who have no
-token, so it must be reachable from the internet. Exposing the daemon's
+A [share link](../sessions/sharing.md), of an asset or a conversation, is
+meant for people who have no token, so it must be reachable from the internet. Exposing the daemon's
 own port would expose its connect screen and `/ws` too. Instead, give share
 links a port of their own, which serves `/s/…` and nothing else, and put
 only that port on the internet:

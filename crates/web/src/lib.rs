@@ -22,6 +22,7 @@ pub mod errors;
 mod files;
 pub mod follow;
 pub mod goal;
+pub mod guest;
 mod highlight;
 pub mod icons;
 pub mod install;

@@ -1201,6 +1201,24 @@ impl Client {
             .await
     }
 
+    /// Make a conversation share (`session_share.create`).
+    pub async fn create_session_share(
+        &self,
+        params: cookie_agent_protocol::SessionShareCreateParams,
+    ) -> Result<cookie_agent_protocol::SessionShareResult, ClientError> {
+        self.call(cookie_agent_protocol::SESSION_SHARE_CREATE_METHOD, &params)
+            .await
+    }
+
+    /// Change a conversation share (`session_share.update`).
+    pub async fn update_session_share(
+        &self,
+        params: cookie_agent_protocol::SessionShareUpdateParams,
+    ) -> Result<cookie_agent_protocol::SessionShareResult, ClientError> {
+        self.call(cookie_agent_protocol::SESSION_SHARE_UPDATE_METHOD, &params)
+            .await
+    }
+
     /// Revoke a share link (`share.revoke`).
     pub async fn revoke_share(
         &self,

@@ -103,7 +103,7 @@ pub use runtime::push_signals::{
     NeedsYouItem, NeedsYouSignal, PushSignal, SettledOutcome, SettledSignal,
 };
 pub use runtime::restart::{RestartHook, RestartScheduled, RestartStatus};
-pub use runtime::shares::OpenShare;
+pub use runtime::shares::{GuestLink, GuestPresence, OpenShare, OpenedLink};
 pub use runtime::{
     AgentMessageHandle, AgentMessageInvocation, AgentRecipientState, ApprovalRespondFailure,
     Engine, EngineError, EngineHistoryView, EngineOptions, SkillInvocation,

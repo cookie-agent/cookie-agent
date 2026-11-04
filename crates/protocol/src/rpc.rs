@@ -428,6 +428,10 @@ pub struct ServerHello {
     /// before making a link when it looks private.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub share_url: Option<String>,
+    /// This connection came through a conversation share (client protocol
+    /// 1.88.0): it reaches one session and what the link allows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guest: Option<crate::GuestHello>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]

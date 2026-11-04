@@ -65,7 +65,7 @@ mod tool_groups;
 pub(crate) use install::{Install, InstallAction, InstallBanner};
 pub(crate) use media_viewer::MediaViewer;
 pub(crate) use restart::{RestartBanner, RestartDialog};
-pub(crate) use shares::ShareDialogView;
+pub(crate) use shares::{SessionShareDialogView, ShareDialogView};
 
 use depth::{
     AttachButtons, DraftFiles, background_sheet, compact_sheet, deferred_prompt_sheet, goal_sheet,
@@ -187,7 +187,9 @@ pub fn WorkspaceView(
     let paged = move || workspace.sidebar_open.get();
     view! {
         <div class="relative flex min-h-0 flex-1">
-            <Sidebar workspace=workspace connection=connection theme=theme />
+            <Show when=move || !workspace.is_guest()>
+                <Sidebar workspace=workspace connection=connection theme=theme />
+            </Show>
             <div
                 class="flex min-w-0 flex-1"
                 class:hidden=move || !chat()
@@ -229,6 +231,7 @@ fn ChatView(workspace: Workspace) -> impl IntoView {
                     }
                 }
             >
+                <shares::GuestBar workspace=workspace />
                 <TitleBar workspace=workspace />
                 // A new session shows its runtime cards where the
                 // transcript will be, above the composer; a session that
@@ -1269,6 +1272,15 @@ fn session_row(
             danger: false,
         }];
         items.extend(menu_items(false)());
+        if workspace.has_shares.get() {
+            items.push(row_menu::MenuItem {
+                id: "share",
+                label: "Share conversation…",
+                icon: icondata::LuShare2,
+                act: Callback::new(move |()| workspace.open_session_share_dialog_of(session_id)),
+                danger: false,
+            });
+        }
         if workspace.can_delete.get() {
             items.push(row_menu::MenuItem {
                 id: "delete",
@@ -1956,7 +1968,9 @@ fn TitleBar(workspace: Workspace) -> impl IntoView {
     };
     view! {
         <div class="flex h-12 shrink-0 items-center gap-1 border-b border-line px-2">
-            <SidebarButton workspace=workspace />
+            <Show when=move || !workspace.is_guest()>
+                <SidebarButton workspace=workspace />
+            </Show>
             {move || {
                 crumbs().last().cloned().map(|(parent, label)| view! {
                     <button
@@ -2026,6 +2040,7 @@ fn TitleBar(workspace: Workspace) -> impl IntoView {
                     </span>
                 </Show>
             </div>
+            <shares::LinkBadge workspace=workspace />
             <Show when=move || !workspace.new_session.get()>
                 <live::LiveBadges workspace=workspace />
             </Show>
@@ -2616,6 +2631,7 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
             class="min-h-0 flex-1 overflow-y-auto px-3 py-2 sm:px-6"
             // A session another client owns offers no revert or fork.
             data-read-only=move || (!workspace.writable()).then_some("")
+            data-guest=move || workspace.is_guest().then_some("")
             on:click=on_click
             on:scroll=move |_| {
                 if let Some((_, at)) = metrics() {
@@ -3681,8 +3697,13 @@ fn ComposerChips(workspace: Workspace, composing: RwSignal<bool>) -> impl IntoVi
                 type="button"
                 id="agent-chip"
                 class=CHIP
+                disabled=move || workspace.is_guest()
                 aria-label=move || format!("Agent: {}", agent())
-                title=move || format!("Agent: {} (click to change)", agent())
+                title=move || if workspace.is_guest() {
+                    format!("Agent: {}. Only the owner can change this.", agent())
+                } else {
+                    format!("Agent: {} (click to change)", agent())
+                }
                 on:click=move |_| workspace.panel.set(Some(Panel::Agents))
             >
                 <Glyph icon=icondata::LuBot class="text-sm text-muted" />
@@ -3693,8 +3714,13 @@ fn ComposerChips(workspace: Workspace, composing: RwSignal<bool>) -> impl IntoVi
                 type="button"
                 id="model-chip"
                 class=CHIP
+                disabled=move || workspace.is_guest()
                 aria-label=move || format!("Model: {}", model())
-                title=move || format!("Model: {} (click to change)", model())
+                title=move || if workspace.is_guest() {
+                    format!("Model: {}. Only the owner can change this.", model())
+                } else {
+                    format!("Model: {} (click to change)", model())
+                }
                 on:click=move |_| workspace.panel.set(Some(Panel::Models))
             >
                 <Glyph icon=icondata::LuSparkles class="text-sm text-muted" />
@@ -3705,9 +3731,14 @@ fn ComposerChips(workspace: Workspace, composing: RwSignal<bool>) -> impl IntoVi
                 type="button"
                 id="permission-mode"
                 class=CHIP
+                disabled=move || workspace.is_guest()
                 aria-label=move || format!("Permission mode: {}", mode_label())
                 aria-haspopup="dialog"
-                title=move || format!("Permission mode: {} (click to change)", mode_label())
+                title=move || if workspace.is_guest() {
+                    format!("Permission mode: {}. Only the owner can change this.", mode_label())
+                } else {
+                    format!("Permission mode: {} (click to change)", mode_label())
+                }
                 on:click=move |_| workspace.panel.set(Some(Panel::Modes))
             >
                 <Glyph icon=Signal::derive(move || icons::permission_mode(mode()).0) class="text-sm text-muted" />
@@ -5122,6 +5153,9 @@ fn commands_sheet(workspace: Workspace) -> impl IntoView {
         let replaced = replaced.get();
         MENU.iter()
             .filter(|entry| crate::commands::offered(entry.command, has_crons))
+            .filter(|entry| {
+                !workspace.is_guest() || crate::commands::offered_to_guest(entry.command)
+            })
             .filter(|entry| !replaced.contains(&entry.id))
             .filter(|entry| matches(&query, [entry.label, entry.description]))
             .map(|entry| {
@@ -5154,13 +5188,17 @@ fn commands_sheet(workspace: Workspace) -> impl IntoView {
             commands
                 .iter()
                 .filter(|command| {
-                    cookie_agent_client_state::acp::command_listed(
-                        &command.name,
-                        query.trim_start_matches('/'),
-                    ) && matches(
-                        &query,
-                        [command.name.as_str(), command.description.as_str()],
-                    )
+                    // A guest's agent commands are the ones that stand in for
+                    // compact and the goal.
+                    (!workspace.is_guest() || matches!(command.name.as_str(), "compact" | "goal"))
+                        && cookie_agent_client_state::acp::command_listed(
+                            &command.name,
+                            query.trim_start_matches('/'),
+                        )
+                        && matches(
+                            &query,
+                            [command.name.as_str(), command.description.as_str()],
+                        )
                 })
                 .cloned()
                 .collect::<Vec<_>>()

@@ -135,6 +135,9 @@ impl ProjectEditor {
 impl Workspace {
     /// Reads `projects.list`, from a daemon that keeps projects.
     pub fn refresh_projects(self) {
+        if self.is_guest() {
+            return;
+        }
         let Some(client) = self.client() else {
             return;
         };

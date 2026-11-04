@@ -413,6 +413,17 @@ pub(crate) fn engine_fault(error: EngineError) -> RpcFault {
         EngineError::Share(cookie_agent_engine::ShareError::PastExpiry) => {
             errors::BAD_PARAMS.error().field("field", "expiry")
         }
+        EngineError::Share(cookie_agent_engine::ShareError::NotRoot(session_id)) => {
+            errors::SHARED_SESSION_NOT_ROOT
+                .error()
+                .field("session_id", session_id)
+        }
+        EngineError::Share(cookie_agent_engine::ShareError::InvalidLabel) => {
+            errors::INVALID_SHARE_LABEL.error()
+        }
+        EngineError::Share(cookie_agent_engine::ShareError::OtherKind(id)) => {
+            errors::SHARE_NOT_FOUND.error().field("id", id)
+        }
         EngineError::Cron(error) => cron_error(error),
         EngineError::Mcp(reason) => errors::MCP_REJECTED
             .error()

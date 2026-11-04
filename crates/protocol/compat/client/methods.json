@@ -1210,6 +1210,22 @@
       "result": "SessionUsageResult"
     },
     {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "session_share.create",
+      "params": "SessionShareCreateParams",
+      "params_role": "command",
+      "result": "SessionShareResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "session_share.update",
+      "params": "SessionShareUpdateParams",
+      "params_role": "command",
+      "result": "SessionShareResult"
+    },
+    {
       "direction": "from_daemon",
       "kind": "notification",
       "method": "sessions.changed",

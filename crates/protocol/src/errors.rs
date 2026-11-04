@@ -712,6 +712,30 @@ error_codes! {
         hint: Some("Set `[share] enabled = true` in the daemon's config.toml."),
         description: "`share.create` while the daemon's `[share] enabled` is false.",
     }
+    NOT_ALLOWED_FOR_GUEST {
+        code: "not_allowed_for_guest",
+        rpc: APPLICATION_ERROR,
+        fields: [required("method", "The method the guest asked for.")],
+        message: "A guest cannot use {method}.",
+        hint: Some("Only the session's owner can do this."),
+        description: "A connection that came through a conversation share asked for a method or a session its link does not allow.",
+    }
+    SHARED_SESSION_NOT_ROOT {
+        code: "shared_session_not_root",
+        rpc: APPLICATION_ERROR,
+        fields: [required("session_id", "The session.")],
+        message: "Session {session_id} is a delegated session, which cannot be shared by itself.",
+        hint: Some("Share its root session."),
+        description: "`session_share.create` named a delegated session.",
+    }
+    INVALID_SHARE_LABEL {
+        code: "invalid_share_label",
+        rpc: INVALID_PARAMS,
+        fields: [],
+        message: "A share link's label is one line of at most 30 bytes.",
+        hint: None,
+        description: "`session_share.create` or `session_share.update` with a blank label, one too long, or one with a line break.",
+    }
     PROJECT_NAME_TAKEN {
         code: "project_name_taken",
         rpc: APPLICATION_ERROR,

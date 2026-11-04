@@ -50,14 +50,14 @@ const COMPRESSION_THRESHOLD_BYTES: usize = 256;
 /// other end offers it, as every browser does. At deflate's fastest level:
 /// on real transcripts it sends 3.4 times fewer bytes, against 4.5 at the
 /// default level, for a fraction of the CPU a busy daemon cannot spare.
-fn socket_options() -> Options {
+pub(super) fn socket_options() -> Options {
     Options::default()
         .with_limits(MAX_WEBSOCKET_MESSAGE_BYTES, MAX_WEBSOCKET_MESSAGE_BYTES)
         .with_low_latency_compression()
         .with_compression_threshold(COMPRESSION_THRESHOLD_BYTES)
 }
 
-struct WebSocketStream {
+pub(super) struct WebSocketStream {
     socket: HttpWebSocket,
     /// The close frame this end closes with, once its handler has chosen
     /// it; a normal closure when there is none.
@@ -119,7 +119,10 @@ fn client_ping_after() -> Duration {
 impl WebSocketStream {
     /// A client's stream: it closes with a normal closure, or saying the
     /// daemon is restarting once `restarting` is set.
-    fn client(socket: HttpWebSocket, restarting: Arc<std::sync::atomic::AtomicBool>) -> Self {
+    pub(super) fn client(
+        socket: HttpWebSocket,
+        restarting: Arc<std::sync::atomic::AtomicBool>,
+    ) -> Self {
         Self {
             socket,
             closing: None,
@@ -662,6 +665,7 @@ async fn websocket_upgrade(
                         page_ticket: Some(super::plugin_pages::page_ticket(state.token.as_str())),
                         share_url,
                     },
+                    guard: None,
                 },
                 stream,
                 shared.shutdown.child_token(),

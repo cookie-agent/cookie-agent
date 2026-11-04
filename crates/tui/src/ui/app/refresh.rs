@@ -619,6 +619,9 @@ impl App {
             RpcUpdate::SessionRenamed(result) => {
                 self.finish_session_rename(*result);
             }
+            RpcUpdate::SessionShared(result) => {
+                self.finish_session_share(*result);
+            }
             RpcUpdate::SessionDeleted { title, outcome } => {
                 self.finish_session_delete(title, outcome);
             }

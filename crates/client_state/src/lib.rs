@@ -1360,6 +1360,9 @@ pub struct SessionState {
     /// The files each submitted user message attached, by the message's
     /// `seq`, for clients that show them.
     pub user_files: HashMap<u64, Vec<cookie_agent_protocol::ArtifactRef>>,
+    /// The share link's label of each user message a guest sent, by its
+    /// sequence (`docs/site/specs/conversation-shares.md` section 7).
+    pub guest_labels: HashMap<u64, String>,
     /// Where each committed text child stands in its model turn: its
     /// `model_turn_seq` and `content_index`, by the child's ID, which its
     /// attachments are keyed by.

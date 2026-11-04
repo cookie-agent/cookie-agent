@@ -15,6 +15,9 @@ impl Workspace {
     /// Shows `view`, reading what it lists; `section` picks the Settings
     /// section. It closes any sheet and the sidebar shown as the page.
     pub fn open_view(self, view: View, section: Option<SettingsSection>) {
+        if self.is_guest() {
+            return;
+        }
         self.panel.set(None);
         self.sidebar_open.set(false);
         match view {

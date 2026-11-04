@@ -5,6 +5,16 @@ The client protocol's version is `MAJOR.MINOR.PATCH`
 adds and a major breaks; before it, every minor could break the wire (see the
 [compatibility spec](../specs/compatibility-v1.md) section 3).
 
+## 1.88.0
+
+- Conversation shares ([spec](../specs/conversation-shares.md)):
+  `session_share.create` and `session_share.update`
+  (`SessionShareCreateParams`, `SessionShareUpdateParams`,
+  `SessionShareResult`, `SessionShare`); `sessions` on `SharesListResult` and
+  `session` on `SharesListParams`; `ServerHello.guest` (`GuestHello`); and the
+  `not_allowed_for_guest`, `shared_session_not_root`, and
+  `invalid_share_label` errors. See [Conversation shares](protocol.md#conversation-shares).
+
 ## 1.87.0
 
 - `machines.runtime_token` (`MachinesRuntimeTokenParams`,

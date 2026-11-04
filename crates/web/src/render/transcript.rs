@@ -499,11 +499,22 @@ fn item_html_in(
                         .collect::<String>()
                 })
                 .unwrap_or_default();
+            let guest = view
+                .state
+                .guest_labels
+                .get(seq)
+                .map(|label| {
+                    format!(
+                        "<div class=\"mb-1 rounded-full bg-accent-soft px-2 py-0.5 text-xs text-accent\" data-guest-label>{} · via link</div>",
+                        super::escape(label)
+                    )
+                })
+                .unwrap_or_default();
             format!(
                 // Under the bubble, its icons, which show while a mouse is
                 // over the row (style/main.css) and keep their room; a
                 // touch screen long-presses the bubble instead.
-                "<div class=\"user-row flex flex-col items-end\" data-seq=\"{seq}\"><div class=\"user-message ml-auto flex w-fit max-w-[80%] justify-end\" data-seq=\"{seq}\"><div class=\"min-w-0 rounded-2xl rounded-tr-sm bg-sunken px-3 py-2\" data-bubble><div class=\"markdown\">{}</div>{files}</div></div>{}</div>",
+                "<div class=\"user-row flex flex-col items-end\" data-seq=\"{seq}\">{guest}<div class=\"user-message ml-auto flex w-fit max-w-[80%] justify-end\" data-seq=\"{seq}\"><div class=\"min-w-0 rounded-2xl rounded-tr-sm bg-sunken px-3 py-2\" data-bubble><div class=\"markdown\">{}</div>{files}</div></div>{}</div>",
                 document_html(markdown),
                 point_actions_html(
                     "message",

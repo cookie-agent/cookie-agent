@@ -313,6 +313,11 @@ pub struct Workspace {
     /// base its handshake gave links, and the address of its page, which
     /// a link without a URL of its own is put after.
     pub has_shares: RwSignal<bool>,
+    /// This connection is a guest's (`docs/site/specs/conversation-shares.md`
+    /// section 6): the link it came through, and what the link allows.
+    pub guest: RwSignal<Option<cookie_agent_protocol::GuestHello>>,
+    /// The conversation share dialog.
+    pub session_share_dialog: RwSignal<Option<shares::SessionShareDialog>>,
     pub share_url: RwSignal<Option<String>>,
     pub share_page_base: RwSignal<String>,
     /// The live links, as `shares.list` last answered.
@@ -657,6 +662,8 @@ impl Workspace {
             asset_renaming: RwSignal::new(None),
             asset_deleting: RwSignal::new(None),
             has_shares: RwSignal::new(false),
+            guest: RwSignal::new(None),
+            session_share_dialog: RwSignal::new(None),
             share_url: RwSignal::new(None),
             share_page_base: RwSignal::new(String::new()),
             share_list: RwSignal::new(None),
@@ -860,6 +867,19 @@ impl Workspace {
             .set(cookie_agent_client_state::shares::daemon_has_shares(
                 client.daemon_version(),
             ));
+        // A guest reaches its one session, so nothing daemon-wide is offered.
+        if self.guest.get_untracked().is_some() {
+            self.can_delete.set(false);
+            self.lists_attachments.set(false);
+            self.has_projects.set(false);
+            self.can_sign_in.set(false);
+            self.has_crons.set(false);
+            self.can_restart.set(false);
+            self.has_push.set(false);
+            self.keeps_unread.set(false);
+            self.keeps_pins.set(false);
+            self.has_shares.set(false);
+        }
         self.share_list.set(None);
         // A new connection has heard nothing of what the page shows.
         self.presence_sent.set_value(None);
@@ -879,6 +899,7 @@ impl Workspace {
         // side by side. A notification's session, opened next,
         // closes them.
         if !reconnected
+            && self.guest.get_untracked().is_none()
             && !browser::matches(browser::DESKTOP_QUERY)
             && self.new_session.get_untracked()
             && self.view.get_untracked() == crate::layout::View::Chat
@@ -898,6 +919,9 @@ impl Workspace {
         }
         spawn_local(async move {
             self.refresh_lists().await;
+            if !reconnected && let Some(guest) = self.guest.get_untracked() {
+                self.open_session(guest.session_id);
+            }
             if reconnected && let Some(session_id) = selected {
                 let subscribe = self
                     .subscriptions
@@ -956,6 +980,16 @@ impl Workspace {
     /// session's last activity, and reads again.
     async fn read_session_list(self, client: &Client) {
         use cookie_agent_client_state::session_window::{SessionWindow, holds_nothing_recent};
+        if let Some(guest) = self.guest.get_untracked() {
+            let params = cookie_agent_protocol::SessionGetParams {
+                session_id: guest.session_id,
+            };
+            match client.get_session(params).await {
+                Ok(result) => self.sessions.set(vec![result.session]),
+                Err(error) => self.status.set(crate::errors::describe(&error)),
+            }
+            return;
+        }
         let read = self.session_list.try_update_value(|list| list.begin());
         let read_params = |window: SessionWindow| {
             window.read_params(
@@ -1656,6 +1690,9 @@ impl Workspace {
     /// Nothing else is remembered from an earlier draft: the composer
     /// brings back the text and files typed for a new session before.
     pub fn start_new_session(self) {
+        if self.is_guest() {
+            return;
+        }
         self.selection.set(crate::cards::Selection::global_only());
         self.new_project.set(None);
         self.card_errors.set(HashMap::new());
@@ -2020,8 +2057,28 @@ impl Workspace {
         self.store.with_value(|store| store.can_evict(session_id))
     }
 
+    /// Whether this connection is a guest's.
+    pub fn is_guest(self) -> bool {
+        self.guest.with(Option::is_some)
+    }
+
+    /// Whether what changes the viewed session's setup is offered: its
+    /// permissions, runtimes, tools, and options are the owner's. Acting in
+    /// the session is [`Self::writable`].
+    pub fn configurable(self) -> bool {
+        !self.is_guest() && self.writable()
+    }
+
     /// Whether the composer may submit to the viewed session.
     pub fn writable(self) -> bool {
+        if let Some(allowed) = self.guest.with(|guest| {
+            guest
+                .as_ref()
+                .map(|guest| guest.can_send && self.selected.get() == Some(guest.session_id))
+        }) && !allowed
+        {
+            return false;
+        }
         self.new_session.get()
             || self.selected.get().is_some_and(|session_id| {
                 !self
@@ -2158,7 +2215,9 @@ impl Workspace {
                     session_id,
                     content,
                     delivery,
-                    selection,
+                    // A guest's run uses the session's selection: it is the
+                    // owner's to change.
+                    selection: selection.filter(|_| !self.is_guest()),
                     client_run_id: client_run_id(),
                     reset_fallback: false,
                 },
@@ -2970,6 +3029,7 @@ impl Workspace {
         use crate::commands::Command;
         match command {
             Command::Rename => self.begin_title_edit(),
+            Command::Share => self.open_session_share_dialog(),
             Command::Compact => {
                 if self.selected.get_untracked().is_none() || self.new_session.get_untracked() {
                     self.status

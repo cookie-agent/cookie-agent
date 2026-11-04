@@ -6,8 +6,8 @@ use anyhow::Context as _;
 use clap::Subcommand;
 use cookie_agent_client_state::shares::{ShareLifetime, daemon_has_shares, share_address};
 use cookie_agent_protocol::{
-    Asset, AssetStore, AssetsSearchParams, ProjectId, SessionId, Share, ShareCreateParams, ShareId,
-    SharesListParams,
+    Asset, AssetStore, AssetsSearchParams, ProjectId, SessionId, SessionShare,
+    SessionShareCreateParams, Share, ShareCreateParams, ShareId, SharesListParams,
 };
 use cookie_agent_protocol_transport::Client;
 use jiff::{Timestamp, tz::TimeZone};
@@ -36,6 +36,22 @@ pub(crate) enum ShareCommand {
         #[arg(long)]
         new: bool,
     },
+    /// Make a link that lets whoever opens it use a root session as a
+    /// guest, and print its address. Its guests use the session's tools,
+    /// machines, and approvals, on your provider account.
+    Session {
+        /// The root session.
+        session: SessionId,
+        /// Who the link is for; messages sent through it show this.
+        #[arg(long)]
+        label: Option<String>,
+        /// Its guests can read the conversation and not act in it.
+        #[arg(long)]
+        watch_only: bool,
+        /// How long the link works: `1d`, `7d`, `30d`, or `never`.
+        #[arg(long, default_value = "7d", value_parser = parse_lifetime)]
+        expires: ShareLifetime,
+    },
     /// Revoke a link, or every link with `--all`; it stops working at
     /// once.
     Revoke {
@@ -61,9 +77,9 @@ pub(crate) async fn run_share(url: &str, token: &str, command: ShareCommand) -> 
     run_share_with(&client, &page, command, &mut super::memory::StdioMemoryIo).await
 }
 
-/// One line of a link: its ID, title, expiry, views, and address.
-fn share_line(share: &Share, page: &str, zone: &TimeZone) -> String {
-    let expiry = share.expires_at.map_or_else(
+/// When a link stops working.
+fn expiry_line(expires_at: Option<Timestamp>, zone: &TimeZone) -> String {
+    expires_at.map_or_else(
         || "never expires".to_owned(),
         |at| {
             format!(
@@ -71,7 +87,31 @@ fn share_line(share: &Share, page: &str, zone: &TimeZone) -> String {
                 at.to_zoned(zone.clone()).strftime("%Y-%m-%d %H:%M")
             )
         },
-    );
+    )
+}
+
+/// One line of a conversation share: its ID, session, label, what it
+/// allows, expiry, guests, and address.
+fn session_share_line(share: &SessionShare, page: &str, zone: &TimeZone) -> String {
+    format!(
+        "{}  {:?}  for {:?}  {}  {}  {} connected  {}",
+        share.id,
+        share.title.as_deref().unwrap_or("session"),
+        share.label,
+        if share.can_send {
+            "can send"
+        } else {
+            "watch only"
+        },
+        expiry_line(share.expires_at, zone),
+        share.connected,
+        cookie_agent_client_state::shares::link_address(share.url.as_deref(), &share.path, page),
+    )
+}
+
+/// One line of a link: its ID, title, expiry, views, and address.
+fn share_line(share: &Share, page: &str, zone: &TimeZone) -> String {
+    let expiry = expiry_line(share.expires_at, zone);
     format!(
         "{}  {:?}  {expiry}  {} view{}  {}",
         share.id,
@@ -144,8 +184,11 @@ pub(crate) async fn run_share_with<I: MemoryIo>(
             if !listed.enabled {
                 io.write_line("Share links are off ([share] enabled = false): no link works.")?;
             }
-            if listed.shares.is_empty() {
+            if listed.shares.is_empty() && listed.sessions.is_empty() {
                 return io.write_line("No share links.");
+            }
+            for share in &listed.sessions {
+                io.write_line(&session_share_line(share, page, &zone))?;
             }
             for share in &listed.shares {
                 io.write_line(&share_line(share, page, &zone))?;
@@ -181,6 +224,23 @@ pub(crate) async fn run_share_with<I: MemoryIo>(
                 ))?;
             }
             io.write_line(&share_line(&made.share, page, &zone))
+        }
+        ShareCommand::Session {
+            session,
+            label,
+            watch_only,
+            expires,
+        } => {
+            let made = client
+                .create_session_share(SessionShareCreateParams {
+                    session_id: session,
+                    label,
+                    can_send: !watch_only,
+                    expiry: expires.expiry(Timestamp::now()),
+                })
+                .await
+                .map_err(anyhow::Error::new)?;
+            io.write_line(&session_share_line(&made.share, page, &zone))
         }
         ShareCommand::Revoke { id: Some(id), .. } => {
             client

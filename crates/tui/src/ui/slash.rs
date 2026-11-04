@@ -76,13 +76,15 @@ pub(crate) enum PaletteAction {
     /// `/rename`: sets the title typed after it, resets it with `--auto`,
     /// or asks for it.
     Rename,
+    /// `/share`: makes a link to the session for the guest named after it.
+    Share,
 }
 
 impl PaletteAction {
     /// Whether the command reads text typed after its name in the search
     /// (`/rename <title>`).
     pub(crate) fn takes_argument(self) -> bool {
-        self == Self::Rename
+        matches!(self, Self::Rename | Self::Share)
     }
 }
 
@@ -292,6 +294,13 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         aliases: &["projects"],
         description: "choose the project of this session, or of the new one",
         action: PaletteAction::Run(SlashCommand::Project),
+        writes_session: false,
+    },
+    CommandSpec {
+        name: "share",
+        aliases: &[],
+        description: "make a link that lets someone use this session: /share <who it is for>",
+        action: PaletteAction::Share,
         writes_session: false,
     },
     CommandSpec {

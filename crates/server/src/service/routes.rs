@@ -1254,6 +1254,26 @@ impl ServerProtocol for Server {
             .map_err(protocol_fault)
     }
 
+    async fn create_session_share(
+        &self,
+        params: cookie_agent_protocol::SessionShareCreateParams,
+    ) -> Result<cookie_agent_protocol::SessionShareResult> {
+        self.engine
+            .create_session_share(params)
+            .await
+            .map_err(protocol_fault)
+    }
+
+    async fn update_session_share(
+        &self,
+        params: cookie_agent_protocol::SessionShareUpdateParams,
+    ) -> Result<cookie_agent_protocol::SessionShareResult> {
+        self.engine
+            .update_session_share(params)
+            .await
+            .map_err(protocol_fault)
+    }
+
     async fn revoke_share(
         &self,
         params: cookie_agent_protocol::ShareRevokeParams,

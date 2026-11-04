@@ -34,6 +34,7 @@ mod refresh;
 pub(in crate::ui) mod restart;
 mod session_delete;
 mod session_rename;
+mod session_share;
 mod sessions;
 mod status;
 #[cfg(test)]
@@ -1263,6 +1264,8 @@ pub(in crate::ui) enum RpcUpdate {
     },
     /// A `session.rename` ended: the session it left.
     SessionRenamed(Box<Result<SessionMeta, ClientError>>),
+    /// A `session_share.create` ended.
+    SessionShared(Box<Result<cookie_agent_protocol::SessionShareResult, ClientError>>),
     Tree {
         session_id: SessionId,
         generation: u64,

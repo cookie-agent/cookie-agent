@@ -838,6 +838,11 @@ every live link with its expiry, views, and who made it, and *Revoke all*.
 The dialog warns when the link's address looks reachable only privately.
 See [Share links](../sessions/sharing.md).
 
+**Share conversation** in a session's ⋮ menu makes a [link that lets someone
+use the session as a guest](../sessions/sharing.md#sharing-a-conversation). The
+guest's page is this one, in a sandbox, with no sidebar and with the session's
+setup disabled.
+
 ## Managing the daemon
 
 - **Runtimes.** **Runtimes** (in the ⋮ menu) lists the session's attached runtimes with their

@@ -625,6 +625,18 @@ impl ServerProtocol for StubServer {
     ) -> Result<cookie_agent_protocol::ShareCreateResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
+    async fn create_session_share(
+        &self,
+        _: cookie_agent_protocol::SessionShareCreateParams,
+    ) -> Result<cookie_agent_protocol::SessionShareResult, ServerFault> {
+        Err(ServerFault::method_not_found("stub"))
+    }
+    async fn update_session_share(
+        &self,
+        _: cookie_agent_protocol::SessionShareUpdateParams,
+    ) -> Result<cookie_agent_protocol::SessionShareResult, ServerFault> {
+        Err(ServerFault::method_not_found("stub"))
+    }
     async fn update_share(
         &self,
         _: cookie_agent_protocol::ShareUpdateParams,
@@ -875,6 +887,7 @@ impl Connection {
                 server: Some(server),
                 pending: None,
                 status: None,
+                guard: None,
             },
             ChannelTransport { incoming, outgoing },
             CancellationToken::new(),
@@ -1059,7 +1072,7 @@ async fn a_replacement_session_tail_forwards_after_the_tail_it_replaces() {
     }
 
     let (notifications, mut outbound) = mpsc::channel(16);
-    let context = ServerContext::new(notifications, CancellationToken::new());
+    let context = ServerContext::new(notifications, CancellationToken::new(), None);
     let session_id = cookie_agent_protocol::SessionId::new_v7();
     let gap = |seq| EventSubscriptionMessage::Gap {
         session_id,

@@ -1,0 +1,459 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Conversation share guest page — mockup</title>
+<style>
+  :root {
+    --bg: #ffffff; --bg2: #fafafa; --raised: #ffffff; --sunken: #f4f4f5;
+    --fg: #09090b; --fg2: #3f3f46; --muted: #71717a; --faint: #a1a1aa;
+    --line: rgba(0,0,0,.075); --line2: rgba(0,0,0,.13);
+    --accent: #5b5bd6; --accent-fg: #ffffff; --accent-soft: rgba(91,91,214,.10);
+    --warn: #b26b00; --warn-soft: rgba(178,107,0,.09); --ok: #2f8f5b;
+    --shadow: 0 1px 2px rgba(0,0,0,.04), 0 4px 16px rgba(0,0,0,.05);
+  }
+  :root[data-theme="dark"] {
+    --bg: #0e0e10; --bg2: #0a0a0c; --raised: #17171a; --sunken: #1b1b1f;
+    --fg: #ededef; --fg2: #b4b4bc; --muted: #86868f; --faint: #5c5c66;
+    --line: rgba(255,255,255,.07); --line2: rgba(255,255,255,.12);
+    --accent: #7c7cff; --accent-fg: #0e0e10; --accent-soft: rgba(124,124,255,.14);
+    --warn: #e5a93b; --warn-soft: rgba(229,169,59,.10); --ok: #5cc28a;
+    --shadow: 0 1px 2px rgba(0,0,0,.3), 0 8px 24px rgba(0,0,0,.35);
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    background: var(--bg); color: var(--fg);
+    font: 14.5px/1.55 Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    -webkit-font-smoothing: antialiased; display: flex; flex-direction: column;
+  }
+  code, pre, .mono { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 12.5px; }
+  svg.i { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; flex: none; }
+
+  /* ---- mockup controls (not part of the design) ---- */
+  .mock {
+    position: sticky; top: 0; z-index: 30; flex: none;
+    display: flex; flex-wrap: wrap; gap: 6px; align-items: center;
+    padding: 8px 16px; background: repeating-linear-gradient(45deg, var(--sunken) 0 8px, var(--bg2) 8px 16px);
+    border-bottom: 1px dashed var(--line2); font-size: 12px; color: var(--muted);
+  }
+  .mock b { color: var(--fg2); margin-right: 4px; font-weight: 600; }
+  .mock button {
+    font: inherit; font-size: 12px; padding: 3px 9px; border-radius: 6px; cursor: pointer;
+    border: 1px solid var(--line2); background: var(--raised); color: var(--fg2);
+  }
+  .mock button[aria-pressed="true"] { background: var(--accent); color: var(--accent-fg); border-color: transparent; }
+  .mock .sep { width: 1px; height: 16px; background: var(--line2); margin: 0 6px; }
+
+  /* ---- top bar ---- */
+  .top {
+    flex: none; display: flex; align-items: center; gap: 12px; padding: 9px 18px;
+    border-bottom: 1px solid var(--line); background: var(--bg); position: sticky; top: 41px; z-index: 20;
+  }
+  .brand { display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: 12.5px; text-decoration: none; flex: none; }
+  .brand svg { width: 20px; height: 20px; }
+  .vsep { width: 1px; height: 18px; background: var(--line2); flex: none; }
+  .title { min-width: 0; display: flex; flex-direction: column; }
+  .title h1 { margin: 0; font-size: 14.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .title .sub { color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .switch {
+    display: inline-flex; align-items: center; gap: 6px; padding: 4px 9px; border-radius: 7px; cursor: pointer;
+    border: 1px solid var(--line2); background: var(--raised); color: var(--fg2); font: inherit; font-size: 12.5px; flex: none;
+  }
+  .grow { flex: 1; }
+  .who { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; flex: none; }
+  .av { width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; font-size: 10.5px; font-weight: 600; color: #fff; border: 2px solid var(--bg); }
+  .avs { display: flex; } .avs .av + .av { margin-left: -6px; }
+  .pill { display: inline-flex; align-items: center; gap: 5px; padding: 2px 8px; border-radius: 999px; font-size: 11.5px; background: var(--sunken); color: var(--muted); }
+  .pill.link { background: var(--accent-soft); color: var(--accent); }
+  .btn {
+    display: inline-flex; align-items: center; gap: 6px; padding: 6px 11px; border-radius: 8px;
+    font: 500 13px/1 inherit; font-family: inherit; cursor: pointer;
+    border: 1px solid var(--line2); background: var(--raised); color: var(--fg);
+  }
+  .btn:hover { background: var(--sunken); }
+  .btn.primary { background: var(--accent); color: var(--accent-fg); border-color: transparent; }
+  .btn.ghost { border-color: transparent; background: transparent; color: var(--muted); }
+
+  /* ---- owner layout (sidebar only in the owner's view) ---- */
+  .shell { flex: 1; display: flex; min-height: 0; }
+  .side { width: 248px; flex: none; border-right: 1px solid var(--line); background: var(--bg2); padding: 12px 8px; font-size: 13px; }
+  .side .h { color: var(--faint); font-size: 11px; text-transform: uppercase; letter-spacing: .06em; padding: 10px 10px 4px; }
+  .side .row { display: flex; align-items: center; gap: 7px; padding: 6px 10px; border-radius: 7px; color: var(--fg2); }
+  .side .row.on { background: var(--sunken); color: var(--fg); }
+  .side .row span.t { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .side .row .sub { color: var(--faint); font-size: 11px; }
+  .main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+
+  /* ---- transcript ---- */
+  .scroll { flex: 1; overflow: auto; }
+  .tx { max-width: 780px; margin: 0 auto; padding: 22px 20px 30px; display: flex; flex-direction: column; gap: 16px; }
+  .msg-user { align-self: flex-end; max-width: 82%; display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
+  .msg-user .bubble { background: var(--sunken); border-radius: 14px; padding: 9px 14px; color: var(--fg); }
+  .msg-user .by { font-size: 11.5px; color: var(--muted); display: flex; gap: 6px; align-items: center; }
+  .msg-user.guest .bubble { background: var(--accent-soft); }
+  .asst { color: var(--fg); }
+  .asst p { margin: 0 0 8px; }
+  .asst p:last-child { margin-bottom: 0; }
+  .asst code { background: var(--sunken); padding: 1px 5px; border-radius: 5px; }
+  .tool {
+    border: 1px solid var(--line); border-radius: 10px; background: var(--raised);
+    display: flex; align-items: center; gap: 9px; padding: 7px 12px; font-size: 13px; color: var(--fg2);
+  }
+  .tool .name { font-weight: 600; color: var(--fg); }
+  .tool .arg { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; }
+  .tool .st { color: var(--ok); font-size: 12px; }
+  .tool .chev { color: var(--faint); }
+  .tools { display: flex; flex-direction: column; gap: 6px; }
+  .fig { border: 1px solid var(--line); border-radius: 12px; overflow: hidden; background: var(--raised); box-shadow: var(--shadow); }
+  .fig .bar { display: flex; justify-content: space-between; align-items: center; padding: 6px 12px; border-bottom: 1px solid var(--line); font-size: 12px; color: var(--muted); }
+  .fig svg.plot { display: block; width: 100%; height: auto; background: #fff; }
+  .approve { border: 1px solid var(--line2); border-left: 3px solid var(--warn); border-radius: 10px; background: var(--warn-soft); padding: 11px 14px; display: flex; flex-direction: column; gap: 8px; }
+  .approve .q { font-size: 13px; color: var(--fg2); }
+  .approve pre { margin: 0; background: var(--raised); border: 1px solid var(--line); border-radius: 7px; padding: 7px 10px; overflow: auto; }
+  .approve .acts { display: flex; gap: 8px; flex-wrap: wrap; }
+  .sysrow { font-size: 12.5px; color: var(--muted); display: flex; align-items: center; gap: 7px; }
+  .sysrow::before, .sysrow::after { content: ""; height: 1px; background: var(--line); flex: 1; }
+
+  /* ---- composer ---- */
+  .composer { flex: none; padding: 0 20px 16px; }
+  .composer .box { max-width: 780px; margin: 0 auto; border: 1px solid var(--line2); border-radius: 14px; background: var(--raised); box-shadow: var(--shadow); }
+  .composer textarea { width: 100%; border: 0; outline: 0; resize: none; background: transparent; color: var(--fg); font: inherit; padding: 12px 14px 4px; min-height: 48px; }
+  .composer .row { display: flex; align-items: center; gap: 8px; padding: 6px 8px 8px 10px; color: var(--muted); font-size: 12.5px; }
+  .composer .model { display: inline-flex; gap: 6px; align-items: center; }
+  .composer .send { width: 30px; height: 30px; border-radius: 9px; display: grid; place-items: center; background: var(--accent); color: var(--accent-fg); border: 0; }
+  .composer .hint { max-width: 780px; margin: 6px auto 0; font-size: 11.5px; color: var(--faint); display: flex; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+  .watch { flex: none; max-width: 780px; margin: 0 auto 16px; padding: 10px 14px; border: 1px dashed var(--line2); border-radius: 12px; color: var(--muted); font-size: 13px; display: flex; gap: 8px; align-items: center; width: calc(100% - 40px); }
+
+  /* ---- share dialog (owner's view) ---- */
+  .scrim { position: fixed; inset: 0; background: rgba(0,0,0,.28); z-index: 40; display: grid; place-items: center; padding: 16px; }
+  .dlg { width: 460px; max-width: 100%; background: var(--raised); border: 1px solid var(--line2); border-radius: 14px; box-shadow: 0 20px 60px rgba(0,0,0,.25); }
+  .dlg header { display: flex; justify-content: space-between; align-items: center; padding: 14px 16px 6px; }
+  .dlg header h2 { margin: 0; font-size: 15px; font-weight: 600; }
+  .dlg .body { padding: 6px 16px 16px; display: flex; flex-direction: column; gap: 12px; font-size: 13px; }
+  .dlg label.f { display: flex; flex-direction: column; gap: 5px; color: var(--fg2); font-weight: 500; }
+  .dlg input[type=text], .dlg select { font: inherit; padding: 7px 10px; border-radius: 8px; border: 1px solid var(--line2); background: var(--bg); color: var(--fg); }
+  .dlg .chk { display: flex; gap: 8px; align-items: flex-start; color: var(--fg2); }
+  .dlg .chk small { display: block; color: var(--muted); font-weight: 400; }
+  .dlg .url { display: flex; gap: 6px; }
+  .dlg .url input { flex: 1; font-family: ui-monospace, Menlo, monospace; font-size: 12px; }
+  .dlg .warn { display: flex; gap: 8px; padding: 9px 11px; border-radius: 9px; background: var(--warn-soft); color: var(--fg2); font-size: 12.5px; }
+  .dlg .warn svg { color: var(--warn); margin-top: 2px; }
+  .dlg .guests { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12.5px; }
+  .dlg footer { display: flex; justify-content: space-between; gap: 8px; padding: 12px 16px; border-top: 1px solid var(--line); }
+  .dlg footer .l, .dlg footer .r { display: flex; gap: 8px; }
+  .danger { color: #c4314b; }
+
+  .gone { max-width: 420px; margin: 18vh auto 0; text-align: center; }
+  .gone h1 { font-size: 22px; font-weight: 600; margin: 18px 0 6px; }
+  .gone p { color: var(--muted); margin: 0; }
+  .gone svg { width: 44px; height: 44px; opacity: .85; }
+
+
+  /* ---- session panel ---- */
+  .panel { width: 384px; flex: none; border-left: 1px solid var(--line); background: var(--bg2); display: flex; flex-direction: column; min-height: 0; }
+  .tabs { display: flex; flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; gap: 0; padding: 8px 8px 0; border-bottom: 1px solid var(--line); }
+  .tab { font: inherit; font-size: 12px; padding: 6px 5.5px; white-space: nowrap; border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--muted); cursor: pointer; }
+  .tab[aria-selected="true"] { color: var(--fg); border-bottom-color: var(--accent); }
+  .pbody { padding: 14px; overflow: auto; display: flex; flex-direction: column; gap: 12px; font-size: 13px; }
+  .pbody h3 { margin: 0; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--faint); font-weight: 600; }
+  .owner-only { display: flex; gap: 7px; align-items: center; font-size: 12px; color: var(--muted); background: var(--sunken); border-radius: 8px; padding: 7px 10px; }
+  .item { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 9px; background: var(--raised); }
+  .item .t { flex: 1; min-width: 0; }
+  .item .t b { display: block; font-weight: 600; font-size: 13px; }
+  .item .t small { color: var(--muted); font-size: 12px; }
+  .tog { width: 30px; height: 18px; border-radius: 999px; background: var(--accent); position: relative; flex: none; }
+  .tog::after { content: ""; position: absolute; top: 2px; right: 2px; width: 14px; height: 14px; border-radius: 50%; background: #fff; }
+  .tog.off { background: var(--line2); } .tog.off::after { right: auto; left: 2px; }
+  .dis { opacity: .45; cursor: not-allowed; }
+  .rule { display: grid; grid-template-columns: 54px 1fr; gap: 8px; font-size: 12.5px; padding: 5px 0; border-bottom: 1px solid var(--line); }
+  .rule .v { font-weight: 600; } .rule .v.ask { color: var(--warn); } .rule .v.allow { color: var(--ok); } .rule .v.deny { color: #c4314b; }
+  .goalbox { border: 1px solid var(--line); border-radius: 10px; background: var(--raised); padding: 10px 12px; display: flex; flex-direction: column; gap: 6px; }
+  .goalbox li { color: var(--fg2); }
+  .goalbox ul { margin: 0; padding-left: 18px; }
+  .btns { display: flex; gap: 8px; flex-wrap: wrap; }
+  .meter { height: 6px; background: var(--sunken); border-radius: 999px; overflow: hidden; } .meter i { display: block; height: 100%; background: var(--accent); }
+  .kv { display: grid; grid-template-columns: 1fr auto; gap: 6px 10px; font-size: 12.5px; } .kv span:nth-child(odd) { color: var(--muted); }
+  .chips { display: flex; gap: 6px; flex-wrap: wrap; }
+  .chip { display: inline-flex; gap: 6px; align-items: center; padding: 4px 9px; border: 1px solid var(--line2); border-radius: 7px; font-size: 12px; color: var(--fg2); background: var(--raised); }
+  .ptoggle { display: inline-flex; }
+  @media (max-width: 1100px) { .panel { width: 320px; } .tab { font-size: 12px; padding: 6px 5px; } }
+  [hidden] { display: none !important; }
+  @media (max-width: 720px) {
+    .panel { display: none; }
+    .side { display: none; }
+    .top { padding: 8px 12px; gap: 8px; }
+    .brand span, .vsep, .who .lbl, .switch .lbl { display: none; }
+    .tx { padding: 16px 12px 24px; }
+    .composer { padding: 0 10px 10px; }
+  }
+</style>
+</head>
+<body>
+
+<div class="mock" role="toolbar" aria-label="Mockup controls">
+  <b>Mockup</b>
+  <button data-view="guest" aria-pressed="true">Guest</button>
+  <button data-view="watch">Watch-only link</button>
+  <button data-view="owner">Owner's view + dialog</button>
+  <button data-view="gone">Not available</button>
+  <span class="sep"></span>
+  <button id="theme">Dark</button>
+</div>
+
+<template id="mark"><svg viewBox="0 0 100 100" aria-hidden="true"><defs><mask id="bite"><rect width="100" height="100" fill="#fff"/><circle cx="64" cy="14" r="7.5" fill="#000"/><circle cx="72.6" cy="23.9" r="8" fill="#000"/><circle cx="82.2" cy="32.4" r="7" fill="#000"/></mask></defs><circle cx="50" cy="50" r="36" fill="#ECB86E" mask="url(#bite)"/><g fill="#5E3A26"><circle cx="49.8" cy="54" r="4.8"/><circle cx="35.2" cy="28.8" r="3.9"/><circle cx="49.8" cy="34.6" r="3.5"/><circle cx="70.5" cy="46.4" r="4.7"/><circle cx="25.7" cy="47.7" r="4.8"/><circle cx="34.4" cy="70.5" r="4.7"/><circle cx="67.3" cy="69.7" r="4.7"/><circle cx="51.1" cy="71.7" r="3.4"/></g></svg></template>
+
+<!-- ================= guest page ================= -->
+<div class="top" id="top">
+  <a class="brand" href="#"><i data-mark></i><span>cookie agent</span></a>
+  <span class="vsep"></span>
+  <div class="title">
+    <h1 id="t-title">Grasp eval: v8 vs baseline</h1>
+    <div class="sub" id="t-sub">ucma · claude-opus-5-5 · shared with you as <b>Alice</b> · link expires Nov 11</div>
+  </div>
+  <span class="grow"></span>
+  <button class="btn ghost ptoggle" id="ptoggle" title="Session panel"><svg class="i" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M15 4v16"/></svg></button>
+  <div class="who">
+    <div class="avs" id="avs"></div>
+    <span class="lbl" id="who-lbl"></span>
+  </div>
+</div>
+
+<div class="shell" id="shell">
+  <aside class="side" id="side" hidden>
+    <div class="h">Today</div>
+    <div class="row on"><span class="t">Grasp eval: v8 vs baseline</span>
+      <span class="pill link" title="Shared · Alice connected"><svg class="i" viewBox="0 0 24 24" style="width:12px;height:12px"><path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"/></svg>1</span></div>
+    <div class="row"><span class="t">Fix teleop latency in unienv adaptor</span></div>
+    <div class="h">Yesterday</div>
+    <div class="row"><span class="t">PI report v8 figures</span></div>
+    <div class="row"><span class="t">cookie-agent: runtime token</span></div>
+  </aside>
+
+  <div class="main">
+    <div class="scroll">
+      <div class="tx" id="tx">
+        <div class="msg-user">
+          <div class="bubble">Run the grasp eval for v8 and the joint-position baseline on the 12 YCB objects, 20 trials each, and plot success per object.</div>
+        </div>
+
+        <div class="tools">
+          <div class="tool"><span class="name">bash</span><span class="arg mono">python eval/grasp.py --ckpt runs/v8/last.pt --objects ycb12 --trials 20</span><span class="st">✓ 4m 12s</span><span class="chev">›</span></div>
+          <div class="tool"><span class="name">bash</span><span class="arg mono">python eval/grasp.py --ckpt runs/baseline_jpos/last.pt --objects ycb12 --trials 20</span><span class="st">✓ 4m 05s</span><span class="chev">›</span></div>
+          <div class="tool"><span class="name">write_asset</span><span class="arg">grasp-success.svg · "Grasp success by object"</span><span class="st">✓</span><span class="chev">›</span></div>
+        </div>
+
+        <div class="asst">
+          <p>v8 succeeds on <b>83%</b> of grasps against <b>61%</b> for the baseline. The gap is widest on thin objects (spatula, scissors); both struggle with the mug handle.</p>
+        </div>
+
+        <div class="fig">
+          <div class="bar"><span>Grasp success by object · asset_3f9a1c2e</span><span>SVG</span></div>
+          <svg class="plot" viewBox="0 0 720 250" id="plot"></svg>
+        </div>
+
+        <div class="msg-user guest" id="g1">
+          <div class="by"><span class="pill link">Alice · via link</span></div>
+          <div class="bubble">Nice. Can you retrain v8 with lr 3e-4 for 2k steps and rerun only the mug and scissors?</div>
+        </div>
+
+        <div class="tools">
+          <div class="tool"><span class="name">read</span><span class="arg mono">configs/v8.yaml</span><span class="st">✓</span><span class="chev">›</span></div>
+          <div class="tool"><span class="name">edit</span><span class="arg mono">configs/v8.yaml</span><span class="st">✓ +1 −1</span><span class="chev">›</span></div>
+        </div>
+
+        <div class="approve" id="approve">
+          <div class="q"><b>bash</b> on <b>yunhao-labserver</b> wants to run:</div>
+          <pre class="mono">python train.py --config configs/v8.yaml --max-steps 2000 --resume runs/v8/last.pt</pre>
+          <div class="q" id="waiting" hidden>Waiting for approval from someone who can send.</div>
+          <div class="acts">
+            <button class="btn primary">Allow once</button>
+            <button class="btn">Allow for this session</button>
+            <button class="btn">Deny…</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="composer" id="composer">
+      <div class="box">
+        <textarea placeholder="Message the agent — / for commands"></textarea>
+        <div class="row">
+          <button class="btn ghost" title="Attach"><svg class="i" viewBox="0 0 24 24"><path d="m21 12-8.6 8.6a5.5 5.5 0 0 1-7.8-7.8l8.6-8.6a3.7 3.7 0 0 1 5.2 5.2L9.8 18a1.8 1.8 0 0 1-2.6-2.6l7.9-7.9"/></svg></button>
+          <button class="btn ghost" title="Goal"><svg class="i" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1"/></svg></button>
+          <span class="grow"></span>
+          <span class="model">ucma · claude-opus-5-5</span>
+          <button class="send" title="Send"><svg class="i" viewBox="0 0 24 24"><path d="M12 19V5"/><path d="m5 12 7-7 7 7"/></svg></button>
+        </div>
+      </div>
+      <div class="hint" id="hint"><span>Messages you send show as <b>Alice · via link</b>. The agent works on the owner's machines.</span><span>Shared from cookie agent</span></div>
+    </div>
+
+    <div class="watch" id="watch" hidden>
+      <svg class="i" viewBox="0 0 24 24"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg>
+      Watch only: this link shows the conversation live but cannot send messages.
+    </div>
+  </div>
+
+  <aside class="panel" id="panel">
+    <div class="tabs" role="tablist">
+      <button class="tab" data-tab="usage">Usage</button>
+      <button class="tab" data-tab="perm">Permissions</button>
+      <button class="tab" data-tab="rt">Runtimes</button>
+      <button class="tab" data-tab="skills">Skills</button>
+      <button class="tab" data-tab="goal" aria-selected="true">Goal</button>
+      <button class="tab" data-tab="bg">Background</button>
+    </div>
+
+    <div class="pbody" data-pane="goal">
+      <h3>Goal</h3>
+      <div class="goalbox">
+        <b>v8 beats the baseline on the mug and scissors</b>
+        <ul><li>✓ Retrain v8 with lr 3e-4 for 2k steps</li><li>Rerun mug and scissors, 20 trials each</li><li>Update the success plot</li></ul>
+        <small style="color:var(--muted)">Active · 1 of 3 done · set by Alice</small>
+      </div>
+      <div class="btns act"><button class="btn">Pause</button><button class="btn">Edit goal…</button><button class="btn">Clear</button></div>
+      <h3>Context</h3>
+      <div class="meter"><i style="width:62%"></i></div>
+      <div class="kv"><span>124k of 200k tokens</span><span>62%</span></div>
+      <div class="btns act"><button class="btn">Compact…</button></div>
+    </div>
+
+    <div class="pbody" data-pane="perm" hidden>
+      <div class="owner-only"><svg class="i" viewBox="0 0 24 24" style="width:13px;height:13px"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>Only the owner can change this.</div>
+      <h3>Mode</h3>
+      <div class="chips"><span class="chip dis">Ask for writes outside the workspace ▾</span></div>
+      <h3>Rules</h3>
+      <div>
+        <div class="rule"><span class="v allow">allow</span><span>read · any path</span></div>
+        <div class="rule"><span class="v allow">allow</span><span>write · workspace</span></div>
+        <div class="rule"><span class="v ask">ask</span><span>bash · any command</span></div>
+        <div class="rule"><span class="v ask">ask</span><span>share</span></div>
+        <div class="rule"><span class="v deny">deny</span><span>delegate</span></div>
+      </div>
+      <div class="btns"><button class="btn dis" disabled>Add rule</button></div>
+    </div>
+
+    <div class="pbody" data-pane="rt" hidden>
+      <div class="owner-only"><svg class="i" viewBox="0 0 24 24" style="width:13px;height:13px"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>Only the owner can change this.</div>
+      <div class="item"><div class="t"><b>yunhao-labserver</b><small>coding · ~/Documents/Projects/UCMA · default</small></div><button class="btn dis" disabled>Detach</button></div>
+      <div class="item"><div class="t"><b>labpc</b><small>coding · not attached</small></div><button class="btn dis" disabled>Attach</button></div>
+      <h3>Tool groups</h3>
+      <div class="item"><div class="t"><b>coding@yunhao-labserver</b><small>bash, read, write, edit · on</small></div><span class="tog dis"></span></div>
+      <div class="item"><div class="t"><b>web</b><small>webfetch, web_search · deferred</small></div><span class="tog off dis"></span></div>
+    </div>
+
+    <div class="pbody" data-pane="skills" hidden>
+      <div class="item"><div class="t"><b>pi-report</b><small>Build the PI update page from vis/pi_report</small></div><span class="tog dis" title="Only the owner can change this"></span></div>
+      <div class="item"><div class="t"><b>slurm-submit</b><small>Submit a training job to the cluster</small></div><span class="tog dis" title="Only the owner can change this"></span></div>
+      <div class="item"><div class="t"><b>dataviz</b><small>Charts that read as one system</small></div><span class="tog off dis" title="Only the owner can change this"></span></div>
+      <div class="btns act"><button class="btn primary">Run pi-report…</button></div>
+      <small style="color:var(--muted)">You can run a skill. Turning skills on or off is the owner's.</small>
+    </div>
+
+    <div class="pbody" data-pane="usage" hidden>
+      <div class="kv"><span>Input</span><span>1.84M tokens</span><span>Cached</span><span>1.61M</span><span>Output</span><span>48.2k</span><span>Cost</span><span>$4.12</span></div>
+      <div class="meter"><i style="width:62%"></i></div>
+      <div class="kv"><span>Context</span><span>124k / 200k</span></div>
+    </div>
+
+    <div class="pbody" data-pane="bg" hidden>
+      <div class="item"><div class="t"><b>bash · python train.py --max-steps 2000</b><small>running · 12m · step 1,240</small></div><button class="btn act">Stop</button></div>
+    </div>
+  </aside>
+</div>
+
+<!-- share dialog, owner's view -->
+<div class="scrim" id="dialog" hidden>
+  <div class="dlg" role="dialog" aria-label="Share conversation">
+    <header><h2>Share conversation</h2><button class="btn ghost" aria-label="Close">✕</button></header>
+    <div class="body">
+      <div class="url">
+        <input type="text" readonly value="https://share.example.com/s/q3Vt0x9LmA2bCdEfGh1iJk">
+        <button class="btn primary">Copy</button>
+      </div>
+      <label class="f">For<input type="text" value="Alice"></label>
+      <label class="chk"><input type="checkbox" checked><span>Can send messages<small>Off makes the link watch-only.</small></span></label>
+      <label class="f">Expires<select><option>1 day</option><option selected>7 days · Nov 11</option><option>30 days</option><option>Never</option></select></label>
+      <div class="warn"><svg class="i" viewBox="0 0 24 24"><path d="M12 9v4"/><path d="M12 17h.01"/><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/></svg>
+        <span>Anyone with this link uses the session as you do: its tools, machines, and approvals, on your provider account.</span></div>
+      <div class="guests"><div class="avs"><span class="av" style="background:#5b5bd6">A</span></div>Alice is connected · 3 views</div>
+    </div>
+    <footer>
+      <div class="l"><button class="btn danger">Revoke</button></div>
+      <div class="r"><button class="btn">New link</button><button class="btn">Done</button></div>
+    </footer>
+  </div>
+</div>
+
+<main class="gone" id="gone" hidden>
+  <i data-mark></i>
+  <h1>This link isn't available</h1>
+  <p>It may have expired or been revoked. Ask the person who shared it for a new one.</p>
+</main>
+
+<script>
+var q0;
+for (const el of document.querySelectorAll('[data-mark]')) el.replaceWith(document.getElementById('mark').content.cloneNode(true));
+
+// the figure: success per object, baseline vs v8
+(function () {
+  const objs = ["mug","bowl","banana","drill","spatula","scissors","can","box","clamp","marker","cup","pitcher"];
+  const base = [.35,.70,.65,.55,.40,.30,.80,.75,.60,.50,.70,.65];
+  const v8   = [.45,.90,.85,.80,.85,.80,.95,.90,.85,.80,.90,.80];
+  const W = 720, H = 250, L = 40, R = 12, T = 30, B = 40, n = objs.length;
+  const gw = (W - L - R) / n, bw = gw * .34, y = v => T + (1 - v) * (H - T - B);
+  let s = '';
+  for (const g of [0,.25,.5,.75,1]) s += `<line x1="${L}" x2="${W-R}" y1="${y(g)}" y2="${y(g)}" stroke="#ececef"/><text x="${L-6}" y="${y(g)+4}" font-size="10" text-anchor="end" fill="#8a8a93">${g*100}%</text>`;
+  objs.forEach((o, i) => {
+    const x = L + i * gw + gw / 2;
+    s += `<rect x="${x-bw-1}" y="${y(base[i])}" width="${bw}" height="${y(0)-y(base[i])}" rx="2" fill="#a1a1aa"/>`;
+    s += `<rect x="${x+1}" y="${y(v8[i])}" width="${bw}" height="${y(0)-y(v8[i])}" rx="2" fill="#5b5bd6"/>`;
+    s += `<text x="${x}" y="${H-B+15}" font-size="10.5" text-anchor="middle" fill="#55555e">${o}</text>`;
+  });
+  s += `<rect x="${L}" y="9" width="10" height="10" rx="2" fill="#a1a1aa"/><text x="${L+15}" y="18" font-size="11" fill="#55555e">baseline (joint positions) · 61%</text>`;
+  s += `<rect x="${L+210}" y="9" width="10" height="10" rx="2" fill="#5b5bd6"/><text x="${L+225}" y="18" font-size="11" fill="#55555e">v8 · 83%</text>`;
+  document.getElementById('plot').innerHTML = s;
+})();
+
+const $ = id => document.getElementById(id);
+function show(view) {
+  document.querySelectorAll('.mock [data-view]').forEach(b => b.setAttribute('aria-pressed', b.dataset.view === view));
+  const gone = view === 'gone', owner = view === 'owner', watch = view === 'watch';
+  $('top').hidden = $('shell').hidden = gone;
+  $('gone').hidden = !gone;
+  if (gone) { $('dialog').hidden = true; return; }
+  $('side').hidden = !owner;
+  $('dialog').hidden = !owner;
+  $('composer').hidden = watch;
+  $('watch').hidden = !watch;
+  $('approve').querySelector('.acts').hidden = watch;
+  $('t-sub').innerHTML = owner
+    ? 'ucma · claude-opus-5-5 · <span class="pill link">Shared · Alice connected</span>'
+    : `ucma · claude-opus-5-5 · ${watch ? 'watching' : 'shared with you as <b>Alice</b>'} · link expires Nov 11`;
+  const av = (c, t) => `<span class="av" style="background:${c}">${t}</span>`;
+  $('avs').innerHTML = owner ? av('#c2410c', 'Y') + av('#5b5bd6', 'A') : watch ? av('#c2410c', 'O') : av('#5b5bd6', 'A') + av('#c2410c', 'O');
+  $('who-lbl').textContent = owner ? 'You and Alice (via link)' : watch ? 'The owner is here' : 'You (Alice) and the owner';
+  $('waiting').hidden = !watch;
+  $('panel').hidden = owner;
+  $('ptoggle').hidden = owner;
+  document.querySelectorAll('.panel .act button, .panel button.act').forEach(b => { b.disabled = watch; b.classList.toggle('dis', watch); });
+  $('hint').hidden = owner;
+}
+document.querySelectorAll('.mock [data-view]').forEach(b => b.onclick = () => show(b.dataset.view));
+document.querySelectorAll('.tab').forEach(t => t.onclick = () => {
+  document.querySelectorAll('.tab').forEach(x => x.setAttribute('aria-selected', x === t));
+  document.querySelectorAll('[data-pane]').forEach(p => p.hidden = p.dataset.pane !== t.dataset.tab);
+});
+$('ptoggle').onclick = () => { $('panel').hidden = !$('panel').hidden; };
+if (q0 = new URLSearchParams(location.search).get('tab')) document.querySelector(`.tab[data-tab="${q0}"]`)?.click();
+const themeBtn = $('theme');
+function setTheme(t) { document.documentElement.dataset.theme = t; themeBtn.textContent = t === 'dark' ? 'Light' : 'Dark'; }
+themeBtn.onclick = () => setTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark');
+const q = new URLSearchParams(location.search);
+setTheme(q.get('theme') || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'));
+show(q.get('view') || 'guest');
+</script>
+</body>
+</html>

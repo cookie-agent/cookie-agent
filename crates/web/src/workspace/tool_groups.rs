@@ -87,6 +87,9 @@ impl Workspace {
     }
 
     fn write_session_tools(self, exposure: ToolExposure) {
+        if self.is_guest() {
+            return;
+        }
         let (Some(client), Some(session_id)) = (self.client(), self.selected.get_untracked())
         else {
             return;

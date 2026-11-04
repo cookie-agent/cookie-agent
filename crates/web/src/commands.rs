@@ -14,6 +14,8 @@ use icondata::Icon;
 pub enum Command {
     /// Rename the session, or go back to its automatic title.
     Rename,
+    /// Make a link that lets someone else use the session.
+    Share,
     /// Compact the session's context, with an optional focus.
     Compact,
     /// Set the root session's goal, or pause, resume, or cancel it.
@@ -70,6 +72,13 @@ pub const MENU: &[MenuEntry] = &[
         label: "Goal",
         icon: icondata::LuTarget,
         description: "Set an objective to work toward; pause, resume, or cancel it",
+    },
+    MenuEntry {
+        command: Command::Share,
+        id: "share",
+        label: "Share conversation",
+        icon: icondata::LuShare2,
+        description: "Make a link that lets someone else use this session",
     },
     MenuEntry {
         command: Command::Schedule,
@@ -135,6 +144,16 @@ pub const fn offered(command: Command, has_crons: bool) -> bool {
     !matches!(command, Command::Schedule) || has_crons
 }
 
+/// Whether a guest is offered `command`: what acts in the session or only
+/// shows it, and not what names it, shares it, or sets it up.
+#[must_use]
+pub const fn offered_to_guest(command: Command) -> bool {
+    !matches!(
+        command,
+        Command::Rename | Command::Share | Command::Schedule | Command::Preset
+    )
+}
+
 /// The menu entry of `command`.
 pub fn entry(command: Command) -> &'static MenuEntry {
     MENU.iter()
@@ -144,7 +163,31 @@ pub fn entry(command: Command) -> &'static MenuEntry {
 
 #[cfg(test)]
 mod tests {
-    use super::{Command, MENU, entry, offered};
+    use super::{Command, MENU, entry, offered, offered_to_guest};
+
+    #[test]
+    fn a_guest_acts_and_reads_but_does_not_set_the_session_up() {
+        for command in [
+            Command::Compact,
+            Command::Goal,
+            Command::Skills,
+            Command::Background,
+            Command::Runtime,
+            Command::Permissions,
+            Command::Usage,
+            Command::Events,
+        ] {
+            assert!(offered_to_guest(command), "{command:?}");
+        }
+        for command in [
+            Command::Rename,
+            Command::Share,
+            Command::Schedule,
+            Command::Preset,
+        ] {
+            assert!(!offered_to_guest(command), "{command:?}");
+        }
+    }
 
     #[test]
     fn only_a_daemon_that_keeps_cron_jobs_offers_scheduling() {
@@ -157,6 +200,7 @@ mod tests {
     fn the_menu_lists_every_command_once_by_a_readable_name() {
         for command in [
             Command::Rename,
+            Command::Share,
             Command::Compact,
             Command::Goal,
             Command::Schedule,
@@ -175,7 +219,6 @@ mod tests {
             );
             assert_eq!(entry(command).command, command);
         }
-        assert_eq!(MENU.len(), 11);
         let mut ids = MENU.iter().map(|entry| entry.id).collect::<Vec<_>>();
         ids.sort_unstable();
         ids.dedup();

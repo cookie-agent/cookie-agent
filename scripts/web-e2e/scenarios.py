@@ -4049,7 +4049,7 @@ def desktop_layout(browser):
     )
     names = [entry[0] for entry in entries]
     assert names == [
-        "rename", "compact", "goal", "schedule", "skills", "background", "runtime", "permissions", "usage",
+        "rename", "compact", "goal", "share", "schedule", "skills", "background", "runtime", "permissions", "usage",
         "events", "preset",
     ], names
     for name, text, icon in entries:
@@ -4059,8 +4059,8 @@ def desktop_layout(browser):
     click_row(browser, "aside nav[aria-label=Sessions] [data-session]")
     browser.wait("an open session", lambda: browser.text("#session-title") != "New session")
     # Rename edits the title in place (renaming), and Schedule a prompt
-    # opens the job form (cron); the others open sheets.
-    for name in [name for name in names[1:] if name != "schedule"]:
+    # opens the job form (cron), and share its dialog; the others open sheets.
+    for name in [name for name in names[1:] if name not in ("schedule", "share")]:
         menu(browser, name)
         browser.wait("the %s sheet" % name, lambda: count(browser, "#sheet [data-command]") == 0 and count(browser, "#sheet") == 1)
         assert page_view(browser) == "chat"
@@ -6817,6 +6817,101 @@ def open_tool_header(browser):
     print("an open header wraps over %d px from %d px, its status on the first line" % (opened["height"], folded["height"]))
 
 
+def guest_link(browser):
+    """A conversation share: the owner makes a link, and whoever opens it
+    uses the session in a sandboxed page that cannot reach the owner's token,
+    until the owner revokes it."""
+    new_session(browser)
+    send(browser, "before the guest")
+    idle(browser, text="ok")
+    browser.click('[aria-label="Commands"]')
+    browser.wait("the session menu", lambda: count(browser, "#sheet [data-command=share]") == 1)
+    settle(browser)
+    browser.click("#sheet [data-command=share]")
+    browser.wait("the share dialog", lambda: count(browser, "#session-share-dialog") == 1)
+    browser.type("#session-share-label", "Alice")
+    browser.click("#session-share-create")
+    browser.wait("the link", lambda: count(browser, "#session-share-url") == 1)
+    url = browser.script("return document.querySelector('#session-share-url').value")
+    assert "/s/" in url, url
+    browser.shot("guest-link-dialog")
+
+    guest = Browser()
+    try:
+        guest.go(url)
+        guest.wait("the guest page", lambda: count(guest, "#guest-bar") == 1, timeout=40)
+        assert "Alice" in guest.text("#guest-bar"), guest.text("#guest-bar")
+        guest.wait("the transcript", lambda: "before the guest" in guest.text("#transcript"))
+        # The page's sandbox: an opaque origin, with none of the owner's
+        # storage, the token among it.
+        sandbox = guest.script(
+            """
+            const out = { origin: window.origin };
+            try { localStorage.length; out.storage = true; } catch (e) { out.storage = false; }
+            try { document.cookie; out.cookie = true; } catch (e) { out.cookie = false; }
+            return out;
+            """
+        )
+        assert sandbox == {"origin": "null", "storage": False, "cookie": False}, sandbox
+        # No sidebar, and the setup is the owner's.
+        assert count(guest, "#sidebar") == 0 and count(guest, "aside [data-new-session]") == 0
+        for chip in ["#agent-chip", "#model-chip", "#permission-mode"]:
+            assert guest.script("return document.querySelector(arguments[0]).disabled", chip), chip
+        guest.shot("guest-link-page")
+
+        # The commands act in the session or show it, and do not set it up.
+        guest.click('[aria-label="Commands"]')
+        guest.wait("the commands", lambda: count(guest, '[data-command="compact"]') == 1)
+        settle(guest)
+        for command in ["goal", "skills", "permissions"]:
+            assert count(guest, '[data-command="%s"]' % command) == 1, command
+        for command in ["rename", "share", "schedule", "preset"]:
+            assert count(guest, '[data-command="%s"]' % command) == 0, command
+        guest.click('[data-command="permissions"]')
+        guest.wait("the note", lambda: count(guest, "[data-owner-only]") == 1)
+        assert count(guest, "#permission-form") == 0
+        guest.shot("guest-link-permissions")
+        # Every tab of the session panel opens without a refused request.
+        for tab in ["Usage", "Runtimes", "Skills", "Goal", "Background", "Events"]:
+            guest.script(
+                "[...document.querySelectorAll('button')].find(b => b.textContent.trim().startsWith(arguments[0])).click()",
+                tab,
+            )
+            settle(guest)
+            guest.shot("guest-link-tab-" + tab.lower())
+            assert "cannot use" not in guest.text("body"), (tab, guest.text("body"))
+        # The goal is a guest's to set.
+        guest.script(
+            "[...document.querySelectorAll('button')].find(b => b.textContent.trim().startsWith('Goal')).click()"
+        )
+        guest.wait("the goal's field", lambda: count(guest, "#goal-input") == 1)
+        guest.type("#goal-input", "the guest's goal")
+        guest.click("#goal-set")
+        browser.wait("the goal for the owner", lambda: "goal" in browser.text("body").lower())
+        guest.script("document.activeElement && document.activeElement.blur()")
+        guest.type("body", ESCAPE)
+
+        # A guest's message reaches the agent, labelled for people.
+        guest.wait("the composer", lambda: count(guest, "#composer") == 1)
+        guest.type("#composer", "from the guest")
+        guest.type("#composer", ENTER)
+        guest.wait("the guest's message", lambda: "from the guest" in guest.text("#transcript"))
+        guest.wait("the label", lambda: count(guest, "[data-guest-label]") == 1)
+        browser.wait("the label for the owner", lambda: count(browser, "[data-guest-label]") == 1)
+        assert "Alice" in browser.text("[data-guest-label]")
+        browser.shot("guest-link-owner")
+        guest.check()
+
+        # Revoking ends the link for whoever has it open.
+        browser.wait("the dialog's count", lambda: count(browser, "#session-share-revoke") == 1)
+        browser.click("#session-share-revoke")
+        guest.wait("the link's end", lambda: count(guest, "#guest-gone") == 1, timeout=40)
+        guest.shot("guest-link-gone")
+    finally:
+        guest.close()
+    browser.click("#session-share-close")
+
+
 SCENARIOS = [
     ("basics", basics, "chat", []),
     ("torn_down", torn_down, "chat", ["basics"]),
@@ -6876,6 +6971,8 @@ SCENARIOS = [
     # It restarts its daemon.
     ("acp_restart", acp_restart, "acp_restart", []),
     # It restarts its daemon.
+    # It has a browser of its own for the guest, in its own group's load.
+    ("guest_link", guest_link, "guest", []),
     ("session_restart", session_restart, "session_restart", []),
     # It restarts its daemon.
     ("restart_daemon", restart_daemon, "restart", []),

@@ -68,10 +68,16 @@ pub struct ServerContext {
     /// Opens once the response of the request this context was handed to has
     /// been queued. `None` for connection-scoped contexts.
     response_sent: Option<CancellationToken>,
+    /// What limits this connection, when it is not the owner's.
+    guard: Option<Arc<dyn ConnectionGuard>>,
 }
 
 impl ServerContext {
-    fn new(notifications: mpsc::Sender<String>, shutdown: CancellationToken) -> Self {
+    fn new(
+        notifications: mpsc::Sender<String>,
+        shutdown: CancellationToken,
+        guard: Option<Arc<dyn ConnectionGuard>>,
+    ) -> Self {
         Self {
             connection_id: NEXT_CONNECTION_ID.fetch_add(1, Ordering::Relaxed),
             client_origin: Arc::new(std::sync::OnceLock::new()),
@@ -81,6 +87,7 @@ impl ServerContext {
             subscribed_sessions: Arc::new(Mutex::new(HashSet::new())),
             session_tails: Arc::new(Mutex::new(HashMap::new())),
             response_sent: None,
+            guard,
         }
     }
 
@@ -114,10 +121,13 @@ impl ServerContext {
     ) -> ServerHello {
         let origin = self
             .client_origin
-            .get_or_init(|| hello.client.origin())
+            .get_or_init(|| match &self.guard {
+                Some(guard) => guard.origin(hello),
+                None => hello.client.origin(),
+            })
             .clone();
         let _ = self.client_version.set(hello.protocol_version);
-        ServerHello {
+        let answer = ServerHello {
             protocol_version: cookie_agent_protocol::CLIENT_PROTOCOL_VERSION,
             engine_version: about.engine_version.clone(),
             origin,
@@ -128,6 +138,11 @@ impl ServerContext {
             page_url: about.page_url.clone(),
             page_ticket: about.page_ticket.clone(),
             share_url: about.share_url.clone(),
+            guest: None,
+        };
+        match &self.guard {
+            Some(guard) => guard.hello(answer),
+            None => answer,
         }
     }
 
@@ -293,12 +308,56 @@ impl ServerContext {
 pub fn test_server_context() -> (ServerContext, mpsc::Receiver<String>) {
     let (notifications, receiver) = mpsc::channel(OUTBOUND_QUEUE_CAPACITY);
     (
-        ServerContext::new(notifications, CancellationToken::new()),
+        ServerContext::new(notifications, CancellationToken::new(), None),
         receiver,
     )
 }
 
 /// Server end of the protocol contract after session-level validation.
+/// What limits a connection that is not the owner's, one that came through
+/// a conversation share (`docs/site/specs/conversation-shares.md` section
+/// 5). The connection loop asks it before anything reaches the server and
+/// before anything queued reaches the client.
+#[async_trait]
+pub trait ConnectionGuard: Send + Sync + 'static {
+    /// The origin stamped on what the connection causes, whatever identity
+    /// its client presents.
+    fn origin(&self, hello: &ClientHello) -> EventOrigin;
+
+    /// The handshake's answer as this connection gets it.
+    fn hello(&self, hello: ServerHello) -> ServerHello;
+
+    /// Whether a request may run; the fault answers it when it may not.
+    async fn admit(&self, method: &str, params: Option<&Value>) -> Result<(), ServerFault>;
+
+    /// Whether a notification may reach the client.
+    fn notify(&self, method: &str, params: Option<&RawValue>) -> bool;
+}
+
+/// Whether a queued frame may go out on a guarded connection: replies to its
+/// own requests do, and notifications as its guard says. A frame that cannot
+/// be read stays in.
+fn frame_passes(guard: Option<&dyn ConnectionGuard>, frame: &str) -> bool {
+    #[derive(Deserialize)]
+    struct Envelope<'a> {
+        #[serde(borrow, default)]
+        method: Option<&'a str>,
+        #[serde(borrow, default)]
+        params: Option<&'a RawValue>,
+    }
+    let Some(guard) = guard else {
+        return true;
+    };
+    match serde_json::from_str::<Envelope<'_>>(frame) {
+        Ok(Envelope {
+            method: Some(method),
+            params,
+        }) => guard.notify(method, params),
+        Ok(Envelope { method: None, .. }) => true,
+        Err(_) => false,
+    }
+}
+
 #[async_trait]
 pub trait ServerProtocol: Send + Sync + 'static {
     /// Called after the handshake response has been sent.
@@ -1048,6 +1107,16 @@ pub trait ServerProtocol: Send + Sync + 'static {
         &self,
         params: cookie_agent_protocol::ShareUpdateParams,
     ) -> Result<cookie_agent_protocol::ShareUpdateResult, ServerFault>;
+    /// Makes a conversation share.
+    async fn create_session_share(
+        &self,
+        params: cookie_agent_protocol::SessionShareCreateParams,
+    ) -> Result<cookie_agent_protocol::SessionShareResult, ServerFault>;
+    /// Changes a conversation share.
+    async fn update_session_share(
+        &self,
+        params: cookie_agent_protocol::SessionShareUpdateParams,
+    ) -> Result<cookie_agent_protocol::SessionShareResult, ServerFault>;
     /// Revokes a share link.
     async fn revoke_share(
         &self,
@@ -1230,6 +1299,7 @@ where
             pending: None,
             status,
             about,
+            guard: None,
         },
         transport,
         shutdown,
@@ -1248,6 +1318,8 @@ pub struct Startup<S> {
     pub status: watch::Receiver<DaemonStatus>,
     /// What the handshake says about the daemon.
     pub about: About,
+    /// What limits the connection, when it is not the owner's.
+    pub guard: Option<Arc<dyn ConnectionGuard>>,
 }
 
 /// What a handshake says about the daemon.
@@ -1288,6 +1360,7 @@ where
             server,
             status: Some(startup.status),
             about: startup.about,
+            guard: startup.guard,
         },
         transport,
         shutdown,
@@ -1305,6 +1378,7 @@ struct Gate<S> {
     pending: Option<Arc<std::sync::OnceLock<Arc<S>>>>,
     status: Option<watch::Receiver<DaemonStatus>>,
     about: About,
+    guard: Option<Arc<dyn ConnectionGuard>>,
 }
 
 /// How often a connection is sent the daemon's status at most; a phase
@@ -1363,9 +1437,10 @@ where
         pending,
         mut status,
         about,
+        guard,
     } = gate;
     let (outbound, mut outbound_rx) = mpsc::channel(OUTBOUND_QUEUE_CAPACITY);
-    let context = ServerContext::new(outbound, shutdown);
+    let context = ServerContext::new(outbound, shutdown, guard.clone());
     let _guard = ConnectionShutdown(context.shutdown());
     let in_flight = Arc::new(Semaphore::new(MAX_IN_FLIGHT_REQUESTS));
     let mut permit = None;
@@ -1389,7 +1464,7 @@ where
         let authenticated = matches!(authentication, Authentication::Authenticated);
         tokio::select! {
             () = context.shutdown.cancelled() => {
-                finish_and_close(&mut transport, &mut outbound_rx).await;
+                finish_and_close(&mut transport, &mut outbound_rx, guard.as_deref()).await;
                 return Ok(());
             }
             () = &mut unauthenticated_until, if !authenticated => return Ok(()),
@@ -1417,7 +1492,7 @@ where
                     } else if handshaken && reads_status {
                         transport.send(MessageFrame::Text(status_notification(&current)?)).await?;
                     }
-                    finish_and_close(&mut transport, &mut outbound_rx).await;
+                    finish_and_close(&mut transport, &mut outbound_rx, guard.as_deref()).await;
                     return Ok(());
                 }
                 if !(handshaken && reads_status) {
@@ -1460,7 +1535,7 @@ where
                     // handshake: its client would take it for a connection
                     // that works, then lose what it sends at once.
                     if context.shutdown.is_cancelled() {
-                        finish_and_close(&mut transport, &mut outbound_rx).await;
+                        finish_and_close(&mut transport, &mut outbound_rx, guard.as_deref()).await;
                         return Ok(());
                     }
                     let Incoming::Request { id, method, params } = incoming else {
@@ -1548,12 +1623,16 @@ where
                 };
                 let permit = permit.take();
                 let (request_context, response_sent) = context.for_request();
+                let guard = guard.clone();
                 tokio::spawn(async move {
                     let _permit = permit;
                     // Opens the notification gate on every exit, a panic included.
                     let _response_sent = response_sent.drop_guard();
-                    let Some(response) = handle(server.as_ref(), incoming, &request_context).await
-                    else {
+                    let response = match admitted(guard.as_deref(), &incoming).await {
+                        Admitted::Yes => handle(server.as_ref(), incoming, &request_context).await,
+                        Admitted::No(response) => response,
+                    };
+                    let Some(response) = response else {
                         return;
                     };
                     tokio::select! {
@@ -1563,6 +1642,9 @@ where
                 });
             }
             Some(frame) = outbound_rx.recv() => {
+                if !frame_passes(guard.as_deref(), &frame) {
+                    continue;
+                }
                 // A notification queued as the client went away: the closed
                 // transport ends the connection as reading its end does, not
                 // as a failure.
@@ -1581,9 +1663,16 @@ const SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// Sends the replies and notifications already queued, then closes the
 /// transport in an orderly way, all within [`SHUTDOWN_GRACE`].
-async fn finish_and_close<T: Transport>(transport: &mut T, outbound: &mut mpsc::Receiver<String>) {
+async fn finish_and_close<T: Transport>(
+    transport: &mut T,
+    outbound: &mut mpsc::Receiver<String>,
+    guard: Option<&dyn ConnectionGuard>,
+) {
     let _ = tokio::time::timeout(SHUTDOWN_GRACE, async {
         while let Ok(frame) = outbound.try_recv() {
+            if !frame_passes(guard, &frame) {
+                continue;
+            }
             if transport.send(MessageFrame::Text(frame)).await.is_err() {
                 return;
             }
@@ -1618,6 +1707,30 @@ fn token_matches(token: &str, expected: &str) -> bool {
                 difference | (left ^ right)
             })
             == 0
+}
+
+/// What a guarded connection's guard says of one message.
+enum Admitted {
+    Yes,
+    /// It does not run: this answers it, when it wants an answer.
+    No(Option<String>),
+}
+
+/// Asks the connection's guard about a post-handshake message. A notification
+/// from the client never runs on a guarded connection.
+async fn admitted(guard: Option<&dyn ConnectionGuard>, incoming: &Incoming) -> Admitted {
+    let Some(guard) = guard else {
+        return Admitted::Yes;
+    };
+    match incoming {
+        Incoming::Notification { .. } => Admitted::No(None),
+        Incoming::Request { id, method, params } => {
+            match guard.admit(method, params.as_ref()).await {
+                Ok(()) => Admitted::Yes,
+                Err(fault) => Admitted::No(error_response(Some(id.clone()), fault).ok()),
+            }
+        }
+    }
 }
 
 /// Runs one post-handshake message and builds its response, if it has one.
@@ -2110,6 +2223,12 @@ async fn dispatch<S: ServerProtocol>(
                 )));
             }
             value(server.update_share(params).await?)
+        }
+        cookie_agent_protocol::SESSION_SHARE_CREATE_METHOD => {
+            value(server.create_session_share(decode(params)?).await?)
+        }
+        cookie_agent_protocol::SESSION_SHARE_UPDATE_METHOD => {
+            value(server.update_session_share(decode(params)?).await?)
         }
         cookie_agent_protocol::SHARE_REVOKE_METHOD => {
             value(server.revoke_share(decode(params)?).await?)

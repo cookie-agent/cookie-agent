@@ -31,6 +31,9 @@ pub struct CronForm {
 impl Workspace {
     /// Reads `crons.list`, when the daemon keeps jobs.
     pub fn poll_crons(self) {
+        if self.is_guest() {
+            return;
+        }
         if !self.has_crons.get_untracked() {
             return;
         }

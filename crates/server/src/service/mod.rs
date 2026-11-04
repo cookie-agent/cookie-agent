@@ -1,3 +1,4 @@
+mod guest;
 mod page;
 mod plugin_pages;
 mod routes;

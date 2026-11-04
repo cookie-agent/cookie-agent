@@ -90,8 +90,12 @@ pub fn runtimes_sheet(workspace: Workspace) -> impl IntoView {
         workspace.poll_session_tools();
     });
     view! {
+        <Show when=move || workspace.is_guest()>
+            <p class=NOTE data-owner-only>"Only the owner can change this."</p>
+        </Show>
         {super::tool_groups::tools_summary(workspace)}
         {attachments_view(workspace)}
+        <Show when=move || !workspace.is_guest()>
         <button
             type="button"
             id="runtime-open-machines"
@@ -101,6 +105,7 @@ pub fn runtimes_sheet(workspace: Workspace) -> impl IntoView {
             <Glyph icon=icondata::LuServer />
             "Machines & runtimes"
         </button>
+        </Show>
     }
 }
 
@@ -132,9 +137,12 @@ fn attachments_view(workspace: Workspace) -> impl IntoView {
                             <span class="min-w-0 flex-1 truncate font-mono text-sm font-bold">
                                 {format!("{} · {}", row.attachment.name, row.attachment.kind)}
                             </span>
-                            <span class=STATE class:text-bad=failed>
-                                {status_label(status)}
-                            </span>
+                            // A guest does not read how the daemon's runtimes are.
+                            <Show when=move || !workspace.is_guest()>
+                                <span class=STATE class:text-bad=failed>
+                                    {status_label(status)}
+                                </span>
+                            </Show>
                         </div>
                         <span class=NOTE data-runtime-place>
                             {format!(
@@ -155,7 +163,7 @@ fn attachments_view(workspace: Workspace) -> impl IntoView {
                         {message.map(|message| view! { <span class=ERROR>{message}</span> })}
                         {chips}
                         {(!servers.is_empty()).then(|| runtime_mcp_servers(servers, None, None))}
-                        <div class="flex gap-2">
+                        <div class="flex gap-2" class:hidden=move || workspace.is_guest()>
                             <button type="button" class=BUTTON data-retry on:click=move |_| workspace.retry_runtime(retry_row.clone())>
                                 <Glyph icon=icondata::LuRefreshCw />
                                 "Retry"
@@ -190,6 +198,7 @@ fn attachments_view(workspace: Workspace) -> impl IntoView {
     };
     view! {
         {rows}
+        <Show when=move || !workspace.is_guest()>
         <Show
             when=move || attaching.get()
             fallback=move || view! {
@@ -274,6 +283,7 @@ fn attachments_view(workspace: Workspace) -> impl IntoView {
                         .into_any()
                 }
             }}
+        </Show>
         </Show>
     }
 }

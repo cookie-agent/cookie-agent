@@ -78,10 +78,17 @@ impl ShareLifetime {
 /// the client reached the daemon's page at, before its `path`.
 #[must_use]
 pub fn share_address(share: &Share, page_base: &str) -> String {
-    share
-        .url
-        .clone()
-        .unwrap_or_else(|| format!("{}/{}", page_base.trim_end_matches('/'), share.path))
+    link_address(share.url.as_deref(), &share.path, page_base)
+}
+
+/// The address a link is copied as: its own URL, else `path` below the
+/// address the client reached the daemon's page at.
+#[must_use]
+pub fn link_address(url: Option<&str>, path: &str, page_base: &str) -> String {
+    url.map_or_else(
+        || format!("{}/{path}", page_base.trim_end_matches('/')),
+        str::to_owned,
+    )
 }
 
 /// The address of the web page of the daemon whose client endpoint is

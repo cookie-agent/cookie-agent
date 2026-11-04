@@ -1,19 +1,21 @@
 //! The daemon's share links (`docs/site/specs/share-links.md` sections 3
-//! and 4): one record per link in `<data_root>/shares.json`, naming the
-//! asset it shows. No bytes are copied: every request reads the asset
-//! store.
+//! and 4, `docs/site/specs/conversation-shares.md` section 3): one record
+//! per link in `<data_root>/shares.json`, naming the asset it shows or the
+//! session it opens. No bytes are copied: every request reads the asset
+//! store or the session.
 //!
 //! Writes are atomic and serialized by one lock. View counts are kept in
 //! memory and written by [`ShareStore::flush`], which the engine's janitor
 //! calls every minute and shutdown calls once.
 
 use std::{
+    collections::HashMap,
     fs, io,
     path::{Path, PathBuf},
     sync::Mutex,
 };
 
-use cookie_agent_protocol::{AssetId, AssetStore, ShareCreated, ShareId};
+use cookie_agent_protocol::{AssetId, AssetStore, SessionId, ShareCreated, ShareId};
 use serde::{Deserialize, Serialize};
 
 /// The store's file under the data root.
@@ -29,6 +31,12 @@ pub enum ShareError {
     Disabled,
     #[error("the expiry is already past")]
     PastExpiry,
+    #[error("session {0} is a delegated session, which cannot be shared by itself")]
+    NotRoot(SessionId),
+    #[error("a share link's label is one line of at most 30 bytes")]
+    InvalidLabel,
+    #[error("share link {0} is not of this kind")]
+    OtherKind(ShareId),
     #[error("the share store failed: {0}")]
     Store(String),
 }
@@ -37,9 +45,8 @@ pub enum ShareError {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub(crate) struct ShareRecord {
     pub(crate) id: ShareId,
-    pub(crate) store: AssetStore,
-    pub(crate) asset: AssetId,
-    pub(crate) title: String,
+    #[serde(flatten)]
+    pub(crate) target: ShareTarget,
     pub(crate) created: ShareCreated,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) expires_at: Option<jiff::Timestamp>,
@@ -49,10 +56,35 @@ pub(crate) struct ShareRecord {
     pub(crate) last_viewed: Option<jiff::Timestamp>,
 }
 
+/// What a link opens. The fields are the record's own, so a file written
+/// before conversation shares reads as asset links.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(untagged)]
+pub(crate) enum ShareTarget {
+    Asset {
+        store: AssetStore,
+        asset: AssetId,
+        title: String,
+    },
+    Session {
+        session: SessionId,
+        label: String,
+        can_send: bool,
+    },
+}
+
 impl ShareRecord {
     /// Whether the link still works at `now`.
     pub(crate) fn live(&self, now: jiff::Timestamp) -> bool {
         self.expires_at.is_none_or(|at| at > now)
+    }
+
+    /// The asset this link shows, when it shows one.
+    pub(crate) fn asset(&self) -> Option<AssetId> {
+        match &self.target {
+            ShareTarget::Asset { asset, .. } => Some(*asset),
+            ShareTarget::Session { .. } => None,
+        }
     }
 }
 
@@ -69,6 +101,8 @@ struct State {
     records: Option<Vec<ShareRecord>>,
     /// Views counted since the file was last written.
     views_dirty: bool,
+    /// The guests connected now, by link. Nothing of it is kept.
+    guests: HashMap<ShareId, u32>,
 }
 
 /// Every share link of a data root.
@@ -170,7 +204,7 @@ impl ShareStore {
             (
                 records
                     .iter()
-                    .filter(|record| record.asset == asset && record.live(now))
+                    .filter(|record| record.asset() == Some(asset) && record.live(now))
                     .max_by_key(|record| record.created.at)
                     .cloned(),
                 false,
@@ -235,6 +269,48 @@ impl ShareStore {
             record.last_viewed = Some(now);
             state.views_dirty = true;
         }
+    }
+
+    /// Counts a guest connecting through link `id`: a view, and one more
+    /// connected until [`Self::guest_left`].
+    pub(crate) fn guest_joined(&self, id: &ShareId, now: jiff::Timestamp) {
+        self.viewed(id, now);
+        *self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .guests
+            .entry(id.clone())
+            .or_insert(0) += 1;
+        self.changed();
+    }
+
+    /// A guest of link `id` went away.
+    pub(crate) fn guest_left(&self, id: &ShareId) {
+        {
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if let Some(count) = state.guests.get_mut(id) {
+                *count = count.saturating_sub(1);
+                if *count == 0 {
+                    state.guests.remove(id);
+                }
+            }
+        }
+        self.changed();
+    }
+
+    /// How many guests are connected through link `id` now.
+    pub(crate) fn guests(&self, id: &ShareId) -> u32 {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .guests
+            .get(id)
+            .copied()
+            .unwrap_or(0)
     }
 
     /// Writes the view counts counted since the last write, and removes
@@ -310,18 +386,18 @@ fn write_file(path: &Path, records: &[ShareRecord]) -> Result<(), ShareError> {
 
 #[cfg(test)]
 mod tests {
-    use cookie_agent_protocol::SessionId;
-
     use super::*;
 
     fn record(id: &str, asset: AssetId, at: &str, expires_at: Option<&str>) -> ShareRecord {
         ShareRecord {
             id: ShareId::new(id).unwrap(),
-            store: AssetStore::Session {
-                session: SessionId::new_v7(),
+            target: ShareTarget::Asset {
+                store: AssetStore::Session {
+                    session: SessionId::new_v7(),
+                },
+                asset,
+                title: "Loss curves".into(),
             },
-            asset,
-            title: "Loss curves".into(),
             created: ShareCreated {
                 at: at.parse().unwrap(),
                 session: None,
@@ -440,9 +516,90 @@ mod tests {
             store.newest_of(kept, now).unwrap().unwrap().id.as_str(),
             "eeeeeeeeeeeeeeeeeeeeee"
         );
-        assert_eq!(store.remove(|record| record.asset == gone).unwrap(), 1);
+        assert_eq!(
+            store.remove(|record| record.asset() == Some(gone)).unwrap(),
+            1
+        );
         assert!(store.newest_of(gone, now).unwrap().is_none());
         assert_eq!(store.list(now).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn a_file_of_asset_links_reads_and_both_kinds_survive_a_new_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let session = SessionId::new_v7();
+        let asset = AssetId::new_v7();
+        // As 1.86.0 wrote it: the asset's fields at the record's top level.
+        fs::write(
+            dir.path().join(SHARES_FILE),
+            serde_json::json!({
+                "version": 1,
+                "shares": [{
+                    "id": "hhhhhhhhhhhhhhhhhhhhhh",
+                    "store": AssetStore::Session { session },
+                    "asset": asset,
+                    "title": "Loss curves",
+                    "created": { "at": "2026-11-01T00:00:00Z" },
+                }],
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let now = at("2026-11-02T00:00:00Z");
+        let store = ShareStore::new(dir.path());
+        let guest_link = ShareId::new("iiiiiiiiiiiiiiiiiiiiii").unwrap();
+        store
+            .insert(ShareRecord {
+                id: guest_link.clone(),
+                target: ShareTarget::Session {
+                    session,
+                    label: "Alice".into(),
+                    can_send: false,
+                },
+                created: ShareCreated {
+                    at: now,
+                    session: None,
+                    agent: None,
+                },
+                expires_at: None,
+                views: 0,
+                last_viewed: None,
+            })
+            .unwrap();
+        let again = ShareStore::new(dir.path());
+        assert_eq!(again.list(now).unwrap().len(), 2);
+        assert!(matches!(
+            again.get(&guest_link, now).unwrap().unwrap().target,
+            ShareTarget::Session {
+                can_send: false,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn a_guest_counts_as_a_view_and_while_connected() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = ShareStore::new(dir.path());
+        let id = ShareId::new("jjjjjjjjjjjjjjjjjjjjjj").unwrap();
+        store
+            .insert(record(
+                id.as_str(),
+                AssetId::new_v7(),
+                "2026-11-01T00:00:00Z",
+                None,
+            ))
+            .unwrap();
+        let now = at("2026-11-02T00:00:00Z");
+        store.guest_joined(&id, now);
+        store.guest_joined(&id, now);
+        assert_eq!(store.guests(&id), 2);
+        store.guest_left(&id);
+        assert_eq!(store.guests(&id), 1);
+        store.guest_left(&id);
+        store.guest_left(&id);
+        assert_eq!(store.guests(&id), 0);
+        assert_eq!(store.get(&id, now).unwrap().unwrap().views, 2);
     }
 
     #[cfg(unix)]

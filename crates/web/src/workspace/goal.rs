@@ -79,7 +79,7 @@ impl Workspace {
             GoalCommand::Lifecycle(action) => needs_selection(*action),
             GoalCommand::Show => false,
         };
-        let selection = if wants_selection {
+        let selection = if wants_selection && !self.is_guest() {
             let Some(selection) = self.draft.get_untracked() else {
                 self.status
                     .set("select an agent and model before activating or resuming a goal".into());

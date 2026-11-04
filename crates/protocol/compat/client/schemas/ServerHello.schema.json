@@ -104,6 +104,34 @@
       ],
       "type": "object"
     },
+    "GuestHello": {
+      "description": "What a guest connection's handshake says about its link (client protocol\n1.88.0): a client with this in its hello is a guest in one session.",
+      "properties": {
+        "can_send": {
+          "type": "boolean"
+        },
+        "expires_at": {
+          "format": "date-time",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "label": {
+          "type": "string"
+        },
+        "session_id": {
+          "format": "uuid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id",
+        "label",
+        "can_send"
+      ],
+      "type": "object"
+    },
     "JsonRpcError": {
       "properties": {
         "code": {
@@ -166,6 +194,17 @@
         "type": "string"
       },
       "type": "array"
+    },
+    "guest": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/GuestHello"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "This connection came through a conversation share (client protocol\n1.88.0): it reaches one session and what the link allows."
     },
     "machine_id": {
       "description": "An opaque identity of the daemon's machine\n(`paths::machine_id`), so a client can tell whether it runs on the\nsame machine; absent when the daemon cannot tell.",

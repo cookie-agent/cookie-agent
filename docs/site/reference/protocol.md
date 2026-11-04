@@ -13,7 +13,7 @@ A client must call `handshake` before any other method:
 
 ```json
 { "jsonrpc": "2.0", "id": 1, "method": "handshake", "params": {
-    "protocol_version": "1.87.0",
+    "protocol_version": "1.88.0",
     "client": { "kind": "web", "instance_id": "<uuid>" },
     "token": "<the daemon's token>",
     "features": [] } }
@@ -22,7 +22,7 @@ A client must call `handshake` before any other method:
 The reply:
 
 ```json
-{ "protocol_version": "1.87.0", "engine_version": "0.3.0",
+{ "protocol_version": "1.88.0", "engine_version": "0.3.0",
   "origin": "client:web-<id>", "machine_id": "<opaque>", "features": [],
   "status": { "phase": "ready" } }
 ```
@@ -351,11 +351,13 @@ Idempotent redelivery resolves against the state preceding the original run.
 | `asset.read` | `store`, `asset` ID, `offset`, `length` (at most 1 MiB) | Base64 `data`, `total_bytes`, `media_type`, and the `sha256` of the content read |
 | `asset.rename` | `store`, `asset` ID, `title` (1 to 200 characters on one line) | The renamed `asset` |
 | `asset.delete` | `store`, `asset` ID | Empty object |
-| `shares.list` | `asset?` ID (since 1.86.0; see [Share links](#share-links)) | The live `shares`, newest first, and `enabled` |
+| `shares.list` | `asset?` ID, `session?` ID (since 1.88.0; see [Share links](#share-links)) | The live `shares`, newest first, `enabled`, and the live `sessions` (conversation shares, since 1.88.0) |
 | `share.create` | `store`, `asset` ID, `expiry`, `reuse?` | The `share`, and `created`: false when `reuse` returned the asset's newest live link |
 | `share.update` | `id`, `title?`, `expiry?` | The changed `share`, or `share_not_found` |
 | `share.revoke` | `id` | Empty object, or `share_not_found` |
 | `shares.revoke_all` | Empty object | `revoked`, how many links |
+| `session_share.create` | `session_id` of a root session, `label?`, `can_send`, `expiry` (since 1.88.0; see [Conversation shares](#conversation-shares)) | The `share` |
+| `session_share.update` | `id`, `label?`, `can_send?`, `expiry?` | The changed `share`, or `share_not_found` |
 | `run.cancel` | Run ID | `cancelled` boolean |
 | `run.tool_background` | Run ID, tool call ID | `accepted` boolean: false unless the call is an executing call of a background-capable tool; it detaches at its detach point (see [Background calls](tools.md#background-calls)) |
 | `session.background.list` | Session ID | The session's background `calls` |
@@ -883,6 +885,29 @@ deleted session tree's and project's (`project.delete` also returns
 `shares_disabled` and every link answers as gone; `shares.list` says so in
 `enabled`. Each change but a view sends `shares.changed` to every
 connection.
+
+
+### Conversation shares
+
+Since 1.88.0 a conversation share is a share link that opens a root session
+for whoever has it ([spec](../specs/conversation-shares.md)). A `SessionShare`
+has its `id`, `path`, and `url?` as a `Share`, then `session_id`, the session's
+`title?`, the `label` messages sent through it show, `can_send`, `created`,
+`expires_at?`, `views` (guest connections), `last_viewed?`, and `connected`.
+
+A guest connects to `s/<id>/ws` below the share base, with no token and from
+any `Origin`, and speaks this protocol. Its hello carries `guest`
+(`session_id`, `label`, `can_send`, `expires_at?`) and no `page_ticket`,
+`page_url`, `share_url`, or `machine_id`. What it asks for is checked first: it
+reads the session and its delegated sessions, and acts in the session when
+`can_send`. Everything else answers `not_allowed_for_guest`, as does an act
+that carries a `selection` or `reset_fallback`, so a guest's run uses the
+session's agent and model. It gets the notifications of its tree, and none of
+the daemon's others. Revoking or changing a link closes its connections.
+
+The origin of what a guest causes is `client:guest-<label in base 32>-<8 hex
+digits>`. A client shows the label on the guest's messages (`guest_label` in
+`cookie_agent_protocol`); the model never sees it.
 
 ### Cron jobs
 

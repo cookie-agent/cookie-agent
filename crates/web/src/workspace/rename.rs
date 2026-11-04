@@ -42,6 +42,7 @@ impl Workspace {
     /// views and may write to.
     pub fn title_editable(self) -> bool {
         !self.new_session.get()
+            && !self.is_guest()
             && self.selected.get().is_some_and(|session_id| {
                 !self
                     .read_only

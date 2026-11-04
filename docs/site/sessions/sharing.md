@@ -1,9 +1,9 @@
 # Share links
 
-A share link is a public URL for one [asset](assets.md). Anyone who has it
-can open it in a browser, without the daemon token, an account, or the
-cookie web client, until it expires or you revoke it. The spec has the
-details: [share links](../specs/share-links.md).
+A share link is a public URL for one [asset](assets.md), or for one
+[conversation](#sharing-a-conversation). Anyone who has it can open it in a
+browser, without the daemon token or an account, until it expires or you
+revoke it. The spec has the details: [share links](../specs/share-links.md).
 
 ## What a link shows
 
@@ -63,6 +63,43 @@ loopback, a LAN or Tailscale address). The safe way to go public is the
 share-only port: see
 [Remote access](../daemon/remote-access.md#public-share-links) and
 [`[share]`](../engine/share.md).
+
+## Sharing a conversation
+
+A conversation share lets someone else **use a session**, not just read it. In
+the web client choose **Share conversation** in the session's ⋮ menu or its
+sidebar row's menu; in the TUI use `/share <who it is for>`; or run
+[`cookie share session`](../clients/cli.md#cookie-share-session).
+
+Whoever opens the link is a guest. The page is the web client's own session
+view, live, without the sidebar:
+
+- **They see everything:** the whole transcript with tool calls and thinking,
+  the system prompt and tools rows, figures, attachments, its subagents'
+  sessions, and the session panel.
+- **They act as you do in the session:** send messages and files, steer and
+  stop, answer approvals and questions, compact, set goals, run skills, and
+  revert.
+- **The setup stays yours:** permissions, runtimes, tool groups and skill
+  switches, the agent, model, and options, and the project show disabled. They
+  cannot fork, rename, or delete, or reach anything outside the session.
+
+!!! warning "A guest acts as you"
+    A guest's turns run with this session's tools, machines, and permission
+    rules, and a guest answers its approvals, on your provider account with no
+    limit. Whatever the session's agent can do, a guest can have it do: read
+    `~/.ssh` or cookie's `config.toml` with its API keys, run commands, write
+    files. Hand out a link as you would a shell on those machines. A link with
+    **Can send messages** off is watch-only, though it still shows everything
+    in the transcript.
+
+A guest's messages show the link's label, such as *Alice · via link*, in every
+client; the model gets them as if you had sent them. Make one link per person
+to tell people apart and revoke one without the others. The session's title bar
+shows a badge while it has a link, with how many guests are connected.
+
+Revoking a link, or changing it, closes its guests' connections at once. A
+link goes with its session.
 
 ## Keep in mind
 

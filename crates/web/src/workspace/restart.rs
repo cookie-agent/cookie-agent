@@ -14,6 +14,9 @@ use super::Workspace;
 impl Workspace {
     /// Reads the configuration status again, for the banner.
     pub(super) fn refresh_config_status(self) {
+        if self.is_guest() {
+            return;
+        }
         if !self.can_restart.get_untracked() {
             return;
         }

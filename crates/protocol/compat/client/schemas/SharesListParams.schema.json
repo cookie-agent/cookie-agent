@@ -10,6 +10,14 @@
         "string",
         "null"
       ]
+    },
+    "session": {
+      "description": "Only the links of this session (client protocol 1.88.0).",
+      "format": "uuid",
+      "type": [
+        "string",
+        "null"
+      ]
     }
   },
   "title": "SharesListParams",

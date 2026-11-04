@@ -30,9 +30,15 @@ pub async fn open(
     identity: ClientIdentity,
 ) -> Result<(Client, ServerHello), ClientError> {
     let client = connect(url).await?;
-    let hello = client
-        .handshake_with_token(identity, HandshakeToken::new(token))
-        .await?;
+    // A conversation share's socket takes no token: its URL is the
+    // credential.
+    let hello = if token.is_empty() {
+        client.handshake_as(identity).await?
+    } else {
+        client
+            .handshake_with_token(identity, HandshakeToken::new(token))
+            .await?
+    };
     Ok((client, hello))
 }
 

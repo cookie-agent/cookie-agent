@@ -38,6 +38,7 @@ impl Starting {
                     page_ticket: None,
                     share_url: None,
                 },
+                guard: None,
             },
             ChannelTransport { incoming, outgoing },
             CancellationToken::new(),

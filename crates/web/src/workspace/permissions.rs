@@ -128,7 +128,7 @@ impl Workspace {
         else {
             return;
         };
-        if !self.writable() {
+        if !self.configurable() {
             self.status
                 .set("cannot change permissions of a read-only session".into());
             return;

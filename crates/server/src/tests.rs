@@ -358,7 +358,7 @@ fn empty_catalog(label: &str) -> Arc<CatalogSnapshot> {
     })
 }
 
-fn openai_catalog() -> Arc<CatalogSnapshot> {
+pub(crate) fn openai_catalog() -> Arc<CatalogSnapshot> {
     let provider_id = ProviderId::new("openai").expect("provider ID");
     let model_id = cookie_agent_protocol::ProviderModelId::new("gpt-5-mini").expect("model ID");
     let environment = vec!["OPENAI_API_KEY".to_owned()];
@@ -436,7 +436,7 @@ fn openai_catalog() -> Arc<CatalogSnapshot> {
     })
 }
 
-fn harness_with_catalog(
+pub(crate) fn harness_with_catalog(
     catalog: Arc<CatalogSnapshot>,
     prepare_store: impl FnOnce(&ProviderStore),
 ) -> Harness {

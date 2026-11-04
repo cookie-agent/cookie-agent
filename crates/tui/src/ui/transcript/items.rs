@@ -357,6 +357,12 @@ pub(super) fn transcript_item_layout(
                 let width = context.width;
                 let theme = context.theme;
                 let mut lines = role_block(Role::User, Vec::new(), width, theme);
+                if let Some(label) = state.guest_labels.get(seq) {
+                    lines.push(Line::from(Span::styled(
+                        format!("{label} · via link"),
+                        theme.muted(),
+                    )));
+                }
                 lines.extend(
                     crate::markdown::render_markdown_lines_width(
                         markdown,

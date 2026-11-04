@@ -478,6 +478,9 @@ pub(super) fn reduce_event_from(
             if !files.is_empty() {
                 state.user_files.insert(sequence, files);
             }
+            if let Some(label) = origin.as_ref().and_then(cookie_agent_protocol::guest_label) {
+                state.guest_labels.insert(sequence, label);
+            }
             push_item(state, timestamp, |id| TranscriptItem::User {
                 id,
                 version: 0,

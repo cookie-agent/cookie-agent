@@ -19,6 +19,24 @@ pub fn page_origin() -> Option<String> {
     window()?.location().origin().ok()
 }
 
+/// Whether the page's own address now answers 404: a conversation share's
+/// guest page asks when its socket cannot open. No answer is not a 404.
+pub async fn page_is_gone() -> bool {
+    let Some(window) = window() else {
+        return false;
+    };
+    let Ok(href) = window.location().href() else {
+        return false;
+    };
+    let Ok(answer) = wasm_bindgen_futures::JsFuture::from(window.fetch_with_str(&href)).await
+    else {
+        return false;
+    };
+    answer
+        .dyn_into::<web_sys::Response>()
+        .is_ok_and(|response| response.status() == 404)
+}
+
 /// The page's `location.hash`, `#` included.
 pub fn page_fragment() -> Option<String> {
     window()?.location().hash().ok()
@@ -267,8 +285,9 @@ pub fn register_service_worker() {
         return;
     };
     let navigator = window.navigator();
-    // A private window may have no service workers.
-    if !js_sys::Reflect::has(&navigator, &"serviceWorker".into()).unwrap_or(false) {
+    // A private window may have no service workers, and a sandboxed page
+    // throws on reading them (the guest page).
+    if property(&navigator, "serviceWorker").is_none() {
         return;
     }
     let options = web_sys::RegistrationOptions::new();

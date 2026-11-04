@@ -21,7 +21,7 @@ use crate::{
     theme::ThemePreference,
     views::{
         Install, InstallAction, InstallBanner, MediaViewer, RestartBanner, RestartDialog,
-        ShareDialogView, WorkspaceView,
+        SessionShareDialogView, ShareDialogView, WorkspaceView,
     },
     workspace::Workspace,
 };
@@ -80,10 +80,17 @@ pub(crate) struct Connection {
     /// The daemon's status (client protocol 1.65.0): how its start goes
     /// while the page waits for it, then what it is busy with.
     daemon: RwSignal<Option<DaemonStatus>>,
+    /// This page is a conversation share's guest page.
+    pub(crate) is_guest: bool,
+    /// The link stopped working, or never did.
+    guest_gone: RwSignal<bool>,
 }
 
 impl Connection {
     fn new() -> Self {
+        let guest_socket = browser::page_href()
+            .as_deref()
+            .and_then(crate::guest::socket_url);
         let filled = browser::page_href()
             .as_deref()
             .and_then(daemon_url_for_page)
@@ -100,6 +107,10 @@ impl Connection {
             &address_fragment,
             |url| browser::load(&token_key(url)),
         );
+        if let Some(socket) = &guest_socket {
+            url.clone_from(socket);
+            token.clear();
+        }
         // A notification opens the page at `#session=<id>`: its session
         // is on the daemon that pushed it (push notifications spec 9.3).
         let pending_session = push::session_from_fragment(&address_fragment);
@@ -139,6 +150,8 @@ impl Connection {
             pending_session: StoredValue::new(pending_session),
             pending_asset: StoredValue::new(pending_asset),
             daemon: RwSignal::new(None),
+            is_guest: guest_socket.is_some(),
+            guest_gone: RwSignal::new(false),
         }
     }
 
@@ -191,7 +204,7 @@ impl Connection {
         if token != self.token.get_untracked() {
             self.token.set(token.clone());
         }
-        if !connects_by_itself(Some(&url), Some(&token)) {
+        if !self.is_guest && !connects_by_itself(Some(&url), Some(&token)) {
             self.phase.set(Phase::Failed {
                 message: "Enter the daemon URL and its token.".into(),
                 hint: None,
@@ -209,10 +222,13 @@ impl Connection {
             }
             match opened {
                 Ok((client, hello)) => {
-                    browser::store(DAEMON_URL_KEY, &url);
-                    browser::store(&token_key(&url), &token);
+                    if !self.is_guest {
+                        browser::store(DAEMON_URL_KEY, &url);
+                        browser::store(&token_key(&url), &token);
+                    }
                     self.adopt(generation, &url, client, &hello);
                 }
+                Err(_) if self.is_guest => self.guest_gone.set(true),
                 Err(error) => self.phase.set(failure(&error)),
             }
         });
@@ -252,6 +268,7 @@ impl Connection {
         let serves_page = crate::browser::page_origin()
             .is_some_and(|origin| cookie_agent_client_state::plugins::serves_page(url, &origin));
         self.workspace.plugin_pages_here.set(serves_page);
+        self.workspace.guest.set(hello.guest.clone());
         if let Some(ticket) = hello.page_ticket.as_deref().filter(|_| serves_page) {
             crate::browser::set_page_ticket(ticket);
         }
@@ -270,7 +287,9 @@ impl Connection {
         let deliveries = client.subscribe_deliveries();
         self.client.set_value(Some(client.clone()));
         self.workspace.adopt(client);
-        self.workspace.resubscribe_push(url.to_owned());
+        if hello.guest.is_none() {
+            self.workspace.resubscribe_push(url.to_owned());
+        }
         if let Some(session) = self
             .pending_session
             .try_update_value(Option::take)
@@ -363,6 +382,14 @@ impl Connection {
                     }
                     Err(error) => {
                         if !self.is_current(generation) {
+                            return;
+                        }
+                        // A browser gives no reason for a socket it could not
+                        // open, so the page asks: 404 says the link is revoked
+                        // or expired. A daemon that is down says nothing, and
+                        // is redialed.
+                        if self.is_guest && browser::page_is_gone().await {
+                            self.guest_gone.set(true);
                             return;
                         }
                         self.phase.set(Phase::Reconnecting {
@@ -500,10 +527,12 @@ pub fn App() -> impl IntoView {
     });
     browser::follow_visual_viewport();
     crate::views::follow_status(workspace);
-    if connects_by_itself(
-        Some(&connection.url.get_untracked()),
-        Some(&connection.token.get_untracked()),
-    ) {
+    if connection.is_guest
+        || connects_by_itself(
+            Some(&connection.url.get_untracked()),
+            Some(&connection.token.get_untracked()),
+        )
+    {
         connection.connect();
     }
 
@@ -522,6 +551,21 @@ pub fn App() -> impl IntoView {
                 // workspace stays mounted while the page reconnects, so the
                 // composer's focus, the scroll positions, and open panels
                 // outlive a dropped connection.
+                if connection.guest_gone.get() {
+                    return view! {
+                        <main id="guest-gone" class="flex flex-1 flex-col items-center justify-center gap-2 px-4 text-center">
+                            <h1 class="text-xl font-semibold">"This link isn't available"</h1>
+                            <p class="text-muted">"It may have expired or been revoked. Ask the person who shared it for a new one."</p>
+                        </main>
+                    }
+                        .into_any();
+                }
+                if connection.is_guest && !shows_workspace.get() {
+                    return view! {
+                        <main class="flex flex-1 items-center justify-center px-4 text-muted">"Opening the conversation…"</main>
+                    }
+                        .into_any();
+                }
                 if !shows_workspace.get() {
                     return view! {
                         <Header connection=connection theme=theme />
@@ -554,9 +598,12 @@ pub fn App() -> impl IntoView {
                         <RestartBanner workspace=connection.workspace />
                         <RestartDialog workspace=connection.workspace />
                         <ShareDialogView workspace=connection.workspace />
+                        <SessionShareDialogView workspace=connection.workspace />
                         <MediaViewer workspace=connection.workspace />
                     </Show>
-                    <InstallBanner />
+                    <Show when=move || !connection.is_guest>
+                        <InstallBanner />
+                    </Show>
                     <WorkspaceView workspace=connection.workspace connection=connection theme=theme />
                 }
                     .into_any()

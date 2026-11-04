@@ -343,6 +343,9 @@ impl Workspace {
     /// changed: the viewed session while the page is visible, focused, and
     /// used lately. A shown tree's notifications are closed.
     pub fn report_presence(self) {
+        if self.is_guest() {
+            return;
+        }
         if !self.has_push.get_untracked() {
             return;
         }

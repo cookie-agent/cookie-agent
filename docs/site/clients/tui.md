@@ -152,6 +152,7 @@ Esc in a step returns to the command list with the search intact.
 | `/permissions` (also `perms`) | Edit session permission overrides; see [Permissions](../extend/agents.md#permissions) |
 | `/sessions` (also `resume`, `load`, `continue`) | Choose a session, rename or delete one, or list every directory's; see [Session picker](#session-picker) |
 | `/project` (also `projects`) | Choose the project of the selected session, or of a new session before its first prompt; see [Projects](#projects) |
+| `/share` | Make a [link](../sessions/sharing.md#sharing-a-conversation) that lets someone use the selected session as a guest, with the default 7-day expiry, and show its address: `/share <who it is for>` names it, and `/share` alone makes one for a guest with no name. Revoke it with `cookie share revoke` or in the web client |
 | `/rename` (also `title`) | Rename the selected session: `/rename <title>` sets the title, `/rename --auto` goes back to the generated title, and `/rename` alone asks for the title in a field holding the current one; see [Renaming](#renaming) |
 | `/skills` | Search user-invocable skills, pick one, then enter optional arguments; space switches the highlighted skill on or off for the agent (you can still run it); see [Skills](../extend/skills.md) |
 | `/attach` (also `file`, `image`) | Ask for a file's path and attach it to the next message; listed once a model is selected; see [Attachments](#attachments) |

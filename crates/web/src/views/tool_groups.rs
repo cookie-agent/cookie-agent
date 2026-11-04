@@ -140,7 +140,9 @@ pub fn tools_summary(workspace: Workspace) -> impl IntoView {
                         </div>
                     </div>
                 </div>
-                <p class=NOTE>"Click a group to change it for this session; changes apply from the next request."</p>
+                <Show when=move || !workspace.is_guest()>
+                    <p class=NOTE>"Click a group to change it for this session; changes apply from the next request."</p>
+                </Show>
             })
         })
     }
@@ -196,7 +198,7 @@ pub fn group_chips(workspace: Workspace, attachment: String) -> impl IntoView {
                         data-tool-group=selector.clone()
                         data-tool-state=state_word(group.state)
                         title=title
-                        disabled=hidden
+                        disabled=hidden || workspace.is_guest()
                         on:click=move |_| {
                             open.update(|open| {
                                 *open = (open.as_deref() != Some(toggled.as_str())).then(|| toggled.clone());
@@ -325,8 +327,9 @@ fn switch(workspace: Workspace, skill: SessionSkill) -> impl IntoView {
     } else {
         "absolute left-0.5 size-4 rounded-full bg-white shadow transition-[left]"
     };
-    let reset = (skill.layer == ExposureLayer::Session || skill.layer == ExposureLayer::Project)
-        .then(|| {
+    let reset = ((skill.layer == ExposureLayer::Session || skill.layer == ExposureLayer::Project)
+        && !workspace.is_guest())
+    .then(|| {
             let name = name.clone();
             view! {
                 <button
@@ -350,11 +353,19 @@ fn switch(workspace: Workspace, skill: SessionSkill) -> impl IntoView {
                 type="button"
                 role="switch"
                 aria-checked=on.to_string()
-                title=if on { "On for the agent" } else { "Off for the agent: you can still run it" }
+                title=if workspace.is_guest() {
+                    "Only the owner can change this"
+                } else if on {
+                    "On for the agent"
+                } else {
+                    "Off for the agent: you can still run it"
+                }
+                class:opacity-50=workspace.is_guest()
                 class="hit-area relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors"
                 class:bg-accent=on
                 class:bg-line-2=!on
                 data-skill-switch=name.clone()
+                disabled=workspace.is_guest()
                 on:click=move |event| {
                     event.stop_propagation();
                     workspace.choose_skill(name.clone(), Some(next), below);

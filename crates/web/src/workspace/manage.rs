@@ -191,6 +191,9 @@ impl Workspace {
 
     /// Reads `runtimes.list`, `machines.list`, and `mcp.server.list`.
     pub fn poll_runtimes(self) {
+        if self.is_guest() {
+            return;
+        }
         let Some(client) = self.client() else {
             return;
         };
@@ -227,6 +230,9 @@ impl Workspace {
     /// otherwise start a read that drops the one before, and none would
     /// land.
     pub fn tick_runtimes(self) {
+        if self.is_guest() {
+            return;
+        }
         if self.reads.with_value(|reads| reads.runtimes_in_flight == 0) {
             self.poll_runtimes();
         }
@@ -524,6 +530,9 @@ impl Workspace {
     // ---- /mcp -------------------------------------------------------------
 
     pub fn poll_mcp(self) {
+        if self.is_guest() {
+            return;
+        }
         let Some(client) = self.client() else {
             return;
         };

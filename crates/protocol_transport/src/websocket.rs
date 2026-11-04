@@ -15,7 +15,9 @@ use cookie_agent_protocol::{
 
 use crate::{
     Client, ClientError,
-    daemon_url::{parse_daemon_url, runtime_dial_in_url, validate_websocket_url},
+    daemon_url::{
+        parse_daemon_url, runtime_dial_in_url, validate_page_websocket_url, validate_websocket_url,
+    },
 };
 
 /// Length of the base64url encoding of the daemon's 32-byte bearer token.
@@ -64,6 +66,21 @@ impl Client {
     /// Connect to a validated daemon endpoint using the per-run bearer token.
     pub async fn connect_websocket_with_token(url: &str, token: &str) -> Result<Self, ClientError> {
         WebSocketTransport::connect_with_token(url, token)
+            .await
+            .map(Self::connect_stream)
+            .map_err(|error| {
+                ClientError::WebSocket(diagnostics::sanitize(
+                    &diagnostics::error_chain(&error),
+                    4096,
+                ))
+            })
+    }
+
+    /// Connect as a guest to a conversation share's `url`
+    /// (`<share base>/s/<id>/ws`), which takes no token: the link is the
+    /// credential.
+    pub async fn connect_guest_websocket(url: &str) -> Result<Self, ClientError> {
+        WebSocketTransport::connect_guest(url)
             .await
             .map(Self::connect_stream)
             .map_err(|error| {
@@ -188,6 +205,22 @@ impl WebSocketTransport {
     pub async fn connect_with_token(url: &str, token: &str) -> Result<Self, TransportError> {
         validate_websocket_url(url).map_err(|error| TransportError::Other(error.to_string()))?;
         Self::connect_request(url, token).await
+    }
+
+    /// Connect to a conversation share's guest endpoint, without a token.
+    pub async fn connect_guest(url: &str) -> Result<Self, TransportError> {
+        validate_page_websocket_url(url)
+            .map_err(|error| TransportError::Other(error.to_string()))?;
+        let request = url
+            .into_client_request()
+            .map_err(|error| TransportError::Other(error.to_string()))?;
+        let socket = connect_within(request, CONNECT_TIMEOUT)
+            .await?
+            .map_err(|error| websocket_error(&error))?;
+        Ok(Self {
+            socket,
+            keepalive: None,
+        })
     }
 
     /// Dial in to the daemon whose client endpoint is `url` as runtime

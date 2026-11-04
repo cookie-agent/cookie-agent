@@ -686,6 +686,17 @@ impl App {
                     .to_owned();
                 self.run_rename_command(&arguments);
             }
+            PaletteAction::Share => {
+                let label = self
+                    .palette
+                    .as_ref()
+                    .and_then(|palette| {
+                        crate::ui::slash::command_argument(spec, palette.search.as_str())
+                    })
+                    .unwrap_or_default()
+                    .to_owned();
+                self.run_share_command(&label);
+            }
             PaletteAction::Compact => self.push_palette_step(PaletteStep::Text {
                 target: TextTarget::CompactFocus,
                 input: InputState::default(),

@@ -25,15 +25,26 @@ pub(super) async fn page(method: Method, uri: Uri, headers: HeaderMap) -> Respon
     }
     let path = uri.path().strip_prefix('/').unwrap_or(uri.path());
     let path = if path.is_empty() { "index.html" } else { path };
-    let Some(asset) = cookie_agent_web_assets::get(path) else {
-        return StatusCode::NOT_FOUND.into_response();
+    let policy = if path == cookie_agent_web_assets::VIEWER_PATH {
+        cookie_agent_web_assets::VIEWER_POLICY
+    } else {
+        cookie_agent_web_assets::content_security_policy()
     };
+    match file(path, &headers, policy) {
+        Some(response) => response,
+        None => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
+/// The file of the page at `path`, under `policy`; `None` when it has none.
+pub(super) fn file(path: &str, headers: &HeaderMap, policy: &str) -> Option<Response> {
+    let asset = cookie_agent_web_assets::get(path)?;
     let cache = if asset.immutable {
         IMMUTABLE
     } else {
         REVALIDATE
     };
-    let compressed = asset.gzip.filter(|_| accepts_gzip(&headers));
+    let compressed = asset.gzip.filter(|_| accepts_gzip(headers));
     // The compressed copy is another representation, with its own tag.
     let etag = match compressed {
         Some(_) => format!("{}-gzip\"", asset.etag.trim_end_matches('"')),
@@ -52,14 +63,9 @@ pub(super) async fn page(method: Method, uri: Uri, headers: HeaderMap) -> Respon
         header::X_CONTENT_TYPE_OPTIONS,
         HeaderValue::from_static("nosniff"),
     );
-    response_headers.insert(
-        header::CONTENT_SECURITY_POLICY,
-        HeaderValue::from_static(if path == cookie_agent_web_assets::VIEWER_PATH {
-            cookie_agent_web_assets::VIEWER_POLICY
-        } else {
-            cookie_agent_web_assets::content_security_policy()
-        }),
-    );
+    if let Ok(policy) = HeaderValue::from_str(policy) {
+        response_headers.insert(header::CONTENT_SECURITY_POLICY, policy);
+    }
     if asset.gzip.is_some() {
         response_headers.insert(header::VARY, HeaderValue::from_static("accept-encoding"));
     }
@@ -71,15 +77,15 @@ pub(super) async fn page(method: Method, uri: Uri, headers: HeaderMap) -> Respon
                 .any(|tag| tag.trim() == etag || tag.trim() == "*")
         });
     if revalidated {
-        return (StatusCode::NOT_MODIFIED, response_headers).into_response();
+        return Some((StatusCode::NOT_MODIFIED, response_headers).into_response());
     }
-    match compressed {
+    Some(match compressed {
         Some(bytes) => {
             response_headers.insert(header::CONTENT_ENCODING, HeaderValue::from_static("gzip"));
             (StatusCode::OK, response_headers, bytes).into_response()
         }
         None => (StatusCode::OK, response_headers, asset.bytes).into_response(),
-    }
+    })
 }
 
 /// Whether `Accept-Encoding` takes gzip: listed (or `*`) without `q=0`.

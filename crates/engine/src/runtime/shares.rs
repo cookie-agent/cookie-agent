@@ -4,15 +4,17 @@
 //! asks of a link, and the links' removal with their assets.
 
 use cookie_agent_protocol::{
-    Asset, AssetStore, Share, ShareCreateParams, ShareCreateResult, ShareCreated, ShareId,
-    ShareRevokeParams, ShareRevokeResult, ShareUpdateParams, ShareUpdateResult, SharesListParams,
-    SharesListResult, SharesRevokeAllParams, SharesRevokeAllResult,
+    Asset, AssetStore, RunId, SHARE_DEFAULT_LABEL, SessionId, SessionOrigin, SessionShare,
+    SessionShareCreateParams, SessionShareResult, SessionShareUpdateParams, Share,
+    ShareCreateParams, ShareCreateResult, ShareCreated, ShareId, ShareRevokeParams,
+    ShareRevokeResult, ShareUpdateParams, ShareUpdateResult, SharesListParams, SharesListResult,
+    SharesRevokeAllParams, SharesRevokeAllResult, is_share_label,
 };
 
 use super::{Engine, EngineError};
 use crate::{
     assets::AssetError,
-    shares::{ShareError, ShareRecord, new_share_id},
+    shares::{ShareError, ShareRecord, ShareTarget, new_share_id},
 };
 
 /// A live link the `/s/` route serves, with its asset as it is now.
@@ -20,6 +22,34 @@ use crate::{
 pub struct OpenShare {
     pub share: Share,
     pub asset: Asset,
+}
+
+/// A live conversation share as its guest connections read it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GuestLink {
+    pub session: SessionId,
+    pub label: String,
+    pub can_send: bool,
+    pub expires_at: Option<jiff::Timestamp>,
+}
+
+/// What a live link opens, for the `/s/` route.
+#[derive(Clone, Debug)]
+pub enum OpenedLink {
+    Asset(Box<OpenShare>),
+    Session(GuestLink),
+}
+
+/// One guest connected through a link. It is counted until dropped.
+pub struct GuestPresence {
+    engine: Engine,
+    id: ShareId,
+}
+
+impl Drop for GuestPresence {
+    fn drop(&mut self) {
+        self.engine.inner.shares.guest_left(&self.id);
+    }
 }
 
 impl Engine {
@@ -48,26 +78,65 @@ impl Engine {
         self.inner.shares.subscribe()
     }
 
-    fn share(record: &ShareRecord, asset: &Asset, base: Option<&str>) -> Share {
-        Share {
+    fn share(record: &ShareRecord, asset: &Asset, base: Option<&str>) -> Option<Share> {
+        let ShareTarget::Asset {
+            store,
+            asset: id,
+            title,
+        } = &record.target
+        else {
+            return None;
+        };
+        Some(Share {
             id: record.id.clone(),
             path: format!("{}{}", cookie_agent_protocol::SHARE_PATH_PREFIX, record.id),
             url: base.map(|base| cookie_agent_protocol::share_url(base, &record.id)),
-            store: record.store.clone(),
-            asset: record.asset,
-            title: record.title.clone(),
+            store: store.clone(),
+            asset: *id,
+            title: title.clone(),
             media_type: asset.media_type.clone(),
             byte_length: asset.byte_length,
             created: record.created.clone(),
             expires_at: record.expires_at,
             views: record.views,
             last_viewed: record.last_viewed,
-        }
+        })
+    }
+
+    /// `record` as a conversation share, `None` when it is not one or its
+    /// session is gone. Blocking.
+    fn session_share(&self, record: &ShareRecord, base: Option<&str>) -> Option<SessionShare> {
+        let ShareTarget::Session {
+            session,
+            label,
+            can_send,
+        } = &record.target
+        else {
+            return None;
+        };
+        let meta = self.get_session(*session).ok()?;
+        Some(SessionShare {
+            id: record.id.clone(),
+            path: format!("{}{}", cookie_agent_protocol::SHARE_PATH_PREFIX, record.id),
+            url: base.map(|base| cookie_agent_protocol::share_url(base, &record.id)),
+            session_id: *session,
+            title: meta.title.map(|title| title.as_str().to_owned()),
+            label: label.clone(),
+            can_send: *can_send,
+            created: record.created.clone(),
+            expires_at: record.expires_at,
+            views: record.views,
+            last_viewed: record.last_viewed,
+            connected: self.inner.shares.guests(&record.id),
+        })
     }
 
     /// The asset `record` shows, `None` when it is gone. Blocking.
     fn shared_asset(&self, record: &ShareRecord) -> Result<Option<Asset>, EngineError> {
-        match self.inner.assets.get(&record.store, record.asset) {
+        let ShareTarget::Asset { store, asset, .. } = &record.target else {
+            return Ok(None);
+        };
+        match self.inner.assets.get(store, *asset) {
             Ok(asset) => Ok(Some(asset)),
             Err(AssetError::NotFound(_)) => Ok(None),
             Err(error) => Err(error.into()),
@@ -95,13 +164,31 @@ impl Engine {
             let base = engine.share_base();
             let records = engine.inner.shares.list(jiff::Timestamp::now())?;
             let mut shares = Vec::new();
+            let mut sessions = Vec::new();
             let mut gone = Vec::new();
             for record in records {
-                if params.asset.is_some_and(|asset| asset != record.asset) {
+                if matches!(record.target, ShareTarget::Session { .. }) {
+                    // A session's links go when it is deleted, so one that
+                    // cannot be read now is only left out.
+                    if params.asset.is_none()
+                        && let Some(share) = engine.session_share(&record, base.as_deref())
+                        && params
+                            .session
+                            .is_none_or(|session| session == share.session_id)
+                    {
+                        sessions.push(share);
+                    }
+                    continue;
+                }
+                if params.session.is_some()
+                    || params
+                        .asset
+                        .is_some_and(|asset| record.asset() != Some(asset))
+                {
                     continue;
                 }
                 match engine.shared_asset(&record)? {
-                    Some(asset) => shares.push(Self::share(&record, &asset, base.as_deref())),
+                    Some(asset) => shares.extend(Self::share(&record, &asset, base.as_deref())),
                     None => gone.push(record.id),
                 }
             }
@@ -114,6 +201,7 @@ impl Engine {
             Ok(SharesListResult {
                 shares,
                 enabled: engine.shares_enabled(),
+                sessions,
             })
         })
         .await
@@ -149,8 +237,10 @@ impl Engine {
         if params.reuse
             && let Some(record) = self.inner.shares.newest_of(asset.id, now)?
         {
+            let share = Self::share(&record, &asset, base.as_deref())
+                .ok_or(ShareError::OtherKind(record.id))?;
             return Ok(ShareCreateResult {
-                share: Self::share(&record, &asset, base.as_deref()),
+                share,
                 created: false,
             });
         }
@@ -159,17 +249,21 @@ impl Engine {
         }
         let record = ShareRecord {
             id: new_share_id()?,
-            store: asset.store.clone(),
-            asset: asset.id,
-            title: asset.title.clone(),
+            target: ShareTarget::Asset {
+                store: asset.store.clone(),
+                asset: asset.id,
+                title: asset.title.clone(),
+            },
             created,
             expires_at: params.expiry.at(),
             views: 0,
             last_viewed: None,
         };
         self.inner.shares.insert(record.clone())?;
+        let share = Self::share(&record, &asset, base.as_deref())
+            .ok_or_else(|| ShareError::OtherKind(record.id.clone()))?;
         Ok(ShareCreateResult {
-            share: Self::share(&record, &asset, base.as_deref()),
+            share,
             created: true,
         })
     }
@@ -189,9 +283,19 @@ impl Engine {
             {
                 return Err(ShareError::PastExpiry.into());
             }
+            let current = engine
+                .inner
+                .shares
+                .get(&params.id, now)?
+                .ok_or_else(|| ShareError::NotFound(params.id.clone()))?;
+            if !matches!(current.target, ShareTarget::Asset { .. }) {
+                return Err(ShareError::OtherKind(params.id).into());
+            }
             let record = engine.inner.shares.update(&params.id, now, |record| {
-                if let Some(title) = params.title {
-                    record.title = title;
+                if let (Some(new), ShareTarget::Asset { title, .. }) =
+                    (params.title, &mut record.target)
+                {
+                    *title = new;
                 }
                 if let Some(expiry) = &params.expiry {
                     record.expires_at = expiry.at();
@@ -201,9 +305,111 @@ impl Engine {
                 engine.inner.shares.remove(|gone| gone.id == record.id)?;
                 return Err(ShareError::NotFound(record.id).into());
             };
-            Ok(ShareUpdateResult {
-                share: Self::share(&record, &asset, engine.share_base().as_deref()),
-            })
+            let share = Self::share(&record, &asset, engine.share_base().as_deref())
+                .ok_or_else(|| ShareError::OtherKind(record.id.clone()))?;
+            Ok(ShareUpdateResult { share })
+        })
+        .await
+    }
+
+    /// `session_share.create`, the user's: no rule is checked.
+    pub async fn create_session_share(
+        &self,
+        params: SessionShareCreateParams,
+    ) -> Result<SessionShareResult, EngineError> {
+        self.shares_blocking(move |engine| {
+            if !engine.shares_enabled() {
+                return Err(ShareError::Disabled.into());
+            }
+            let now = jiff::Timestamp::now();
+            if params.expiry.at().is_some_and(|at| at <= now) {
+                return Err(ShareError::PastExpiry.into());
+            }
+            let label = params
+                .label
+                .unwrap_or_else(|| SHARE_DEFAULT_LABEL.to_owned());
+            if !is_share_label(&label) {
+                return Err(ShareError::InvalidLabel.into());
+            }
+            let meta = engine.get_session(params.session_id)?;
+            if !matches!(meta.origin, SessionOrigin::Root) {
+                return Err(ShareError::NotRoot(params.session_id).into());
+            }
+            let record = ShareRecord {
+                id: new_share_id()?,
+                target: ShareTarget::Session {
+                    session: params.session_id,
+                    label,
+                    can_send: params.can_send,
+                },
+                created: ShareCreated {
+                    at: now,
+                    session: None,
+                    agent: None,
+                },
+                expires_at: params.expiry.at(),
+                views: 0,
+                last_viewed: None,
+            };
+            engine.inner.shares.insert(record.clone())?;
+            let share = engine
+                .session_share(&record, engine.share_base().as_deref())
+                .ok_or_else(|| ShareError::NotFound(record.id.clone()))?;
+            Ok(SessionShareResult { share })
+        })
+        .await
+    }
+
+    /// `session_share.update`.
+    pub async fn update_session_share(
+        &self,
+        params: SessionShareUpdateParams,
+    ) -> Result<SessionShareResult, EngineError> {
+        self.shares_blocking(move |engine| {
+            let now = jiff::Timestamp::now();
+            if params
+                .expiry
+                .as_ref()
+                .and_then(cookie_agent_protocol::ShareExpiry::at)
+                .is_some_and(|at| at <= now)
+            {
+                return Err(ShareError::PastExpiry.into());
+            }
+            if params
+                .label
+                .as_deref()
+                .is_some_and(|label| !is_share_label(label))
+            {
+                return Err(ShareError::InvalidLabel.into());
+            }
+            let current = engine
+                .inner
+                .shares
+                .get(&params.id, now)?
+                .ok_or_else(|| ShareError::NotFound(params.id.clone()))?;
+            if !matches!(current.target, ShareTarget::Session { .. }) {
+                return Err(ShareError::OtherKind(params.id).into());
+            }
+            let record = engine.inner.shares.update(&params.id, now, |record| {
+                if let ShareTarget::Session {
+                    label, can_send, ..
+                } = &mut record.target
+                {
+                    if let Some(new) = params.label {
+                        *label = new;
+                    }
+                    if let Some(new) = params.can_send {
+                        *can_send = new;
+                    }
+                }
+                if let Some(expiry) = &params.expiry {
+                    record.expires_at = expiry.at();
+                }
+            })?;
+            let share = engine
+                .session_share(&record, engine.share_base().as_deref())
+                .ok_or_else(|| ShareError::NotFound(record.id.clone()))?;
+            Ok(SessionShareResult { share })
         })
         .await
     }
@@ -237,9 +443,9 @@ impl Engine {
         .await
     }
 
-    /// The live link `id` and its asset, for the `/s/` route; `None` when
-    /// links are off, or the link or its asset is gone.
-    pub async fn open_share(&self, id: ShareId) -> Result<Option<OpenShare>, EngineError> {
+    /// What the live link `id` opens, for the `/s/` route; `None` when links
+    /// are off, or the link or what it opens is gone.
+    pub async fn open_share(&self, id: ShareId) -> Result<Option<OpenedLink>, EngineError> {
         if !self.shares_enabled() {
             return Ok(None);
         }
@@ -247,15 +453,77 @@ impl Engine {
             let Some(record) = engine.inner.shares.get(&id, jiff::Timestamp::now())? else {
                 return Ok(None);
             };
+            if let Some(link) = guest_link(&record) {
+                return Ok(engine
+                    .get_session(link.session)
+                    .is_ok()
+                    .then_some(OpenedLink::Session(link)));
+            }
             let Some(asset) = engine.shared_asset(&record)? else {
                 return Ok(None);
             };
-            Ok(Some(OpenShare {
-                share: Self::share(&record, &asset, engine.share_base().as_deref()),
+            let Some(share) = Self::share(&record, &asset, engine.share_base().as_deref()) else {
+                return Ok(None);
+            };
+            Ok(Some(OpenedLink::Asset(Box::new(OpenShare {
+                share,
                 asset,
-            }))
+            }))))
         })
         .await
+    }
+
+    /// The live conversation share `id` as it is now; `None` when links are
+    /// off or it is gone. A guest connection asks before each thing it does,
+    /// so a change to the link applies at once.
+    pub async fn guest_link(&self, id: ShareId) -> Result<Option<GuestLink>, EngineError> {
+        if !self.shares_enabled() {
+            return Ok(None);
+        }
+        self.shares_blocking(move |engine| {
+            Ok(engine
+                .inner
+                .shares
+                .get(&id, jiff::Timestamp::now())?
+                .as_ref()
+                .and_then(guest_link))
+        })
+        .await
+    }
+
+    /// Counts a guest connected through link `id` until the result drops.
+    #[must_use]
+    pub fn guest_presence(&self, id: ShareId) -> GuestPresence {
+        self.inner.shares.guest_joined(&id, jiff::Timestamp::now());
+        GuestPresence {
+            engine: self.clone(),
+            id,
+        }
+    }
+
+    /// Whether `session` is `root` or a delegated session of its tree.
+    pub fn session_in_tree(&self, root: SessionId, session: SessionId) -> bool {
+        if root == session {
+            return true;
+        }
+        self.get_session(session).is_ok_and(|meta| {
+            matches!(
+                meta.origin,
+                SessionOrigin::Delegated { root_session_id, .. } if root_session_id == root
+            )
+        })
+    }
+
+    /// The session the active run `run` belongs to.
+    #[must_use]
+    pub fn session_of_active_run(&self, run: RunId) -> Option<SessionId> {
+        self.inner
+            .sessions
+            .active
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(&run)
+            .map(|active| active.session)
     }
 
     /// The whole content of a shared asset; `None` when it changed or went
@@ -290,9 +558,16 @@ impl Engine {
     /// Removes the links of the assets of `store`, as its owner's deletion
     /// does, and says how many. Blocking.
     pub(crate) fn forget_shares_of_store(&self, store: &AssetStore) -> u64 {
+        let session = match store {
+            AssetStore::Session { session } => Some(*session),
+            _ => None,
+        };
         self.inner
             .shares
-            .remove(|record| &record.store == store)
+            .remove(|record| match &record.target {
+                ShareTarget::Asset { store: own, .. } => own == store,
+                ShareTarget::Session { session: own, .. } => Some(*own) == session,
+            })
             .unwrap_or_else(|error| {
                 eprintln!("cookie-agent: share links: {error}");
                 0
@@ -301,9 +576,31 @@ impl Engine {
 
     /// Removes the links of the asset `asset`. Blocking.
     pub(crate) fn forget_shares_of_asset(&self, asset: cookie_agent_protocol::AssetId) {
-        if let Err(error) = self.inner.shares.remove(|record| record.asset == asset) {
+        if let Err(error) = self
+            .inner
+            .shares
+            .remove(|record| record.asset() == Some(asset))
+        {
             eprintln!("cookie-agent: share links: {error}");
         }
+    }
+}
+
+/// `record` as its guest connections read it, when it is a conversation
+/// share.
+fn guest_link(record: &ShareRecord) -> Option<GuestLink> {
+    match &record.target {
+        ShareTarget::Session {
+            session,
+            label,
+            can_send,
+        } => Some(GuestLink {
+            session: *session,
+            label: label.clone(),
+            can_send: *can_send,
+            expires_at: record.expires_at,
+        }),
+        ShareTarget::Asset { .. } => None,
     }
 }
 
