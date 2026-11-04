@@ -1,7 +1,8 @@
 # Share links: public URLs for assets
 
-Status: **approved** (2026-11-03), not implemented. The user's decisions
-are in [section 12](#12-decisions-2026-11-03). A mockup of the landing page is
+Status: **implemented** (2026-11-04; client protocol 1.86.0). The user's decisions
+are in [section 12](#12-decisions-2026-11-03); how it landed is in
+[section 14](#14-implementation-notes-2026-11-04). A mockup of the landing page is
 [`share-links/preview.html`](share-links/preview.html). Builds on
 [assets](assets.md), [attachments in assistant messages](message-attachments.md),
 and the daemon's HTTP listener as [plugin web pages](plugin-web-ui.md) left it.
@@ -398,3 +399,41 @@ The user decided:
   second port, but it trusts the `Host` header, and a request that reaches
   the main listener with another `Host` gets the control plane. A separate
   port does not depend on headers.
+
+## 14. Implementation notes (2026-11-04)
+
+Implemented in client protocol 1.86.0. Where the code settled what the
+draft left open, or differs:
+
+- **The share-only port is plain HTTP.** `cookie daemon`'s TLS identity
+  comes from its command line, not `[server]`, so the second listener takes
+  none; it is meant for a tunnel on loopback, which brings its own TLS.
+  Changing `[share] listen` takes a daemon restart.
+- **Making a link is explicit.** The dialog of an asset with no link shows
+  its expiry and *Create link* rather than making one on opening, since a
+  link publishes the asset. An asset with a link shows it with *Copy*,
+  *Change expiry…* (counted from now), *New link*, and *Revoke*.
+- **The Sharing view** lists only live links: `shares.list` never returns
+  expired ones, so it has no filter for them. *Revoke all* asks first.
+- **`share_link` reuses** the asset's newest live link whatever its expiry,
+  and says so with that link's expiry, rather than matching the expiry it
+  was asked for.
+- **Links go with their assets** at `asset.delete`, `delete_asset`, a tree's
+  deletion, and a project's (`deleted_shares`); `shares.list` also drops a
+  link whose asset is gone however it went. Expired links are dropped by
+  the engine's janitor, which writes counted views every minute, and at
+  shutdown.
+- **Views** count the landing page's `GET`s only, not `raw`, `download`, or
+  `HEAD`.
+- **The landing page's font** is the web bundle's Inter at
+  `/s/_font/inter.woff2` (no ID is that short), with the system font when
+  the bundle is not built. Markdown and text are rendered into the page;
+  `raw` serves them as `text/plain`. PDF is served without a sandbox, which
+  the browser's viewer refuses, but with `frame-ancestors 'self'`.
+- **The private-address warning** treats a `.ts.net` name as private only
+  when it is the page's own address, not a configured `[share] url`, since
+  a Funnel address is public.
+- **Errors:** `share_not_found`, `shares_disabled`, and `-32602` for an
+  expiry already past.
+- **Not yet:** the per-link title in `share.update` has no control in the
+  web client, only in the protocol.

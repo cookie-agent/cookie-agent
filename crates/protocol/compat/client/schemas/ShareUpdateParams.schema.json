@@ -1,0 +1,73 @@
+{
+  "$defs": {
+    "ShareExpiry": {
+      "description": "When a link stops working.",
+      "oneOf": [
+        {
+          "properties": {
+            "type": {
+              "const": "never",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "at": {
+              "format": "date-time",
+              "type": "string"
+            },
+            "type": {
+              "const": "at",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "at"
+          ],
+          "type": "object"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Changes a link's title or expiry.",
+  "properties": {
+    "expiry": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ShareExpiry"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "id": {
+      "description": "A share link's ID: 22 base64url characters.",
+      "maxLength": 22,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9_-]{22}$",
+      "type": "string"
+    },
+    "title": {
+      "maxLength": 200,
+      "minLength": 1,
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "id"
+  ],
+  "title": "ShareUpdateParams",
+  "type": "object"
+}

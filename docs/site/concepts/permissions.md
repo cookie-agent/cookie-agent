@@ -22,7 +22,8 @@ Each tool declares a permission *action* and names the *resource* of each call:
 - `attach` (`attach_machine`, `detach_machine`): the workspace, checked on
   the target runtime (`attach@labpc`);
 - `asset` (the [asset tools](../sessions/assets.md)): what the call does,
-  `read`, `write`, or `delete`.
+  `read`, `write`, or `delete`;
+- `share` (`share_link`, [share links](../sessions/sharing.md)): `asset`.
 
 Actions are free-form labels, a lowercase letter then up to 31 lowercase
 letters, digits, or underscores, so a runtime's or a plugin's tools can
@@ -107,6 +108,11 @@ The `asset` action has a default by whether the run is delegated too:
 asset tools only when its document grants them. Assets have no owner: a
 rule applies the same to every asset a session can see. See
 [Assets and figures](../sessions/assets.md#permissions).
+
+The `share` action (`share_link`, whose resource is `asset`) defaults to
+`share: ask` for a root run of any agent but an internal one, and
+`share: deny` for a delegated run at any depth: a link publishes an asset,
+so no default allows it. See [Share links](../sessions/sharing.md).
 
 ## How the levels combine
 

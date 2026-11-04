@@ -35,6 +35,7 @@ mod runtime_groups;
 mod runtime_snapshot;
 mod runtimes;
 mod runtimes_tool;
+mod shares;
 #[cfg(test)]
 #[path = "../../../test-support/model_fixtures.rs"]
 mod test_support;
@@ -102,6 +103,7 @@ pub use runtime::push_signals::{
     NeedsYouItem, NeedsYouSignal, PushSignal, SettledOutcome, SettledSignal,
 };
 pub use runtime::restart::{RestartHook, RestartScheduled, RestartStatus};
+pub use runtime::shares::OpenShare;
 pub use runtime::{
     AgentMessageHandle, AgentMessageInvocation, AgentRecipientState, ApprovalRespondFailure,
     Engine, EngineError, EngineHistoryView, EngineOptions, SkillInvocation,
@@ -113,6 +115,7 @@ pub use runtimes::{
     RuntimeTemplateSummary, StartError, StartedRuntime, ToolLayer,
 };
 pub use runtimes_tool::runtimes_tool_spec;
+pub use shares::ShareError;
 
 // The tool API, imported once for the engine's own modules.
 pub(crate) use cookie_agent_runtime_api::{

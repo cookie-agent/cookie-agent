@@ -55,7 +55,10 @@ impl Engine {
         // The tree's own assets go with it; the tree is gone either way.
         let store = cookie_agent_protocol::AssetStore::Session { session: root };
         if let Err(error) = self
-            .assets_blocking(move |_, stores| Ok(stores.remove(&store)?))
+            .assets_blocking(move |engine, stores| {
+                engine.forget_shares_of_store(&store);
+                Ok(stores.remove(&store)?)
+            })
             .await
         {
             eprintln!("cookie-agent: the assets of the deleted session {root} stay: {error}");

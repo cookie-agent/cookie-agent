@@ -1,0 +1,188 @@
+{
+  "$defs": {
+    "AssetStore": {
+      "description": "Where an asset is kept (section 4.1). A store's assets are listed,\nread, and changed together; an asset never moves between stores.",
+      "oneOf": [
+        {
+          "description": "A session tree's own assets (scope `session`), named by the tree's\nroot. They are deleted with the tree.",
+          "properties": {
+            "session": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": {
+              "const": "session",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "session"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A project's assets (scope `project`).",
+          "properties": {
+            "project": {
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^[a-z0-9][a-z0-9-]{0,63}$",
+              "type": "string"
+            },
+            "type": {
+              "const": "project",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "project"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The assets of every session in no project (scope `project`).",
+          "properties": {
+            "type": {
+              "const": "shared",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "Share": {
+      "description": "One share link (section 3).",
+      "properties": {
+        "asset": {
+          "format": "uuid",
+          "type": "string"
+        },
+        "byte_length": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "created": {
+          "$ref": "#/$defs/ShareCreated"
+        },
+        "expires_at": {
+          "description": "When the link stops working; never when absent.",
+          "format": "date-time",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "description": "A share link's ID: 22 base64url characters.",
+          "maxLength": 22,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9_-]{22}$",
+          "type": "string"
+        },
+        "last_viewed": {
+          "format": "date-time",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "media_type": {
+          "description": "The asset's current type and size.",
+          "type": "string"
+        },
+        "path": {
+          "description": "The landing page's path relative to the share base, `s/<id>`.",
+          "type": "string"
+        },
+        "store": {
+          "$ref": "#/$defs/AssetStore",
+          "description": "The asset it shows, always as the asset is now."
+        },
+        "title": {
+          "description": "What the landing page is headed with; the asset's title when the\nlink was made, unless changed since.",
+          "type": "string"
+        },
+        "url": {
+          "description": "The landing page's full URL, when the daemon knows its share base\n(`[share] url` or `[server] page_url`). Absent, a client puts the\naddress it reached the daemon's page at before `path`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "views": {
+          "description": "How many times the landing page was opened. Approximate: chat apps\nthat preview links open it too.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "path",
+        "store",
+        "asset",
+        "title",
+        "media_type",
+        "byte_length",
+        "created",
+        "views"
+      ],
+      "type": "object"
+    },
+    "ShareCreated": {
+      "description": "When a link was made, and by whom: the user when `session` is absent,\nelse an agent's call in that session.",
+      "properties": {
+        "agent": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[a-z0-9](?:[a-z0-9]|-(?=[a-z0-9]))*$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "at": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "session": {
+          "format": "uuid",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "at"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "enabled": {
+      "description": "Whether the daemon serves links (`[share] enabled`).",
+      "type": "boolean"
+    },
+    "shares": {
+      "items": {
+        "$ref": "#/$defs/Share"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "shares",
+    "enabled"
+  ],
+  "title": "SharesListResult",
+  "type": "object"
+}

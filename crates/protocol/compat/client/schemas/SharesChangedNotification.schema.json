@@ -1,0 +1,6 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "A link was made, changed, revoked, or removed with its asset; refetch\n`shares.list`.",
+  "title": "SharesChangedNotification",
+  "type": "object"
+}

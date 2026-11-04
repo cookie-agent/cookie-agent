@@ -105,6 +105,7 @@ nav:
       - Delegating to runtimes: sessions/delegation.md
       - Attaching media: sessions/media.md
       - Assets and attachments: sessions/assets.md
+      - Share links: sessions/sharing.md
       - Compaction: sessions/compaction.md
       - Goal mode: sessions/goals.md
       - Memory: sessions/memory.md
@@ -140,6 +141,7 @@ nav:
       - 'Shell Environment [shell_environment]': engine/shell_environment.md
       - 'ACP Agents [acp]': engine/acp.md
       - 'Transfers [transfer]': engine/transfer.md
+      - 'Share links [share]': engine/share.md
       - 'Request Header [headers]': engine/headers.md
       - tui.toml:
           - tui.toml: tui/configuration.md
@@ -166,6 +168,7 @@ nav:
   - Specs:
       - Status and scope: specs/index.md
       - Implemented:
+          - Share links: specs/share-links.md
           - Plugin web pages and settings: specs/plugin-web-ui.md
           - "Quiet Ink: a new look for both clients": specs/quiet-ink.md
           - Onboarding with ACP agents: specs/acp-onboarding.md

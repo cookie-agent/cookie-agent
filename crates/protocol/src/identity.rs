@@ -229,6 +229,36 @@ fn validate_asset_handle(value: &str) -> Result<(), WireStringError> {
     }
 }
 
+/// A share link's ID (`docs/site/specs/share-links.md` section 3): 128
+/// random bits as 22 base64url characters. It is the link's secret: its
+/// URL is the capability.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct ShareId(String);
+string_wire_impl!(
+    ShareId,
+    22,
+    "^[A-Za-z0-9_-]{22}$",
+    "A share link's ID: 22 base64url characters.",
+    validate_share_id
+);
+
+impl ShareId {
+    /// How many characters an ID has.
+    pub const LEN: usize = 22;
+}
+
+fn validate_share_id(value: &str) -> Result<(), WireStringError> {
+    if value.len() == ShareId::LEN
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+    {
+        Ok(())
+    } else {
+        Err(WireStringError::Invalid("must be 22 base64url characters"))
+    }
+}
+
 /// A producer's label, chosen by its sender at registration.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct ProducerName(String);

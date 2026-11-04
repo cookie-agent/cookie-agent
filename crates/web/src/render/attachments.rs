@@ -26,6 +26,11 @@ const SURFACE: &str = "asset-card group relative flex min-w-0 overflow-hidden ro
 /// A card's corner button, shown while the pointer is over the card (and
 /// always on a touch screen).
 const CORNER: &str = "absolute top-1.5 right-1.5 z-20 inline-flex min-h-8 min-w-8 items-center justify-center gap-1 rounded-md bg-surface/90 px-1.5 text-xs opacity-0 shadow-sm group-hover:opacity-100 group-focus-within:opacity-100 hover:bg-hover focus-visible:opacity-100 [@media(hover:none)]:opacity-100";
+/// The card's *Share link* button, left of its corner button; it stays
+/// shown, in the accent, while the asset has a live link.
+const SHARE_CORNER: &str = "absolute top-1.5 right-11 z-20 inline-flex min-h-8 min-w-8 items-center justify-center gap-1 rounded-md bg-surface/90 px-1.5 text-xs opacity-0 shadow-sm group-hover:opacity-100 group-focus-within:opacity-100 group-data-[shared]:opacity-100 group-data-[shared]:text-accent hover:bg-hover focus-visible:opacity-100 [@media(hover:none)]:opacity-100";
+/// The share button in a file's chip, beside its corner button.
+const SHARE_IN_ROW: &str = "inline-flex size-9 shrink-0 items-center justify-center rounded-md text-muted opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 group-data-[shared]:opacity-100 group-data-[shared]:text-accent hover:bg-hover hover:text-fg focus-visible:opacity-100 [@media(hover:none)]:opacity-100";
 /// The same button in a file's chip, in the row beside its download, whose
 /// corner it would cover; it keeps its room while hidden.
 const CORNER_IN_ROW: &str = "inline-flex size-9 shrink-0 items-center justify-center rounded-md text-muted opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 hover:bg-hover hover:text-fg focus-visible:opacity-100 [@media(hover:none)]:opacity-100";
@@ -133,12 +138,17 @@ impl CardFile {
     }
 
     /// The card's corner: *Copy handle* for an asset, *Save as asset* for
-    /// a stored file.
+    /// a stored file, and beside it *Share link*
+    /// (`docs/site/specs/share-links.md` section 7.1).
     fn corner(&self) -> String {
-        self.corner_button(CORNER)
+        format!(
+            "{}{}",
+            self.share_button(SHARE_CORNER),
+            self.corner_button(CORNER)
+        )
     }
 
-    /// [`Self::corner`]'s button with the classes `class`.
+    /// [`Self::corner`]'s first button with the classes `class`.
     fn corner_button(&self, class: &str) -> String {
         match &self.source {
             CardSource::Asset(block) => {
@@ -154,6 +164,23 @@ impl CardFile {
                 svg(icondata::LuBookmark, ""),
             ),
         }
+    }
+
+    /// The card's *Share link* button with the classes `class`: an asset's
+    /// opens the share dialog, a stored file's saves it as an asset of the
+    /// session first. A shared asset's card keeps it shown, in the accent.
+    fn share_button(&self, class: &str) -> String {
+        let action = match &self.source {
+            CardSource::Asset(_) => "data-action=\"asset-share\"".to_owned(),
+            CardSource::Artifact { key, .. } => format!(
+                "data-action=\"attachment-share\" data-attach-key=\"{}\"",
+                key.attribute()
+            ),
+        };
+        format!(
+            "<button type=\"button\" {action} class=\"{class}\" aria-label=\"Share link\" title=\"Share link\">{}</button>",
+            svg(icondata::LuShare2, ""),
+        )
     }
 
     /// What the type pill says: the file's extension, else its media
@@ -508,11 +535,12 @@ fn file_html(file: &CardFile) -> String {
     let hue = crate::badges::hue_class(Some(cookie_agent_client_state::badges::badge_hue(&label)));
     let name = file.filename.as_deref().unwrap_or(&file.title);
     format!(
-        "<span class=\"{SURFACE} items-center gap-2.5 px-2.5 py-2\" {}><span class=\"grid h-9 w-9 shrink-0 place-items-center rounded-lg border font-mono text-[0.625rem] font-bold {hue}\">{}</span><span class=\"flex min-w-0 flex-1 flex-col\"><span class=\"truncate text-sm\" data-asset-title>{}</span><span class=\"truncate text-[0.6875rem] text-muted\" data-asset-note>{}</span></span>{}<button type=\"button\" data-action=\"asset-download\" class=\"inline-flex size-9 shrink-0 items-center justify-center rounded-md text-accent hover:bg-hover\" aria-label=\"Download {}\" title=\"Download\">{}</button></span>",
+        "<span class=\"{SURFACE} items-center gap-2.5 px-2.5 py-2\" {}><span class=\"grid h-9 w-9 shrink-0 place-items-center rounded-lg border font-mono text-[0.625rem] font-bold {hue}\">{}</span><span class=\"flex min-w-0 flex-1 flex-col\"><span class=\"truncate text-sm\" data-asset-title>{}</span><span class=\"truncate text-[0.6875rem] text-muted\" data-asset-note>{}</span></span>{}{}<button type=\"button\" data-action=\"asset-download\" class=\"inline-flex size-9 shrink-0 items-center justify-center rounded-md text-accent hover:bg-hover\" aria-label=\"Download {}\" title=\"Download\">{}</button></span>",
         file.placeholder("file"),
         escape(&label),
         escape(name),
         escape(&cookie_agent_protocol::human_bytes(file.byte_length)),
+        file.share_button(SHARE_IN_ROW),
         file.corner_button(CORNER_IN_ROW),
         escape(name),
         svg(icondata::LuDownload, ""),

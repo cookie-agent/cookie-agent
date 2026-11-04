@@ -128,7 +128,16 @@ pub(super) async fn run_daemon(
     let listener = cookie_agent_server::DaemonListener::new(
         cookie_agent_engine::status::StatusBoard::new(cookie_agent_protocol::DaemonPhase::Starting),
     )
-    .with_page_url(configuration.runtime.server.page_url.clone());
+    .with_page_url(configuration.runtime.server.page_url.clone())
+    .with_share_url(
+        configuration
+            .runtime
+            .share
+            .url
+            .clone()
+            .or_else(|| configuration.runtime.server.page_url.clone()),
+    );
+    let share_listen = configuration.runtime.share.listen;
     let mut signals =
         cookie_agent_protocol::StopSignals::new().context("listen for stop signals")?;
     let running = daemon_restart::bind_retrying(bind_wait, || {
@@ -148,6 +157,23 @@ pub(super) async fn run_daemon(
     if let Some(line) = web_page_line(&url) {
         println!("{line}");
     }
+    // The share-only listener (`[share] listen`): links answer as gone
+    // until the daemon is ready.
+    let shares = match share_listen {
+        Some(address) => match listener.serve_shares_on(address).await {
+            Ok(shares) => {
+                println!("share links served alone at http://{}/s/", shares.address());
+                Some(shares)
+            }
+            Err(error) => {
+                listener.shutdown();
+                running.wait().await;
+                return Err(anyhow::Error::new(error)
+                    .context(format!("listen for share links on {address}")));
+            }
+        },
+        None => None,
+    };
     let compose = async {
         #[cfg(debug_assertions)]
         hold_start_for_test(listener.board()).await;
@@ -159,6 +185,9 @@ pub(super) async fn run_daemon(
             println!("cookie daemon stopped while starting");
             listener.shutdown();
             running.wait().await;
+            if let Some(shares) = shares {
+                shares.wait().await;
+            }
             return Ok(DaemonExit::Stopped);
         }
     };
@@ -169,6 +198,9 @@ pub(super) async fn run_daemon(
                 .fail(&format!("{error:#}"), FAILED_START_NOTICE)
                 .await;
             running.wait().await;
+            if let Some(shares) = shares {
+                shares.wait().await;
+            }
             return Err(error);
         }
     };
@@ -198,6 +230,9 @@ pub(super) async fn run_daemon(
             runtime.server.shutdown();
             runtime.stop_catalog_refresh().await;
             running.wait().await;
+            if let Some(shares) = shares {
+                shares.wait().await;
+            }
             runtime.engine.shutdown().await;
         }
         DaemonExit::Restart => {
@@ -214,6 +249,9 @@ pub(super) async fn run_daemon(
             // Returns once every client connection sent that close frame
             // (bounded), so the relaunch does not cut it off.
             running.wait().await;
+            if let Some(shares) = shares {
+                shares.wait().await;
+            }
         }
     }
     Ok(exit)

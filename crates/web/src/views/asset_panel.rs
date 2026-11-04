@@ -65,6 +65,11 @@ fn Panel(workspace: Workspace, open: OpenAsset) -> impl IntoView {
     let copy = handle.clone();
     let (origin, file_title) = (open.source.clone(), open.title.clone());
     let copyable = !handle.is_empty();
+    let shareable = match &open.source {
+        crate::assets::Source::Asset { store, asset } => Some((store.clone(), *asset)),
+        crate::assets::Source::Artifact { .. } => None,
+    };
+    let share_title = open.title.clone();
     let tab = move |is_source: bool| {
         move || {
             format!(
@@ -151,6 +156,25 @@ fn Panel(workspace: Workspace, open: OpenAsset) -> impl IntoView {
                         <Glyph icon=icondata::LuCopy />
                     </button>
                 </Show>
+                {shareable.map(|(store, asset)| {
+                    view! {
+                        <Show when=move || workspace.has_shares.get()>
+                            <button
+                                type="button"
+                                id="asset-panel-share"
+                                class=BUTTON
+                                title="Share link"
+                                aria-label="Share link"
+                                on:click={
+                                    let (store, title) = (store.clone(), share_title.clone());
+                                    move |_| workspace.open_share_dialog(store.clone(), asset, title.clone())
+                                }
+                            >
+                                <Glyph icon=icondata::LuShare2 />
+                            </button>
+                        </Show>
+                    }
+                })}
                 <button
                     type="button"
                     id="asset-panel-full"

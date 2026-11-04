@@ -56,6 +56,7 @@ mod questions;
 mod restart;
 mod row_menu;
 mod session_rows;
+mod shares;
 mod shell;
 mod sidebar;
 mod skills;
@@ -64,6 +65,7 @@ mod tool_groups;
 pub(crate) use install::{Install, InstallAction, InstallBanner};
 pub(crate) use media_viewer::MediaViewer;
 pub(crate) use restart::{RestartBanner, RestartDialog};
+pub(crate) use shares::ShareDialogView;
 
 use depth::{
     AttachButtons, DraftFiles, background_sheet, compact_sheet, deferred_prompt_sheet, goal_sheet,

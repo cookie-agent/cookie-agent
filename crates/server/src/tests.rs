@@ -188,6 +188,7 @@ fn harness_built(
             agents: cookie_agent_config::AgentsConfig::default(),
             transfer: cookie_agent_config::TransferConfig::default(),
             mcp_idle_stop_after: Default::default(),
+            share: cookie_agent_config::ShareConfig::default(),
             utility_model: None,
             shell_environment: cookie_agent_config::ShellEnvironmentConfig {
                 capture: cookie_agent_protocol::runtime_protocol::ShellCapture::Off,
@@ -466,6 +467,7 @@ fn harness_with_catalog_and_mcp(
             agents: cookie_agent_config::AgentsConfig::default(),
             transfer: cookie_agent_config::TransferConfig::default(),
             mcp_idle_stop_after: Default::default(),
+            share: cookie_agent_config::ShareConfig::default(),
             utility_model: None,
             shell_environment: cookie_agent_config::ShellEnvironmentConfig {
                 capture: cookie_agent_protocol::runtime_protocol::ShellCapture::Off,
@@ -2468,7 +2470,7 @@ async fn projects_are_created_changed_and_deleted_and_sessions_move_through_rpc(
     .await;
     assert_eq!(
         deleted["result"],
-        json!({ "deleted_sessions": 2, "deleted_memories": 1, "deleted_assets": 0 }),
+        json!({ "deleted_sessions": 2, "deleted_memories": 1, "deleted_assets": 0, "deleted_shares": 0 }),
         "{deleted}"
     );
     let (left, _) = request(&mut client, 21, "session.list", json!({})).await;

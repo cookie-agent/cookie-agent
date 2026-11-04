@@ -270,6 +270,7 @@ mod tests {
             status: None,
             page_url: None,
             page_ticket: None,
+            share_url: None,
         }
     }
 

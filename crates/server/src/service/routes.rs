@@ -46,6 +46,7 @@ impl ServerProtocol for Server {
         self.start_memory_notifications(context.clone());
         self.start_project_notifications(context.clone());
         self.start_asset_notifications(context.clone());
+        self.start_share_notifications(context.clone());
         self.start_cron_notifications(context.clone());
         self.start_push_notifications(context.clone());
         self.start_restart_notifications(context.clone());
@@ -64,6 +65,10 @@ impl ServerProtocol for Server {
 
     fn page_url(&self) -> Option<String> {
         self.engine.page_url()
+    }
+
+    fn share_url(&self) -> Option<String> {
+        self.engine.share_base()
     }
 
     fn page_ticket(&self) -> Option<String> {
@@ -1202,6 +1207,56 @@ impl ServerProtocol for Server {
     ) -> Result<cookie_agent_protocol::AssetDeleteResult> {
         self.engine
             .delete_asset(params)
+            .await
+            .map_err(protocol_fault)
+    }
+
+    async fn list_shares(
+        &self,
+        params: cookie_agent_protocol::SharesListParams,
+    ) -> Result<cookie_agent_protocol::SharesListResult> {
+        self.engine
+            .list_shares(params)
+            .await
+            .map_err(protocol_fault)
+    }
+
+    async fn create_share(
+        &self,
+        params: cookie_agent_protocol::ShareCreateParams,
+    ) -> Result<cookie_agent_protocol::ShareCreateResult> {
+        self.engine
+            .create_share(params)
+            .await
+            .map_err(protocol_fault)
+    }
+
+    async fn update_share(
+        &self,
+        params: cookie_agent_protocol::ShareUpdateParams,
+    ) -> Result<cookie_agent_protocol::ShareUpdateResult> {
+        self.engine
+            .update_share(params)
+            .await
+            .map_err(protocol_fault)
+    }
+
+    async fn revoke_share(
+        &self,
+        params: cookie_agent_protocol::ShareRevokeParams,
+    ) -> Result<cookie_agent_protocol::ShareRevokeResult> {
+        self.engine
+            .revoke_share(params)
+            .await
+            .map_err(protocol_fault)
+    }
+
+    async fn revoke_all_shares(
+        &self,
+        params: cookie_agent_protocol::SharesRevokeAllParams,
+    ) -> Result<cookie_agent_protocol::SharesRevokeAllResult> {
+        self.engine
+            .revoke_all_shares(params)
             .await
             .map_err(protocol_fault)
     }

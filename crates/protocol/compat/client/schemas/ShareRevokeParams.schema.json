@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Revokes a link: it stops working at once.",
+  "properties": {
+    "id": {
+      "description": "A share link's ID: 22 base64url characters.",
+      "maxLength": 22,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9_-]{22}$",
+      "type": "string"
+    }
+  },
+  "required": [
+    "id"
+  ],
+  "title": "ShareRevokeParams",
+  "type": "object"
+}

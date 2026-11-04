@@ -2,6 +2,8 @@ mod page;
 mod plugin_pages;
 mod routes;
 mod runtime_notifications;
+mod share_landing;
+mod share_pages;
 mod websocket;
 pub use page::page_url;
 pub use websocket::{TlsConfig, load_tls};
@@ -69,6 +71,9 @@ pub(crate) struct Shared {
     /// The page ticket of the token the daemon's listener serves with,
     /// which handshakes report once the daemon is ready.
     pub(crate) page_ticket: std::sync::RwLock<Option<String>>,
+    /// The base of the daemon's share links, `[share] url` or `[server]
+    /// page_url`, which handshakes report while the daemon starts.
+    pub(crate) share_url: std::sync::RwLock<Option<String>>,
 }
 
 impl DaemonListener {
@@ -85,6 +90,7 @@ impl DaemonListener {
                 connections: Arc::new(tokio::sync::watch::Sender::new(())),
                 page_url: std::sync::RwLock::new(None),
                 page_ticket: std::sync::RwLock::new(None),
+                share_url: std::sync::RwLock::new(None),
             }),
         }
     }
@@ -98,6 +104,18 @@ impl DaemonListener {
             .page_url
             .write()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = page_url;
+        self
+    }
+
+    /// Reports `share_url`, the base of the daemon's share links, in the
+    /// handshakes of clients that connect while it starts.
+    #[must_use]
+    pub fn with_share_url(self, share_url: Option<String>) -> Self {
+        *self
+            .shared
+            .share_url
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = share_url;
         self
     }
 

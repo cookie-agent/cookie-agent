@@ -196,6 +196,43 @@ impl OpenAsset {
     }
 }
 
+/// The assets with a live link among `shares`.
+fn shared_ids(shares: &[cookie_agent_protocol::Share]) -> std::collections::HashSet<String> {
+    shares.iter().map(|share| share.asset.to_string()).collect()
+}
+
+/// Marks every asset card on the page whose asset has a live link among
+/// `shares` with `data-shared`, which keeps its share button shown, and
+/// unmarks the rest.
+pub fn mark_shared(shares: &[cookie_agent_protocol::Share]) {
+    let Some(document) = web_sys::window().and_then(|window| window.document()) else {
+        return;
+    };
+    let shared = shared_ids(shares);
+    let Ok(cards) = document.query_selector_all("[data-asset]") else {
+        return;
+    };
+    for index in 0..cards.length() {
+        if let Some(card) = cards
+            .item(index)
+            .and_then(|node| node.dyn_into::<web_sys::Element>().ok())
+        {
+            mark_card(&card, &shared);
+        }
+    }
+}
+
+fn mark_card(card: &web_sys::Element, shared: &std::collections::HashSet<String>) {
+    let is_shared = card
+        .get_attribute("data-asset")
+        .is_some_and(|asset| shared.contains(&asset));
+    if is_shared {
+        let _ = card.set_attribute("data-shared", "");
+    } else {
+        let _ = card.remove_attribute("data-shared");
+    }
+}
+
 /// Fills every asset placeholder under `root` not filled yet.
 pub fn show_within(root: &web_sys::Element, workspace: Workspace) {
     listen();
@@ -213,6 +250,14 @@ pub fn show_within(root: &web_sys::Element, workspace: Workspace) {
             continue;
         };
         let _ = element.set_attribute("data-shown", "loading");
+        let shared =
+            leptos::prelude::WithUntracked::with_untracked(&workspace.share_list, |list| {
+                list.as_ref()
+                    .and_then(|list| list.as_ref().ok())
+                    .map(|list| shared_ids(&list.shares))
+                    .unwrap_or_default()
+            });
+        mark_card(&element, &shared);
         spawn_local(fill(element, shown, workspace));
     }
 }
@@ -368,6 +413,30 @@ pub fn act(
         "asset-copy" => {
             if let Some(handle) = target.get_attribute("data-asset-handle") {
                 copy_handle(handle, workspace);
+            }
+        }
+        "asset-share" => {
+            if let Some(card) = card()
+                && let Some(Placeholder {
+                    source: Source::Asset { store, asset },
+                    title,
+                    ..
+                }) = placeholder(&card)
+            {
+                // The title the card shows now, which follows a rename.
+                let title = card
+                    .query_selector("[data-asset-title]")
+                    .ok()
+                    .flatten()
+                    .and_then(|title| title.text_content())
+                    .filter(|shown| !shown.trim().is_empty())
+                    .unwrap_or(title);
+                workspace.open_share_dialog(store, asset, title);
+            }
+        }
+        "attachment-share" => {
+            if let Some(key) = attach_key(target) {
+                workspace.share_attachment(key);
             }
         }
         "asset-chip" => match target

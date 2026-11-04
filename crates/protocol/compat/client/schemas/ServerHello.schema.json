@@ -198,6 +198,13 @@
       "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$",
       "type": "string"
     },
+    "share_url": {
+      "description": "The base of the daemon's share links (client protocol 1.86.0,\n`docs/site/specs/share-links.md` section 6.1): its `[share] url`,\nelse its `[server] page_url`, when either is set. Clients warn\nbefore making a link when it looks private.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "status": {
       "anyOf": [
         {

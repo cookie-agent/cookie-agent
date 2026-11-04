@@ -60,6 +60,7 @@ pub(crate) mod memory;
 pub(crate) mod message_attachments;
 pub(crate) mod messaging;
 pub(crate) mod official;
+pub(crate) mod shares;
 pub(crate) use background_tasks::{BackgroundActor, Stopped};
 mod blocking_io;
 pub(crate) mod compaction;
@@ -349,6 +350,9 @@ pub enum EngineError {
     /// An asset request was refused or failed.
     #[error(transparent)]
     Asset(#[from] crate::assets::AssetError),
+    /// A share link request was refused or failed.
+    #[error(transparent)]
+    Share(#[from] crate::shares::ShareError),
     /// A cron request was refused or failed.
     #[error(transparent)]
     Cron(#[from] crate::crons::CronError),
@@ -1068,6 +1072,8 @@ pub(crate) struct Inner {
     /// The asset stores of session trees, projects, and sessions in no
     /// project.
     pub(crate) assets: Arc<crate::assets::AssetStores>,
+    /// The share links to assets.
+    pub(crate) shares: Arc<crate::shares::ShareStore>,
     /// The attachments of assistant messages in flight.
     pub(crate) message_attachments: message_attachments::MessageAttachments,
     /// The cron jobs.
@@ -1291,6 +1297,7 @@ impl Engine {
         }
         let crons = Arc::new(crate::crons::CronStore::open(&options.data_dir)?);
         let assets = Arc::new(crate::assets::AssetStores::new(&options.data_dir));
+        let shares = Arc::new(crate::shares::ShareStore::new(&options.data_dir));
         drop(restoring);
         let artifacts = ArtifactRouter::for_store(&store)?;
         // Every write belongs to the directory of the writing session's root.
@@ -1424,6 +1431,7 @@ impl Engine {
                 mcp_wanted: mcp_wanted::McpWanted::default(),
                 projects,
                 assets,
+                shares,
                 message_attachments: Default::default(),
                 crons,
                 cron_scheduler: cron::fire::CronSchedulerState::default(),
@@ -2147,6 +2155,10 @@ impl Engine {
             .delegation
             .admission_tasks_closing
             .store(true, Ordering::Release);
+        {
+            let engine = self.clone();
+            let _ = tokio::task::spawn_blocking(move || engine.flush_shares()).await;
+        }
         let janitor = self
             .inner
             .janitor_task

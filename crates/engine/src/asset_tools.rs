@@ -48,6 +48,7 @@ pub(crate) const WRITE: &str = "write_asset";
 pub(crate) const READ: &str = "read_asset";
 pub(crate) const LIST: &str = "list_assets";
 pub(crate) const DELETE: &str = "delete_asset";
+pub(crate) const SHARE: &str = "share_link";
 
 /// How many assets an unresolved handle's error lists.
 const LISTED_ON_ERROR: usize = 20;
@@ -59,6 +60,8 @@ const WRITE_DESCRIPTION: &str = "Save a file as an asset, a file you give the us
 const READ_DESCRIPTION: &str = "Read an asset's content by its handle, as `read` reads a file: text with `offset` and `limit` in 1-based lines, an image as an image when you take images, and otherwise only the asset's type and size.";
 
 const LIST_DESCRIPTION: &str = "List the assets you can use: this conversation's and the project's, newest first, each with its handle, title, type, size, scope, and which session last saved it and when. At most 100 are listed.";
+
+const SHARE_DESCRIPTION: &str = "Make a public link to an asset, for the user to send to people outside cookie: anyone with the link can open the asset in a browser, without signing in, until the link expires. The link always shows the asset's current content. The user is usually asked to approve the call. `expires_in` is `7d` by default; `1d`, `30d`, and `never` are the others. An asset that already has a live link gets that link back, with its own expiry. Only share what the user asked to share.";
 
 const DELETE_DESCRIPTION: &str = "Delete an asset by its handle. Every place it was shown then says it was deleted, and it cannot be brought back.";
 
@@ -99,6 +102,42 @@ struct DeleteArgs {
     asset: String,
 }
 
+/// How long a link `share_link` makes lasts.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
+enum ShareLifetime {
+    #[serde(rename = "1d")]
+    Day,
+    #[default]
+    #[serde(rename = "7d")]
+    Week,
+    #[serde(rename = "30d")]
+    Month,
+    #[serde(rename = "never")]
+    Never,
+}
+
+impl ShareLifetime {
+    fn expiry(self, now: jiff::Timestamp) -> cookie_agent_protocol::ShareExpiry {
+        let days = match self {
+            Self::Day => 1,
+            Self::Week => 7,
+            Self::Month => 30,
+            Self::Never => return cookie_agent_protocol::ShareExpiry::Never,
+        };
+        cookie_agent_protocol::ShareExpiry::At {
+            at: now + jiff::SignedDuration::from_hours(24 * days),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ShareArgs {
+    asset: String,
+    #[serde(default)]
+    expires_in: ShareLifetime,
+}
+
 fn spec(name: &str, description: &str, parameters: serde_json::Value) -> ToolSpec {
     ToolSpec {
         background: false,
@@ -112,7 +151,7 @@ fn spec(name: &str, description: &str, parameters: serde_json::Value) -> ToolSpe
         },
         result_truncation: ToolResultTruncationPolicy::Bounded,
         name: name.into(),
-        permission_name: Some(PermissionAction::ASSET.as_str().to_owned()),
+        permission_name: Some(permission_action(name).as_str().to_owned()),
         description: description.into(),
         parameters,
     }
@@ -186,7 +225,29 @@ fn build_specs() -> Vec<ToolSpec> {
                 "properties": {"asset": handle("The asset's handle")}
             }),
         ),
+        spec(
+            SHARE,
+            SHARE_DESCRIPTION,
+            serde_json::json!({
+                "type": "object", "additionalProperties": false,
+                "required": ["asset"],
+                "properties": {
+                    "asset": handle("The asset's handle"),
+                    "expires_in": {"type": "string", "enum": ["1d", "7d", "30d", "never"], "description": "How long the link works: `7d` (default), `1d`, `30d`, or `never`"},
+                }
+            }),
+        ),
     ]
+}
+
+/// The action a tool's calls are checked under: `share` for `share_link`,
+/// `asset` for the rest.
+fn permission_action(tool: &str) -> PermissionAction {
+    if tool == SHARE {
+        PermissionAction::SHARE
+    } else {
+        PermissionAction::ASSET
+    }
 }
 
 /// The asset tools, for the tool reference.
@@ -201,6 +262,7 @@ fn resource(tool: &str) -> Result<&'static str, ToolError> {
         READ | LIST => Ok("read"),
         WRITE => Ok("write"),
         DELETE => Ok("delete"),
+        SHARE => Ok("asset"),
         other => Err(ToolError::execution(format!(
             "the assets provider received another tool, `{other}`"
         ))),
@@ -363,6 +425,7 @@ enum AssetCall {
     },
     List(Option<AssetScope>),
     Delete(Asset),
+    Share(Asset, ShareLifetime),
 }
 
 /// A prepared `write_asset`: the file's route on its machine, and where it
@@ -446,7 +509,7 @@ impl ToolProvider for AssetTools {
 
     fn get_permission_name(tool_name: &str) -> Result<Option<&'static str>, ToolError> {
         resource(tool_name)?;
-        Ok(Some("asset"))
+        Ok(Some(if tool_name == SHARE { "share" } else { "asset" }))
     }
 
     fn get_permission_resource(
@@ -454,7 +517,8 @@ impl ToolProvider for AssetTools {
         name: &str,
         _arguments: &serde_json::Value,
     ) -> Result<(Option<&'static str>, Option<String>), ToolError> {
-        Ok((Some("asset"), Some(resource(name)?.to_owned())))
+        let action = if name == SHARE { "share" } else { "asset" };
+        Ok((Some(action), Some(resource(name)?.to_owned())))
     }
 
     fn get_display_argument(
@@ -490,10 +554,11 @@ impl ToolProvider for AssetTools {
             READ => "Read an asset".to_owned(),
             LIST => "List assets".to_owned(),
             DELETE => "Delete an asset".to_owned(),
+            SHARE => "Share an asset publicly".to_owned(),
             _ => return cookie_agent_runtime_api::tool_title_only(&call.name),
         };
         let mut entries = Vec::new();
-        for member in ["machine", "asset", "title", "scope"] {
+        for member in ["machine", "asset", "title", "scope", "expires_in"] {
             if let Some(value) = text(member) {
                 entries.push((member, value));
             }
@@ -618,10 +683,25 @@ impl ToolProvider for AssetTools {
                 .await?;
                 (AssetCall::Delete(asset), None)
             }
+            SHARE => {
+                let args: ShareArgs = parse_args(SHARE, call.arguments.clone())?;
+                if !engine.shares_enabled() {
+                    return Err(refused(
+                        "share links are turned off on this daemon ([share] enabled = false)",
+                    ));
+                }
+                let reference = args.asset;
+                let asset = blocking(&engine, session, move |engine, stores| {
+                    resolve(engine, stores, &reference)
+                })
+                .await?;
+                (AssetCall::Share(asset, args.expires_in), None)
+            }
             _ => unreachable!("checked by resource"),
         };
+        let action = permission_action(&call.name);
         let asset_resource = prepared_resource(
-            PermissionAction::ASSET,
+            action.clone(),
             "asset",
             label.as_bytes(),
             label.as_bytes(),
@@ -637,7 +717,7 @@ impl ToolProvider for AssetTools {
             let operation = prepared_operation(
                 &call.name,
                 &call.arguments,
-                vec![(PermissionAction::ASSET, label)],
+                vec![(action, label)],
                 vec![asset_resource],
                 &ctx.context_bytes(),
             )?;
@@ -736,10 +816,17 @@ impl PreparedExecutor for AssetExecutor {
                     Vec::new(),
                 ))
             }
+            AssetCall::Share(asset, lifetime) => {
+                execute_share(engine, &context, asset, lifetime).await
+            }
             AssetCall::Delete(asset) => {
                 let (store, id) = (asset.store.clone(), asset.id);
                 engine
-                    .assets_blocking(move |_, stores| Ok(stores.delete(&store, id)?))
+                    .assets_blocking(move |engine, stores| {
+                        stores.delete(&store, id)?;
+                        engine.forget_shares_of_asset(id);
+                        Ok(())
+                    })
                     .await
                     .map_err(|error| refused(error.to_string()))?;
                 Ok(text_result(
@@ -750,6 +837,67 @@ impl PreparedExecutor for AssetExecutor {
             }
         }
     }
+}
+
+/// Makes `asset`'s link, or returns the live one it has.
+async fn execute_share(
+    engine: Engine,
+    context: &ToolExecutionContext,
+    asset: Asset,
+    lifetime: ShareLifetime,
+) -> Result<ToolCompletion, ToolError> {
+    let now = jiff::Timestamp::now();
+    let params = cookie_agent_protocol::ShareCreateParams {
+        store: asset.store.clone(),
+        asset: asset.id,
+        expiry: lifetime.expiry(now),
+        reuse: true,
+    };
+    let created = cookie_agent_protocol::ShareCreated {
+        at: now,
+        session: Some(context.session),
+        agent: Some(context.turn_context.agent.clone()),
+    };
+    let engine_for_call = engine.clone();
+    let result = tokio::task::spawn_blocking(move || engine_for_call.make_share(params, created))
+        .await
+        .map_err(|error| refused(format!("the share request did not finish: {error}")))?
+        .map_err(|error| refused(error.to_string()))?;
+    let share = result.share;
+    let address = share.url.clone().unwrap_or_else(|| {
+        format!(
+            "{} below the address of the daemon's web page (the daemon has no [share] url or \
+             [server] page_url, so ask the user for that address)",
+            share.path
+        )
+    });
+    let expiry = match share.expires_at {
+        Some(at) => format!(
+            "expires {}",
+            at.to_zoned(jiff::tz::TimeZone::UTC)
+                .strftime("%Y-%m-%d %H:%M UTC")
+        ),
+        None => "never expires".to_owned(),
+    };
+    let output = format!(
+        "{} {}: {address} ({expiry}{}).",
+        if result.created {
+            "Shared"
+        } else {
+            "Already shared"
+        },
+        asset.summary(),
+        if result.created {
+            ""
+        } else {
+            ", the existing link"
+        }
+    );
+    Ok(text_result(
+        &format!("Shared {}", asset.title),
+        output,
+        Vec::new(),
+    ))
 }
 
 /// One `list_assets` line: the asset, its scope, and who saved it when.

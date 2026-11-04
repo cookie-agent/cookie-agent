@@ -244,6 +244,7 @@ impl Engine {
         self.assets_blocking(move |engine, stores| {
             engine.check_client_store(&params.store)?;
             stores.delete(&params.store, params.asset)?;
+            engine.forget_shares_of_asset(params.asset);
             Ok(AssetDeleteResult {})
         })
         .await

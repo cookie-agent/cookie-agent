@@ -57,6 +57,7 @@ mod reads;
 mod rename;
 mod restart;
 mod selection;
+mod shares;
 mod skills;
 mod tool_groups;
 mod tree;
@@ -76,6 +77,7 @@ pub(crate) use pins::{date_label, local_date, local_today};
 pub use projects::{EditorFields, ProjectEditor};
 pub use provider_sign_in::{PASTE_BACK_STEPS, ProviderSignIn, page_on_loopback};
 pub use selection::{PickState, Picked};
+pub use shares::ShareDialog;
 
 /// How long usage events settle before the status bar's cost is read again.
 const COST_DEBOUNCE: Duration = Duration::from_millis(250);
@@ -307,6 +309,18 @@ pub struct Workspace {
     pub asset_open: RwSignal<Option<cookie_agent_protocol::AssetId>>,
     pub asset_renaming: RwSignal<Option<(cookie_agent_protocol::AssetId, String)>>,
     pub asset_deleting: RwSignal<Option<cookie_agent_protocol::AssetId>>,
+    /// Whether the daemon keeps share links (client protocol 1.86.0), the
+    /// base its handshake gave links, and the address of its page, which
+    /// a link without a URL of its own is put after.
+    pub has_shares: RwSignal<bool>,
+    pub share_url: RwSignal<Option<String>>,
+    pub share_page_base: RwSignal<String>,
+    /// The live links, as `shares.list` last answered.
+    pub share_list: RwSignal<Option<Result<cookie_agent_protocol::SharesListResult, String>>>,
+    /// The share dialog, while it is open.
+    pub share_dialog: RwSignal<Option<shares::ShareDialog>>,
+    /// *Revoke all* waits for its confirmation.
+    pub share_revoking_all: RwSignal<bool>,
     /// What the last refresh of the official skills did, and whether it
     /// failed; `None` while one is on its way or before any.
     pub skills_update_note: RwSignal<Option<(String, bool)>>,
@@ -642,6 +656,12 @@ impl Workspace {
             asset_open: RwSignal::new(None),
             asset_renaming: RwSignal::new(None),
             asset_deleting: RwSignal::new(None),
+            has_shares: RwSignal::new(false),
+            share_url: RwSignal::new(None),
+            share_page_base: RwSignal::new(String::new()),
+            share_list: RwSignal::new(None),
+            share_dialog: RwSignal::new(None),
+            share_revoking_all: RwSignal::new(false),
             skills_update_note: RwSignal::new(None),
             skills_updating: RwSignal::new(false),
             skill_pick: RwSignal::new(None),
@@ -836,12 +856,18 @@ impl Workspace {
             .set(cookie_agent_client_state::pins::daemon_keeps_pins(
                 client.daemon_version(),
             ));
+        self.has_shares
+            .set(cookie_agent_client_state::shares::daemon_has_shares(
+                client.daemon_version(),
+            ));
+        self.share_list.set(None);
         // A new connection has heard nothing of what the page shows.
         self.presence_sent.set_value(None);
         self.restarting.set(None);
         self.restart_confirm.set(false);
         self.client.set_value(Some(client));
         self.refresh_config_status();
+        self.refresh_shares();
         self.subscriptions
             .update_value(|subscriptions| subscriptions.reset());
         self.finish_waiting_sign_in();
@@ -1054,6 +1080,10 @@ impl Workspace {
                 if self.assets_opened.get_untracked() {
                     self.assets_changed_later();
                 }
+                return;
+            }
+            ClientDelivery::SharesChanged(_) => {
+                self.refresh_shares();
                 return;
             }
             ClientDelivery::McpChanged(_)

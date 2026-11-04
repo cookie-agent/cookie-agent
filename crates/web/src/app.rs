@@ -21,7 +21,7 @@ use crate::{
     theme::ThemePreference,
     views::{
         Install, InstallAction, InstallBanner, MediaViewer, RestartBanner, RestartDialog,
-        WorkspaceView,
+        ShareDialogView, WorkspaceView,
     },
     workspace::Workspace,
 };
@@ -255,6 +255,10 @@ impl Connection {
         if let Some(ticket) = hello.page_ticket.as_deref().filter(|_| serves_page) {
             crate::browser::set_page_ticket(ticket);
         }
+        self.workspace.share_url.set(hello.share_url.clone());
+        self.workspace
+            .share_page_base
+            .set(cookie_agent_client_state::shares::page_base(url).unwrap_or_default());
         // The page waited for the daemon to be ready; what it is busy with
         // comes in its notifications from here on.
         self.daemon.set(
@@ -549,6 +553,7 @@ pub fn App() -> impl IntoView {
                         <DaemonNotice connection=connection />
                         <RestartBanner workspace=connection.workspace />
                         <RestartDialog workspace=connection.workspace />
+                        <ShareDialogView workspace=connection.workspace />
                         <MediaViewer workspace=connection.workspace />
                     </Show>
                     <InstallBanner />

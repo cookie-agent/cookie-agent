@@ -696,6 +696,22 @@ error_codes! {
         hint: Some("See `assets.list` for the store's assets."),
         description: "An `asset.*` request named an asset its store does not hold, such as one deleted since.",
     }
+    SHARE_NOT_FOUND {
+        code: "share_not_found",
+        rpc: APPLICATION_ERROR,
+        fields: [required("id", "The share link's ID.")],
+        message: "There is no share link {id}.",
+        hint: Some("See `shares.list` for the live links."),
+        description: "A `share.*` request named a link the daemon does not have, such as one revoked or expired since.",
+    }
+    SHARES_DISABLED {
+        code: "shares_disabled",
+        rpc: APPLICATION_ERROR,
+        fields: [],
+        message: "Share links are turned off.",
+        hint: Some("Set `[share] enabled = true` in the daemon's config.toml."),
+        description: "`share.create` while the daemon's `[share] enabled` is false.",
+    }
     PROJECT_NAME_TAKEN {
         code: "project_name_taken",
         rpc: APPLICATION_ERROR,

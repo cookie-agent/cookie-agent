@@ -27,6 +27,7 @@ attaching clients to it.
 | [`cookie memory`](#cookie-memory) | List, edit, and delete the daemon's memories |
 | [`cookie project`](#cookie-project) | List, create, rename, delete, and edit the daemon's projects |
 | [`cookie cron`](#cookie-cron) | List, create, edit, run, and delete the daemon's cron jobs |
+| [`cookie share`](#cookie-share) | List, make, and revoke the daemon's share links |
 | [`cookie skills`](#cookie-skills) | List the daemon's skills, refresh the official ones, and check skills |
 | [`cookie agents`](#cookie-agents) | List the daemon's agents, refresh the official ones, and check agent documents |
 | [`cookie update`](#cookie-update) | Replace this binary with the newest stable or nightly release |
@@ -634,6 +635,44 @@ one-shot whose time has passed needs a new `--schedule` first.
 the fire's outcome and the session it went to. A run now counts toward
 neither the job's run limit nor its failures, and fires even with
 `[cron] enabled = false`.
+
+### `cookie share`
+
+```text
+cookie share <COMMAND> [--url <URL>] [--token <TOKEN>]
+```
+
+Lists, makes, and revokes the daemon's [share links](../sessions/sharing.md):
+public URLs for assets, which anyone can open without a token. It connects
+to the daemon at `--url`, or `[server] url` of this machine's `config.toml`,
+or the local daemon, with `--token` or `[server] token`. A link the daemon
+has no `[share] url` or `[server] page_url` for is printed on the address of
+the daemon's web page.
+
+#### `cookie share list`
+
+Prints one line per live link: its ID, title, expiry, views, and address.
+
+#### `cookie share create`
+
+```text
+cookie share create <ASSET> [--session <SESSION_ID> | --project <PROJECT_ID>] [--expires 1d|7d|30d|never] [--new]
+```
+
+Makes a link to the asset `<ASSET>`, a handle such as `asset_3f9a1c2e` or its
+UUID, and prints it. Without `--session` or `--project`, the handle is looked
+up in every store, and a handle more than one store holds asks for one of
+them. `--expires` is `7d` when omitted. An asset that already has a live link
+prints that link, unless `--new` makes another.
+
+#### `cookie share revoke`
+
+```text
+cookie share revoke <ID> | --all
+```
+
+Revokes one link, or with `--all` every link. A revoked link stops working
+at once.
 
 ### `cookie skills`
 

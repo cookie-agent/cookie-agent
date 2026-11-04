@@ -11,6 +11,9 @@ report, or anything else.
   can find in the Assets view; it shows one with
   `<attach asset="asset_3f9a1c2e"/>`, always as the asset is now.
 
+To show an asset to someone outside cookie, give them a
+[share link](sharing.md).
+
 The web client shows images, video, HTML pages, and Markdown documents
 as a gallery of cards (pages and documents open beside the chat), and
 other files as downloads; the TUI lists them with links that open them in the web

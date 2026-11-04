@@ -228,6 +228,9 @@ pub enum ClientDelivery {
     MemoryChanged(cookie_agent_protocol::MemoryChangedNotification),
     /// An asset was written, renamed, or deleted (client protocol 1.67.0).
     AssetsChanged(cookie_agent_protocol::AssetsChangedNotification),
+    /// A share link was made, changed, revoked, or removed (client
+    /// protocol 1.86.0); refetch `shares.list`.
+    SharesChanged(cookie_agent_protocol::SharesChangedNotification),
     /// A project was created, changed, or deleted; refetch
     /// `projects.list`.
     ProjectsChanged(cookie_agent_protocol::ProjectsChangedNotification),
@@ -1167,6 +1170,56 @@ impl Client {
         self.call(
             cookie_agent_protocol::ASSET_DELETE_METHOD,
             &cookie_agent_protocol::AssetDeleteParams { store, asset },
+        )
+        .await
+    }
+
+    /// List the share links (`shares.list`).
+    pub async fn list_shares(
+        &self,
+        params: cookie_agent_protocol::SharesListParams,
+    ) -> Result<cookie_agent_protocol::SharesListResult, ClientError> {
+        self.call(cookie_agent_protocol::SHARES_LIST_METHOD, &params)
+            .await
+    }
+
+    /// Make a share link (`share.create`).
+    pub async fn create_share(
+        &self,
+        params: cookie_agent_protocol::ShareCreateParams,
+    ) -> Result<cookie_agent_protocol::ShareCreateResult, ClientError> {
+        self.call(cookie_agent_protocol::SHARE_CREATE_METHOD, &params)
+            .await
+    }
+
+    /// Change a share link's title or expiry (`share.update`).
+    pub async fn update_share(
+        &self,
+        params: cookie_agent_protocol::ShareUpdateParams,
+    ) -> Result<cookie_agent_protocol::ShareUpdateResult, ClientError> {
+        self.call(cookie_agent_protocol::SHARE_UPDATE_METHOD, &params)
+            .await
+    }
+
+    /// Revoke a share link (`share.revoke`).
+    pub async fn revoke_share(
+        &self,
+        id: cookie_agent_protocol::ShareId,
+    ) -> Result<cookie_agent_protocol::ShareRevokeResult, ClientError> {
+        self.call(
+            cookie_agent_protocol::SHARE_REVOKE_METHOD,
+            &cookie_agent_protocol::ShareRevokeParams { id },
+        )
+        .await
+    }
+
+    /// Revoke every share link (`shares.revoke_all`).
+    pub async fn revoke_all_shares(
+        &self,
+    ) -> Result<cookie_agent_protocol::SharesRevokeAllResult, ClientError> {
+        self.call(
+            cookie_agent_protocol::SHARES_REVOKE_ALL_METHOD,
+            &cookie_agent_protocol::SharesRevokeAllParams {},
         )
         .await
     }
@@ -2970,6 +3023,11 @@ async fn route_notification(
             let changed: cookie_agent_protocol::AssetsChangedNotification =
                 serde_json::from_str(params)?;
             let _ = deliveries.send(ClientDelivery::AssetsChanged(changed));
+        }
+        cookie_agent_protocol::SHARES_CHANGED_METHOD => {
+            let changed: cookie_agent_protocol::SharesChangedNotification =
+                serde_json::from_str(params)?;
+            let _ = deliveries.send(ClientDelivery::SharesChanged(changed));
         }
         cookie_agent_protocol::PROJECTS_CHANGED_METHOD => {
             let changed: cookie_agent_protocol::ProjectsChangedNotification =

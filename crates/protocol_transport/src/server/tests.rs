@@ -613,6 +613,36 @@ impl ServerProtocol for StubServer {
     ) -> Result<cookie_agent_protocol::AssetRenameResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
+    async fn list_shares(
+        &self,
+        _: cookie_agent_protocol::SharesListParams,
+    ) -> Result<cookie_agent_protocol::SharesListResult, ServerFault> {
+        Err(ServerFault::method_not_found("stub"))
+    }
+    async fn create_share(
+        &self,
+        _: cookie_agent_protocol::ShareCreateParams,
+    ) -> Result<cookie_agent_protocol::ShareCreateResult, ServerFault> {
+        Err(ServerFault::method_not_found("stub"))
+    }
+    async fn update_share(
+        &self,
+        _: cookie_agent_protocol::ShareUpdateParams,
+    ) -> Result<cookie_agent_protocol::ShareUpdateResult, ServerFault> {
+        Err(ServerFault::method_not_found("stub"))
+    }
+    async fn revoke_share(
+        &self,
+        _: cookie_agent_protocol::ShareRevokeParams,
+    ) -> Result<cookie_agent_protocol::ShareRevokeResult, ServerFault> {
+        Err(ServerFault::method_not_found("stub"))
+    }
+    async fn revoke_all_shares(
+        &self,
+        _: cookie_agent_protocol::SharesRevokeAllParams,
+    ) -> Result<cookie_agent_protocol::SharesRevokeAllResult, ServerFault> {
+        Err(ServerFault::method_not_found("stub"))
+    }
     async fn delete_asset(
         &self,
         _: cookie_agent_protocol::AssetDeleteParams,

@@ -66,3 +66,45 @@ port forwards both. The page then finds the daemon at its own address.
     (`cloudflared service install`), run `cloudflared service uninstall`.
     Delete the tunnel and its DNS record in Cloudflare, or the name keeps
     pointing at nothing.
+
+## Public share links
+
+A [share link](../sessions/sharing.md) is meant for people who have no
+token, so it must be reachable from the internet. Exposing the daemon's
+own port would expose its connect screen and `/ws` too. Instead, give share
+links a port of their own, which serves `/s/…` and nothing else, and put
+only that port on the internet:
+
+```toml
+[share]
+url = "https://share.example.com"
+listen = "127.0.0.1:7420"
+```
+
+Restart the daemon after changing `listen`. Then point a public tunnel at
+`127.0.0.1:7420`:
+
+- **cloudflared**, with a hostname of its own in the tunnel's
+  `config.yml`:
+
+  ```yaml
+  ingress:
+    - hostname: share.example.com
+      service: http://127.0.0.1:7420
+    - service: http_status:404
+  ```
+
+- **Tailscale Funnel**, on one of the ports Funnel allows (443, 8443, or
+  10000). Use another port than the one `tailscale serve` gives the daemon's
+  page, so the page stays on the tailnet:
+
+  ```sh
+  tailscale funnel --bg --https=8443 127.0.0.1:7420
+  ```
+
+  Set `[share] url` to `https://<host>.<tailnet>.ts.net:8443`. Turn it off
+  with `tailscale funnel --bg --https=8443 off`.
+
+Links still open on the daemon's own address too, for whoever reaches it.
+Without a public address, a link works only where the page can be reached;
+the share dialog says so.

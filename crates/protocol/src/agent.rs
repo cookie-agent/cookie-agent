@@ -64,9 +64,12 @@ impl PermissionAction {
     /// resource is what the call does: `read`, `write`, or `delete`
     /// (`docs/site/specs/assets.md` section 6).
     pub const ASSET: Self = Self(Cow::Borrowed("asset"));
+    /// Making public share links to assets (`share_link`); the resource is
+    /// `asset` (`docs/site/specs/share-links.md` section 7.2).
+    pub const SHARE: Self = Self(Cow::Borrowed("share"));
 
     /// The actions of the tools Cookie Agent ships, in display order.
-    pub const BUILT_IN: [Self; 13] = [
+    pub const BUILT_IN: [Self; 14] = [
         Self::READ,
         Self::WRITE,
         Self::BASH,
@@ -80,6 +83,7 @@ impl PermissionAction {
         Self::CRON,
         Self::ATTACH,
         Self::ASSET,
+        Self::SHARE,
     ];
 
     pub const MAX_LEN: usize = 32;

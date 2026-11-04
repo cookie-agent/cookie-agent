@@ -331,6 +331,10 @@ fn router(
             "/plugins/{*path}",
             axum::routing::any(super::plugin_pages::plugin_pages),
         )
+        .route(
+            "/s/{*path}",
+            axum::routing::any(super::share_pages::share_pages),
+        )
         .fallback(super::page::page)
         .with_state(WebSocketState {
             shared,
@@ -381,7 +385,37 @@ async fn listen(
     })
 }
 
+/// The share-only listener's routes: `/s/…` and nothing else
+/// (`docs/site/specs/share-links.md` section 6.2).
+fn share_router(shared: Arc<Shared>, server: ServerSlot, token: Arc<Zeroizing<String>>) -> Router {
+    Router::new()
+        .route(
+            "/s/{*path}",
+            axum::routing::any(super::share_pages::share_pages),
+        )
+        .fallback(super::share_pages::not_shared)
+        .with_state(WebSocketState {
+            shared,
+            server,
+            token,
+            tls: false,
+        })
+}
+
 impl DaemonListener {
+    /// Serves share links and nothing else on `address`, over plain HTTP,
+    /// for a tunnel to point at (`[share] listen`). Links answer as gone
+    /// until the daemon is ready.
+    pub async fn serve_shares_on(&self, address: SocketAddr) -> Result<RunningServer, ServerError> {
+        // The share routes never read the token; the state only carries one.
+        let router = share_router(
+            Arc::clone(&self.shared),
+            Arc::clone(&self.server),
+            Arc::new(Zeroizing::new(String::new())),
+        );
+        listen(router, address, None, &self.shared).await
+    }
+
     /// Serves clients (`/ws`), dial-in runtimes (`/runtime`), and the web
     /// page on `address`, over TLS when `tls` is given, before the daemon
     /// is ready too: see [`DaemonListener`]. Every connection presents
@@ -610,6 +644,11 @@ async fn websocket_upgrade(
                 .read()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .clone();
+            let share_url = shared
+                .share_url
+                .read()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone();
             let _ = cookie_agent_protocol_transport::serve_starting(
                 cookie_agent_protocol_transport::Startup {
                     server,
@@ -618,6 +657,7 @@ async fn websocket_upgrade(
                         engine_version: cookie_agent_engine::release::version().to_owned(),
                         page_url,
                         page_ticket: Some(super::plugin_pages::page_ticket(state.token.as_str())),
+                        share_url,
                     },
                 },
                 stream,

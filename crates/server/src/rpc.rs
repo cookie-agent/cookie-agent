@@ -404,6 +404,15 @@ pub(crate) fn engine_fault(error: EngineError) -> RpcFault {
         EngineError::Asset(cookie_agent_engine::AssetError::InvalidStore(_)) => {
             errors::BAD_PARAMS.error().field("field", "store")
         }
+        EngineError::Share(cookie_agent_engine::ShareError::NotFound(id)) => {
+            errors::SHARE_NOT_FOUND.error().field("id", id)
+        }
+        EngineError::Share(cookie_agent_engine::ShareError::Disabled) => {
+            errors::SHARES_DISABLED.error()
+        }
+        EngineError::Share(cookie_agent_engine::ShareError::PastExpiry) => {
+            errors::BAD_PARAMS.error().field("field", "expiry")
+        }
         EngineError::Cron(error) => cron_error(error),
         EngineError::Mcp(reason) => errors::MCP_REJECTED
             .error()

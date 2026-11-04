@@ -268,6 +268,10 @@ pub struct ProjectDeleteResult {
     /// 1.67.0).
     #[serde(default)]
     pub deleted_assets: u64,
+    /// The share links of those assets, removed with them (client protocol
+    /// 1.86.0).
+    #[serde(default)]
+    pub deleted_shares: u64,
 }
 
 /// A project was created, changed, or deleted; refetch `projects.list`.

@@ -33,6 +33,7 @@ pub fn view_icon(view: View) -> crate::icons::Icon {
         View::Agents => icondata::LuBot,
         View::Skills => icondata::LuBookOpen,
         View::Assets => icondata::LuImages,
+        View::Sharing => icondata::LuShare2,
         View::Mcp => icondata::LuPlug,
         View::Settings => icondata::LuSettings,
         View::Machines => icondata::LuServer,
@@ -145,6 +146,7 @@ pub fn PageView(workspace: Workspace, connection: Connection) -> impl IntoView {
                                 View::Cron => cron_page(workspace).into_any(),
                                 View::Skills => super::skills::skills_page(workspace).into_any(),
                                 View::Assets => super::assets::assets_page(workspace).into_any(),
+                                View::Sharing => super::shares::sharing_page(workspace).into_any(),
                                 View::Mcp => mcp_sheet(workspace).into_any(),
                                 View::Chat | View::Settings | View::Agents => ().into_any(),
                             }}

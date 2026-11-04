@@ -24,6 +24,8 @@ self.addEventListener("fetch", (event) => {
   // Plugin pages are the plugins' own, served through the daemon
   // (docs/site/specs/plugin-web-ui.md): the browser fetches them itself.
   if (/\/plugins\//.test(url.pathname)) return;
+  // Share links are public pages of their own (docs/site/specs/share-links.md).
+  if (/\/s\//.test(url.pathname)) return;
   // A failed fetch (the daemon restarting, the network gone) becomes the
   // network error the browser would show anyway, instead of a rejection
   // the console reports as uncaught.

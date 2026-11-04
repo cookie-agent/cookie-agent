@@ -26,14 +26,17 @@ pub enum View {
     Cron,
     /// A project's assets (client protocol 1.67.0).
     Assets,
+    /// The live share links (client protocol 1.86.0).
+    Sharing,
 }
 
 impl View {
     /// The views in the sidebar's order: Chat is the session list itself,
     /// and Settings comes at the sidebar's foot, after every other view.
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 10] = [
         Self::Chat,
         Self::Assets,
+        Self::Sharing,
         Self::Agents,
         Self::Skills,
         Self::Mcp,
@@ -55,6 +58,7 @@ impl View {
             Self::Memory => "Memory",
             Self::Cron => "Scheduled prompts",
             Self::Assets => "Assets",
+            Self::Sharing => "Sharing",
         }
     }
 
@@ -62,13 +66,13 @@ impl View {
     /// the view shows before any of its items: Chat's sessions in the
     /// sidebar, shown as the page; the agents, the Settings sections, the
     /// memories, and the cron jobs as the page itself until one opens.
-    /// Skills, MCP servers, Machines, and Assets have no list: each is one
-    /// page.
+    /// Skills, MCP servers, Machines, Assets, and Sharing have no list:
+    /// each is one page.
     pub const fn phone_list(self) -> Option<PhoneList> {
         match self {
             Self::Chat => Some(PhoneList::Sidebar),
             Self::Agents | Self::Settings | Self::Memory | Self::Cron => Some(PhoneList::Page),
-            Self::Skills | Self::Mcp | Self::Machines | Self::Assets => None,
+            Self::Skills | Self::Mcp | Self::Machines | Self::Assets | Self::Sharing => None,
         }
     }
 
@@ -84,6 +88,7 @@ impl View {
             Self::Memory => "memory",
             Self::Cron => "cron",
             Self::Assets => "assets",
+            Self::Sharing => "sharing",
         }
     }
 }
@@ -413,7 +418,13 @@ mod tests {
             );
             assert_eq!(reconcile(&[Away, detail], &[Away]), HistoryStep::Back(1));
         }
-        for view in [View::Skills, View::Mcp, View::Machines, View::Assets] {
+        for view in [
+            View::Skills,
+            View::Mcp,
+            View::Machines,
+            View::Assets,
+            View::Sharing,
+        ] {
             assert_eq!(view.phone_list(), None, "{view:?}");
         }
         assert_eq!(View::Chat.phone_list(), Some(PhoneList::Sidebar));

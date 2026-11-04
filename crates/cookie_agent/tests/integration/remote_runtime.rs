@@ -1659,6 +1659,56 @@ async fn assets_are_saved_from_a_machine_shown_listed_replaced_and_deleted() {
             .assets
             .is_empty()
     );
+    // The agent shares the plot; a second call gets the same link back.
+    fixture.model.enqueue(tool_call(
+        "share_link",
+        &serde_json::json!({"asset": handle, "expires_in": "1d"}),
+    ));
+    fixture.model.enqueue(tool_call(
+        "share_link",
+        &serde_json::json!({"asset": handle}),
+    ));
+    fixture.model.enqueue(final_answer("shared"));
+    let before = fixture.model.requests().len();
+    fixture.run(session, "share the plot").await;
+    let requests = fixture.model.requests()[before..].to_vec();
+    assert!(requests[1].contains("Shared asset_"), "{}", requests[1]);
+    assert!(requests[2].contains("Already shared"), "{}", requests[2]);
+    let shares = fixture
+        .engine
+        .list_shares(cookie_agent_protocol::SharesListParams::default())
+        .await
+        .unwrap()
+        .shares;
+    assert_eq!(shares.len(), 1, "{shares:?}");
+    assert_eq!(shares[0].asset, plot.id);
+    assert_eq!(shares[0].created.session, Some(session));
+    assert!(
+        requests[1].contains(shares[0].id.as_str()),
+        "{}",
+        requests[1]
+    );
+    let expires = shares[0].expires_at.expect("a day");
+    let left = expires.as_second() - jiff::Timestamp::now().as_second();
+    assert!((23 * 3600..=24 * 3600).contains(&left), "{left}");
+    // The link goes with its asset.
+    fixture
+        .engine
+        .delete_asset(cookie_agent_protocol::AssetDeleteParams {
+            store: session_store.clone(),
+            asset: plot.id,
+        })
+        .await
+        .unwrap();
+    assert!(
+        fixture
+            .engine
+            .list_shares(cookie_agent_protocol::SharesListParams::default())
+            .await
+            .unwrap()
+            .shares
+            .is_empty()
+    );
     // A read the rules ask about waits for the user, who allows it: in the
     // mode that asks, not yolo.
     fs::write(fixture.web.join("secret.txt"), "only when allowed").unwrap();

@@ -1112,6 +1112,25 @@ pub fn asset_default_rules(mode: AgentMode, delegated: bool) -> Vec<PermissionRu
     )]
 }
 
+/// The `share` default (`docs/site/specs/share-links.md` section 7.2): a
+/// link publishes an asset, so a root run asks the user, a `delegated`
+/// run, at any depth, is denied, and an internal agent gets nothing. No
+/// default allows it.
+pub fn share_default_rules(mode: AgentMode, delegated: bool) -> Vec<PermissionRule> {
+    if mode == AgentMode::Internal {
+        return Vec::new();
+    }
+    vec![PermissionRule::new(
+        PermissionAction::SHARE,
+        WildcardPattern::new("*").expect("static default pattern"),
+        if delegated {
+            PermissionEffect::Deny
+        } else {
+            PermissionEffect::Ask
+        },
+    )]
+}
+
 /// Every rule the daemon supplies to a run of an agent of `mode`, root or
 /// `delegated`, each for an action its document names no key for. Whatever
 /// no rule matches asks ([`MergedRules`]).
@@ -1141,6 +1160,7 @@ fn run_defaults_but_message(mode: AgentMode, delegated: bool) -> Vec<PermissionR
         .chain(cron_default_rules(mode, delegated))
         .chain(attach_default_rules(mode, delegated))
         .chain(asset_default_rules(mode, delegated))
+        .chain(share_default_rules(mode, delegated))
         .collect()
 }
 

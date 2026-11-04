@@ -127,6 +127,7 @@ impl ServerContext {
                 .filter(|_| cookie_agent_protocol::reads_daemon_status(hello.protocol_version)),
             page_url: about.page_url.clone(),
             page_ticket: about.page_ticket.clone(),
+            share_url: about.share_url.clone(),
         }
     }
 
@@ -327,12 +328,19 @@ pub trait ServerProtocol: Send + Sync + 'static {
         None
     }
 
+    /// The base of the daemon's share links (client protocol 1.86.0);
+    /// `None` when it has none configured.
+    fn share_url(&self) -> Option<String> {
+        None
+    }
+
     /// What the handshake says about the daemon.
     fn about(&self) -> About {
         About {
             engine_version: self.engine_version(),
             page_url: self.page_url(),
             page_ticket: self.page_ticket(),
+            share_url: self.share_url(),
         }
     }
 
@@ -1016,6 +1024,31 @@ pub trait ServerProtocol: Send + Sync + 'static {
         &self,
         params: cookie_agent_protocol::AssetDeleteParams,
     ) -> Result<cookie_agent_protocol::AssetDeleteResult, ServerFault>;
+    /// Lists the share links.
+    async fn list_shares(
+        &self,
+        params: cookie_agent_protocol::SharesListParams,
+    ) -> Result<cookie_agent_protocol::SharesListResult, ServerFault>;
+    /// Makes a share link, or returns one the asset has.
+    async fn create_share(
+        &self,
+        params: cookie_agent_protocol::ShareCreateParams,
+    ) -> Result<cookie_agent_protocol::ShareCreateResult, ServerFault>;
+    /// Changes a share link's title or expiry.
+    async fn update_share(
+        &self,
+        params: cookie_agent_protocol::ShareUpdateParams,
+    ) -> Result<cookie_agent_protocol::ShareUpdateResult, ServerFault>;
+    /// Revokes a share link.
+    async fn revoke_share(
+        &self,
+        params: cookie_agent_protocol::ShareRevokeParams,
+    ) -> Result<cookie_agent_protocol::ShareRevokeResult, ServerFault>;
+    /// Revokes every share link.
+    async fn revoke_all_shares(
+        &self,
+        params: cookie_agent_protocol::SharesRevokeAllParams,
+    ) -> Result<cookie_agent_protocol::SharesRevokeAllResult, ServerFault>;
     /// Reads a range of any artifact in the store of a session's tree.
     async fn read_artifact(
         &self,
@@ -1218,6 +1251,8 @@ pub struct About {
     /// What the web page stores to open plugin pages, when the daemon
     /// serves them on this connection's listener.
     pub page_ticket: Option<String>,
+    /// The base of its share links, when that is configured.
+    pub share_url: Option<String>,
 }
 
 /// [`serve`] for a daemon that may still be starting. Until its server is
@@ -2043,6 +2078,32 @@ async fn dispatch<S: ServerProtocol>(
         }
         cookie_agent_protocol::ASSET_DELETE_METHOD => {
             value(server.delete_asset(decode(params)?).await?)
+        }
+        cookie_agent_protocol::SHARES_LIST_METHOD => {
+            value(server.list_shares(decode(params)?).await?)
+        }
+        cookie_agent_protocol::SHARE_CREATE_METHOD => {
+            value(server.create_share(decode(params)?).await?)
+        }
+        cookie_agent_protocol::SHARE_UPDATE_METHOD => {
+            let params: cookie_agent_protocol::ShareUpdateParams = decode(params)?;
+            if params
+                .title
+                .as_deref()
+                .is_some_and(|title| !cookie_agent_protocol::is_asset_title(title))
+            {
+                return Err(ServerFault::invalid_params(format!(
+                    "title must be 1 to {} characters on one line",
+                    cookie_agent_protocol::ASSET_TITLE_MAX_CHARS
+                )));
+            }
+            value(server.update_share(params).await?)
+        }
+        cookie_agent_protocol::SHARE_REVOKE_METHOD => {
+            value(server.revoke_share(decode(params)?).await?)
+        }
+        cookie_agent_protocol::SHARES_REVOKE_ALL_METHOD => {
+            value(server.revoke_all_shares(decode(params)?).await?)
         }
         cookie_agent_protocol::RUNTIME_SNAPSHOT_GET_METHOD if has_request_id => {
             value(server.runtime_snapshot(decode_default(params)?).await?)

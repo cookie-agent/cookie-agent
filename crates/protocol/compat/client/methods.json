@@ -1212,6 +1212,54 @@
     {
       "direction": "to_daemon",
       "kind": "request",
+      "method": "share.create",
+      "params": "ShareCreateParams",
+      "params_role": "command",
+      "result": "ShareCreateResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "share.revoke",
+      "params": "ShareRevokeParams",
+      "params_role": "command",
+      "result": "ShareRevokeResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "share.update",
+      "params": "ShareUpdateParams",
+      "params_role": "command",
+      "result": "ShareUpdateResult"
+    },
+    {
+      "direction": "from_daemon",
+      "kind": "notification",
+      "method": "shares.changed",
+      "params": "SharesChangedNotification",
+      "params_role": "information",
+      "result": null
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "shares.list",
+      "params": "SharesListParams",
+      "params_role": "command",
+      "result": "SharesListResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "shares.revoke_all",
+      "params": "SharesRevokeAllParams",
+      "params_role": "command",
+      "result": "SharesRevokeAllResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
       "method": "skills.get",
       "params": "SkillsGetParams",
       "params_role": "command",

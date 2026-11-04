@@ -60,6 +60,7 @@ Every key is optional. Unknown keys, including removed top-level `pricing`, fail
 | `shell_environment` | [Shell Environment](shell_environment.md): the environment runtimes start processes in |
 | `acp` | [ACP Agents](acp.md) |
 | `transfer` | [Transfers](transfer.md): `max_bytes`, the most one `transfer` call moves |
+| `share` | [Share links](share.md): `enabled`, `url`, the public address links use, and `listen`, a port that serves only share links |
 | `skills` | [Official skills](../extend/skills.md#official-skills): `official`, whether the daemon keeps the official skills up to date and offers them |
 | `agents` | [Official agents](../extend/agents.md#official-agents): `official`, whether the daemon keeps the official agents up to date and offers them, and `default`, the agent new sessions start with |
 | `headers` | [Request Header](headers.md) |

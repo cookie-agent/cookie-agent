@@ -22,6 +22,7 @@ impl Workspace {
             View::Agents => self.open_config(),
             View::Skills => self.poll_skill_list(),
             View::Assets => self.open_assets(),
+            View::Sharing => self.refresh_shares(),
             View::Mcp => self.poll_mcp(),
             View::Settings => self.open_section(section),
             View::Machines => self.poll_runtimes(),
@@ -79,6 +80,7 @@ impl Workspace {
             View::Memory => self.poll_memory(),
             View::Skills => self.poll_skill_list(),
             View::Assets => self.poll_assets(),
+            View::Sharing => self.refresh_shares(),
             View::Mcp => self.poll_mcp(),
             View::Chat | View::Machines | View::Cron => {}
         }
@@ -152,7 +154,7 @@ impl Workspace {
                 self.memory_edit.with(Option::is_none) && self.memory_pending.with(Option::is_none)
             }
             View::Cron => self.cron_form.with(Option::is_none),
-            View::Skills | View::Mcp | View::Machines | View::Assets => true,
+            View::Skills | View::Mcp | View::Machines | View::Assets | View::Sharing => true,
         }
     }
 
@@ -176,7 +178,12 @@ impl Workspace {
                 self.memory_edit.with(Option::is_some) || self.memory_pending.with(Option::is_some)
             }
             View::Cron => self.cron_form.with(Option::is_some),
-            View::Chat | View::Skills | View::Mcp | View::Machines | View::Assets => false,
+            View::Chat
+            | View::Skills
+            | View::Mcp
+            | View::Machines
+            | View::Assets
+            | View::Sharing => false,
         };
         if editing {
             layers.push(Layer::Editor);

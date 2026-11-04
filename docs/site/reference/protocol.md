@@ -13,7 +13,7 @@ A client must call `handshake` before any other method:
 
 ```json
 { "jsonrpc": "2.0", "id": 1, "method": "handshake", "params": {
-    "protocol_version": "1.85.0",
+    "protocol_version": "1.86.0",
     "client": { "kind": "web", "instance_id": "<uuid>" },
     "token": "<the daemon's token>",
     "features": [] } }
@@ -22,7 +22,7 @@ A client must call `handshake` before any other method:
 The reply:
 
 ```json
-{ "protocol_version": "1.85.0", "engine_version": "0.3.0",
+{ "protocol_version": "1.86.0", "engine_version": "0.3.0",
   "origin": "client:web-<id>", "machine_id": "<opaque>", "features": [],
   "status": { "phase": "ready" } }
 ```
@@ -66,6 +66,9 @@ The reply:
   A web page keeps it in its `cookie_page_ticket` cookie, on the page's own
   path. It is derived from the daemon token, so rotating the token revokes
   it, and it opens plugin pages only, never `/ws` or `/runtime`.
+- **`share_url`** (since 1.86.0) is the base of the daemon's share links,
+  its `[share] url`, else its `[server] page_url`, when either is set
+  ([Share links](#share-links)).
 
 **Authentication.** A client authenticates with the daemon's bearer token
 (`[server] token`) in one of two places:
@@ -347,6 +350,11 @@ Idempotent redelivery resolves against the state preceding the original run.
 | `asset.read` | `store`, `asset` ID, `offset`, `length` (at most 1 MiB) | Base64 `data`, `total_bytes`, `media_type`, and the `sha256` of the content read |
 | `asset.rename` | `store`, `asset` ID, `title` (1 to 200 characters on one line) | The renamed `asset` |
 | `asset.delete` | `store`, `asset` ID | Empty object |
+| `shares.list` | `asset?` ID (since 1.86.0; see [Share links](#share-links)) | The live `shares`, newest first, and `enabled` |
+| `share.create` | `store`, `asset` ID, `expiry`, `reuse?` | The `share`, and `created`: false when `reuse` returned the asset's newest live link |
+| `share.update` | `id`, `title?`, `expiry?` | The changed `share`, or `share_not_found` |
+| `share.revoke` | `id` | Empty object, or `share_not_found` |
+| `shares.revoke_all` | Empty object | `revoked`, how many links |
 | `run.cancel` | Run ID | `cancelled` boolean |
 | `run.tool_background` | Run ID, tool call ID | `accepted` boolean: false unless the call is an executing call of a background-capable tool; it detaches at its detach point (see [Background calls](tools.md#background-calls)) |
 | `session.background.list` | Session ID | The session's background `calls` |
@@ -850,6 +858,30 @@ absent; a session tree's own assets go by its root's project. `scope` is
 `session` or `project`, both when absent. The result's `sessions` names
 each tree whose own assets it lists: its root `session`, `title`, and
 `project`. A project the daemon does not have is `-32602`.
+
+### Share links
+
+Since 1.86.0 a share link is a public URL for one asset
+([spec](../specs/share-links.md)): anyone who has it opens the asset's
+landing page at `s/<id>` below the share base, without the token, until it
+expires or is revoked. A `Share` has its `id` (22 base64url characters, the
+link's secret), `path` (`s/<id>`), `url` when the daemon knows its share
+base (else a client puts the address it reached the daemon's page at before
+`path`), the asset's `store` and `asset` ID, the `title` the landing page
+is headed with, the asset's current `media_type` and `byte_length`,
+`created` (`at`, and the `session` and `agent` of an agent's call, absent
+for the user's), `expires_at` (absent: never), `views`, and `last_viewed`.
+A link always shows the asset as it is now.
+
+`expiry` is a tagged `ShareExpiry`: `{ "type": "never" }` or
+`{ "type": "at", "at": … }`; a time already past is `-32602`.
+`share.create` with `reuse` returns the asset's newest live link instead of
+making one. A link whose asset is deleted is removed with it, and so are a
+deleted session tree's and project's (`project.delete` also returns
+`deleted_shares`). While `[share] enabled` is false, `share.create` is
+`shares_disabled` and every link answers as gone; `shares.list` says so in
+`enabled`. Each change but a view sends `shares.changed` to every
+connection.
 
 ### Cron jobs
 
@@ -1625,6 +1657,7 @@ subscriptions to the deleted sessions end with them: no further
 | `machines.changed` | The machine registry changed, or a runtime joined a new machine; an empty object |
 | `memory.changed` | A memory file changed through the daemon; an empty object |
 | `assets.changed` | An asset was written, renamed, or deleted through the daemon; an empty object (since 1.67.0) |
+| `shares.changed` | A share link was made, changed, revoked, or removed with its asset; an empty object (since 1.86.0) |
 | `projects.changed` | A project was created, changed, or deleted; an empty object |
 | `crons.changed` | A cron job was created, changed, fired, or deleted; an empty object |
 | `notifications.changed` | A push subscription was added, changed, or removed (since 1.30.0); an empty object |
@@ -1647,7 +1680,7 @@ subscribed session's list again.
 
 ### Daemon-wide changes
 
-`runtime.changed`, `sessions.changed`, `mcp.changed`, `runtimes.changed`, `plugins.changed`, `machines.changed`, `memory.changed`, `assets.changed`, `projects.changed`, `crons.changed`, `notifications.changed`, `daemon.restarting`, and `onboarding.changed` reach every connection
+`runtime.changed`, `sessions.changed`, `mcp.changed`, `runtimes.changed`, `plugins.changed`, `machines.changed`, `memory.changed`, `assets.changed`, `shares.changed`, `projects.changed`, `crons.changed`, `notifications.changed`, `daemon.restarting`, and `onboarding.changed` reach every connection
 from its handshake on, whether or not it subscribed to any session, so each
 client sharing a daemon stays current with what the others do. Clients ignore
 notification methods they do not know.

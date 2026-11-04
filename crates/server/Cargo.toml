@@ -27,6 +27,7 @@ getrandom.workspace = true
 hyper = { version = "1.11", features = ["client", "http1"] }
 hyper-util = { version = "0.1.20", features = ["tokio"] }
 jiff.workspace = true
+pulldown-cmark.workspace = true
 reqwest.workspace = true
 rustls.workspace = true
 rustls-pki-types.workspace = true

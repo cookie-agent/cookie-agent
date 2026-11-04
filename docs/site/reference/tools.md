@@ -63,6 +63,7 @@ block under the system prompt in the TUI transcript.
 | [`read_asset`](#read_asset) | `asset` |
 | [`list_assets`](#list_assets) | `asset` |
 | [`delete_asset`](#delete_asset) | `asset` |
+| [`share_link`](#share_link) | `share` |
 
 <!-- /generated -->
 
@@ -1030,7 +1031,7 @@ tools instead of in the system prompt.
 |---|---|---|---|
 | `agents` | [`list_agents`](#list_agents) | yes | The agents this session can delegate to or schedule, and what each is for. |
 | `artifacts` | [`read_artifact`](#read_artifact) | no | Tool output too large for the conversation, kept aside and read back by range. |
-| `assets` | [`write_asset`](#write_asset), [`read_asset`](#read_asset), [`list_assets`](#list_assets), [`delete_asset`](#delete_asset) | yes | Assets: files you give the user, such as charts, diagrams, HTML pages, and reports, shown in the conversation and kept for this session or the project. |
+| `assets` | [`write_asset`](#write_asset), [`read_asset`](#read_asset), [`list_assets`](#list_assets), [`delete_asset`](#delete_asset), [`share_link`](#share_link) | yes | Assets: files you give the user, such as charts, diagrams, HTML pages, and reports, shown in the conversation and kept for this session or the project. |
 | `background` | [`stop_background`](#stop_background) | no | Calls running in the background, and stopping them. |
 | `coding` | [`read`](#read), [`write`](#write), [`edit`](#edit), [`bash`](#bash) | no | The workspace: reading, writing, and editing files, and running shell commands. |
 | `cron` | [`cron_create`](#cron_create), [`cron_list`](#cron_list), [`cron_update`](#cron_update), [`cron_delete`](#cron_delete), [`cron_run`](#cron_run) | yes | Scheduled prompts: run a prompt once after a delay or on a cron schedule, in this session, a subagent's, or a new session. |
@@ -2880,7 +2881,8 @@ again replaces it; there are no versions.
 The tools are checked under the `asset` action, whose resource is what a
 call does: `read` (`read_asset`, `list_assets`, and an `<attach asset=…/>` tag), `write`
 (`write_asset`), or `delete` (`delete_asset`). Assets have no owner: a rule
-applies the same to every asset a session can see.
+applies the same to every asset a session can see. `share_link` is checked
+under its own action, `share`.
 
 ### `write_asset`
 
@@ -3079,6 +3081,63 @@ Only when the session has the `global` runtime attached and no `"*": deny` for `
     ```
 
 <!-- /generated -->
+
+### `share_link`
+
+<!-- generated: tool share_link -->
+
+```text
+share_link(asset: string, expires_in?: "1d" | "7d" | "30d" | "never")
+```
+
+Description sent to the model:
+
+```text
+Make a public link to an asset, for the user to send to people outside cookie: anyone with the link can open the asset in a browser, without signing in, until the link expires. The link always shows the asset's current content. The user is usually asked to approve the call. `expires_in` is `7d` by default; `1d`, `30d`, and `never` are the others. An asset that already has a live link gets that link back, with its own expiry. Only share what the user asked to share.
+```
+
+Only when the session has the `global` runtime attached and no `"*": deny` for `share` hides it. A root run of any agent but an internal one asks the user by default; a delegated run is denied it. Its resource is `asset`.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `asset` | `string` | yes | The asset's handle |
+| `expires_in` | `"1d" \| "7d" \| "30d" \| "never"` | no | How long the link works: `7d` (default), `1d`, `30d`, or `never` |
+
+??? note "Parameters JSON Schema"
+
+    ```json
+    {
+      "additionalProperties": false,
+      "properties": {
+        "asset": {
+          "description": "The asset's handle",
+          "type": "string"
+        },
+        "expires_in": {
+          "description": "How long the link works: `7d` (default), `1d`, `30d`, or `never`",
+          "enum": [
+            "1d",
+            "7d",
+            "30d",
+            "never"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "asset"
+      ],
+      "type": "object"
+    }
+    ```
+
+<!-- /generated -->
+
+Makes a public link to an asset ([share links](../specs/share-links.md)):
+anyone with the link opens the asset's landing page in a browser without the
+daemon token, until the link expires (7 days unless the call says `1d`,
+`30d`, or `never`). It is checked under the `share` action with the resource
+`asset`, which asks the user by default for a root run.
 
 ### Display
 

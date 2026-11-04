@@ -339,6 +339,15 @@ fn asset_row(workspace: Workspace, asset: Asset, place: AssetPlace) -> impl Into
     let title = asset.title.clone();
     let rename_store = store.clone();
     let delete_store = store.clone();
+    let share_store = store.clone();
+    let share_row_title = title.clone();
+    let shared = move || {
+        workspace.share_list.with(|list| {
+            list.as_ref()
+                .and_then(|list| list.as_ref().ok())
+                .is_some_and(|list| list.shares.iter().any(|share| share.asset == id))
+        })
+    };
     let download_asset = asset.clone();
     let saved_link = match session {
         Some(session) => view! {
@@ -394,9 +403,11 @@ fn asset_row(workspace: Workspace, asset: Asset, place: AssetPlace) -> impl Into
     let context_items = {
         let title = title.clone();
         let download_asset = download_asset.clone();
+        let share_store = share_store.clone();
         move || {
             use super::row_menu::MenuItem;
             let (title, download_asset) = (title.clone(), download_asset.clone());
+            let (share_store, share_title) = (share_store.clone(), title.clone());
             vec![
                 MenuItem {
                     id: "open",
@@ -420,6 +431,15 @@ fn asset_row(workspace: Workspace, asset: Asset, place: AssetPlace) -> impl Into
                     icon: icondata::LuDownload,
                     act: Callback::new(move |()| {
                         crate::assets::download(workspace, download_asset.clone())
+                    }),
+                    danger: false,
+                },
+                MenuItem {
+                    id: "share",
+                    label: "Share link…",
+                    icon: icondata::LuShare2,
+                    act: Callback::new(move |()| {
+                        workspace.open_share_dialog(share_store.clone(), id, share_title.clone())
                     }),
                     danger: false,
                 },
@@ -487,6 +507,27 @@ fn asset_row(workspace: Workspace, asset: Asset, place: AssetPlace) -> impl Into
                     <Glyph icon=icondata::LuDownload />
                     "Download"
                 </button>
+                <Show when=move || workspace.has_shares.get()>
+                    <button
+                        type="button"
+                        class=move || {
+                            if shared() {
+                                format!("{ROW_BUTTON} text-accent")
+                            } else {
+                                ROW_BUTTON.to_owned()
+                            }
+                        }
+                        data-asset-action="share"
+                        data-shared=move || shared().to_string()
+                        on:click={
+                            let (store, title) = (store.clone(), share_row_title.clone());
+                            move |_| workspace.open_share_dialog(store.clone(), id, title.clone())
+                        }
+                    >
+                        <Glyph icon=icondata::LuShare2 />
+                        {move || if shared() { "Shared" } else { "Share" }}
+                    </button>
+                </Show>
                 <button
                     type="button"
                     class=ROW_BUTTON

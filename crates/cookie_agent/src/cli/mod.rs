@@ -31,6 +31,7 @@ mod onboard;
 mod project;
 mod runtime;
 mod sessions;
+mod share;
 mod skills;
 pub(crate) mod update;
 mod web;
@@ -270,6 +271,26 @@ enum Command {
     Cron {
         #[command(subcommand)]
         command: cron::CronCommand,
+        /// The daemon's client URL; `[server] url` in this machine's
+        /// `config.toml`, or the local daemon, when omitted.
+        #[arg(long, global = true)]
+        url: Option<String>,
+        /// The daemon's bearer token; `[server] token` in this machine's
+        /// `config.toml` when omitted.
+        #[arg(
+            long,
+            global = true,
+            env = "COOKIE_DAEMON_TOKEN",
+            hide_env_values = true,
+            allow_hyphen_values = true
+        )]
+        token: Option<String>,
+    },
+    /// List, make, and revoke a daemon's share links: public URLs for
+    /// assets.
+    Share {
+        #[command(subcommand)]
+        command: share::ShareCommand,
         /// The daemon's client URL; `[server] url` in this machine's
         /// `config.toml`, or the local daemon, when omitted.
         #[arg(long, global = true)]
@@ -545,6 +566,14 @@ pub(crate) async fn dispatch(cli: Cli, launch: &mut Launch) -> anyhow::Result<()
             let target = daemon_target(url, token)?;
             cron::run_cron(&target.url, &target.token, command).await
         }
+        Some(Command::Share {
+            command,
+            url,
+            token,
+        }) => {
+            let target = daemon_target(url, token)?;
+            share::run_share(&target.url, &target.token, command).await
+        }
         Some(Command::Attach { url, token }) => {
             #[cfg(feature = "tui")]
             cookie_agent_tui::markdown::warm_up_syntax_assets();
@@ -577,6 +606,7 @@ fn local_workspace(
                 | Command::Memory { .. }
                 | Command::Project { .. }
                 | Command::Cron { .. }
+                | Command::Share { .. }
                 | Command::Runtime { .. }
                 | Command::Update(_),
         )

@@ -122,6 +122,11 @@ fn availability(name: &str) -> Option<&'static str> {
              default; a delegated run is denied them. `write_asset` also checks its file as \
              `read` on the machine it reads it from."
         }
+        "share_link" => {
+            "Only when the session has the `global` runtime attached and no `\"*\": deny` for \
+             `share` hides it. A root run of any agent but an internal one asks the user by \
+             default; a delegated run is denied it. Its resource is `asset`."
+        }
         "read_artifact" => {
             "Always, whatever the agent's permission rules: it reads only output retained by \
              the session's own tree."

@@ -828,6 +828,16 @@ row says where the asset lives (its project, and a session's own its
 session, a link to it) and who saved it; open one as a figure, rename,
 download, or delete it (after asking).
 
+**Share links.** Every asset card, attachment card, Assets row, and the
+side panel has a share button, which opens the share dialog: *Create link*
+with an expiry (*7 days* unless you pick *1 day*, *30 days*, or *Never*),
+then the link with *Copy*, *Change expiry…*, *New link*, and *Revoke*. An
+attachment is saved as an asset of the session first. A shared asset's card
+keeps its share button shown, in the accent. The **Sharing** view lists
+every live link with its expiry, views, and who made it, and *Revoke all*.
+The dialog warns when the link's address looks reachable only privately.
+See [Share links](../sessions/sharing.md).
+
 ## Managing the daemon
 
 - **Runtimes.** **Runtimes** (in the ⋮ menu) lists the session's attached runtimes with their

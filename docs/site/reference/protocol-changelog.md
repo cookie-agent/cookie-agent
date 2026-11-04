@@ -5,6 +5,16 @@ The client protocol's version is `MAJOR.MINOR.PATCH`
 adds and a major breaks; before it, every minor could break the wire (see the
 [compatibility spec](../specs/compatibility-v1.md) section 3).
 
+## 1.86.0
+
+- Share links ([spec](../specs/share-links.md)): `shares.list`,
+  `share.create`, `share.update`, `share.revoke`, `shares.revoke_all`, and
+  the `shares.changed` notification; `Share`, `ShareCreated`, and
+  `ShareExpiry`; `ServerHello.share_url`; `deleted_shares` on
+  `project.delete`; the `share_not_found` and `shares_disabled` errors; and
+  the built-in `share` permission action. See
+  [Share links](protocol.md#share-links).
+
 ## 1.85.0
 
 - MCP servers connect on demand

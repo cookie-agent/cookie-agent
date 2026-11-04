@@ -223,6 +223,7 @@ pub mod runtime_protocol;
 mod semver;
 mod session_model;
 mod setup_value;
+mod share;
 #[cfg(not(target_arch = "wasm32"))]
 mod stop;
 mod stored_display;
@@ -274,6 +275,7 @@ pub use runtime_protocol::{McpServerScope, McpServerTool};
 pub use semver::*;
 pub use session_model::*;
 pub use setup_value::*;
+pub use share::*;
 #[cfg(not(target_arch = "wasm32"))]
 pub use stop::StopSignals;
 pub use tool_exposure::*;

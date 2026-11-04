@@ -41,6 +41,12 @@ impl Engine {
                 {
                     break;
                 }
+                // Counted share link views reach the disk, and expired
+                // links leave it.
+                {
+                    let engine = engine.clone();
+                    let _ = tokio::task::spawn_blocking(move || engine.flush_shares()).await;
+                }
                 if let Err(error) = engine.evict_idle_subagents().await {
                     eprintln!("subagent session janitor failed: {error}");
                 }

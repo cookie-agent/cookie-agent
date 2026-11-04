@@ -784,6 +784,9 @@ pub struct EngineConfig {
     /// stays connected; `None` keeps it.
     #[serde(skip)]
     pub mcp_idle_stop_after: McpIdleStop,
+    /// `[share]`: public share links to assets.
+    #[serde(default)]
+    pub share: ShareConfig,
     #[serde(skip)]
     pub pricing: PricingConfig,
     /// Each model's authored `cache_ttl`: zero is a cache that never
@@ -835,6 +838,7 @@ pub(crate) struct RawRuntimeLayer {
     pub(crate) skills: Option<SkillsConfig>,
     pub(crate) agents: Option<AgentsConfig>,
     pub(crate) transfer: Option<TransferConfig>,
+    pub(crate) share: Option<ShareConfig>,
     #[serde(default)]
     #[serde(deserialize_with = "deserialize_optional_headers")]
     pub(crate) headers: Option<BTreeMap<HeaderName, SafeStaticHeaderValue>>,
@@ -1636,6 +1640,48 @@ impl TransferConfig {
     }
 }
 
+/// `[share]`: public share links to assets
+/// (`docs/site/specs/share-links.md` section 6).
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ShareConfig {
+    /// Whether the daemon serves share links and makes new ones. Off,
+    /// every link answers as gone, and links are kept.
+    #[serde(default = "yes")]
+    pub enabled: bool,
+    /// The public address links are built on, such as
+    /// `https://share.example.com`: an `http://` or `https://` URL with no
+    /// credentials, query, or fragment. Unset, `[server] page_url`.
+    #[serde(default)]
+    pub url: Option<String>,
+    /// A second listener that serves share links and nothing else, such as
+    /// `127.0.0.1:7420`, for a tunnel to point at.
+    #[serde(default)]
+    pub listen: Option<std::net::SocketAddr>,
+}
+
+impl Default for ShareConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            url: None,
+            listen: None,
+        }
+    }
+}
+
+impl ShareConfig {
+    fn invalid_reason(&self) -> Option<&'static str> {
+        if self.url.as_deref().is_some_and(|url| !valid_page_url(url)) {
+            return Some("share.url must be an http:// or https:// URL with no query or fragment");
+        }
+        if self.listen.is_some_and(|address| address.port() == 0) {
+            return Some("share.listen must name a port other than 0");
+        }
+        None
+    }
+}
+
 /// `[acp]`: how the daemon runs ACP agents
 /// (`docs/site/specs/acp-agents.md` section 7).
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
@@ -2109,6 +2155,9 @@ pub(crate) fn apply_settings(runtime: &mut EngineConfig, layer: &RawRuntimeLayer
     if let Some(value) = &layer.agents {
         runtime.agents = value.clone();
     }
+    if let Some(value) = &layer.share {
+        runtime.share = value.clone();
+    }
     if let Some(value) = layer.transfer {
         runtime.transfer = value;
     }
@@ -2315,6 +2364,9 @@ pub(crate) fn validate_runtime(runtime: &EngineConfig) -> Result<(), ConfigError
         return Err(ConfigError::InvalidRuntime(reason));
     }
     if let Some(reason) = runtime.notifications.invalid_reason() {
+        return Err(ConfigError::InvalidRuntime(reason));
+    }
+    if let Some(reason) = runtime.share.invalid_reason() {
         return Err(ConfigError::InvalidRuntime(reason));
     }
     if let Some(reason) = runtime.acp.invalid_reason() {

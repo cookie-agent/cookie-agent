@@ -53,6 +53,7 @@ pub mod session_delete;
 pub mod session_filter;
 pub mod session_rename;
 pub mod session_window;
+pub mod shares;
 pub mod skills;
 pub mod subscriptions;
 pub mod tool_header;
@@ -2220,6 +2221,7 @@ impl StateStore {
             | ClientDelivery::MachinesChanged(_)
             | ClientDelivery::MemoryChanged(_)
             | ClientDelivery::AssetsChanged(_)
+            | ClientDelivery::SharesChanged(_)
             | ClientDelivery::ProjectsChanged(_)
             | ClientDelivery::CronsChanged(_)
             | ClientDelivery::NotificationsChanged(_)
