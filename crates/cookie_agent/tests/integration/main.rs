@@ -8,6 +8,7 @@ mod config_harness;
 #[path = "../../../../test-support/eventually.rs"]
 mod eventually;
 
+mod config_form_catalog;
 mod daemon_restart;
 mod local_daemon;
 mod remote_runtime;

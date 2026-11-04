@@ -30,7 +30,7 @@ type Choice = Vec<ModelChoice>;
 
 /// Which model a model step chooses.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Slot {
+pub(super) enum Slot {
     Default,
     Small,
     Utility,
@@ -200,9 +200,9 @@ fn Stepper(workspace: Workspace) -> impl IntoView {
                                 OnboardingStep::AcpAgent => acp_step(workspace).into_any(),
                                 OnboardingStep::Tools => tools_step(workspace, tools, tools_runtime, default_agent).into_any(),
                                 OnboardingStep::Provider => provider_step(workspace).into_any(),
-                                OnboardingStep::DefaultModel => model_step(workspace, Slot::Default, default_choice).into_any(),
-                                OnboardingStep::SmallModel => model_step(workspace, Slot::Small, small_choice).into_any(),
-                                OnboardingStep::UtilityModel => model_step(workspace, Slot::Utility, utility_choice).into_any(),
+                                OnboardingStep::DefaultModel => model_step(workspace, Slot::Default, default_choice, true).into_any(),
+                                OnboardingStep::SmallModel => model_step(workspace, Slot::Small, small_choice, true).into_any(),
+                                OnboardingStep::UtilityModel => model_step(workspace, Slot::Utility, utility_choice, true).into_any(),
                             }}
                         </div>
                         <footer class="flex flex-col gap-2 border-t border-line px-4 py-2">
@@ -764,7 +764,16 @@ fn provider_step(workspace: Workspace) -> impl IntoView {
 /// chips: choosing a model adds it to the end of the field's fallback list,
 /// choosing it again takes it out; the small and utility models may also
 /// take the models of a field before them.
-fn model_step(workspace: Workspace, slot: Slot, choice: RwSignal<Choice>) -> impl IntoView {
+/// The picker for `slot`'s models. `replaces` is the onboarding step's, which
+/// starts with nothing chosen: it introduces the field, and says what is
+/// configured and that choosing replaces it. The Configuration form's row says
+/// what the field is, and its picker starts from the file.
+pub(super) fn model_step(
+    workspace: Workspace,
+    slot: Slot,
+    choice: RwSignal<Choice>,
+    replaces: bool,
+) -> impl IntoView {
     let search = RwSignal::new(String::new());
     let field = field_name(slot.field());
     let current = move || {
@@ -772,6 +781,7 @@ fn model_step(workspace: Workspace, slot: Slot, choice: RwSignal<Choice>) -> imp
             .onboarding
             .status
             .get()
+            .filter(|_| replaces)
             .and_then(|status| configured_label(&status, slot.field()))
     };
     let position = move |chosen: &Choice, key: &cookie_agent_protocol::ModelKey| {
@@ -833,13 +843,15 @@ fn model_step(workspace: Workspace, slot: Slot, choice: RwSignal<Choice>) -> imp
         })
         .collect_view();
     view! {
-        <p class="text-sm">
-            {match slot {
-                Slot::Default => "The default model runs your agents. Choose more for fallbacks: the first available one runs, and the next take over when it fails.",
-                Slot::Small => "Optional: the models of subagents that carry out work, such as the worker and the explorer. Without them they use the default model.",
-                Slot::Utility => "Optional: fast, cheap models for approvals and session titles. Without them they use the session's own model.",
-            }}
-        </p>
+        {replaces.then(|| view! {
+            <p class="text-sm">
+                {match slot {
+                    Slot::Default => "The default model runs your agents. Choose more for fallbacks: the first available one runs, and the next take over when it fails.",
+                    Slot::Small => "Optional: the models of subagents that carry out work, such as the worker and the explorer. Without them they use the default model.",
+                    Slot::Utility => "Optional: fast, cheap models for approvals and session titles. Without them they use the session's own model.",
+                }}
+            </p>
+        })}
         {move || current().map(|current| view! {
             <p class=NOTE data-current-model>{format!("{field} is {current}; choosing models replaces it.")}</p>
         })}

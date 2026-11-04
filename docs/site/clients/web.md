@@ -975,14 +975,27 @@ setup disabled.
   available models, each name with its model ID beside it. Credentials
   are typed into password fields, read once when you connect, and never
   kept by the page; closing the form clears them.
-- **Configuration.** Settings › Configuration has `config.toml`. Open it
-  to edit it in the page and **Apply** it. A change the daemon refuses
-  stays open with the reason, to be fixed and applied again; a document
-  that changed meanwhile is reloaded instead. Notes about what the configuration names
-  that does not exist yet, such as a delegation target no runtime has
-  reported, are listed above it. **Reload from disk** applies edits made
-  by hand, and **Restart daemon** beside it applies what only a restart
-  does (see [Restarting the daemon](#restarting-the-daemon)); it is
+- **Configuration.** Settings › Configuration shows `config.toml` as a form:
+  each setting with its key and a control, in sections, and those the file
+  sets start open. An unset field shows its default in faint type, and ↺
+  removes a key to go back to it. Edits wait in a bar at the foot that lists
+  them, for **Apply** or **Discard**. Apply writes only those keys, so the
+  file's comments and everything else stay; a value that cannot be one blocks
+  it, and an edit the daemon refuses, or a file that changed meanwhile, stays
+  to be applied again. The default, small, and utility models open the same
+  picker as [Setting up a daemon](#setting-up-a-daemon). Tables with a panel
+  of their own (providers, MCP servers, plugins, runtime templates, and ACP
+  agents) are only counted and linked. A key the form has no control for is
+  shown read-only in a box, as the file writes it, in its section or under
+  **Other settings**. Credentials are masked in the form.
+  **Edit the file** opens the whole file to edit and **Apply**: a change the
+  daemon refuses stays open with the reason, a document that changed meanwhile
+  is reloaded instead, and the file shows as it is, credentials included.
+  TOML that does not parse leaves only this. Notes about what the
+  configuration names that does not exist yet, such as a delegation target no
+  runtime has reported, are listed above the form. **Reload from disk** applies
+  edits made by hand, and **Restart daemon** beside it applies what only a
+  restart does (see [Restarting the daemon](#restarting-the-daemon)); it is
   highlighted while a change waits for a restart.
 - **Restarting the daemon.** <a id="restarting-the-daemon"></a>While the
   daemon's configuration lists parts that only a restart applies, a banner

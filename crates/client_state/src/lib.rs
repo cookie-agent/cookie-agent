@@ -16,6 +16,7 @@ pub mod assets;
 pub mod badges;
 pub mod cache;
 pub mod config;
+pub mod config_form;
 pub mod cron;
 pub mod cut_points;
 pub mod daemon_status;

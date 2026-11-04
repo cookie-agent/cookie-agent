@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use cookie_agent_client_state::{
     config::{ConfigApplyOutcome, document_text, new_agent_refusal, reload_status, restart_note},
+    config_form::ConfigForm,
     mcp::{
         McpFields, PersistChoice, edit_refusal, is_global, mutation_runtime, new_definition,
         sort_servers, toggle_tool,
@@ -26,14 +27,15 @@ use cookie_agent_client_state::{
     },
 };
 use cookie_agent_protocol::{
-    AgentId, AttachmentName, CapabilityName, ClientConnectId, ClientRequestId, ConfigApplyParams,
-    ConfigChange, ConfigRevision, McpServerAddParams, McpServerEditParams, McpServerInfo,
-    McpServerNameParams, McpServerPersistParams, McpServerReconnectParams, McpServerRenameParams,
-    McpServerScope, McpServerSetEnabledParams, MemoryListParams, ProviderConnectParams,
-    ProviderDescriptor, ProviderDisconnectParams, RuntimeAgentDeclaration, RuntimeId,
-    RuntimesAgentsListParams, RuntimesAgentsRemoveParams, RuntimesAgentsRenameParams,
-    RuntimesAgentsRenameResult, RuntimesAgentsSetParams, RuntimesConnectParams,
-    RuntimesReconnectParams, SessionRuntimeAttachParams, SessionRuntimeDetachParams, errors,
+    AgentId, AttachmentName, CapabilityName, ClientConnectId, ClientRequestId,
+    ConfigApplyErrorCode, ConfigApplyParams, ConfigChange, ConfigRevision, McpServerAddParams,
+    McpServerEditParams, McpServerInfo, McpServerNameParams, McpServerPersistParams,
+    McpServerReconnectParams, McpServerRenameParams, McpServerScope, McpServerSetEnabledParams,
+    MemoryListParams, ProviderConnectParams, ProviderDescriptor, ProviderDisconnectParams,
+    RuntimeAgentDeclaration, RuntimeId, RuntimesAgentsListParams, RuntimesAgentsRemoveParams,
+    RuntimesAgentsRenameParams, RuntimesAgentsRenameResult, RuntimesAgentsSetParams,
+    RuntimesConnectParams, RuntimesReconnectParams, SessionRuntimeAttachParams,
+    SessionRuntimeDetachParams, errors,
 };
 use cookie_agent_protocol_transport::ClientDelivery;
 use leptos::{prelude::*, task::spawn_local};
@@ -1116,6 +1118,56 @@ impl Workspace {
                     .await,
             );
             self.finish_config(edit.path.clone(), Some(edit), outcome);
+        });
+    }
+
+    /// Applies the Configuration form's edits, one `set` per key, so the rest
+    /// of `config.toml` stays as it is. What the daemon refuses, or a file
+    /// that changed meanwhile, leaves the edits in place to apply again.
+    pub fn apply_config_form(self, form: &ConfigForm) {
+        let Some(client) = self.client() else {
+            return;
+        };
+        let Some(Ok(config)) = self.config.get_untracked() else {
+            return;
+        };
+        let drafts = self.config_form_drafts.get_untracked();
+        let Ok(changes) = form.changes(&drafts) else {
+            return;
+        };
+        if changes.is_empty() {
+            self.config_form_drafts.set(Default::default());
+            return;
+        }
+        self.status.set("applying config.toml…".to_owned());
+        let revision = config.revision.clone();
+        spawn_local(async move {
+            let outcome = ConfigApplyOutcome::from_result(
+                client
+                    .apply_config(ConfigApplyParams {
+                        expected_revision: revision,
+                        changes,
+                    })
+                    .await,
+            );
+            let report = outcome.report("config.toml");
+            match outcome {
+                ConfigApplyOutcome::Applied(_) => {
+                    self.config_form_drafts.set(Default::default());
+                    self.config_error.set(None);
+                }
+                ConfigApplyOutcome::Refused {
+                    reason: ConfigApplyErrorCode::Conflict,
+                    ..
+                } => self.config_error.set(Some(
+                    "config.toml changed meanwhile, so nothing was applied. Your edits are still here: check them and apply again."
+                        .to_owned(),
+                )),
+                ConfigApplyOutcome::Refused { .. } => self.config_error.set(report.error),
+                ConfigApplyOutcome::Failed(_) => {}
+            }
+            self.status.set(report.status);
+            self.poll_config();
         });
     }
 

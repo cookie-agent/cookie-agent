@@ -4,7 +4,6 @@
 //! [`super::agents`], and `/memory` [`super::memory`].
 
 use cookie_agent_client_state::{
-    config::config_rows,
     mcp::{
         McpFields, McpTransport, PersistChoice, StateTone, edit_refusal, runtime_label, scope_note,
         server_definition_display, server_message, server_state_label, server_tone,
@@ -1508,12 +1507,48 @@ pub fn config_sheet(workspace: Workspace) -> impl IntoView {
         let draft = workspace
             .config_drafts
             .with(|drafts| drafts.contains_key("config.toml"));
-        let label = config_rows(&config)
-            .into_iter()
-            .find(|row| row.path.as_deref() == Some("config.toml"))
-            .map(|row| row.label)
-            .unwrap_or_default();
         view! {
+            <div class="mx-auto flex w-full max-w-3xl flex-1 flex-col gap-2.5">
+            <div class="flex flex-wrap items-center gap-2">
+                <p class="mr-auto font-mono text-sm font-bold" id="config-path">"config.toml"</p>
+                <div class="flex items-center gap-2" data-config-path="config.toml">
+                    <button type="button" class=BUTTON on:click=move |_| workspace.edit_config("config.toml")>
+                        <Glyph icon=icondata::LuFileText />
+                        "Edit the file"
+                        {draft.then(|| view! { <span class="text-xs text-accent">"not applied"</span> })}
+                    </button>
+                </div>
+                <button type="button" id="config-reload" class=BUTTON on:click=move |_| workspace.reload_config()>
+                    <Glyph icon=icondata::LuRefreshCw />
+                    "Reload from disk"
+                </button>
+                // Beside the reload, so the parts it cannot apply are
+                // applied where the configuration was changed; it
+                // stands out while some wait for a restart.
+                {move || workspace.can_restart.get().then(|| {
+                    let needed = move || workspace.config_status.with(|status| {
+                        status.as_ref().is_some_and(|status| !status.restart_required.is_empty())
+                    });
+                    view! {
+                        <button
+                            type="button"
+                            id="restart-daemon"
+                            class=move || if needed() { PRIMARY } else { BUTTON }
+                            data-restart-needed=move || needed().then_some("")
+                            on:click=move |_| workspace.ask_restart()
+                        >
+                            <Glyph icon=icondata::LuPower />
+                            "Restart daemon"
+                        </button>
+                    }
+                })}
+            </div>
+            {move || workspace.can_restart.get().then(|| {
+                let parts = move || workspace.config_status.with(|status| {
+                    status.as_ref().map(cookie_agent_client_state::restart::restart_parts).unwrap_or_default()
+                });
+                move || (!parts().is_empty()).then(|| view! { <p class=NOTE>{format!("Waiting for a restart: {}.", parts())}</p> })
+            })}
             {move || workspace.config_error.get().map(|error| view! { <p class=ERROR id="config-error">{error}</p> })}
             {config.status.error.clone().map(|error| view! { <p class=ERROR>{format!("The running configuration has an error: {error}")}</p> })}
             {(!config.status.diagnostics.is_empty() || !config.status.native_compaction.is_empty() || !config.status.deferred_tools.is_empty()).then(|| view! {
@@ -1521,56 +1556,7 @@ pub fn config_sheet(workspace: Workspace) -> impl IntoView {
                     {config.status.diagnostics.iter().cloned().chain(cookie_agent_client_state::config::record_lines(&config.status)).map(|line| view! { <li>{line}</li> }).collect_view()}
                 </ul>
             })}
-            <div class="flex items-center gap-2" data-config-path="config.toml">
-                <button type="button" class=format!("{ROW} min-w-0 flex-1") on:click=move |_| workspace.edit_config("config.toml")>
-                    <span class="flex items-center gap-2 font-mono text-sm whitespace-pre">
-                        <Glyph icon=icondata::LuFileText class="opacity-70" />
-                        {label}
-                    </span>
-                    {draft.then(|| view! { <span class="text-xs text-accent">"not applied"</span> })}
-                </button>
-            </div>
-            <div class="mt-3 flex flex-col gap-2 border-t border-line pt-3">
-                <div class="flex flex-wrap gap-2">
-                    <button type="button" id="config-reload" class=BUTTON on:click=move |_| workspace.reload_config()>
-                        <Glyph icon=icondata::LuRefreshCw />
-                        "Reload from disk"
-                    </button>
-                    // Beside the reload, so the parts it cannot apply are
-                    // applied where the configuration was changed; it
-                    // stands out while some wait for a restart.
-                    {move || workspace.can_restart.get().then(|| {
-                        let needed = move || workspace.config_status.with(|status| {
-                            status.as_ref().is_some_and(|status| !status.restart_required.is_empty())
-                        });
-                        view! {
-                            <button
-                                type="button"
-                                id="restart-daemon"
-                                class=move || if needed() { PRIMARY } else { BUTTON }
-                                data-restart-needed=move || needed().then_some("")
-                                on:click=move |_| workspace.ask_restart()
-                            >
-                                <Glyph icon=icondata::LuPower />
-                                "Restart daemon"
-                            </button>
-                        }
-                    })}
-                </div>
-                {move || workspace.can_restart.get().then(|| view! {
-                    <p class=NOTE>
-                        {move || {
-                            let parts = workspace.config_status.with(|status| {
-                                status.as_ref().map(cookie_agent_client_state::restart::restart_parts).unwrap_or_default()
-                            });
-                            if parts.is_empty() {
-                                "Restarting relaunches the daemon with the same arguments; clients reconnect on their own.".to_owned()
-                            } else {
-                                format!("Waiting for a restart: {parts}.")
-                            }
-                        }}
-                    </p>
-                })}
+            {super::config_form::config_form(workspace)}
             </div>
         }
         .into_any()

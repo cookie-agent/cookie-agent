@@ -393,6 +393,9 @@ pub struct Workspace {
     /// Edits the daemon refused, by path, to be fixed and applied again.
     pub config_drafts: RwSignal<HashMap<String, ConfigEdit>>,
     pub config_error: RwSignal<Option<String>>,
+    /// The Configuration form's edits not applied yet: field text by dotted
+    /// key, blank removing the key.
+    pub config_form_drafts: RwSignal<std::collections::BTreeMap<String, String>>,
     /// The document open in the editor.
     pub config_edit: RwSignal<Option<ConfigEdit>>,
     pub memory: RwSignal<Option<Result<cookie_agent_protocol::MemoryListResult, String>>>,
@@ -698,6 +701,7 @@ impl Workspace {
             config: RwSignal::new(None),
             config_drafts: RwSignal::new(HashMap::new()),
             config_error: RwSignal::new(None),
+            config_form_drafts: RwSignal::new(std::collections::BTreeMap::new()),
             config_edit: RwSignal::new(None),
             memory: RwSignal::new(None),
             memory_edit: RwSignal::new(None),

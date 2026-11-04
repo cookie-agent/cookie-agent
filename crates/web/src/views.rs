@@ -40,6 +40,7 @@ mod agents;
 mod asset_panel;
 mod assets;
 mod cards;
+mod config_form;
 mod cron;
 mod depth;
 mod install;

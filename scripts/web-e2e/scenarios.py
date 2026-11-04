@@ -2493,6 +2493,25 @@ def management(browser):
     print("a config edit with an unknown key was refused, then a valid one applied")
     close_sheet(browser)
 
+    # The form: an edit changes one key and leaves the file's comment.
+    open_section(browser, "settings", "configuration")
+    browser.wait("the form", lambda: count(browser, "#config-form") == 1)
+    browser.click('[data-config-section="cron"] summary')
+    history = '[data-config-field="cron.history"] input'
+    set_text(browser, history, "many")
+    browser.wait("the value to fix", lambda: count(browser, "[data-field-error]") == 1)
+    assert browser.script("return document.querySelector('#config-form-apply').disabled")
+    set_text(browser, history, "7")
+    browser.wait("the change", lambda: count(browser, "[data-field-error]") == 0)
+    browser.shot("config-form")
+    browser.click("#config-form-apply")
+    browser.wait("the applied form", lambda: count(browser, "#config-form-bar") == 0)
+    with open(os.path.join(HOME, ".cookie-agent", "config.toml")) as file:
+        written = file.read()
+    assert "history = 7" in written and "# edited from the page" in written, "the form rewrote the file"
+    print("a form edit changed one key and kept the file's comment")
+    close_sheet(browser)
+
     # Memory: an invalid one is refused, then created, edited over a change
     # made meanwhile, and deleted, in the project `e2e` the daemon adopted
     # from its memory folder at start.

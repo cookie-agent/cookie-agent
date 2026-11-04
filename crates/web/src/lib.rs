@@ -14,6 +14,7 @@ pub mod badges;
 pub mod browser;
 pub mod cards;
 pub mod commands;
+pub mod config_toml;
 pub mod connect;
 pub mod connection;
 pub mod cron;
