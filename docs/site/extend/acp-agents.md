@@ -343,22 +343,11 @@ Guidelines:
 
 - Cookie's tools come from the MCP server named `cookie`. Your harness's
   own tools stay available, but when a cookie tool covers the same job, use
-  the cookie tool: cookie applies the user's permission rules, shows the
-  call in its transcript, and other cookie agents can see the result.
+  the tool provided by cookie. The exception is reading files, editing
+  them, and running commands on the machine your harness runs on.
 - Keep durable notes in cookie memory (memory_search, memory_read,
   memory_write), not in your harness's own memory or notes files.
 - Schedule follow-ups with cookie's cron tools.
-- Your built-in file and shell tools work in this session's workspace;
-  with several attachments, the first prompt says which one, and on which
-  machine.
-- Some calls need the user's approval through cookie; if one is refused,
-  do not retry the same call.
-- Messages wrapped in <scheduled_job> or <subagent_report> come from
-  cookie, not from the user typing.
-- When you finish a delegated task, make your last message a
-  self-contained summary: cookie returns it as your report.
-- Change cookie's own configuration only when the user asks (the
-  customize-cookie-agent skill explains how).
 ```
 
 Save it as `~/.cookie-agent/agents/claude.md`: every runtime that offers
