@@ -28,6 +28,7 @@ fn memory_limits_are_read_from_the_memory_table() {
     assert_eq!(
         loaded.runtime.memory,
         MemoryConfig {
+            enabled: true,
             user_max_bytes: 1000,
             agent_max_bytes: 1100,
             machine_max_bytes: 1200,
@@ -37,6 +38,19 @@ fn memory_limits_are_read_from_the_memory_table() {
             snapshot_index_bytes: 1024,
         }
     );
+}
+
+#[test]
+fn memory_can_be_turned_off_and_keeps_its_limits() {
+    let authored = root("[memory]\nenabled = false\nuser_max_bytes = 1000\n");
+    let loaded = load_from_user_root(Some(authored.path())).expect("authored");
+    assert!(!loaded.runtime.memory.enabled);
+    assert_eq!(loaded.runtime.memory.user_max_bytes, 1000);
+    assert!(!loads("[memory]\nenabled = \"no\"\n"));
+
+    let authored = root("[memory]\nuser_max_bytes = 1000\n");
+    let loaded = load_from_user_root(Some(authored.path())).expect("authored");
+    assert!(loaded.runtime.memory.enabled);
 }
 
 #[test]

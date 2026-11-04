@@ -3,7 +3,9 @@
 Memory is what Cookie Agent keeps between sessions: Markdown notes that the
 agent and you write, which later sessions see or find again. It belongs to the
 `global` runtime, so a session has memory while `global` is attached;
-detaching `global` turns it off for that session. Memory is gathered context:
+detaching `global` turns it off for that session, and
+[`[memory] enabled = false`](../engine/memory.md#turning-memory-off) turns it
+off for every session. Memory is gathered context:
 reading or writing it never changes a session's attachments, runtimes, or
 workspaces. The [memory spec](../specs/memory.md) has the full design.
 

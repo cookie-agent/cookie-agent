@@ -1755,6 +1755,11 @@ const fn default_cron_history() -> usize {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct MemoryConfig {
+    /// Whether runs have memory at all: off, no run gets the memory tools,
+    /// a snapshot, or the memory section of the system prompt, and the notes
+    /// stay on disk for the user to read and edit.
+    #[serde(default = "yes")]
+    pub enabled: bool,
     /// Largest `user://` category, frontmatter included, in bytes.
     #[serde(default = "default_memory_document_bytes")]
     pub user_max_bytes: usize,
@@ -1784,6 +1789,7 @@ pub struct MemoryConfig {
 impl Default for MemoryConfig {
     fn default() -> Self {
         Self {
+            enabled: true,
             user_max_bytes: default_memory_document_bytes(),
             agent_max_bytes: default_memory_document_bytes(),
             machine_max_bytes: default_memory_document_bytes(),

@@ -1,10 +1,11 @@
 # Memory [memory]
 
-Size limits of memory documents and of the memory snapshot a session's model
-sees. Complete `config.toml`:
+Whether runs have memory, the size limits of memory documents, and those of the
+memory snapshot a session's model sees. Complete `config.toml`:
 
 ```toml
 [memory]
+enabled = true
 user_max_bytes = 16384
 agent_max_bytes = 16384
 machine_max_bytes = 16384
@@ -22,6 +23,7 @@ replaced; see [config.toml](configuration.md).
 
 | Key | Type | Default | Description |
 |---|---|---|---|
+| `enabled` | boolean | `true` | Whether runs have memory. See [Turning memory off](#turning-memory-off). |
 | `user_max_bytes` | integer | `16384` | Largest `user://` category, frontmatter included, in bytes. Must be positive and at most 57344. |
 | `agent_max_bytes` | integer | `16384` | Largest `agent://` file, frontmatter included, in bytes. Must be positive and at most 57344. |
 | `machine_max_bytes` | integer | `16384` | Largest `machine://` memory, frontmatter included, in bytes. Must be positive and at most 57344. |
@@ -51,3 +53,13 @@ configuration whose limits sum to more fails to load.
 The limits apply at once when the configuration is applied or reloaded: a
 lowered document limit applies from the next write, and the next snapshot
 marks the memories over it.
+
+## Turning memory off
+
+`enabled = false` takes memory from every run, whatever its agent's rules say:
+no memory tools, no snapshot, and no memory section in the system prompt. It
+applies from each session's next run. As when a session
+[detaches `global`](../sessions/memory.md), a memory turn a session already has
+stays in its history until a compaction. The notes stay on disk, and you can
+still read and edit them in the clients; setting it back brings them to the next
+run.

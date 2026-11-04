@@ -88,7 +88,8 @@ pub(crate) struct MemoryAccess {
 }
 
 /// Whether a run of `agent` has memory (section 6): its agent is not
-/// internal, `global_attached`, and the merged list of its rules and the
+/// internal, `reachable` (`[memory] enabled` and `global` attached), and the
+/// merged list of its rules and the
 /// session overlay ([`MergedRules`]) offers `memory` on the `global`
 /// runtime. A writable run can also both read and write some memory URL
 /// (section 16.9.1): the pattern of one of its `allow` or `ask` `memory`
@@ -97,7 +98,7 @@ pub(crate) struct MemoryAccess {
 /// asks. The frozen rules already
 /// have their variables expanded.
 pub(crate) fn memory_access(
-    global_attached: bool,
+    reachable: bool,
     agent: &AgentSnapshot,
     overlay: Option<&SessionPermissionOverlay>,
 ) -> MemoryAccess {
@@ -121,7 +122,7 @@ pub(crate) fn memory_access(
             .collect::<Vec<_>>()
     };
     let available =
-        global_attached && agent.mode != AgentMode::Internal && visible(&PermissionAction::MEMORY);
+        reachable && agent.mode != AgentMode::Internal && visible(&PermissionAction::MEMORY);
     let overlap = || {
         let writable = patterns(PermissionAction::MEMORY_WRITE);
         patterns(PermissionAction::MEMORY).iter().any(|readable| {
@@ -335,6 +336,17 @@ impl Engine {
         MemoryLimits::of(&self.inner.config.load().runtime.memory)
     }
 
+    /// `[memory] enabled` as configured now.
+    pub(crate) fn memory_enabled(&self) -> bool {
+        self.inner.config.load().runtime.memory.enabled
+    }
+
+    /// Whether the session can have memory: it is on, and the session has
+    /// the `global` runtime attached.
+    pub(crate) fn memory_reachable(&self, session: SessionId) -> bool {
+        self.memory_enabled() && self.global_attached(session)
+    }
+
     /// Whether the session has the `global` runtime attached.
     pub(crate) fn global_attached(&self, session: SessionId) -> bool {
         self.session_runtimes(session).is_ok_and(|attachments| {
@@ -413,7 +425,7 @@ impl Engine {
         let latest = projection.log.last_memory_loaded();
         let delegated = matches!(projection.meta.origin, SessionOrigin::Delegated { .. });
         let access = memory_access(
-            self.global_attached(session),
+            self.memory_reachable(session),
             &policy.agent,
             Some(&projection.permission_overlay),
         );
@@ -542,7 +554,7 @@ impl Engine {
             return Ok(None);
         };
         let access = memory_access(
-            self.global_attached(session),
+            self.memory_reachable(session),
             &agent,
             Some(&projection.permission_overlay),
         );

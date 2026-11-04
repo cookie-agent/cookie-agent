@@ -1281,7 +1281,7 @@ impl Engine {
         // `memory` rule, whatever `memory_write` rules say, and the write
         // tools only when some memory is both readable and writable.
         let memory = super::memory::runs::memory_access(
-            true,
+            self.memory_enabled(),
             &policy.agent,
             Some(&session_projection.permission_overlay),
         );

@@ -1240,6 +1240,15 @@ async fn a_finished_compaction_takes_a_new_snapshot_at_the_next_run() {
 /// user memory holds one feedback line, and returns its snapshots, the
 /// memory tools of its request, and the request.
 async fn root_run_memory(permissions: &str) -> (Vec<MemorySnapshot>, Vec<String>, String) {
+    memory_after_settings(permissions, &[]).await
+}
+
+/// [`root_run_memory`] after applying each of `enabled` to `[memory] enabled`
+/// in turn.
+async fn memory_after_settings(
+    permissions: &str,
+    enabled: &[bool],
+) -> (Vec<MemorySnapshot>, Vec<String>, String) {
     let (endpoint, responses, captured) = scripted_channel_server(1).await;
     let (fixture, selection) =
         custom_fixture_with_endpoint_and_primary_agent(&endpoint, &agent(permissions));
@@ -1249,6 +1258,25 @@ async fn root_run_memory(permissions: &str) -> (Vec<MemorySnapshot>, Vec<String>
         "Feedback",
         "- prefers short answers\n",
     );
+    for enabled in enabled {
+        let revision = fixture
+            .engine
+            .configuration_documents()
+            .await
+            .unwrap()
+            .revision;
+        fixture
+            .engine
+            .apply_config_changes(
+                revision,
+                vec![crate::ConfigChange::Set {
+                    key: vec!["memory".to_owned(), "enabled".to_owned()],
+                    value: serde_json::json!(enabled),
+                }],
+            )
+            .await
+            .unwrap();
+    }
     responses
         .send(MatchedScriptedResponse::last_message_contains(
             "hello",
@@ -1304,6 +1332,22 @@ async fn a_root_run_without_memory_keys_reads_and_writes_by_default() {
     assert!(tools.is_empty());
     assert!(!request.contains("# Memory"));
     assert!(!request.contains("prefers short answers"));
+}
+
+/// `[memory] enabled = false` takes memory from every run, whatever its
+/// rules, and keeps the notes: setting it back brings them to the next run.
+#[tokio::test]
+async fn turning_memory_off_takes_the_tools_and_the_snapshot_and_keeps_the_notes() {
+    let (taken, tools, request) = memory_after_settings("{ read: allow }", &[false]).await;
+    assert!(taken.is_empty());
+    assert!(tools.is_empty());
+    assert!(!request.contains("# Memory"));
+    assert!(!request.contains("prefers short answers"));
+
+    let (taken, tools, request) = memory_after_settings("{ read: allow }", &[false, true]).await;
+    assert_eq!(taken.len(), 1);
+    assert!(tools.contains(&"memory_read".to_owned()));
+    assert!(request.contains("prefers short answers"));
 }
 
 /// The snapshot follows the `memory` rules per URL (section 7.5): a denied
