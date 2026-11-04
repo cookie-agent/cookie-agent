@@ -79,7 +79,7 @@ pub fn NewSessionCards(workspace: Workspace) -> impl IntoView {
                 <div class="ml-auto inline-flex gap-0.5 rounded-md border border-line-2 bg-sunken p-0.5 text-xs" data-jump="">
                     <button
                         type="button"
-                        class="rounded px-2.5 py-1 text-muted hover:bg-hover"
+                        class="hit-area rounded px-2.5 py-1 text-muted hover:bg-hover"
                         data-jump-to="runtimes"
                         on:click=move |_| crate::browser::jump("#new-session")
                     >
@@ -87,7 +87,7 @@ pub fn NewSessionCards(workspace: Workspace) -> impl IntoView {
                     </button>
                     <button
                         type="button"
-                        class="rounded px-2.5 py-1 text-muted hover:bg-hover"
+                        class="hit-area rounded px-2.5 py-1 text-muted hover:bg-hover"
                         data-jump-to="skills"
                         on:click=move |_| crate::browser::jump("#new-session-skills")
                     >

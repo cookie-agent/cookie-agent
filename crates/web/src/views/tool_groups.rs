@@ -23,7 +23,7 @@ use crate::{
 /// from a runtime's last run dotted.
 fn chip_class(state: ToolGroupState, hidden: bool, cached: bool) -> String {
     if hidden {
-        return "group-chip inline-flex min-h-7 items-center gap-1 rounded-md border border-dotted border-line-2 px-2 text-xs text-faint opacity-60".to_owned();
+        return "group-chip hit-area inline-flex min-h-7 items-center gap-1 rounded-md border border-dotted border-line-2 px-2 text-xs text-faint opacity-60".to_owned();
     }
     let look = match state {
         ToolGroupState::On => "border-line-2 bg-surface text-fg-2",
@@ -38,7 +38,7 @@ fn chip_class(state: ToolGroupState, hidden: bool, cached: bool) -> String {
         "border-solid"
     };
     format!(
-        "group-chip relative inline-flex min-h-7 items-center gap-1 rounded-md border px-2 text-xs hover:bg-hover {look} {style}"
+        "group-chip hit-area relative inline-flex min-h-7 items-center gap-1 rounded-md border px-2 text-xs hover:bg-hover {look} {style}"
     )
 }
 
@@ -193,8 +193,8 @@ pub fn group_chips(workspace: Workspace, attachment: String) -> impl IntoView {
                     <button
                         type="button"
                         class=chip_class(group.state, hidden, false)
-                        data-group=selector.clone()
-                        data-state=state_word(group.state)
+                        data-tool-group=selector.clone()
+                        data-tool-state=state_word(group.state)
                         title=title
                         disabled=hidden
                         on:click=move |_| {
@@ -214,8 +214,8 @@ pub fn group_chips(workspace: Workspace, attachment: String) -> impl IntoView {
             view! {
                 <button
                     type="button"
-                    class="group-chip inline-flex min-h-7 items-center rounded-md border border-dotted border-line-2 px-2 text-xs text-muted hover:bg-hover"
-                    data-group-more=""
+                    class="group-chip hit-area inline-flex min-h-7 items-center rounded-md border border-dotted border-line-2 px-2 text-xs text-muted hover:bg-hover"
+                    data-tool-group-more=""
                     on:click=move |_| unfolded.set(true)
                 >
                     {format!("+{}", folded.len())}
@@ -259,7 +259,7 @@ fn group_menu(
         view! {
             <button
                 type="button"
-                class="flex min-h-9 items-center justify-between gap-3 rounded-md px-2 text-sm hover:bg-hover"
+                class="flex min-h-9 items-center justify-between gap-3 rounded-md px-2 text-sm hover:bg-hover compact:min-h-11"
                 data-choose=state_word(state)
                 on:click=choice(Some(state))
             >
@@ -273,7 +273,7 @@ fn group_menu(
             view! {
                 <button
                     type="button"
-                    class="flex min-h-9 items-center justify-between gap-3 rounded-md border-t border-line px-2 text-sm hover:bg-hover"
+                    class="flex min-h-9 items-center justify-between gap-3 rounded-md border-t border-line px-2 text-sm hover:bg-hover compact:min-h-11"
                     data-choose="reset"
                     on:click=choice(None)
                 >
@@ -285,7 +285,7 @@ fn group_menu(
             }
         });
     view! {
-        <div class="mt-1 flex flex-col rounded-lg border border-line-2 bg-raised p-1 shadow" data-group-menu=group.selector.to_string()>
+        <div class="mt-1 flex flex-col rounded-lg border border-line-2 bg-raised p-1 shadow" data-tool-group-menu=group.selector.to_string()>
             <p class="px-2 py-1 text-xs text-muted">
                 <b class="font-mono text-fg">{group.selector.to_string()}</b>
                 {format!(" · {} tools · ~{:.1}k tok", group.tools.len(), group.token_estimate as f64 / 1000.0)}
@@ -351,7 +351,7 @@ fn switch(workspace: Workspace, skill: SessionSkill) -> impl IntoView {
                 role="switch"
                 aria-checked=on.to_string()
                 title=if on { "On for the agent" } else { "Off for the agent: you can still run it" }
-                class="relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors"
+                class="hit-area relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors"
                 class:bg-accent=on
                 class:bg-line-2=!on
                 data-skill-switch=name.clone()
@@ -476,7 +476,7 @@ pub fn card_tools(
                     let class = chip_class(rule.state, false, true);
                     let dot = choice_dot(set, rule.from_project);
                     view! {
-                        <span class=class data-group=rule.selector.to_string() data-state=state_word(rule.state)>
+                        <span class=class data-tool-group=rule.selector.to_string() data-tool-state=state_word(rule.state)>
                             {kind_glyph(rule.selector.kind())}
                             {rule.selector.name().to_owned()}
                             <span class=dot></span>
@@ -517,8 +517,8 @@ pub fn card_tools(
                     <button
                         type="button"
                         class=chip_class(state, false, cached)
-                        data-group=selector.clone()
-                        data-state=state_word(state)
+                        data-tool-group=selector.clone()
+                        data-tool-state=state_word(state)
                         title=title
                         on:click=move |_| {
                             open.update(|open| {
@@ -580,7 +580,7 @@ fn card_group_menu(
         view! {
             <button
                 type="button"
-                class="flex min-h-9 items-center justify-between gap-3 rounded-md px-2 text-sm hover:bg-hover"
+                class="flex min-h-9 items-center justify-between gap-3 rounded-md px-2 text-sm hover:bg-hover compact:min-h-11"
                 data-choose=state_word(option)
                 on:click=pick(Some(option))
             >
@@ -593,7 +593,7 @@ fn card_group_menu(
         view! {
             <button
                 type="button"
-                class="flex min-h-9 items-center justify-between gap-3 rounded-md border-t border-line px-2 text-sm hover:bg-hover"
+                class="flex min-h-9 items-center justify-between gap-3 rounded-md border-t border-line px-2 text-sm hover:bg-hover compact:min-h-11"
                 data-choose="reset"
                 on:click=pick(None)
             >
@@ -603,7 +603,7 @@ fn card_group_menu(
         }
     });
     view! {
-        <div class="flex flex-col rounded-lg border border-line-2 bg-raised p-1 shadow" data-group-menu=group.selector.to_string()>
+        <div class="flex flex-col rounded-lg border border-line-2 bg-raised p-1 shadow" data-tool-group-menu=group.selector.to_string()>
             <p class="px-2 py-1 text-xs text-muted">
                 <b class="font-mono text-fg">{group.selector.to_string()}</b>
                 {format!(" · {} tools · ~{:.1}k tok", group.tools.len(), group.token_estimate as f64 / 1000.0)}
@@ -842,7 +842,7 @@ fn card_skill_row(
                 role="switch"
                 aria-checked=on.to_string()
                 title=if on { "On for the agent" } else { "Off for the agent: you can still run it" }
-                class="relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors"
+                class="hit-area relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors"
                 class:bg-accent=on
                 class:bg-line-2=!on
                 data-skill-switch=name.clone()
@@ -932,7 +932,7 @@ pub fn draft_figures(workspace: Workspace, set: CardSet) -> impl IntoView {
                         " · "
                         <button
                             type="button"
-                            class="text-accent underline"
+                            class="hit-area text-accent underline"
                             data-reset-to-project=""
                             on:click=move |_| set.exposure.set(copy.clone())
                         >
