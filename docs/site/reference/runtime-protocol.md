@@ -131,7 +131,7 @@ plugin protocol adds its own (see
 
 ## Version
 
-The protocol version is a semver string, currently **1.15.0**
+The protocol version is a semver string, currently **1.16.0**
 (`cookie_agent_protocol::RUNTIME_PROTOCOL_VERSION`). The daemon sends its
 version in `runtime/initialize` and the runtime answers with its own. Each end
 reads the other's `protocol_version` from the raw JSON before it decodes
@@ -227,6 +227,8 @@ does not know reads as `off`.
 1.15.0 added the `asset` display block, shared with the client protocol
 ([assets](../specs/assets.md)). Only the daemon makes it; a runtime
 never needs to send one.
+1.16.0 added tool groups: `tools.groups` and each tool's optional `group`
+([session tool groups](../specs/session-tool-groups.md) section 11.1).
 
 ## Capabilities and instances
 
@@ -460,8 +462,9 @@ never used: a remote server connects with its static headers only.
 | `instance` | The instance's handle on this connection. |
 | `attachment_name` | The name sessions attach the instance under: `<runtime ID>_<workspace basename>`, sanitized, for a coding instance. |
 | `workspace` | The canonical workspace on the runtime's machine; absent for a capability without one. `AGENTS.md` is loaded only from instances that report one. |
-| `tools.tools` | Tool declarations: `name`, `collision` (`prefix`, `override`, or `fallback`; see [collisions](../specs/runtimes.md#63-collisions)), `permission`, `description`, `parameters` (JSON Schema), `concurrency`, `result_truncation`, `output`, and optionally `background` and `background_default`. `background` says the tool supports the background: the daemon adds a `background` argument to its schema, strips it before `tool/prepare`, and may detach its calls (see [Background calls](#background-calls)); `background_default` is that argument's default and is only valid with `background`. `permission` is the action the tool is checked under: a label matching `[a-z][a-z0-9_]{0,31}`, either one the daemon's own tools use (such as `bash` or `read`, which takes file paths) or the runtime's own (such as `browse`). An action no rule names is denied, so its tools stay hidden until an agent grants it. A tool without `permission` needs none: it is always published and every call is allowed without rules or approval, and its prepared calls report no `permission` either. Version 1 allowed only the nine built-in actions, and versions before 3 required `permission`. |
+| `tools.tools` | Tool declarations: `name`, `collision` (`prefix`, `override`, or `fallback`; see [collisions](../specs/runtimes.md#63-collisions)), `permission`, `description`, `parameters` (JSON Schema), `concurrency`, `result_truncation`, `output`, and optionally `background` and `background_default`. `background` says the tool supports the background: the daemon adds a `background` argument to its schema, strips it before `tool/prepare`, and may detach its calls (see [Background calls](#background-calls)); `background_default` is that argument's default and is only valid with `background`. `permission` is the action the tool is checked under: a label matching `[a-z][a-z0-9_]{0,31}`, either one the daemon's own tools use (such as `bash` or `read`, which takes file paths) or the runtime's own (such as `browse`). An action no rule names is denied, so its tools stay hidden until an agent grants it. A tool without `permission` needs none: it is always published and every call is allowed without rules or approval, and its prepared calls report no `permission` either. Since 1.16.0 a tool may also name its `group` from `tools.groups`. Version 1 allowed only the nine built-in actions, and versions before 3 required `permission`. |
 | `tools.prompt_sections` | System prompt sections (`title`, `body`) the tools contribute. |
+| `tools.groups` | Since 1.16.0: the tool groups the tools name, each once: `name` (`[a-z][a-z0-9_]{0,31}`; `mcp`, `plugin`, `runtime`, and the fixed groups `artifacts`, `background`, `loader`, `tool_search`, and `skills` are reserved), `summary` (what the tools are for, at most 512 bytes), and optional `default` (`on`, the default, or `deferred`). A tool's `group` names one; a session's choices name the group with the runtime's ID, such as `coding@labpc` (see [Tool groups and skills](../extend/agents.md#tool-groups-and-skills)). A tool that names no group, or an undeclared or invalid one, belongs to its capability's group, named after the capability. cookie's own coding runtime declares `coding` and `web`. |
 | `skills.skills` | Project skills: the `SKILL.md` text, `source`, absolute `path` and `base_dir` on the runtime's machine, and a sample of `supporting_files`. The daemon parses the text with the same rules as local discovery. |
 | `skills.discoveries` | Every `SKILL.md` found, with `precedence_winner`. |
 | `mcp_servers` | The status of each MCP server after its first connection attempt, in name order: `name`; `state`, one of `connected`, `connecting`, `reconnecting`, `failed`, `disabled`, or `disconnected`; `message`, why it failed; `tools`, its tool names; since 1.5.0, `scope`, `workspace` here (absent reads as `workspace`); since 1.6.0, `filtered_tools`; and since 1.9.0, `server_tools`, every tool it lists by its own name with `filtered` set for those its filters left out. Absent when the instance hosts none. Runtime-scoped servers are not among them. |

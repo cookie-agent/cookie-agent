@@ -248,6 +248,9 @@ pub struct SessionProjection {
     pub runs: HashMap<RunId, RunProjection>,
     pub rename_records: HashMap<cookie_agent_protocol::ClientRenameId, SessionRenameRecord>,
     pub permission_overlay: SessionPermissionOverlay,
+    /// The session's tool exposure choices: the newest
+    /// `session_tool_exposure_set`'s, empty without one.
+    pub tool_exposure: cookie_agent_protocol::ToolExposure,
     /// The tree's permission mode the newest `permission_mode_set` recorded;
     /// only a root records one.
     pub permission_mode: Option<cookie_agent_protocol::PermissionMode>,
@@ -2173,6 +2176,7 @@ impl SessionStore {
                     | EventPayload::UserInputSubmitted { .. }
                     | EventPayload::DelegatedContextSeeded { .. }
                     | EventPayload::SessionPermissionOverlaySet { .. }
+                    | EventPayload::SessionToolExposureSet { .. }
                     | EventPayload::SkillLoaded { .. }
                     | EventPayload::AgentMdLoaded { .. }
             );

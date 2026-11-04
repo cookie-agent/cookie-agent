@@ -769,6 +769,41 @@ pub struct RuntimeTools {
     pub tools: Vec<ToolDeclaration>,
     #[serde(default)]
     pub prompt_sections: Vec<PromptSectionDeclaration>,
+    /// The groups its tools name (runtime protocol 1.16.0;
+    /// `docs/site/specs/session-tool-groups.md` section 11.1), each once.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub groups: Vec<ToolGroupDeclaration>,
+}
+
+/// A tool group a runtime declares once for the tools that name it.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, schemars::JsonSchema)]
+pub struct ToolGroupDeclaration {
+    /// `[a-z][a-z0-9_]{0,31}`; `mcp`, `plugin`, `runtime`, and the fixed
+    /// groups are reserved.
+    pub name: String,
+    /// What its tools are for, at most 512 bytes.
+    pub summary: String,
+    /// The group's state before any choice: `on` (absent) or `deferred`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default: Option<crate::ToolGroupState>,
+}
+
+impl ToolGroupDeclaration {
+    /// Whether the name and summary are valid and the name is not reserved.
+    #[must_use]
+    pub fn is_valid(&self) -> bool {
+        let name = self.name.as_bytes();
+        !name.is_empty()
+            && name.len() <= 32
+            && name[0].is_ascii_lowercase()
+            && name
+                .iter()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || *byte == b'_')
+            && !matches!(self.name.as_str(), "mcp" | "plugin" | "runtime")
+            && !crate::FIXED_TOOL_GROUPS.contains(&self.name.as_str())
+            && self.summary.len() <= 512
+            && self.default != Some(crate::ToolGroupState::Off)
+    }
 }
 
 /// A tool as a runtime declares it.
@@ -797,6 +832,10 @@ pub struct ToolDeclaration {
     /// argument; only valid with `background`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub background_default: bool,
+    /// The group of `RuntimeTools::groups` the tool belongs to (runtime
+    /// protocol 1.16.0); its capability's group when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
 }
 
 /// The permission action a tool spec's permission name spells: any valid

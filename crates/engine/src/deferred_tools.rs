@@ -34,20 +34,30 @@ pub(crate) fn is_loader(name: &str) -> bool {
 }
 
 /// The deferral policy: whether a composed tool is deferred on a model that
-/// defers. It picks MCP and plugin tools (section 4), and the tools of the
-/// built-in groups in [`DEFERRED_BUILTIN_GROUPS`] (stable prefix spec,
-/// section 3), unless `config` sends their group up front.
+/// defers. A group's `on` or `deferred` choice (`forced`, session tool
+/// groups spec section 5.1) decides first; otherwise it picks MCP and plugin
+/// tools (section 4), and the tools of the built-in groups in
+/// [`DEFERRED_BUILTIN_GROUPS`] (stable prefix spec, section 3), unless
+/// `config` sends their group up front.
 pub(crate) fn policy_defers(
     source: &SourcedProvider,
     tool: &str,
     config: &DeferredToolsConfig,
+    forced: Option<cookie_agent_protocol::ToolGroupState>,
 ) -> bool {
+    match forced {
+        Some(cookie_agent_protocol::ToolGroupState::On) => return false,
+        Some(cookie_agent_protocol::ToolGroupState::Deferred) => return true,
+        Some(cookie_agent_protocol::ToolGroupState::Off) | None => {}
+    }
     match source.provider.tool_source(tool) {
         Some(ProvidedToolSource::Mcp { .. } | ProvidedToolSource::Plugin { .. }) => {
             !source.provider.always_load(tool)
         }
-        None => source.provider.tool_group().is_some_and(|group| {
-            DEFERRED_BUILTIN_GROUPS.contains(&group.name) && !config.always_loads(group.name)
+        None => source.provider.tool_group(tool).is_some_and(|group| {
+            group.deferred
+                || (DEFERRED_BUILTIN_GROUPS.contains(&group.name.as_ref())
+                    && !config.always_loads(&group.name))
         }),
     }
 }
@@ -72,20 +82,23 @@ pub(crate) fn group_of(source: &SourcedProvider, tool: &str) -> Group {
             source: ToolGroupSource::Plugin,
             summary: source.provider.source_summary(tool),
         },
-        None => match source.provider.tool_group() {
+        None => match source.provider.tool_group(tool) {
             Some(group) => Group {
-                name: group.name.to_owned(),
+                name: group.name.into_owned(),
                 source: ToolGroupSource::Builtin,
-                summary: Some(group.summary.to_owned()),
+                summary: Some(group.summary.into_owned()),
             },
+            // A runtime's tool that names no group belongs to its
+            // capability's (session tool groups spec, section 4.1).
             None => Group {
-                name: source.attachment.as_ref().map_or_else(
-                    || {
+                name: match (&source.attachment, source.origin.runtime()) {
+                    (Some(_), Some(runtime)) => runtime.capability().as_str().to_owned(),
+                    (Some(attachment), None) => attachment.to_string(),
+                    (None, _) => {
                         let id = source.provider.provider_id();
                         id.strip_prefix("builtin.").unwrap_or(id).to_owned()
-                    },
-                    ToString::to_string,
-                ),
+                    }
+                },
                 source: ToolGroupSource::Builtin,
                 summary: None,
             },

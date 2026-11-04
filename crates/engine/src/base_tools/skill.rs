@@ -74,7 +74,6 @@ impl PreparedExecutor for SkillExecutor {
                     Some(context.run),
                     &self.args.name,
                     &self.args.args,
-                    true,
                 )
                 .await
                 .map_err(tool_error)?;
@@ -105,7 +104,10 @@ impl SkillTool {
             concurrency: Default::default(),
             result_truncation: Default::default(),
             name: "skill".into(),
-            permission_name: Some("skill".into()),
+            // Skills take no permission: the session's skill choices
+            // decide which the model may load (session tool groups spec,
+            // section 7).
+            permission_name: None,
             description: "Load a skill listed in `<available_skills>` by its name, with optional `args`. Its instructions come back as the result.".into(),
             parameters: schema::<SkillArgs>(),
         }
@@ -114,18 +116,18 @@ impl SkillTool {
 
 impl SkillTool {
     /// The group this provider's tools are announced under when deferred.
-    pub const GROUP: cookie_agent_runtime_api::ToolGroup = cookie_agent_runtime_api::ToolGroup {
-        name: "skills",
-        summary: "Skills: packaged instructions for a kind of task, loaded by name.",
-    };
+    pub const GROUP: cookie_agent_runtime_api::ToolGroup = cookie_agent_runtime_api::ToolGroup::new(
+        "skills",
+        "Skills: packaged instructions for a kind of task, loaded by name.",
+    );
 }
 #[async_trait]
 impl ToolProvider for SkillTool {
     fn provider_id(&self) -> &'static str {
-        "builtin.skill"
+        crate::base_tools::SKILL_PROVIDER_ID
     }
 
-    fn tool_group(&self) -> Option<cookie_agent_runtime_api::ToolGroup> {
+    fn tool_group(&self, _tool: &str) -> Option<cookie_agent_runtime_api::ToolGroup> {
         Some(Self::GROUP)
     }
 
@@ -142,17 +144,10 @@ impl ToolProvider for SkillTool {
 
     fn get_permission_name(tool_name: &str) -> Result<Option<&'static str>, ToolError> {
         if tool_name == "skill" {
-            Ok(Some("skill"))
+            Ok(None)
         } else {
             Err(ToolError::execution("skill provider received another tool"))
         }
-    }
-
-    fn permission_for_unlisted_tool(
-        &self,
-        tool_name: &str,
-    ) -> Result<Option<&'static str>, ToolError> {
-        Ok((tool_name == "skill").then_some("skill"))
     }
 
     fn get_permission_resource(
@@ -162,7 +157,7 @@ impl ToolProvider for SkillTool {
     ) -> Result<(Option<&'static str>, Option<String>), ToolError> {
         Self::get_permission_name(name)?;
         let args: SkillArgs = serde_json::from_value(arguments.clone()).map_err(tool_error)?;
-        Ok((Some("skill"), Some(args.name)))
+        Ok((None, Some(args.name)))
     }
 
     fn get_display_argument(
@@ -210,8 +205,10 @@ impl ToolProvider for SkillTool {
                 .get_model_skill(ctx.session, &args.name, &args.args)
                 .map_err(tool_error)?;
         }
+        // No rule is evaluated; the capability only names the operation.
+        let action = PermissionAction::new("skill").map_err(tool_error)?;
         let resource = prepared_resource(
-            PermissionAction::SKILL,
+            action.clone(),
             "skill",
             args.name.as_bytes(),
             args.name.as_bytes(),
@@ -221,7 +218,7 @@ impl ToolProvider for SkillTool {
         let operation = prepared_operation(
             "skill",
             &args,
-            vec![(PermissionAction::SKILL, "load")],
+            vec![(action, "load")],
             vec![resource],
             &ctx.context_bytes(),
         )?;

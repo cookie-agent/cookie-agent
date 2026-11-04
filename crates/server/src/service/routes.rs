@@ -98,6 +98,7 @@ impl ServerProtocol for Server {
                 runtimes,
                 params.project,
                 params.agent_options,
+                params.exposure,
             )
             .await
             .map_err(protocol_fault)?;
@@ -260,6 +261,26 @@ impl ServerProtocol for Server {
     ) -> Result<SessionPermissionGetResult> {
         self.engine
             .get_session_permissions(params.session_id)
+            .map_err(protocol_fault)
+    }
+
+    async fn get_session_tools(
+        &self,
+        params: cookie_agent_protocol::SessionToolsGetParams,
+    ) -> Result<cookie_agent_protocol::SessionToolsGetResult> {
+        self.engine
+            .get_session_tools(params.session_id)
+            .map_err(protocol_fault)
+    }
+
+    async fn set_session_tools(
+        &self,
+        params: cookie_agent_protocol::SessionToolsSetParams,
+        context: &ServerContext,
+    ) -> Result<cookie_agent_protocol::SessionToolsGetResult> {
+        self.engine
+            .set_session_tools(params.session_id, params.exposure, context.client_origin())
+            .await
             .map_err(protocol_fault)
     }
 

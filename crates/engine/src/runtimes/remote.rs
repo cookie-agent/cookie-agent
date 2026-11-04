@@ -857,11 +857,37 @@ impl Drop for ClientInner {
 struct DeclaredTools {
     specs: Vec<ToolSpec>,
     prompt_sections: Vec<PromptSection>,
+    /// The group each tool names, by tool; a tool that names an undeclared
+    /// or invalid group has none, and belongs to its capability's group.
+    groups: std::collections::HashMap<String, cookie_agent_runtime_api::ToolGroup>,
 }
 
 impl From<RuntimeTools> for DeclaredTools {
     fn from(tools: RuntimeTools) -> Self {
+        let declared = tools
+            .groups
+            .iter()
+            .filter(|group| group.is_valid())
+            .map(|group| (group.name.as_str(), group))
+            .collect::<std::collections::HashMap<_, _>>();
+        let groups = tools
+            .tools
+            .iter()
+            .filter_map(|tool| {
+                let group = declared.get(tool.group.as_deref()?)?;
+                Some((
+                    tool.name.clone(),
+                    cookie_agent_runtime_api::ToolGroup {
+                        name: group.name.clone().into(),
+                        summary: group.summary.clone().into(),
+                        deferred: group.default
+                            == Some(cookie_agent_protocol::ToolGroupState::Deferred),
+                    },
+                ))
+            })
+            .collect();
         Self {
+            groups,
             specs: tools
                 .tools
                 .into_iter()
@@ -2430,6 +2456,12 @@ impl ToolProvider for RemoteToolProvider {
 
     fn composition_source(&self) -> Option<String> {
         self.composition_source.clone()
+    }
+
+    /// The group the runtime declared for its own tool `tool_name`.
+    fn tool_group(&self, tool_name: &str) -> Option<cookie_agent_runtime_api::ToolGroup> {
+        self.declared()
+            .and_then(|tools| tools.groups.get(tool_name).cloned())
     }
 
     /// An MCP server's tool, by the instance's last MCP report, or the

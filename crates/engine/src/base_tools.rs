@@ -30,6 +30,8 @@ use stop_background::StopBackgroundTool;
 pub(crate) use stop_background::TOOL_NAME as STOP_BACKGROUND_TOOL;
 /// The provider of the loader tools.
 pub(crate) const LOADER_PROVIDER_ID: &str = "builtin.loader";
+/// The `skill` tool's provider.
+pub(crate) const SKILL_PROVIDER_ID: &str = "builtin.skill";
 
 fn tool_error(error: impl std::fmt::Display) -> crate::ToolError {
     crate::ToolError::execution(error.to_string())
@@ -207,10 +209,7 @@ mod tests {
 
     #[test]
     fn static_permission_names_cover_every_base_tool() {
-        assert_eq!(
-            SkillTool::get_permission_name("skill").unwrap(),
-            Some("skill")
-        );
+        assert_eq!(SkillTool::get_permission_name("skill").unwrap(), None);
         assert_eq!(GoalTools::get_permission_name("goal_get").unwrap(), None);
         assert_eq!(GoalTools::get_permission_name("goal_set").unwrap(), None);
         assert_eq!(GoalTools::get_permission_name("goal_update").unwrap(), None);

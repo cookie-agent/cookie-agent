@@ -920,6 +920,7 @@ fn built_in_internal_document(
         permissions: IndexMap::new(),
         agent_md: None,
         acp: None,
+        exposure: Default::default(),
     };
     let document_fingerprint = fingerprint(
         "cookie-agent/built-in-internal-agent-document/v2",
@@ -1157,6 +1158,7 @@ fn runtime_agent_default_document(agent: &AcpOffers) -> Result<AgentDocument, En
         permissions: IndexMap::new(),
         agent_md: None,
         acp: Some(cookie_agent_config::AcpDocumentSettings::default()),
+        exposure: Default::default(),
     };
     let body = String::new();
     let document_fingerprint = fingerprint(
@@ -1195,6 +1197,7 @@ fn built_in_default_document(first: Option<&ModelSelection>) -> Result<AgentDocu
     }))
     .collect();
     let frontmatter = AgentFrontmatter {
+        exposure: Default::default(),
         description: "Built-in default coding agent".to_owned(),
         mode: AgentMode::Primary,
         enabled: true,
@@ -1501,6 +1504,7 @@ mod tests {
         let id = IdentityAgentId::new(id).expect("agent ID");
         let body = "Test agent.\n".to_owned();
         let frontmatter = AgentFrontmatter {
+            exposure: Default::default(),
             description: "Test agent".to_owned(),
             mode,
             enabled,

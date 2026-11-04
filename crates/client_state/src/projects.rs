@@ -273,6 +273,7 @@ pub fn editor_defaults(
         }
     }
     let defaults = ProjectDefaults {
+        exposure: Default::default(),
         preset: preset.map(str::to_owned),
         agent: agent.cloned(),
         global,

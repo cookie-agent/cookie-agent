@@ -993,6 +993,7 @@ mod tests {
     fn a_projects_defaults_become_the_selection_and_back() {
         use cookie_agent_protocol::ProjectRuntime;
         let defaults = ProjectDefaults {
+            exposure: Default::default(),
             global: false,
             runtimes: vec![
                 ProjectRuntime {

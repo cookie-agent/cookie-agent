@@ -175,6 +175,7 @@ fn child_agent(binding: FrozenModelBinding) -> AgentSnapshot {
         delegation: None,
         fallback_chain: vec![persisted(&binding)],
         selected_suffix_start: 0,
+        exposure: Default::default(),
     }
 }
 
@@ -3548,6 +3549,7 @@ fn project_wire_types_round_trip_and_commands_stay_strict() {
         emoji: Some("🍪".into()),
         revision: "0123456789abcdef".into(),
         defaults: Some(ProjectDefaults {
+            exposure: Default::default(),
             preset: Some("rust".into()),
             agent: Some(AgentId::new("builder").unwrap()),
             global: true,

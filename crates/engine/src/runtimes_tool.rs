@@ -99,10 +99,10 @@ fn check_name(tool: &str) -> Result<(), ToolError> {
 
 impl RuntimesTool {
     /// The group this provider's tools are announced under when deferred.
-    pub const GROUP: cookie_agent_runtime_api::ToolGroup = cookie_agent_runtime_api::ToolGroup {
-        name: "runtimes",
-        summary: "The runtimes this session can work through: the machines and capabilities a subagent can be started on.",
-    };
+    pub const GROUP: cookie_agent_runtime_api::ToolGroup = cookie_agent_runtime_api::ToolGroup::new(
+        "runtimes",
+        "The runtimes this session can work through: the machines and capabilities a subagent can be started on.",
+    );
 }
 #[async_trait]
 impl ToolProvider for RuntimesTool {
@@ -110,7 +110,7 @@ impl ToolProvider for RuntimesTool {
         PROVIDER_ID
     }
 
-    fn tool_group(&self) -> Option<cookie_agent_runtime_api::ToolGroup> {
+    fn tool_group(&self, _tool: &str) -> Option<cookie_agent_runtime_api::ToolGroup> {
         Some(Self::GROUP)
     }
 

@@ -170,6 +170,7 @@ pub(crate) fn agent_snapshot(agent: &str, mode: AgentMode) -> AgentSnapshot {
         delegation: None,
         fallback_chain: vec![persisted(&binding)],
         selected_suffix_start: 0,
+        exposure: Default::default(),
     }
 }
 

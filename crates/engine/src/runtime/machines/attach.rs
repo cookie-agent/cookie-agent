@@ -169,8 +169,8 @@ impl Engine {
 
     /// The tools `attachment` brings to `session` as a run of `policy`
     /// publishes them now: by their published names, with the `machine` that
-    /// routes a call there and the group of those still deferred, the tools
-    /// the agent hides from its ACP agent left out.
+    /// routes a call there and the group of those still deferred. Groups
+    /// that are off are not composed.
     pub(crate) fn attachment_tools(
         &self,
         session: SessionId,
@@ -179,23 +179,13 @@ impl Engine {
     ) -> Result<Vec<AttachedTool>, EngineError> {
         let composition = self.compose_for_policy(session, policy)?;
         let (entries, _) = self.route_tools(session, composition.tools)?;
-        let hide = self
-            .current_runtime()
-            .agents
-            .get(&policy.agent.agent)
-            .and_then(|agent| agent.document.frontmatter.acp.clone())
-            .map(|acp| acp.hidden_tools())
-            .unwrap_or_default();
         let defers = self.defers_tools(policy);
-        let fold = self.inner.store.get(session)?.log.deferral();
+        let projection = self.inner.store.get(session)?;
+        let exposure = crate::exposure::Layers::of(&projection, policy);
+        let fold = projection.log.deferral();
         let config = self.inner.config.load();
         let mut tools = entries
             .into_iter()
-            .filter(|(tool, _)| {
-                !hide
-                    .iter()
-                    .any(|pattern| cookie_agent_config::simple_wildcard_match(pattern, &tool.name))
-            })
             .filter_map(|(tool, routes)| {
                 // A routed tool runs here through its member of this machine.
                 let (machine, source, spec) = match routes {
@@ -224,6 +214,7 @@ impl Engine {
                                     &source,
                                     &spec.name,
                                     &config.runtime.deferred_tools,
+                                    exposure.forced(&source, &spec.name),
                                 )
                         }
                     };

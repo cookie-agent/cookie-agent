@@ -180,7 +180,7 @@ command = ["y"]
 
 #[test]
 fn an_acp_document_may_have_an_empty_body() {
-    let document = "---\ndescription: Codex on labpc\nmode: all\nacp:\n  mode: auto\n  config: { model: gpt-5 }\n  hide_tools: [read, \"exa_*\"]\npermissions:\n  bash: { \"git *\": allow }\n---\n";
+    let document = "---\ndescription: Codex on labpc\nmode: all\nacp:\n  mode: auto\n  config: { model: gpt-5 }\ntool_groups:\n  coding: off\n  \"mcp:exa\": deferred\npermissions:\n  bash: { \"git *\": allow }\n---\n";
     let loaded = load(
         "[runtimes.local.acp.agents.claude]\ncommand = [\"x\"]\n",
         &[("local-claude.md", document)],
@@ -193,7 +193,26 @@ fn an_acp_document_may_have_an_empty_body() {
         .expect("its acp block");
     assert_eq!(settings.mode.as_deref(), Some("auto"));
     assert_eq!(settings.config["model"], "gpt-5");
-    assert_eq!(settings.hidden_tools(), ["read", "exa_*"]);
+    let exposure = &loaded.agents[&AgentId::new("local-claude").unwrap()]
+        .frontmatter
+        .exposure;
+    assert_eq!(
+        exposure
+            .tool_groups
+            .iter()
+            .map(|rule| (rule.selector.to_string(), rule.state))
+            .collect::<Vec<_>>(),
+        [
+            (
+                "coding".to_owned(),
+                cookie_agent_protocol::ToolGroupState::Off
+            ),
+            (
+                "mcp:exa".to_owned(),
+                cookie_agent_protocol::ToolGroupState::Deferred
+            ),
+        ]
+    );
     assert!(
         loaded.agents[&AgentId::new("local-claude").unwrap()]
             .body
@@ -203,7 +222,18 @@ fn an_acp_document_may_have_an_empty_body() {
     for (frontmatter, field) in [
         ("agent_md: true\nacp: {}\n", "agent_md"),
         ("acp: { mode: \"\" }\n", "acp"),
-        ("acp: { hide_tools: [\"\"] }\n", "acp.hide_tools"),
+        ("acp: { hide_tools: [webfetch] }\n", "acp.hide_tools"),
+        ("acp: {}\ntool_groups: { artifacts: off }\n", "tool_groups"),
+        ("acp: {}\ntool_groups: { \"coding@Labpc\": off }\n", "Labpc"),
+        ("acp: {}\nskills: { \"Bad Name\": off }\n", "skill name"),
+        (
+            "acp: {}\npermissions:\n  skill: allow\n",
+            "`skill` permission",
+        ),
+        (
+            "acp: {}\npermissions:\n  skill@labpc: deny\n",
+            "`skill` permission",
+        ),
     ] {
         let text = format!("---\ndescription: ACP\nmode: all\n{frontmatter}---\n");
         let error = rejected("", &[("local-claude.md", &text)]);

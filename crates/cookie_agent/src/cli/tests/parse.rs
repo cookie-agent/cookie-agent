@@ -333,8 +333,6 @@ fn cli_commands_and_removed_flags_are_exact() {
         "release-check",
         "--skill-args",
         "v1.2.0",
-        "--allowed-tools",
-        "skill:release-check",
     ])
     .unwrap()
     .command
@@ -343,9 +341,17 @@ fn cli_commands_and_removed_flags_are_exact() {
     };
     assert_eq!(args.skill.as_deref(), Some("release-check"));
     assert_eq!(args.skill_args.as_deref(), Some("v1.2.0"));
-    assert_eq!(
-        args.allowed_tools,
-        [run::AllowedTool::Skill("release-check".into())]
+    assert!(args.allowed_tools.is_empty());
+    // Skills take no permission any more: `skill:<name>` is not an action.
+    assert!(
+        Cli::try_parse_from([
+            "cookie",
+            "run",
+            "p",
+            "--allowed-tools",
+            "skill:release-check"
+        ])
+        .is_err()
     );
     assert!(Cli::try_parse_from(["cookie", "run", "prompt", "--skill-args", "orphan"]).is_err());
     assert!(Cli::try_parse_from(["cookie", "run"]).is_err());

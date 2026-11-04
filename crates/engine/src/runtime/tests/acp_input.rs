@@ -110,6 +110,7 @@ async fn starting_options_apply_after_the_documents_config_and_invalid_ones_are_
                 choice("reasoning_effort_x", "high"),
                 choice("mode", "nonsense"),
             ],
+            None,
         )
         .await
         .expect("session created")
@@ -176,6 +177,7 @@ async fn malformed_starting_options_create_no_session() {
             SessionRuntimes::default(),
             None,
             vec![choice("model", "large"), choice("model", "small")],
+            None,
         )
         .await
         .expect_err("an option chosen twice is refused");
@@ -394,7 +396,8 @@ async fn an_agent_without_additional_directories_gets_only_its_cwd() {
 #[tokio::test(flavor = "multi_thread")]
 async fn several_attachments_say_where_the_agents_builtin_tools_run() {
     // Every tool hidden: the attachments are listed all the same.
-    let document = "---\ndescription: Fixture\nmode: all\nacp: { hide_tools: [\"*\"] }\n---\n";
+    let document =
+        "---\ndescription: Fixture\nmode: all\nacp: {}\ntool_groups: { \"*\": off }\n---\n";
     let acp = acp_fixture(&[], &[("fixture.md", document)]).await;
     let engine = acp.engine();
     let (session, second) = two_workspace_session(&acp).await;
@@ -511,8 +514,7 @@ async fn session_with_a_skill(acp: &AcpFixture) -> cookie_agent_protocol::Sessio
 
 #[tokio::test(flavor = "multi_thread")]
 async fn the_first_prompt_lists_the_skills_when_the_skill_tool_is_offered() {
-    let document =
-        "---\ndescription: Fixture\nmode: all\nacp: {}\npermissions:\n  skill: allow\n---\n";
+    let document = "---\ndescription: Fixture\nmode: all\nacp: {}\n---\n";
     let acp = acp_fixture(&[], &[("fixture.md", document)]).await;
     let engine = acp.engine();
     let session = session_with_a_skill(&acp).await;
@@ -560,7 +562,7 @@ async fn the_first_prompt_lists_the_skills_when_the_skill_tool_is_offered() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_hidden_skill_tool_lists_no_skills() {
-    let document = "---\ndescription: Fixture\nmode: all\nacp:\n  hide_tools: [read, write, edit, bash, webfetch, skill]\npermissions:\n  skill: allow\n---\n";
+    let document = "---\ndescription: Fixture\nmode: all\nacp: {}\ntool_groups: { coding: off }\nskills: { \"*\": off }\n---\n";
     let acp = acp_fixture(&[], &[("fixture.md", document)]).await;
     let engine = acp.engine();
     let session = session_with_a_skill(&acp).await;

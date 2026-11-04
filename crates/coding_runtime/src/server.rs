@@ -1862,7 +1862,23 @@ fn declared_tools(providers: &[Arc<dyn ToolProvider>]) -> Result<RuntimeTools, S
             if !names.insert(spec.name.clone()) {
                 return Err(format!("tool `{}` is declared twice", spec.name));
             }
-            tools.tools.push(ToolDeclaration::from_spec(&spec)?);
+            let mut declaration = ToolDeclaration::from_spec(&spec)?;
+            // Each group once, with the tools that name it.
+            if let Some(group) = provider.tool_group(&spec.name) {
+                if !tools.groups.iter().any(|known| known.name == group.name) {
+                    tools.groups.push(
+                        cookie_agent_protocol::runtime_protocol::ToolGroupDeclaration {
+                            name: group.name.clone().into_owned(),
+                            summary: group.summary.clone().into_owned(),
+                            default: group
+                                .deferred
+                                .then_some(cookie_agent_protocol::ToolGroupState::Deferred),
+                        },
+                    );
+                }
+                declaration.group = Some(group.name.into_owned());
+            }
+            tools.tools.push(declaration);
         }
         tools.prompt_sections.extend(
             provider

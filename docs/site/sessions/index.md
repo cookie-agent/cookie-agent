@@ -163,7 +163,7 @@ The clients revert, and fork, at three points:
 - **The end of a reply.** The cut keeps the reply and drops what came
   after it: the next run, or a producer's message, a goal, or a compaction
   that started before the next run. Settings changed after the reply, such
-  as the model or the permission mode, stay. The last reply has nothing
+  as the model, the permission mode, or the tool groups, stay. The last reply has nothing
   after it to revert; a fork there copies the whole session.
 - **A compaction.** The revert drops the compaction, cutting where the
   input it summarized ended, so the model reads the full conversation
@@ -176,6 +176,39 @@ row ends in a `[revert]` button. In the web client, icons under each
 message and finished reply copy, revert, and fork (on a touch screen, a long
 press on a message or a reply's **⋯** opens them as a menu), and a
 compaction's row has a **Revert** button.
+
+## Tool groups and skills
+
+A session chooses which tool groups it is offered and which skills it
+loads, one at a time (see
+[Tool groups and skills](../extend/agents.md#tool-groups-and-skills) for
+groups, states, and layers):
+
+- **A tool group** is `on` (sent up front), `deferred` (loaded with
+  `tool_search` when needed, on a model that defers), or `off` (not
+  offered). A choice names the group exactly, on its runtime: `coding@labpc`,
+  `mcp:playwright@local`, `mcp:exa` for a top-level MCP server, `memory` for
+  a daemon group.
+- **A skill** is on or off for the agent. One that is off is left out of
+  the skill listing and refused by the `skill` tool; you can still run it.
+- **Any choice of the session beats the agent document's rules,** however
+  general they are. Picking the state the layers below give removes the
+  choice; **Reset** does too.
+- **When it applies.** From the session's next request. A deferred tool
+  that goes off leaves at once; a tool that was sent up front stays listed
+  to the model until the context is next refreshed, and a call to it is
+  refused. A group turned on joins as any new tool does.
+- **Projects.** A project's defaults choose groups and skills the same way;
+  a new session in the project starts with a copy of them, so they beat
+  the agent document too. Editing the project later changes no existing
+  session, and moving a session keeps its choices.
+- **History.** The choices are a setting of the session, recorded as
+  `session_tool_exposure_set`: they survive a restart, a revert to a
+  reply's end keeps a change made after it, and a fork copies them.
+  Subagents start from their own agent document.
+
+`session.tools.get` and `session.tools.set` read and change them (see
+[Tool groups and skills](../reference/protocol.md#tool-groups-and-skills)).
 
 ## Delete
 

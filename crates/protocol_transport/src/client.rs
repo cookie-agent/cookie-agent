@@ -817,6 +817,25 @@ impl Client {
         self.call("session.permission.get", &params).await
     }
 
+    /// `session.tools.get`: a session's tool groups and skills.
+    pub async fn get_session_tools(
+        &self,
+        params: cookie_agent_protocol::SessionToolsGetParams,
+    ) -> Result<cookie_agent_protocol::SessionToolsGetResult, ClientError> {
+        self.call(cookie_agent_protocol::SESSION_TOOLS_GET_METHOD, &params)
+            .await
+    }
+
+    /// `session.tools.set`: replaces a session's tool group and skill
+    /// choices.
+    pub async fn set_session_tools(
+        &self,
+        params: cookie_agent_protocol::SessionToolsSetParams,
+    ) -> Result<cookie_agent_protocol::SessionToolsGetResult, ClientError> {
+        self.call(cookie_agent_protocol::SESSION_TOOLS_SET_METHOD, &params)
+            .await
+    }
+
     pub async fn set_session_permission(
         &self,
         params: SessionPermissionSetParams,

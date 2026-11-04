@@ -600,6 +600,7 @@ impl Engine {
                 .map(policy::persisted_binding)
                 .collect::<Result<_, _>>()?,
             selected_suffix_start: 0,
+            exposure: Default::default(),
         };
         let limits = &document.frontmatter.limits;
         let inherit_parent_cache = resolved.resolved_fallback.iter().any(|fallback| {
@@ -679,6 +680,7 @@ fn unavailable_internal_policy(
             delegation: None,
             fallback_chain: Vec::new(),
             selected_suffix_start: 0,
+            exposure: Default::default(),
         },
         models: Vec::new(),
         runtime: Some(Arc::clone(&owner.runtime)),
@@ -772,6 +774,7 @@ fn frozen_internal_policy_from_definition(
             .map(policy::persisted_binding)
             .collect::<Result<_, _>>()?,
         selected_suffix_start: 0,
+        exposure: Default::default(),
     };
     let resolved = owner.registry.get(&definition.agent);
     let inherit_parent_cache = resolved.map_or_else(

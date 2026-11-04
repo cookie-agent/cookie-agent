@@ -59,27 +59,21 @@ impl From<PermissionModeArg> for PermissionMode {
     }
 }
 
-/// One `--allowed-tools` entry: every tool of a permission action, or one
-/// skill.
+/// One `--allowed-tools` entry: every tool of a permission action.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub enum AllowedTool {
     Action(PermissionAction),
-    Skill(String),
 }
 
 impl AllowedTool {
     fn action(&self) -> PermissionAction {
-        match self {
-            Self::Action(action) => action.clone(),
-            Self::Skill(_) => PermissionAction::SKILL,
-        }
+        let Self::Action(action) = self;
+        action.clone()
     }
 
-    fn resource(&self) -> &str {
-        match self {
-            Self::Skill(name) => name,
-            Self::Action(_) => "*",
-        }
+    #[allow(clippy::unused_self)]
+    const fn resource(&self) -> &'static str {
+        "*"
     }
 }
 
@@ -87,17 +81,8 @@ impl std::str::FromStr for AllowedTool {
     type Err = String;
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
-        if let Some(name) = value.strip_prefix("skill:") {
-            return if name.is_empty() {
-                Err("expected skill:<name>".into())
-            } else {
-                Ok(Self::Skill(name.to_owned()))
-            };
-        }
         PermissionAction::new(value).map(Self::Action).map_err(|_| {
-            "expected a permission action, such as read, write, bash, delegate, or mcp, or \
-             skill:<name>"
-                .into()
+            "expected a permission action, such as read, write, bash, delegate, or mcp".into()
         })
     }
 }

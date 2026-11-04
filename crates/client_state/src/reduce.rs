@@ -1947,6 +1947,7 @@ pub(super) fn reduce_event_from(
         | EventPayload::InternalAgentUsageRecorded { .. }
         | EventPayload::ToolCallLinked { .. }
         | EventPayload::SessionPermissionOverlaySet { .. }
+        | EventPayload::SessionToolExposureSet { .. }
         | EventPayload::PermissionModeSet { .. }
         | EventPayload::SessionProjectSet { .. }
         | EventPayload::DelegatedAttachmentsAdded { .. }

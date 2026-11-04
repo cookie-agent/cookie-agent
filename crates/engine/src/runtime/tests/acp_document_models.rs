@@ -96,6 +96,7 @@ async fn the_first_offered_model_and_its_variant_beat_acp_config_and_lose_to_ses
             SessionRuntimes::default(),
             None,
             vec![choice("reasoning_effort", "low")],
+            None,
         )
         .await
         .expect("session created")

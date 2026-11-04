@@ -533,6 +533,10 @@
         "document_source": {
           "$ref": "#/$defs/AgentDocumentSource"
         },
+        "exposure": {
+          "$ref": "#/$defs/ToolExposure",
+          "description": "The document's `tool_groups` and `skills`\n(`docs/site/specs/session-tool-groups.md` section 5.3); empty when it\nnames none, and in snapshots written before them."
+        },
         "fallback_chain": {
           "items": {
             "$ref": "#/$defs/PersistedModelBinding"
@@ -3131,6 +3135,23 @@
           "required": [
             "type",
             "overlay"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The session's tool exposure choices afterwards, whole\n(`docs/site/specs/session-tool-groups.md` section 5.5).",
+          "properties": {
+            "exposure": {
+              "$ref": "#/$defs/ToolExposure"
+            },
+            "type": {
+              "const": "session_tool_exposure_set",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "exposure"
           ],
           "type": "object"
         },
@@ -9341,6 +9362,37 @@
         }
       ]
     },
+    "SkillRule": {
+      "description": "One rule over skills.",
+      "properties": {
+        "from_project": {
+          "description": "Copied from the session's project's defaults when the session was\ncreated, and not changed since.",
+          "type": "boolean"
+        },
+        "skill": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[a-z0-9_*?-]+$",
+          "type": "string"
+        },
+        "state": {
+          "$ref": "#/$defs/SkillState"
+        }
+      },
+      "required": [
+        "skill",
+        "state"
+      ],
+      "type": "object"
+    },
+    "SkillState": {
+      "description": "A skill's state.",
+      "enum": [
+        "on",
+        "off"
+      ],
+      "type": "string"
+    },
     "StagedSkillPayload": {
       "properties": {
         "args": {
@@ -9584,6 +9636,49 @@
       ],
       "type": "string"
     },
+    "ToolExposure": {
+      "description": "One layer's rules: an agent document's, a project's defaults, or a\nsession's.",
+      "properties": {
+        "skills": {
+          "items": {
+            "$ref": "#/$defs/SkillRule"
+          },
+          "maxItems": 256,
+          "type": "array"
+        },
+        "tool_groups": {
+          "items": {
+            "$ref": "#/$defs/ToolGroupRule"
+          },
+          "maxItems": 256,
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "ToolGroupRule": {
+      "description": "One rule over tool groups.",
+      "properties": {
+        "from_project": {
+          "description": "Copied from the session's project's defaults when the session was\ncreated, and not changed since.",
+          "type": "boolean"
+        },
+        "selector": {
+          "maxLength": 168,
+          "minLength": 1,
+          "pattern": "^(?:mcp:|plugin:)?[^@\\s\\u0000-\\u001f\\u007f-\\u009f]+(?:@[a-z][a-z0-9_]{0,31})?$",
+          "type": "string"
+        },
+        "state": {
+          "$ref": "#/$defs/ToolGroupState"
+        }
+      },
+      "required": [
+        "selector",
+        "state"
+      ],
+      "type": "object"
+    },
     "ToolGroupSource": {
       "description": "Where a tool group's tools come from (client protocol 1.44.0).",
       "oneOf": [
@@ -9604,6 +9699,26 @@
         }
       ],
       "x-open": true
+    },
+    "ToolGroupState": {
+      "description": "A tool group's state.",
+      "oneOf": [
+        {
+          "const": "on",
+          "description": "Offered, sent up front.",
+          "type": "string"
+        },
+        {
+          "const": "deferred",
+          "description": "Offered deferred, loaded with `tool_search`; `on` on a model that\ndoes not defer and for an ACP agent.",
+          "type": "string"
+        },
+        {
+          "const": "off",
+          "description": "Not offered.",
+          "type": "string"
+        }
+      ]
     },
     "ToolIdentity": {
       "description": "The tool a call goes to, as the daemon knows it.",

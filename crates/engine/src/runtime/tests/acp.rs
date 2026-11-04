@@ -809,7 +809,7 @@ async fn an_agent_that_speaks_only_acp_v1_is_refused() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn an_agent_that_takes_a_system_prompt_gets_the_context_there_and_again_on_resume() {
-    let document = "---\ndescription: Fixture with a body\nmode: all\nacp: { hide_tools: [\"*\"] }\n---\nYou review changes.\n";
+    let document = "---\ndescription: Fixture with a body\nmode: all\nacp: {}\ntool_groups: { \"*\": off }\n---\nYou review changes.\n";
     let acp = acp_fixture(
         &[("ACP_FIXTURE_SYSTEM_PROMPT", "1")],
         &[("fixture.md", document)],
@@ -895,7 +895,7 @@ async fn a_title_that_repeats_the_first_prompts_context_names_nothing() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_lost_session_is_replaced_and_the_session_is_told() {
     // Every tool hidden: the first prompt carries no tool instructions.
-    let document = "---\ndescription: Fixture with a body\nmode: all\nacp: { hide_tools: [\"*\"] }\n---\nYou review changes.\n";
+    let document = "---\ndescription: Fixture with a body\nmode: all\nacp: {}\ntool_groups: { \"*\": off }\n---\nYou review changes.\n";
     let acp = acp_fixture(&[("ACP_FIXTURE_LOST", "1")], &[("fixture.md", document)]).await;
     let engine = acp.engine();
     let session = engine.create_session(selection()).unwrap().session_id;
@@ -1154,7 +1154,7 @@ async fn the_bridge_lists_cookies_tools_without_the_hidden_ones() {
     assert!(tools.contains(&"memory_read"), "{tools:?}");
     assert!(!tools.contains(&"tool_search"), "{tools:?}");
 
-    let document = "---\ndescription: Fixture that sees all\nmode: all\nacp:\n  hide_tools: [\"web*\"]\npermissions:\n  read: { \"${workspace_dir}/*\": allow }\n  bash: deny\n---\n";
+    let document = "---\ndescription: Fixture that sees all\nmode: all\nacp: {}\npermissions:\n  read: { \"${workspace_dir}/*\": allow }\n  bash: deny\n---\n";
     let acp = acp_fixture(&[], &[("fixture.md", document)]).await;
     let engine = acp.engine();
     let session = engine.create_session(selection()).unwrap().session_id;
@@ -1263,7 +1263,7 @@ async fn an_acp_agents_runtime_tools_take_machine_from_the_first_machine() {
 async fn a_bridged_call_runs_unless_a_deny_rule_matches() {
     // The call has passed the harness's own check: cookie's rules only
     // refuse it, and an `ask` lets it run without an approval.
-    let document = "---\ndescription: Fixture with bash\nmode: all\nacp:\n  hide_tools: []\npermissions:\n  bash: { \"rm *\": deny, \"*\": ask }\n---\n";
+    let document = "---\ndescription: Fixture with bash\nmode: all\nacp: {}\ntool_groups: { web: on }\npermissions:\n  bash: { \"rm *\": deny, \"*\": ask }\n---\n";
     let acp = acp_fixture(&[], &[("fixture.md", document)]).await;
     let engine = acp.engine();
     let session = engine.create_session(selection()).unwrap().session_id;
@@ -1285,7 +1285,7 @@ async fn a_bridged_call_runs_unless_a_deny_rule_matches() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_request_for_cookies_tool_is_decided_on_the_calls_own_row() {
-    let document = "---\ndescription: Fixture with bash\nmode: all\nacp:\n  hide_tools: []\npermissions:\n  bash: { \"echo *\": allow, \"rm *\": deny, \"*\": ask }\n---\n";
+    let document = "---\ndescription: Fixture with bash\nmode: all\nacp: {}\ntool_groups: { web: on }\npermissions:\n  bash: { \"echo *\": allow, \"rm *\": deny, \"*\": ask }\n---\n";
     let acp = acp_fixture(&[], &[("fixture.md", document)]).await;
     let engine = acp.engine();
     let session = engine.create_session(selection()).unwrap().session_id;
@@ -1497,7 +1497,7 @@ async fn a_bridged_call_of_a_streaming_tool_returns_its_output() {
     // `bash` streams its output: a bridged call captures it as a model's
     // call does, rather than as nested dispatch, which takes single output
     // only.
-    let document = "---\ndescription: Fixture with bash\nmode: all\nacp:\n  hide_tools: []\npermissions:\n  bash: allow\n---\n";
+    let document = "---\ndescription: Fixture with bash\nmode: all\nacp: {}\ntool_groups: { web: on }\npermissions:\n  bash: allow\n---\n";
     let acp = acp_fixture(&[], &[("fixture.md", document)]).await;
     let engine = acp.engine();
     let session = engine.create_session(selection()).unwrap().session_id;
@@ -1512,7 +1512,7 @@ async fn a_bridged_call_of_a_streaming_tool_returns_its_output() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn the_bridge_tells_the_agent_once_when_its_tool_list_changes() {
-    let document = "---\ndescription: Fixture that reads\nmode: all\nacp:\n  hide_tools: [\"web*\"]\npermissions:\n  read: { \"${workspace_dir}/*\": allow }\n---\n";
+    let document = "---\ndescription: Fixture that reads\nmode: all\nacp: {}\npermissions:\n  read: { \"${workspace_dir}/*\": allow }\n---\n";
     let acp = acp_fixture(&[], &[("fixture.md", document)]).await;
     let engine = acp.engine();
     let session = engine.create_session(selection()).unwrap().session_id;
@@ -1547,7 +1547,7 @@ async fn the_bridge_tells_the_agent_once_when_its_tool_list_changes() {
     // A list changed during a bridged call is announced before the call's
     // result (request 3), and not again as the next turn starts. The
     // agent's request to make the call, a write outside the workspace,
-    // waits on its approval while the document comes to hide `cron_list`.
+    // waits on its approval while the session turns the `cron` group off.
     let outside = acp.workspace().parent().unwrap().join("outside.txt");
     let call = format!(
         "mcp ask write {}",
@@ -1555,10 +1555,21 @@ async fn the_bridge_tells_the_agent_once_when_its_tool_list_changes() {
     );
     let run = start(engine, session, "call", &call).await;
     let approval = wait_for_escalated_approval(engine, session).await;
-    let hiding = document.replace("[\"web*\"]", "[\"web*\", \"cron_list\"]");
-    let agents = acp.workspace().parent().unwrap().join("user/agents");
-    write_private_test_file(&agents.join("fixture.md"), hiding);
-    engine.reload_configuration().await.unwrap();
+    engine
+        .set_session_tools(
+            session,
+            cookie_agent_protocol::ToolExposure {
+                tool_groups: vec![cookie_agent_protocol::ToolGroupRule {
+                    selector: "cron".parse().unwrap(),
+                    state: cookie_agent_protocol::ToolGroupState::Off,
+                    from_project: false,
+                }],
+                skills: Vec::new(),
+            },
+            origin(),
+        )
+        .await
+        .unwrap();
     approve_once(engine, &approval, "approve-write").await;
     let answer = final_text(&finished(engine, session, run).await);
     assert!(answer.ends_with("error: False"), "{answer}");
@@ -1967,7 +1978,7 @@ async fn the_first_prompt_carries_the_body_the_attachments_the_offered_tools_ins
  {
     // The memory write tools are hidden: part A of the memory section, not
     // its rubric.
-    let document = "---\ndescription: Fixture with context\nmode: all\nacp:\n  hide_tools: [read, write, edit, bash, webfetch, memory_write, memory_edit, memory_delete]\n---\nYou review changes.\n";
+    let document = "---\ndescription: Fixture with context\nmode: all\nacp: {}\ntool_groups: { coding: off }\npermissions:\n  memory_write: deny\n---\nYou review changes.\n";
     let acp = acp_fixture(&[], &[("fixture.md", document)]).await;
     let engine = acp.engine();
     let profile = crate::memory::url::MemoryUrl::parse("user://profile").unwrap();
@@ -2089,7 +2100,7 @@ async fn the_first_prompt_carries_the_body_the_attachments_the_offered_tools_ins
         "{}",
         first[3]
     );
-    let document = "---\ndescription: Fixture with context\nmode: all\nacp: { hide_tools: [\"memory_*\"] }\n---\nBody.\n";
+    let document = "---\ndescription: Fixture with context\nmode: all\nacp: {}\ntool_groups: { memory: off }\n---\nBody.\n";
     let acp = acp_fixture(&[], &[("fixture.md", document)]).await;
     let engine = acp.engine();
     let session = engine.create_session(selection()).unwrap().session_id;

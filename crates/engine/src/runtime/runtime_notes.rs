@@ -35,8 +35,6 @@ pub(super) const SEVERAL_ATTACHMENTS: &str = concat!(
 pub(crate) struct BuiltinTools<'a> {
     pub(crate) runtime: &'a str,
     pub(crate) cwd: &'a str,
-    /// The agent document's `hide_tools`: left out of the listing.
-    pub(crate) hide: &'a [String],
     /// Whether the bridge offers `transfer`.
     pub(crate) transfer: bool,
     /// A routed tool the bridge offers, for the example (`bash`).
@@ -438,22 +436,9 @@ fn routed_runtimes_prompt(
         block.push_str(">\n");
         for member in &members {
             for (group, names) in tools.get(&member.name).into_iter().flatten() {
-                // An ACP agent's hidden tools are not listed.
-                let names = names
-                    .iter()
-                    .filter(|name| {
-                        builtin.is_none_or(|builtin| {
-                            !builtin.hide.iter().any(|pattern| {
-                                cookie_agent_config::simple_wildcard_match(pattern, name)
-                            })
-                        })
-                    })
-                    .cloned()
-                    .collect::<Vec<_>>();
                 if names.is_empty() {
                     continue;
                 }
-                let names = &names;
                 let new_defaults = names
                     .iter()
                     .filter(|name| defaulted.insert((*name).clone()))
@@ -987,7 +972,7 @@ mod tests {
         let coding = || {
             vec![(
                 "coding".to_owned(),
-                ["read", "write", "edit", "bash", "webfetch"]
+                ["read", "write", "edit", "bash"]
                     .map(str::to_owned)
                     .to_vec(),
             )]
@@ -996,11 +981,9 @@ mod tests {
             (AttachmentName::new("local_web").unwrap(), coding()),
             (AttachmentName::new("labpc_api").unwrap(), coding()),
         ]);
-        let hide = vec!["webfetch".to_owned()];
         let builtin = BuiltinTools {
             runtime: "local",
             cwd: "/home/me/web",
-            hide: &hide,
             transfer: true,
             example: Some("bash"),
         };
@@ -1017,14 +1000,13 @@ mod tests {
             &reach,
             &HashMap::new(),
         );
-        // The agent's own machine is marked, the hidden tool is listed on no
-        // machine, and the note names both machines and `transfer`.
+        // The agent's own machine is marked, and the note names both
+        // machines and `transfer`.
         let laptop = block
             .lines()
             .find(|line| line.starts_with("<machine name=\"laptop\""))
             .unwrap();
         assert!(laptop.contains("builtin_tools=\"true\""), "{block}");
-        assert!(!block.contains("webfetch"), "{block}");
         let note = block.rsplit("</machines>\n").next().unwrap();
         for part in [
             "`laptop`",

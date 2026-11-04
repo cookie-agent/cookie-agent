@@ -89,6 +89,7 @@ fn assert_permission(
         delegation: None,
         fallback_chain: Vec::new(),
         selected_suffix_start: 0,
+        exposure: Default::default(),
     };
     let decision = PermissionPipeline::default().decide_operation(
         &policy,

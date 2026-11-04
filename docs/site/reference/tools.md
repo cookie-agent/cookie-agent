@@ -34,7 +34,7 @@ block under the system prompt in the TUI transcript.
 | [`edit`](#edit) | `write` |
 | [`bash`](#bash) | `bash` |
 | [`webfetch`](#webfetch) | `webfetch` |
-| [`skill`](#skill) | `skill` |
+| [`skill`](#skill) | *none* |
 | [`delegate_subagent`](#delegate_subagent) | `delegate` |
 | [`get_subagent_result`](#get_subagent_result) | `delegate` |
 | [`send_message`](#send_message) | `message` |
@@ -1032,7 +1032,7 @@ tools instead of in the system prompt.
 | `artifacts` | [`read_artifact`](#read_artifact) | no | Tool output too large for the conversation, kept aside and read back by range. |
 | `assets` | [`write_asset`](#write_asset), [`read_asset`](#read_asset), [`list_assets`](#list_assets), [`delete_asset`](#delete_asset) | yes | Assets: files you give the user, such as charts, diagrams, HTML pages, and reports, shown in the conversation and kept for this session or the project. |
 | `background` | [`stop_background`](#stop_background) | no | Calls running in the background, and stopping them. |
-| `coding` | [`read`](#read), [`write`](#write), [`edit`](#edit), [`bash`](#bash), [`webfetch`](#webfetch) | no | The workspace: reading, writing, and editing files, running shell commands, and fetching web pages. |
+| `coding` | [`read`](#read), [`write`](#write), [`edit`](#edit), [`bash`](#bash) | no | The workspace: reading, writing, and editing files, and running shell commands. |
 | `cron` | [`cron_create`](#cron_create), [`cron_list`](#cron_list), [`cron_update`](#cron_update), [`cron_delete`](#cron_delete), [`cron_run`](#cron_run) | yes | Scheduled prompts: run a prompt once after a delay or on a cron schedule, in this session, a subagent's, or a new session. |
 | `delegation` | [`delegate_subagent`](#delegate_subagent), [`get_subagent_result`](#get_subagent_result) | no | Subagents: hand a focused task to another agent, and collect its result. |
 | `goal` | [`goal_get`](#goal_get), [`goal_set`](#goal_set), [`goal_update`](#goal_update) | yes | The session's goal and the checklist that tracks it. |
@@ -1041,6 +1041,7 @@ tools instead of in the system prompt.
 | `messaging` | [`send_message`](#send_message) | no | Messages between the agents of a session tree. |
 | `runtimes` | [`list_runtimes`](#list_runtimes) | yes | The runtimes this session can work through: the machines and capabilities a subagent can be started on. |
 | `skills` | [`skill`](#skill) | no | Skills: packaged instructions for a kind of task, loaded by name. |
+| `web` | [`webfetch`](#webfetch) | no | Fetching web pages. |
 
 <!-- /generated -->
 

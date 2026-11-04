@@ -585,7 +585,7 @@ async fn bench(target: u64) {
     });
     let skills_block = time(50, || {
         engine
-            .live_skills_block(session, &policy, None)
+            .live_skills_block(session, &policy)
             .expect("skills block")
     });
     let project_lookup = time(50, || engine.session_project_name(session));

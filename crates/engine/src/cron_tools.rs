@@ -713,10 +713,10 @@ fn text_result(title: &str, output: String) -> ToolCompletion {
 
 impl CronTools {
     /// The group this provider's tools are announced under when deferred.
-    pub const GROUP: cookie_agent_runtime_api::ToolGroup = cookie_agent_runtime_api::ToolGroup {
-        name: "cron",
-        summary: "Scheduled prompts: run a prompt once after a delay or on a cron schedule, in this session, a subagent's, or a new session.",
-    };
+    pub const GROUP: cookie_agent_runtime_api::ToolGroup = cookie_agent_runtime_api::ToolGroup::new(
+        "cron",
+        "Scheduled prompts: run a prompt once after a delay or on a cron schedule, in this session, a subagent's, or a new session.",
+    );
 }
 #[async_trait]
 impl ToolProvider for CronTools {
@@ -724,7 +724,7 @@ impl ToolProvider for CronTools {
         PROVIDER_ID
     }
 
-    fn tool_group(&self) -> Option<cookie_agent_runtime_api::ToolGroup> {
+    fn tool_group(&self, _tool: &str) -> Option<cookie_agent_runtime_api::ToolGroup> {
         Some(Self::GROUP)
     }
 

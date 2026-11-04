@@ -206,6 +206,7 @@ fn runtime(id: &str, workspace: Option<&str>) -> ProjectRuntime {
 #[test]
 fn defaults_attach_when_they_name_runtimes_or_drop_global() {
     let mut defaults = ProjectDefaults {
+        exposure: Default::default(),
         agent: Some(AgentId::new("builder").unwrap()),
         ..ProjectDefaults::default()
     };
@@ -307,6 +308,7 @@ fn the_default_agent_brings_its_preset_and_its_own_model() {
         ProjectAgent::Unset
     );
     info.defaults = Some(ProjectDefaults {
+        exposure: Default::default(),
         agent: Some(AgentId::new("builder").unwrap()),
         preset: Some("rust".into()),
         ..ProjectDefaults::default()
@@ -370,6 +372,7 @@ fn an_acp_default_agent_runs_its_synthetic_model() {
     let live = |selection: &ModelSelection| selection.model.as_str() != "acp/claude";
     let mut info = project("aaa", "web", None);
     info.defaults = Some(ProjectDefaults {
+        exposure: Default::default(),
         agent: Some(AgentId::new("claude").unwrap()),
         ..ProjectDefaults::default()
     });

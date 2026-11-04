@@ -67,7 +67,7 @@ pub fn rule_key(action: &PermissionAction, runtime: Option<&RuntimeId>) -> Strin
 
 /// Reads a rule key from the form's action and runtime fields, checked as the
 /// daemon checks agent documents: an empty runtime field means every runtime,
-/// and `message` and `skill` take no runtime.
+/// and `message` takes no runtime.
 pub fn parse_rule_key(
     action: &str,
     runtime: &str,
@@ -315,18 +315,17 @@ mod tests {
     }
 
     #[test]
-    fn message_and_skill_refuse_a_runtime() {
-        for name in ["message", "skill"] {
-            assert_eq!(
-                parse_rule_key(name, "labpc"),
-                Err(format!(
-                    "`{name}@labpc`: `message` and `skill` belong to the base layer and take no runtime selector"
-                ))
-            );
-            assert!(parse_rule_key(name, "").is_ok());
-            assert!(!takes_runtime(name));
-        }
-        for name in ["bash", "delegate", "deploy", "", "Not valid"] {
+    fn message_refuses_a_runtime() {
+        assert_eq!(
+            parse_rule_key("message", "labpc"),
+            Err(
+                "`message@labpc`: `message` belongs to the base layer and takes no runtime selector"
+                    .to_owned()
+            )
+        );
+        assert!(parse_rule_key("message", "").is_ok());
+        assert!(!takes_runtime("message"));
+        for name in ["bash", "delegate", "deploy", "skill", "", "Not valid"] {
             assert!(takes_runtime(name), "{name}");
         }
     }

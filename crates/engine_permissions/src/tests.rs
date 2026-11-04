@@ -24,6 +24,7 @@ fn policy(rules: Vec<PermissionRule>) -> AgentSnapshot {
         delegation: None,
         fallback_chain: Vec::new(),
         selected_suffix_start: 0,
+        exposure: Default::default(),
     }
 }
 
@@ -386,52 +387,6 @@ fn turn_scoped_skill_grant_requires_explicit_ask() {
         "bash",
         Some(std::path::Path::new("/workspace")),
     ));
-}
-
-#[test]
-fn skill_grant_can_publish_another_skill_action() {
-    let base_policy = policy(vec![rule(
-        "ask",
-        PermissionAction::SKILL,
-        "other-skill",
-        PermissionEffect::Ask,
-    )]);
-    let grants = SessionPermissionOverlay {
-        rules: vec![rule(
-            "skill-chain",
-            PermissionAction::SKILL,
-            "other-skill",
-            PermissionEffect::Allow,
-        )],
-    };
-    assert!(PermissionPipeline::tool_visible_with_grants(
-        &base_policy,
-        None,
-        None,
-        "skill",
-        Some(std::path::Path::new("/workspace")),
-    ));
-    assert!(PermissionPipeline::tool_visible_with_grants(
-        &base_policy,
-        None,
-        Some(&grants),
-        "skill",
-        Some(std::path::Path::new("/workspace")),
-    ));
-    let operation = operation(vec![resource(
-        PermissionAction::SKILL,
-        "other-skill",
-        b"other-skill",
-    )]);
-    let decision = PermissionPipeline::default().decide_operation_with_grants(
-        &base_policy,
-        None,
-        Some(&grants),
-        &operation,
-        &[Some("other-skill".into())],
-        Some(std::path::Path::new("/workspace")),
-    );
-    assert_eq!(decision.effect, PermissionEffect::Allow);
 }
 
 fn rule(
@@ -1051,7 +1006,6 @@ fn resource_names_do_not_override_configured_permission_effects() {
             PermissionAction::new("issue_read").expect("a plugin's own action"),
             &["read .env"][..],
         ),
-        (PermissionAction::SKILL, &["review"][..]),
     ];
     for (action, names) in cases {
         for name in names {
@@ -2288,6 +2242,7 @@ fn agent_document(
         official_version: None,
         id: AgentId::new(id).expect("agent ID"),
         frontmatter: cookie_agent_config::AgentFrontmatter {
+            exposure: Default::default(),
             description: "Test agent".into(),
             mode,
             enabled: true,
@@ -2362,7 +2317,6 @@ fn mode_defaults_follow_the_agent_mode() {
         triple("write", "${workspace_dir}/*", allow),
         triple("write", "*", ask),
         triple("webfetch", "*", allow),
-        triple("skill", "*", allow),
         triple("mcp", "*", ask),
         triple("delegate", "*", deny),
     ];

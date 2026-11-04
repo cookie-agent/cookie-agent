@@ -1,0 +1,311 @@
+{
+  "$defs": {
+    "ExposureLayer": {
+      "description": "The layer that decided a group's or a skill's state.",
+      "oneOf": [
+        {
+          "const": "default",
+          "description": "The defaults: on, deferral as configured.",
+          "type": "string"
+        },
+        {
+          "const": "agent",
+          "description": "The agent document's `tool_groups` or `skills`.",
+          "type": "string"
+        },
+        {
+          "const": "project",
+          "description": "The session's choices, copied from its project's defaults.",
+          "type": "string"
+        },
+        {
+          "const": "session",
+          "description": "The session's own choices.",
+          "type": "string"
+        }
+      ]
+    },
+    "SessionSkill": {
+      "description": "One skill of a session.",
+      "properties": {
+        "attachment": {
+          "description": "The attachment that contributes a project skill.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "below": {
+          "$ref": "#/$defs/SkillState"
+        },
+        "below_layer": {
+          "$ref": "#/$defs/ExposureLayer"
+        },
+        "description": {
+          "type": "string"
+        },
+        "layer": {
+          "$ref": "#/$defs/ExposureLayer"
+        },
+        "name": {
+          "description": "The name the session knows it by.",
+          "type": "string"
+        },
+        "shadowed": {
+          "description": "Shadowed by a skill of the same name: it cannot be switched.",
+          "type": "boolean"
+        },
+        "source": {
+          "$ref": "#/$defs/SkillSource"
+        },
+        "state": {
+          "$ref": "#/$defs/SkillState"
+        }
+      },
+      "required": [
+        "name",
+        "description",
+        "source",
+        "state",
+        "layer",
+        "below",
+        "below_layer"
+      ],
+      "type": "object"
+    },
+    "SessionToolGroup": {
+      "description": "One group of a session, on one runtime.",
+      "properties": {
+        "attachment": {
+          "description": "The session's attachment that offers it; absent for the base layer.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "below": {
+          "$ref": "#/$defs/ToolGroupState",
+          "description": "What the layers below the session's choice give: what `Reset`\nreturns to."
+        },
+        "below_layer": {
+          "$ref": "#/$defs/ExposureLayer",
+          "description": "The layer `below` comes from."
+        },
+        "hidden_by_permissions": {
+          "description": "Permissions hide every tool of it.",
+          "type": "boolean"
+        },
+        "kind": {
+          "$ref": "#/$defs/ToolGroupKind"
+        },
+        "layer": {
+          "$ref": "#/$defs/ExposureLayer"
+        },
+        "name": {
+          "type": "string"
+        },
+        "runtime": {
+          "description": "The runtime that offers it; absent for the base layer, `global`,\nand top-level MCP servers.",
+          "maxLength": 32,
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9_]{0,31}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "selector": {
+          "description": "The group's exact selector, as a choice for it names it.",
+          "maxLength": 168,
+          "minLength": 1,
+          "pattern": "^(?:mcp:|plugin:)?[^@\\s\\u0000-\\u001f\\u007f-\\u009f]+(?:@[a-z][a-z0-9_]{0,31})?$",
+          "type": "string"
+        },
+        "state": {
+          "$ref": "#/$defs/ToolGroupState"
+        },
+        "summary": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "token_estimate": {
+          "description": "An estimate of the tokens its definitions cost sent up front.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "tools": {
+          "description": "Its tools, by the names the model sees.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "selector",
+        "kind",
+        "name",
+        "state",
+        "layer",
+        "below",
+        "below_layer",
+        "tools",
+        "token_estimate"
+      ],
+      "type": "object"
+    },
+    "SkillRule": {
+      "description": "One rule over skills.",
+      "properties": {
+        "from_project": {
+          "description": "Copied from the session's project's defaults when the session was\ncreated, and not changed since.",
+          "type": "boolean"
+        },
+        "skill": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[a-z0-9_*?-]+$",
+          "type": "string"
+        },
+        "state": {
+          "$ref": "#/$defs/SkillState"
+        }
+      },
+      "required": [
+        "skill",
+        "state"
+      ],
+      "type": "object"
+    },
+    "SkillSource": {
+      "description": "Where a skill comes from: `project`, `official` (an official skill the\ndaemon keeps up to date, since client protocol 1.22.0), or `user`. A\nvalue this build does not know reads as `user`.",
+      "enum": [
+        "project",
+        "official",
+        "user"
+      ],
+      "type": "string",
+      "x-open": true
+    },
+    "SkillState": {
+      "description": "A skill's state.",
+      "enum": [
+        "on",
+        "off"
+      ],
+      "type": "string"
+    },
+    "ToolExposure": {
+      "description": "One layer's rules: an agent document's, a project's defaults, or a\nsession's.",
+      "properties": {
+        "skills": {
+          "items": {
+            "$ref": "#/$defs/SkillRule"
+          },
+          "maxItems": 256,
+          "type": "array"
+        },
+        "tool_groups": {
+          "items": {
+            "$ref": "#/$defs/ToolGroupRule"
+          },
+          "maxItems": 256,
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "ToolGroupKind": {
+      "description": "What kind of group a selector names.",
+      "oneOf": [
+        {
+          "const": "builtin",
+          "description": "A built-in provider's group (`coding`, `memory`), or one a runtime\ndeclares.",
+          "type": "string"
+        },
+        {
+          "const": "mcp",
+          "description": "An MCP server's tools.",
+          "type": "string"
+        },
+        {
+          "const": "plugin",
+          "description": "A plugin's tools.",
+          "type": "string"
+        }
+      ]
+    },
+    "ToolGroupRule": {
+      "description": "One rule over tool groups.",
+      "properties": {
+        "from_project": {
+          "description": "Copied from the session's project's defaults when the session was\ncreated, and not changed since.",
+          "type": "boolean"
+        },
+        "selector": {
+          "maxLength": 168,
+          "minLength": 1,
+          "pattern": "^(?:mcp:|plugin:)?[^@\\s\\u0000-\\u001f\\u007f-\\u009f]+(?:@[a-z][a-z0-9_]{0,31})?$",
+          "type": "string"
+        },
+        "state": {
+          "$ref": "#/$defs/ToolGroupState"
+        }
+      },
+      "required": [
+        "selector",
+        "state"
+      ],
+      "type": "object"
+    },
+    "ToolGroupState": {
+      "description": "A tool group's state.",
+      "oneOf": [
+        {
+          "const": "on",
+          "description": "Offered, sent up front.",
+          "type": "string"
+        },
+        {
+          "const": "deferred",
+          "description": "Offered deferred, loaded with `tool_search`; `on` on a model that\ndoes not defer and for an ACP agent.",
+          "type": "string"
+        },
+        {
+          "const": "off",
+          "description": "Not offered.",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "exposure": {
+      "$ref": "#/$defs/ToolExposure",
+      "description": "The session's own choices."
+    },
+    "groups": {
+      "items": {
+        "$ref": "#/$defs/SessionToolGroup"
+      },
+      "type": "array"
+    },
+    "skills": {
+      "items": {
+        "$ref": "#/$defs/SessionSkill"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "groups",
+    "skills",
+    "exposure"
+  ],
+  "title": "SessionToolsGetResult",
+  "type": "object"
+}

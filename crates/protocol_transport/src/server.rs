@@ -412,6 +412,25 @@ pub trait ServerProtocol: Send + Sync + 'static {
         &self,
         params: SessionPermissionGetParams,
     ) -> Result<SessionPermissionGetResult, ServerFault>;
+    /// A session's tool groups and skills with their states.
+    async fn get_session_tools(
+        &self,
+        _params: cookie_agent_protocol::SessionToolsGetParams,
+    ) -> Result<cookie_agent_protocol::SessionToolsGetResult, ServerFault> {
+        Err(ServerFault::method_not_found(
+            cookie_agent_protocol::SESSION_TOOLS_GET_METHOD,
+        ))
+    }
+    /// Replaces a session's tool group and skill choices.
+    async fn set_session_tools(
+        &self,
+        _params: cookie_agent_protocol::SessionToolsSetParams,
+        _context: &ServerContext,
+    ) -> Result<cookie_agent_protocol::SessionToolsGetResult, ServerFault> {
+        Err(ServerFault::method_not_found(
+            cookie_agent_protocol::SESSION_TOOLS_SET_METHOD,
+        ))
+    }
     async fn set_session_permission(
         &self,
         params: SessionPermissionSetParams,
@@ -1643,6 +1662,12 @@ async fn dispatch<S: ServerProtocol>(
             value(server.set_permission_mode(decode(params)?, context).await?)
         }
         "session.permission.get" => value(server.get_session_permissions(decode(params)?).await?),
+        cookie_agent_protocol::SESSION_TOOLS_GET_METHOD => {
+            value(server.get_session_tools(decode(params)?).await?)
+        }
+        cookie_agent_protocol::SESSION_TOOLS_SET_METHOD => {
+            value(server.set_session_tools(decode(params)?, context).await?)
+        }
         "session.permission.set" => value(
             server
                 .set_session_permission(decode(params)?, context)

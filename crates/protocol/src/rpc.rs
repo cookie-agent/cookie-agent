@@ -469,6 +469,12 @@ pub struct SessionCreateParams {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[schemars(length(max = 64))]
     pub agent_options: Vec<crate::AcpOptionChoice>,
+    /// The session's tool group and skill choices (client protocol 1.82.0;
+    /// `docs/site/specs/session-tool-groups.md` section 5.5): exact
+    /// selectors and skill names. When omitted and `project` has defaults
+    /// for them, the session starts with a copy of those.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exposure: Option<crate::ToolExposure>,
 }
 
 const fn attach_global() -> bool {
@@ -494,6 +500,7 @@ impl SessionCreateParams {
             cwd: None,
             project: None,
             agent_options: Vec::new(),
+            exposure: None,
         }
     }
 }

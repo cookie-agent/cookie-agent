@@ -121,6 +121,7 @@ fn policy(rules: Vec<PermissionRule>) -> AgentSnapshot {
         delegation: None,
         fallback_chain: Vec::new(),
         selected_suffix_start: 0,
+        exposure: Default::default(),
     }
 }
 

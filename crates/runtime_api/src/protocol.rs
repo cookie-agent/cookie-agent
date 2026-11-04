@@ -42,6 +42,7 @@ impl ToolDeclarationExt for ToolDeclaration {
             output: spec.output.clone(),
             background: spec.background,
             background_default: spec.background_default,
+            group: None,
         })
     }
 

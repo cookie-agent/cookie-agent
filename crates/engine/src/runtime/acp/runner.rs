@@ -2975,14 +2975,8 @@ impl Engine {
             .await?;
         let home = process.client.home();
         let platform = process.client.platform();
-        let hide = document
-            .frontmatter
-            .acp
-            .clone()
-            .unwrap_or_default()
-            .hidden_tools();
         let bridge_tools: Option<Vec<String>> = self
-            .bridged_tool_definitions(active.session, &active.policy, &hide)
+            .bridged_tool_definitions(active.session, &active.policy)
             .ok()
             .map(|tools| tools.into_iter().map(|tool| tool.name).collect());
         // The agent's own subagent sees its parent's bridge: the tools row
@@ -3093,7 +3087,7 @@ impl Engine {
             // its runs, once, ahead of the run's first prompt.
             let first_round = !std::mem::replace(&mut turn.machines_told, true);
             let machines_note = if first_round && context.is_empty() {
-                self.acp_machines_note(active.session, run_id, &active.policy, document, &turn.live)
+                self.acp_machines_note(active.session, run_id, &active.policy, &turn.live)
             } else {
                 None
             };
@@ -3476,18 +3470,17 @@ impl Engine {
     }
 
     /// The machines block an ACP agent of `policy` reads, its harness's
-    /// tools on `runtime` in `cwd`, `hide` left out
-    /// (`docs/site/specs/acp-several-runtimes.md` section 5).
+    /// tools on `runtime` in `cwd` (`docs/site/specs/acp-several-runtimes.md`
+    /// section 5).
     fn acp_runtimes_block(
         &self,
         session: SessionId,
         policy: &crate::policy::FrozenRunPolicy,
-        hide: &[String],
         runtime: &str,
         cwd: &str,
     ) -> Option<String> {
         let bridged = self
-            .bridged_tool_definitions(session, policy, hide)
+            .bridged_tool_definitions(session, policy)
             .map(|tools| tools.into_iter().map(|tool| tool.name).collect::<Vec<_>>())
             .unwrap_or_default();
         self.runtimes_block(
@@ -3495,7 +3488,6 @@ impl Engine {
             Some(&super::super::runtime_notes::BuiltinTools {
                 runtime,
                 cwd,
-                hide,
                 transfer: bridged.iter().any(|tool| tool == "transfer"),
                 example: bridged.iter().any(|tool| tool == "bash").then_some("bash"),
             }),
@@ -3512,7 +3504,6 @@ impl Engine {
         session: SessionId,
         run: RunId,
         policy: &crate::policy::FrozenRunPolicy,
-        document: &cookie_agent_config::AgentDocument,
         live: &LiveSession,
     ) -> Option<String> {
         let events = self.inner.store.log(session).ok()?.event_snapshot();
@@ -3531,19 +3522,8 @@ impl Engine {
         if !changed {
             return None;
         }
-        let hide = document
-            .frontmatter
-            .acp
-            .clone()
-            .unwrap_or_default()
-            .hidden_tools();
-        let block = self.acp_runtimes_block(
-            session,
-            policy,
-            &hide,
-            live.agent.runtime.as_str(),
-            &live.cwd,
-        )?;
+        let block =
+            self.acp_runtimes_block(session, policy, live.agent.runtime.as_str(), &live.cwd)?;
         Some(cookie_agent_protocol::model_text::system_reminder(
             &format!("<machines_changed>\n{block}\n</machines_changed>"),
         ))
@@ -3578,25 +3558,18 @@ impl Engine {
         )
         .await?;
         let events = self.inner.store.log(session)?.event_snapshot();
-        let hide = document
-            .frontmatter
-            .acp
-            .clone()
-            .unwrap_or_default()
-            .hidden_tools();
-        let offered = self.offered_tools(session, policy, &hide)?;
+        let offered = self.offered_tools(session, policy)?;
         let mut context = Vec::new();
         if !document.body.trim().is_empty() {
             context.push(document.body.clone());
         }
-        context.extend(self.acp_runtimes_block(session, policy, &hide, runtime, cwd));
+        context.extend(self.acp_runtimes_block(session, policy, runtime, cwd));
         context.push(self.session_attachments_block(session));
         context.extend(self.tool_prompt_block(policy, session, Some(&offered), &|_, _| true)?);
         if offered.skill {
             context.extend(self.skill_listing(
                 session,
                 policy,
-                None,
                 super::prompt::SKILL_LISTING_CONTEXT_TOKENS,
             )?);
         }

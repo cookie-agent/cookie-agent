@@ -126,6 +126,8 @@ pub(crate) fn parse_agent(
     reject_schema_field(&yaml_value, yaml, path)?;
     reject_renamed_models_field(&yaml_value, &id)?;
     reject_removed_tools_field(&yaml_value, &id)?;
+    reject_removed_hide_tools_field(&yaml_value, &id)?;
+    reject_removed_skill_permission(&yaml_value, &id)?;
     validate_permission_expressions(&yaml_value, &id)?;
     let frontmatter = parse_frontmatter(yaml, yaml_value, path)?;
     let mut body = format!("{}\n", raw_body.trim_end_matches('\n'));
@@ -231,6 +233,13 @@ fn yaml_error(path: &Path, error: &serde_yaml::Error) -> ConfigError {
             extract_serde_field(&rendered, "missing field")
                 .map(|field| format!("missing required field `{field}`{location}"))
         })
+        // A selector or skill name the protocol refuses says why.
+        .or_else(|| {
+            ["invalid tool group selector", "invalid skill name"]
+                .into_iter()
+                .any(|prefix| rendered.starts_with(prefix))
+                .then(|| format!("{rendered}{location}"))
+        })
         .unwrap_or_else(|| format!("malformed YAML frontmatter{location}"));
     invalid_document(path, message)
 }
@@ -256,6 +265,46 @@ fn reject_removed_tools_field(
         .is_some_and(|frontmatter| frontmatter.contains_key(&tools))
     {
         return Err(ConfigError::AgentToolsRemoved(agent.clone()));
+    }
+    Ok(())
+}
+
+fn reject_removed_hide_tools_field(
+    value: &serde_yaml::Value,
+    agent: &AgentId,
+) -> Result<(), ConfigError> {
+    let acp = serde_yaml::Value::String("acp".to_owned());
+    let hide_tools = serde_yaml::Value::String("hide_tools".to_owned());
+    if value
+        .as_mapping()
+        .and_then(|frontmatter| frontmatter.get(&acp))
+        .and_then(serde_yaml::Value::as_mapping)
+        .is_some_and(|block| block.contains_key(&hide_tools))
+    {
+        return Err(ConfigError::AgentHideToolsRemoved(agent.clone()));
+    }
+    Ok(())
+}
+
+/// A `skill` key in `permissions` (with or without a runtime selector):
+/// skills take no permission since the session tool groups spec (S3).
+fn reject_removed_skill_permission(
+    value: &serde_yaml::Value,
+    agent: &AgentId,
+) -> Result<(), ConfigError> {
+    let permissions = serde_yaml::Value::String("permissions".to_owned());
+    if value
+        .as_mapping()
+        .and_then(|frontmatter| frontmatter.get(&permissions))
+        .and_then(serde_yaml::Value::as_mapping)
+        .is_some_and(|rules| {
+            rules
+                .keys()
+                .filter_map(serde_yaml::Value::as_str)
+                .any(|key| key.split_once('@').map_or(key, |(action, _)| action) == "skill")
+        })
+    {
+        return Err(ConfigError::AgentSkillPermissionRemoved(agent.clone()));
     }
     Ok(())
 }

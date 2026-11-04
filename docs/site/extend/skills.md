@@ -70,8 +70,8 @@ carries no version.
   [`cookie skills`](../clients/cli.md#cookie-skills). The TUI's skill picker
   and the web page's skill list mark official skills.
 
-Skills grant no tools; the `skill` permission and every tool's own rules
-still decide each call.
+Skills grant no tools; the session's [skill choices](agents.md#tool-groups-and-skills)
+and every tool's own rules still decide each call.
 
 ```toml
 [skills]
@@ -117,17 +117,20 @@ does not execute a shell.
 ## Invocation and permissions
 
 The model uses `skill({"name":"release-check","args":"v1.2.0"})`. The tool is
-absent when policy leaves no skill effectively usable, and skills with
+absent when no skill is on for the agent, and skills with
 `disable-model-invocation: true` are omitted from the model listing. In the TUI, users
 choose `/skills` in the [command palette](../clients/tui.md#command-palette), search for a
 `user-invocable` skill, press Enter, and type optional arguments such as
-`v1.2.0` into the prompt that follows. The highlighted skill's source,
-permission effect, and location show under the list. Headless runs use
+`v1.2.0` into the prompt that follows. The highlighted skill's source
+and location show under the list. Headless runs use
 `cookie run --skill release-check --skill-args v1.2.0 "Check the release"`.
 
-Skill access uses the `skill` permission action and the skill name as its
-resource. A denied skill is hidden from the model listing. Headless runs can
-grant one skill with `--allowed-tools skill:release-check`.
+Skills take no permission. Which skills the model may load is the agent
+document's, the project's, and the session's
+[skill choices](agents.md#tool-groups-and-skills): a skill that is off is
+left out of the listing and refused by the `skill` tool, and a skill that
+is on loads without asking, its grants with it. The user may still run any
+user-invocable skill, on or off for the agent.
 
 `allowed-tools` uses the agentskills.io/Claude Code syntax: a space-separated
 string of bare `Tool` names or `Tool(pattern)` entries. Patterns may contain
@@ -149,9 +152,10 @@ patterns pass through unchanged: `Write(src/**)` grants the `src/**` glob.
 
 On load, these entries create turn-scoped allow grants labeled for that skill.
 A project skill's grants apply only to the tools of the attachment that
-contributed it (and, for `Skill` and `Delegate` grants, to the base layer's
-`skill` and `delegate_subagent` tools); a user skill's grants apply to every
-runtime.
+contributed it (and, for `Delegate` grants, to the base layer's
+`delegate_subagent` tool); a user skill's grants apply to every runtime. A
+`Skill(...)` entry grants nothing: skills take no permission, so it names an
+action no tool uses.
 Grants from every skill loaded during the same turn are merged; loading a
 grantless skill does not remove grants from an earlier skill. The complete
 collection disappears on the next committed user input. Grants can only upgrade

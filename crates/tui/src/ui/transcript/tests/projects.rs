@@ -223,6 +223,7 @@ async fn a_draft_takes_the_projects_attachments_and_agent() {
     app.agents.push(builder);
     app.new_session_draft = app.default_draft_selection();
     app.projects[0].defaults = Some(ProjectDefaults {
+        exposure: Default::default(),
         preset: Some("rust".into()),
         agent: Some(AgentId::new("builder").unwrap()),
         global: true,
@@ -257,6 +258,7 @@ async fn a_draft_takes_the_projects_attachments_and_agent() {
     // A project naming an agent that cannot start a session keeps the
     // draft's agent, and says so.
     app.projects[1].defaults = Some(ProjectDefaults {
+        exposure: Default::default(),
         agent: Some(AgentId::new("gone").unwrap()),
         ..ProjectDefaults::default()
     });

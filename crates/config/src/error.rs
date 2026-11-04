@@ -75,6 +75,14 @@ pub enum ConfigError {
     AgentToolsRemoved(AgentId),
     #[error("agent `{0}` uses the removed `model_fallback` field; use `models` instead")]
     AgentModelsRenamed(AgentId),
+    #[error("agent `{0}` uses the removed `acp.hide_tools` field; use `tool_groups` instead")]
+    AgentHideToolsRemoved(AgentId),
+    #[error(
+        "agent `{0}` has a `skill` permission, which was removed; use the `skills` key to choose the agent's skills"
+    )]
+    AgentSkillPermissionRemoved(AgentId),
+    #[error("agent `{agent}` has invalid `tool_groups` or `skills`: {message}")]
+    AgentExposure { agent: AgentId, message: String },
     #[error("agent `{0}`: timeout_ms is only supported for internal agents")]
     AgentTimeoutInternalOnly(AgentId),
     #[error(

@@ -14,7 +14,7 @@ Each tool declares a permission *action* and names the *resource* of each call:
 - `webfetch`: the URL;
 - `delegate`: the subagent's agent ID; `message`: the recipient's relation,
   `parent`, `child`, or `sibling`;
-- `mcp`: the MCP tool's name; `skill`: the skill name;
+- `mcp`: the MCP tool's name;
 - `memory` and `memory_write`: the memory URL;
 - `cron`: the target kind of the cron job a call touches, `session`,
   `subagent`, or `new`;
@@ -61,7 +61,6 @@ counts). Every agent that is not internal gets:
 | `read` | `allow` |
 | `write` (and `edit`) | `"${workspace_dir}/*": allow`, `"*": ask`: edits in the workspace, asking for any other path |
 | `webfetch` | `allow` |
-| `skill` | `allow` |
 | `mcp` | `"*": ask` |
 | `delegate` | `deny`: an agent delegates only to the subagents its document names |
 | `list_runtimes` | `allow` for `primary` and `all` agents; a subagent asks |
@@ -137,7 +136,7 @@ rule with its source (`session`, `agent`, or `default`).
 | `mcp: deny` | default `mcp: {"*": ask}` | none: the MCP tools are hidden |
 
 So a session can turn off a tool a default gives (memory, cron, MCP,
-`list_runtimes`, skills, attaching), and a broad session rule does not override a narrower rule
+`list_runtimes`, attaching), and a broad session rule does not override a narrower rule
 of the document: to change that rule for one session, override that exact
 pattern, which is what editing a row in `/permissions` does. See
 [Session permission overlays](../extend/agents.md#session-permission-overlays).
@@ -147,7 +146,7 @@ pattern, which is what editing a row in `/permissions` does. See
 A rule keyed `action@runtime_id` applies only to that runtime's tools,
 whatever workspace they work in, so `bash: ask` with `bash@labpc: {"git *":
 allow}` lets git run freely on `labpc` and asks for everything else. Of the
-daemon's own tools' actions, `message` and `skill` take no selector;
+daemon's own tools' actions, `message` takes no selector;
 `delegate@labpc` checks a root's delegation that gives its subagent the
 `labpc` runtime (see [Delegating to runtimes](../sessions/delegation.md#limiting-where-the-root-delegates)).
 See [Runtime selectors](../extend/agents.md#runtime-selectors).
@@ -200,3 +199,12 @@ tree, reject it, or reject it with a note for the agent. See
 Rules decide which calls run; they are not a sandbox. An allowed `bash`
 command runs with your user's rights, and `cat .env` is a `bash` call, not a
 `read`. See [Security](../daemon/security.md).
+
+## Not a permission: tool groups and skills
+
+Which tool groups a session is offered, and which skills it loads, are not
+permissions: a session, its agent document, and its project choose them
+(see [Tool groups and skills](../extend/agents.md#tool-groups-and-skills)).
+They only take tools away; the rules above still decide every call of a
+tool that is offered. Skills take no permission at all: the `skill` action
+is gone, and a document that names it fails.

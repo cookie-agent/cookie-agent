@@ -94,10 +94,10 @@ impl MessageToolProvider {
 
 impl MessageToolProvider {
     /// The group this provider's tools are announced under when deferred.
-    pub const GROUP: cookie_agent_runtime_api::ToolGroup = cookie_agent_runtime_api::ToolGroup {
-        name: "messaging",
-        summary: "Messages between the agents of a session tree.",
-    };
+    pub const GROUP: cookie_agent_runtime_api::ToolGroup = cookie_agent_runtime_api::ToolGroup::new(
+        "messaging",
+        "Messages between the agents of a session tree.",
+    );
 }
 #[async_trait]
 impl ToolProvider for MessageToolProvider {
@@ -105,7 +105,7 @@ impl ToolProvider for MessageToolProvider {
         "builtin.message"
     }
 
-    fn tool_group(&self) -> Option<cookie_agent_runtime_api::ToolGroup> {
+    fn tool_group(&self, _tool: &str) -> Option<cookie_agent_runtime_api::ToolGroup> {
         Some(Self::GROUP)
     }
 

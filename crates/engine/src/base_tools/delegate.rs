@@ -266,10 +266,10 @@ struct PreparedToolParts {
 
 impl DelegateToolProvider {
     /// The group this provider's tools are announced under when deferred.
-    pub const GROUP: cookie_agent_runtime_api::ToolGroup = cookie_agent_runtime_api::ToolGroup {
-        name: "delegation",
-        summary: "Subagents: hand a focused task to another agent, and collect its result.",
-    };
+    pub const GROUP: cookie_agent_runtime_api::ToolGroup = cookie_agent_runtime_api::ToolGroup::new(
+        "delegation",
+        "Subagents: hand a focused task to another agent, and collect its result.",
+    );
 }
 #[async_trait]
 impl ToolProvider for DelegateToolProvider {
@@ -277,7 +277,7 @@ impl ToolProvider for DelegateToolProvider {
         "builtin.delegate"
     }
 
-    fn tool_group(&self) -> Option<cookie_agent_runtime_api::ToolGroup> {
+    fn tool_group(&self, _tool: &str) -> Option<cookie_agent_runtime_api::ToolGroup> {
         Some(Self::GROUP)
     }
 

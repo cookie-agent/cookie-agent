@@ -214,6 +214,7 @@ never stored.
 |---|---|---|---|
 | `session_created` | state | runless | The session's creation: origin, handle, workspace, selection, agent, revisions, `history_format` |
 | `session_permission_overlay_set` | state | runless | The session's permission overlay |
+| `session_tool_exposure_set` | state | runless | The session's tool group and skill choices, whole (since client protocol 1.82.0) |
 | `runtime_attached`, `runtime_detached` | state | runless | The session's [runtime attachments](#runtime-attachments) |
 | `skill_loaded` | state | either | A loaded skill body |
 | `skill_invocation_noted` | audit | either | A repeat of an identical skill load |
@@ -748,6 +749,13 @@ contains the complete, validated set of unique `(action, resource)` rules for
 the session. The latest visible event wins. Because it is an ordinary branch
 event, restart replay, revert, and fork recover the same overlay without a
 sidecar file.
+
+The runless `session_tool_exposure_set` event's `exposure` holds the
+session's tool group and skill choices, whole: exact selectors and skill
+names, each rule marked `from_project` when copied from the session's
+project's defaults (see
+[Tool groups and skills](protocol.md#tool-groups-and-skills)). The latest
+visible event wins, recovered the same way.
 
 `model_usage_recorded` follows a committed provider turn and
 contains the positive `model_turn_seq`, agent ID, resolved model identity, and

@@ -12,6 +12,10 @@
             "null"
           ]
         },
+        "exposure": {
+          "$ref": "#/$defs/ToolExposure",
+          "description": "The tool group and skill choices a new session in the project\nstarts with (client protocol 1.82.0;\n`docs/site/specs/session-tool-groups.md` section 5.4): exact\nselectors and skill names. The daemon copies them into a new\nsession's choices when `session.create` carries none of its own."
+        },
         "global": {
           "description": "Whether a new session attaches the global runtime; `true` when\nomitted.",
           "type": "boolean"
@@ -133,6 +137,100 @@
         "runtime_id"
       ],
       "type": "object"
+    },
+    "SkillRule": {
+      "description": "One rule over skills.",
+      "properties": {
+        "from_project": {
+          "description": "Copied from the session's project's defaults when the session was\ncreated, and not changed since.",
+          "type": "boolean"
+        },
+        "skill": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[a-z0-9_*?-]+$",
+          "type": "string"
+        },
+        "state": {
+          "$ref": "#/$defs/SkillState"
+        }
+      },
+      "required": [
+        "skill",
+        "state"
+      ],
+      "type": "object"
+    },
+    "SkillState": {
+      "description": "A skill's state.",
+      "enum": [
+        "on",
+        "off"
+      ],
+      "type": "string"
+    },
+    "ToolExposure": {
+      "description": "One layer's rules: an agent document's, a project's defaults, or a\nsession's.",
+      "properties": {
+        "skills": {
+          "items": {
+            "$ref": "#/$defs/SkillRule"
+          },
+          "maxItems": 256,
+          "type": "array"
+        },
+        "tool_groups": {
+          "items": {
+            "$ref": "#/$defs/ToolGroupRule"
+          },
+          "maxItems": 256,
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "ToolGroupRule": {
+      "description": "One rule over tool groups.",
+      "properties": {
+        "from_project": {
+          "description": "Copied from the session's project's defaults when the session was\ncreated, and not changed since.",
+          "type": "boolean"
+        },
+        "selector": {
+          "maxLength": 168,
+          "minLength": 1,
+          "pattern": "^(?:mcp:|plugin:)?[^@\\s\\u0000-\\u001f\\u007f-\\u009f]+(?:@[a-z][a-z0-9_]{0,31})?$",
+          "type": "string"
+        },
+        "state": {
+          "$ref": "#/$defs/ToolGroupState"
+        }
+      },
+      "required": [
+        "selector",
+        "state"
+      ],
+      "type": "object"
+    },
+    "ToolGroupState": {
+      "description": "A tool group's state.",
+      "oneOf": [
+        {
+          "const": "on",
+          "description": "Offered, sent up front.",
+          "type": "string"
+        },
+        {
+          "const": "deferred",
+          "description": "Offered deferred, loaded with `tool_search`; `on` on a model that\ndoes not defer and for an ACP agent.",
+          "type": "string"
+        },
+        {
+          "const": "off",
+          "description": "Not offered.",
+          "type": "string"
+        }
+      ]
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",

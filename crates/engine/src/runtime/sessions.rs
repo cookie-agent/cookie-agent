@@ -137,13 +137,17 @@ impl Engine {
         runtimes: super::attachments::SessionRuntimes,
         project: Option<cookie_agent_protocol::ProjectId>,
     ) -> Result<SessionMeta, EngineError> {
-        self.create_root_session(selection, mode, rules, runtimes, project, None)
+        self.create_root_session(selection, mode, rules, runtimes, project, None, None)
             .await
     }
 
     /// [`Self::create_session_in_project`] for a session a cron job's fire
     /// creates when `cron` names the job and the session's title: its
-    /// creation records the job (`SessionMeta::cron`) and the title.
+    /// creation records the job (`SessionMeta::cron`) and the title. With
+    /// `exposure`, the session's tool group and skill choices; without, a
+    /// project's defaults' (`docs/site/specs/session-tool-groups.md`
+    /// section 5.4).
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn create_root_session(
         &self,
         selection: RunSelection,
@@ -155,13 +159,26 @@ impl Engine {
             cookie_agent_protocol::SessionCron,
             cookie_agent_protocol::SessionTitle,
         )>,
+        exposure: Option<cookie_agent_protocol::ToolExposure>,
     ) -> Result<SessionMeta, EngineError> {
         crate::permissions::check_rule_selectors(&rules).map_err(EngineError::Permission)?;
         let overlay = SessionPermissionOverlay { rules };
         overlay
             .validate()
             .map_err(|error| EngineError::Permission(error.to_string()))?;
+        if let Some(exposure) = &exposure {
+            exposure
+                .validate_exact()
+                .map_err(|error| EngineError::ToolExposure(error.to_string()))?;
+        }
+        let mut exposure = exposure;
         if let Some(project) = &project {
+            if exposure.is_none() {
+                exposure = self
+                    .project_exposure_defaults(project)
+                    .await?
+                    .map(crate::exposure::from_project);
+            }
             let defaults = self.project_attachment_defaults(project).await?;
             if runtimes.runtimes.is_none()
                 && let Some(defaults) = defaults
@@ -200,6 +217,15 @@ impl Engine {
                 None,
                 EventOrigin::new("user").expect("static event origin is valid"),
                 Event::SessionPermissionOverlaySet { overlay },
+            )
+            .await?;
+        }
+        if let Some(exposure) = exposure.filter(|exposure| !exposure.is_empty()) {
+            self.append(
+                session_id,
+                None,
+                EventOrigin::new("user").expect("static event origin is valid"),
+                Event::SessionToolExposureSet { exposure },
             )
             .await?;
         }

@@ -263,7 +263,6 @@ fn action_icon(action: &PermissionAction) -> &'static str {
         (PermissionAction::BASH, ToolHint::SHELL),
         (PermissionAction::DELEGATE, ToolHint::DELEGATE),
         (PermissionAction::MESSAGE, ToolHint::MESSAGE),
-        (PermissionAction::SKILL, ToolHint::SKILL),
         (PermissionAction::WEBFETCH, ToolHint::FETCH),
     ]
     .into_iter()
@@ -281,7 +280,6 @@ fn resource_noun(action: &PermissionAction) -> std::borrow::Cow<'static, str> {
         (PermissionAction::DELEGATE, "delegations to agents"),
         (PermissionAction::MESSAGE, "messages to sessions"),
         (PermissionAction::MCP, "MCP tools"),
-        (PermissionAction::SKILL, "skills"),
         (PermissionAction::WEBFETCH, "fetches of URLs"),
     ];
     known
@@ -879,7 +877,6 @@ pub(in crate::ui) fn sample_permissions() -> SessionPermissionGetResult {
             action(PermissionAction::DELEGATE, Allow, AgentDocument, vec![]),
             action(PermissionAction::MESSAGE, Deny, Default, vec![]),
             action(PermissionAction::MCP, Ask, AgentDocument, vec![]),
-            action(PermissionAction::SKILL, Allow, AgentDocument, vec![]),
             action(PermissionAction::WEBFETCH, Ask, SessionOverlay, vec![]),
         ],
         current_mode: None,

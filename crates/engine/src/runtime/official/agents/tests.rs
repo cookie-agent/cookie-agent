@@ -399,7 +399,7 @@ async fn a_user_document_inheriting_one_official_document_does_not_hold_back_ano
     std::fs::create_dir_all(&agents).unwrap();
     write_private_test_file(
         &agents.join("_acp.md"),
-        b"---\ninherit: ../official_agents/_acp.md\nacp:\n  hide_tools: [bash]\n---\n",
+        b"---\ninherit: ../official_agents/_acp.md\ntool_groups: { coding: off }\n---\n",
     );
     fixture.engine.reload_configuration().await.expect("reload");
 

@@ -667,7 +667,6 @@ fn permission_keys_take_a_runtime_selector() {
         "bash@1lab",
         "Fetch@labpc",
         "message@labpc",
-        "skill@labpc",
     ] {
         let document = format!(
             "description: Worker\nmode: subagent\nenabled: true\nmodels: []\npermissions:\n  {rejected}: allow\n"

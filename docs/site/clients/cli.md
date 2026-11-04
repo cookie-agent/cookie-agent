@@ -116,7 +116,7 @@ describes each option.
 | `-m`, `--model <MODEL>` | see [Selection and limits](#selection-and-limits) | `provider/model` to run. |
 | `--variant <VARIANT>` | | Named model variant, or `base` for none. |
 | `--permission-mode <MODE>` | `auto-approve` | `auto-approve`, `auto-approve-n`, `auto-approve-y`, `ask`, or `yolo`; the underscore spellings are aliases. |
-| `--allowed-tools <ACTION,...>` | | Permission actions, or `skill:<name>`, to allow; repeatable and comma-delimited. |
+| `--allowed-tools <ACTION,...>` | | Permission actions to allow; repeatable and comma-delimited. |
 | `--skill <NAME>` | | Load a user-invocable skill before the prompt. |
 | `--skill-args <TEXT>` | | Arguments of `--skill`; requires it. |
 | `--max-turns <N>` | `100` | Most committed root model turns, at least 1. |
@@ -895,8 +895,8 @@ run` has no one to answer", and the run goes on.
 `--allowed-tools` may be repeated or comma-delimited and accepts any
 permission action, such as `read`, `write`, `bash`, `webfetch`, `delegate`, or
 `mcp` (a lowercase letter, then lowercase letters, digits, or `_`, at most 32
-bytes), and `skill:<name>` — each entry adds an `allow` overlay rule (resource
-`*`, or the given skill name). It does not deny omitted actions. The rule
+bytes) — each entry adds an `allow` overlay rule (resource `*`). It does
+not deny omitted actions. The rule
 replaces only the agent's rule with the same pattern: `--allowed-tools bash`
 turns the agent's `bash: ask` into `allow`, but a narrower agent rule such as
 `delegate: {reviewer: ask}` still decides the calls it matches (see
@@ -905,10 +905,10 @@ turns the agent's `bash: ask` into `allow`, but a narrower agent rule such as
 ### Skills
 
 `--skill <name>` loads a user-invocable skill before the prompt run.
-`--skill-args <text>` supplies its raw arguments and requires `--skill`. Skill
-permission is evaluated before injection; use `--allowed-tools skill:<name>` to
-grant it explicitly in unattended runs. The load appends the same durable event
-used by interactive and model invocation.
+`--skill-args <text>` supplies its raw arguments and requires `--skill`. Skills
+take no permission: the user may run any user-invocable skill, even one that
+is off for the agent. The load appends the same durable event used by
+interactive and model invocation.
 
 ### Output
 

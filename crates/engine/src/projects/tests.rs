@@ -50,6 +50,7 @@ fn creating_a_project_writes_its_file_and_an_empty_overview() {
     let (data, store) = store();
     let mut changes = store.subscribe();
     let defaults = ProjectDefaults {
+        exposure: Default::default(),
         preset: Some("rust".into()),
         agent: Some(AgentId::new("builder").unwrap()),
         global: false,
@@ -374,6 +375,7 @@ fn defaults_list_each_runtime_once_with_a_real_workspace() {
         workspace: workspace.map(str::to_owned),
     };
     let defaults = |runtimes| ProjectDefaults {
+        exposure: Default::default(),
         runtimes,
         ..ProjectDefaults::default()
     };

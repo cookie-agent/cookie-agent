@@ -227,6 +227,7 @@ mod setup_value;
 mod stop;
 mod stored_display;
 pub mod strict;
+mod tool_exposure;
 mod transport;
 mod uploads;
 
@@ -275,6 +276,7 @@ pub use session_model::*;
 pub use setup_value::*;
 #[cfg(not(target_arch = "wasm32"))]
 pub use stop::StopSignals;
+pub use tool_exposure::*;
 pub use transport::{
     InProcessStream, MAX_WEBSOCKET_MESSAGE_BYTES, MessageFrame, MessageStream, Transport,
     TransportError, in_process_pair,

@@ -148,16 +148,24 @@ fn render_table(specs: &[ToolSpec]) -> String {
 /// its summary.
 fn render_groups() -> String {
     let mut groups = builtin_tool_groups(DELEGATE_TARGET_PLACEHOLDER);
-    groups.push((
-        cookie_agent_coding_runtime::BuiltinTools::GROUP,
-        BuiltinTools::new(&WorkspaceContext::new(&std::env::temp_dir()).expect("workspace"))
-            .tools_for_session(&SessionToolContext::new(SessionId::new_v7()))
-            .expect("built-in tool specs")
-            .into_iter()
-            .map(|spec| spec.name)
-            .collect(),
-    ));
-    groups.sort_by_key(|(group, _)| group.name);
+    let coding =
+        BuiltinTools::new(&WorkspaceContext::new(&std::env::temp_dir()).expect("workspace"));
+    for spec in coding
+        .tools_for_session(&SessionToolContext::new(SessionId::new_v7()))
+        .expect("built-in tool specs")
+    {
+        let group = coding
+            .tool_group(&spec.name)
+            .expect("built-in tools have groups");
+        match groups
+            .iter_mut()
+            .find(|(known, _)| known.name == group.name)
+        {
+            Some((_, tools)) => tools.push(spec.name),
+            None => groups.push((group, vec![spec.name])),
+        }
+    }
+    groups.sort_by(|(left, _), (right, _)| left.name.cmp(&right.name));
     let mut table = String::from(
         "| Group | Tools | Deferred | Summary sent to the model |
 |---|---|---|---|
@@ -169,11 +177,12 @@ fn render_groups() -> String {
             .map(|tool| format!("[`{tool}`](#{tool})"))
             .collect::<Vec<_>>()
             .join(", ");
-        let deferred = if cookie_agent_config::DEFERRED_BUILTIN_GROUPS.contains(&group.name) {
-            "yes"
-        } else {
-            "no"
-        };
+        let deferred =
+            if cookie_agent_config::DEFERRED_BUILTIN_GROUPS.contains(&group.name.as_ref()) {
+                "yes"
+            } else {
+                "no"
+            };
         writeln!(
             table,
             "| `{}` | {tools} | {deferred} | {} |",

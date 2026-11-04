@@ -60,6 +60,8 @@ Review the requested change and report concrete findings.
 | `permissions` | table | `{}` | Ordered action permission map; see [Permissions](#permissions). At most 256 rules. |
 | `agent_md` | boolean | *(unset)* | Load [AGENTS.md context](#agentsmd-context) for this agent's root runs. Unset follows `[agent_md] enabled`; a value overrides it. Rejected on `subagent` and `internal` agents, which never load AGENTS.md. |
 | `acp` | table | *(unset)* | Makes the document an ACP agent's; see [ACP agent documents](#acp-agent-documents). |
+| `tool_groups` | table | `{}` | Which tool groups the agent is offered: selectors such as `coding`, `coding@labpc`, `mcp:exa`, `"mcp:*"`, or `plugin:browser`, each `on`, `deferred`, or `off`; see [Tool groups and skills](#tool-groups-and-skills). Rejected on `internal` agents. |
+| `skills` | table | `{}` | Which skills the agent loads: skill names or patterns, each `on` or `off`; see [Tool groups and skills](#tool-groups-and-skills). Rejected on `internal` agents. |
 
 `max_output_tokens` applies in every mode and defaults to `0` in all of them. A
 nonzero value caps each request at the smaller of the document value and the
@@ -211,7 +213,8 @@ mode: all
 models: [{ model: "gpt-5", variant: "high" }, "gpt-5-mini"]
 acp:
   mode: auto
-  hide_tools: [webfetch]
+tool_groups:
+  coding: off
 permissions:
   read: allow
   bash: { "git *": allow, "*": ask }
@@ -225,7 +228,16 @@ You review changes for this project before they are committed.
 | `acp.agent` | agent ID | the document's ID | The declaration the document runs, the key of a `[runtimes.<id>.acp.agents.<agent>]` table; several documents may run one. See [Several documents over one agent](acp-agents.md#several-documents-over-one-agent). |
 | `acp.mode` | string | the agent's `auto`, else its default | The mode the agent starts its sessions in, by mode ID. |
 | `acp.config` | table of strings | `{}` | Initial values of the agent's config options, by option ID (`"true"` or `"false"`, quoted, for an on/off option such as Claude Code's `fast`); an unknown option or value is reported in the session and skipped. |
-| `acp.hide_tools` | array of patterns | `[webfetch]` | Cookie's tools the agent does not get through the MCP bridge on any machine, with `*` and `?`; `[]` offers every tool the rules offer. Cookie's `read`, `write`, `edit`, and `bash` are offered by default, for every attached machine, the agent's own included (see [Several machines](acp-agents.md#several-machines)). |
+
+Which of cookie's tools the agent gets through the MCP bridge is the
+document's [`tool_groups`](#tool-groups-and-skills): an ACP agent's defaults
+turn `web` off, since a fetch reads the same page from nearly any machine
+and the harness has its own, and `web: on` brings it back. Cookie's `read`,
+`write`, `edit`, and `bash` (the `coding` group) are offered by default, for
+every attached machine, the agent's own included (see
+[Several machines](acp-agents.md#several-machines)). The former
+`acp.hide_tools` is removed: a document that declares it fails, naming
+`tool_groups`.
 
 - `models` names values of the agent's own options, not cookie's model
   keys. Each entry's `model` is a value of the agent's model option (the
@@ -517,7 +529,7 @@ defaults (see [Listing runtimes](#listing-runtimes),
 [MCP default](#mcp-default), and the
 [defaults table](../concepts/permissions.md)): every agent that is not
 internal reads every file, edits files in its workspace and asks for any other
-path, fetches the web, uses every skill, is offered MCP tools and asks before
+path, fetches the web, is offered MCP tools and asks before
 each call, and delegates to no subagent unless its document names one. Memory has a default too, by whether
 the run is delegated rather than by mode (see
 [Memory permissions](#memory-permissions)). `cron` defaults the same way:
@@ -906,6 +918,60 @@ started. A manual `/compact` on a session whose last run started under an
 older version uses that run's frozen compaction body as written; the next run
 picks up the current documents.
 
+## Tool groups and skills
+
+Every tool belongs to a **group**: a built-in group such as `coding`
+(`read`, `write`, `edit`, `bash`), `web` (`webfetch`), `memory`, or `cron`,
+a group a runtime declares for its own tools, an MCP server, or a plugin
+(the [groups table](../reference/tools.md#deferred-tools) lists the
+built-in ones). A document's `tool_groups` turns groups `on` (sent up
+front), `deferred` (loaded with `tool_search` on a model that defers, else
+`on`), or `off` (not offered at all), and its `skills` turns skills `on` or
+`off`:
+
+```yaml
+tool_groups:
+  cron: off
+  "mcp:*": deferred
+  "mcp:github": on
+  coding@labpc: off
+skills:
+  "*": off
+  release-check: on
+```
+
+- **Selectors** are `<group>` or `<group>@<runtime>` for built-in and
+  runtime groups, `mcp:<server>` or `mcp:<server>@<runtime>`, and
+  `plugin:<name>`. Without `@runtime` a selector matches the group on
+  every runtime. Names take `*` and `?`; within the document the most
+  specific rule wins (more literal characters, then fewer wildcards, then
+  a runtime), and the later one on a tie. An MCP server's group is the
+  server, never a name prefix: `mcp:exa` does not match `exa_pro`.
+- **Skills** are matched by the name the session knows them by, such as
+  `local_deploy` for a project skill whose name collides.
+- **Fixed groups** are never switched: `artifacts`, `background`, the
+  loader (`tool_search`), and `skills`, whose `skill` tool is offered
+  while at least one skill is on. A rule naming one fails the document; a
+  pattern such as `*` passes over them.
+- **Layers.** The defaults (everything `on`, deferred as
+  [`[deferred_tools]`](../engine/deferred_tools.md) and the `always_load`
+  keys say, and `web` off for an ACP agent), then the document, then the
+  session's own choices, which a project's defaults are copied into when a
+  session is created. The highest layer with a rule matching a group
+  decides it, however general the rule: a session's `coding: off` beats
+  the document's `coding@labpc: on`.
+- **Tool groups only take away.** Permissions still decide every call of
+  a tool that is offered, and a tool the rules hide stays hidden whatever
+  its group's state.
+- **Skills take no permission.** A skill that is on loads without asking;
+  one that is off is left out of `<available_skills>` and refused by the
+  `skill` tool, though the user can still run it. A `skill` key in
+  `permissions` fails the document, naming `skills`.
+
+Sessions and projects choose groups and skills one at a time, by exact
+selector, in the clients' runtimes and skills panels; see
+[Tool groups and skills](../sessions/index.md#tool-groups-and-skills).
+
 ## Selecting an agent
 
 In the TUI, `/new` creates a root session after choosing from agents in the
@@ -917,7 +983,7 @@ preselected.
 
 Agent documents define an ordered permission map keyed by permission action.
 The tools Cookie Agent ships use `read`, `write`, `bash`, `delegate`,
-`message`, `mcp`, `skill`, `webfetch`, `memory`, and `memory_write`; a runtime's or plugin's tools may
+`message`, `mcp`, `webfetch`, `memory`, and `memory_write`; a runtime's or plugin's tools may
 declare actions of their own, such as `browse`, which rules name the same way.
 An action is a lowercase ASCII letter followed by up to 31 lowercase letters,
 digits, or underscores. A key that
@@ -949,7 +1015,7 @@ later declaration on an exact tie. Whatever no rule matches asks: a resource
 a key's patterns leave out, and every action the document names no key for,
 a plugin's or a runtime's included. `ask` routes a call through the approval
 flow; only an explicit `deny` denies. The only rules the daemon writes for an
-agent are the mode defaults of `read`, `write`, `webfetch`, `skill`, `mcp`,
+agent are the mode defaults of `read`, `write`, `webfetch`, `mcp`,
 `delegate`, and `list_runtimes` (see
 [Permissions](../concepts/permissions.md#permissions) for the table) and the
 run defaults of `memory`, `memory_write`, `cron`, `attach`, and `message`,
@@ -978,7 +1044,7 @@ asks, and reads inside the local runtime's workspace are allowed. A qualified
 rule only outranks an unqualified one at the same resource specificity: with
 `bash: {"git push *": deny}` and `bash@labpc: {"*": allow}`, `git push` on
 `labpc` is still denied. The runtime ID follows `[a-z][a-z0-9_]{0,31}`.
-`message` and `skill` belong to the base layer and take no selector.
+`message` belongs to the base layer and takes no selector.
 `delegate@<runtime>` checks a root's `delegate_subagent` call that names that
 runtime in `capabilities`, under each runtime it names; a call without
 `capabilities` sees only plain `delegate` rules (see
@@ -999,7 +1065,7 @@ Tool providers publish a static permission name and an optional resource label:
 | `stop_background` | none | Needs no permission |
 | `send_message` | `message` | Recipient's relationship to the sender: `parent`, `child`, `sibling`, or `*` |
 | `<server>_<tool>` | `mcp` | The complete generated MCP tool name |
-| `skill` | `skill` | Skill name |
+| `skill` | none | None: skills take no permission; a session's and agent's [skill choices](#tool-groups-and-skills) decide which the model may load |
 | `goal_get`, `goal_set`, `goal_update` | none | None: published to root runs (an ACP agent's only while the session has an active or paused goal), and always allowed |
 | `read_artifact` | none | None: always sent and always allowed, because it reads only the session tree's own retained output |
 | `webfetch` | `webfetch` | Initial URL as given, including its query string |

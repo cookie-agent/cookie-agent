@@ -1288,7 +1288,11 @@ impl Engine {
         // One merged rule list per home the runtimes reported, not one per
         // tool.
         let mut merged_by_home = Vec::<(Option<String>, MergedRules<'_>)>::new();
+        let exposure = crate::exposure::Layers::of(&session_projection, policy);
         let mut composition = self.compose_session_tools(session, |source, tool| {
+            if !exposure.offers(&crate::exposure::GroupKey::of(source, &tool.name)) {
+                return false;
+            }
             let delegation_tool = tool.permission_name.as_deref() == Some("delegate");
             let goal_tool = source.attachment.is_none()
                 && matches!(tool.name.as_str(), "goal_get" | "goal_set" | "goal_update");
@@ -1472,6 +1476,8 @@ impl Engine {
     ) -> Result<PublishedToolSet, EngineError> {
         let defers = self.defers_tools(policy);
         let composition = self.compose_for_policy_with(session, policy, defers)?;
+        let projection = self.inner.store.get(session)?;
+        let exposure = crate::exposure::Layers::of(&projection, policy);
         let notes = self.runtime_tool_notes(session);
         let config = self.inner.config.load();
         let mut output = Vec::with_capacity(composition.tools.len());
@@ -1521,6 +1527,7 @@ impl Engine {
                             &source,
                             &spec.name,
                             &config.runtime.deferred_tools,
+                            exposure.forced(&source, &spec.name),
                         ),
                         source: round_source,
                     });
@@ -1652,7 +1659,9 @@ impl Engine {
                 tool.source.provider.provider_id() != crate::base_tools::LOADER_PROVIDER_ID
             })
         };
-        let fold = self.inner.store.get(session)?.log.deferral();
+        let projection = self.inner.store.get(session)?;
+        let exposure = crate::exposure::Layers::of(&projection, policy);
+        let fold = projection.log.deferral();
         let config = self.inner.config.load();
         let keys = tools()
             .map(|tool| (tool.name.as_str(), provider_key(&tool.source)))
@@ -1665,6 +1674,7 @@ impl Engine {
                         &tool.source,
                         &tool.spec.name,
                         &config.runtime.deferred_tools,
+                        exposure.forced(&tool.source, &tool.spec.name),
                     ) || fold.folded.contains(&tool.name)
                 })
                 .map(|tool| tool.name.clone())
@@ -2022,7 +2032,6 @@ fn fallback_permission_name(tool_name: &str) -> Option<&'static str> {
         "write" | "edit" => Some("write"),
         "bash" => Some("bash"),
         "delegate_subagent" | "get_subagent_result" => Some("delegate"),
-        "skill" => Some("skill"),
         "webfetch" => Some("webfetch"),
         _ => None,
     }

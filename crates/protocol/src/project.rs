@@ -64,6 +64,13 @@ pub struct ProjectDefaults {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[schemars(length(max = 256))]
     pub runtimes: Vec<ProjectRuntime>,
+    /// The tool group and skill choices a new session in the project
+    /// starts with (client protocol 1.82.0;
+    /// `docs/site/specs/session-tool-groups.md` section 5.4): exact
+    /// selectors and skill names. The daemon copies them into a new
+    /// session's choices when `session.create` carries none of its own.
+    #[serde(default, skip_serializing_if = "crate::ToolExposure::is_empty")]
+    pub exposure: crate::ToolExposure,
 }
 
 impl Default for ProjectDefaults {
@@ -73,6 +80,7 @@ impl Default for ProjectDefaults {
             agent: None,
             global: true,
             runtimes: Vec::new(),
+            exposure: crate::ToolExposure::default(),
         }
     }
 }

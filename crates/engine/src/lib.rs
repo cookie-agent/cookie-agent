@@ -13,6 +13,7 @@ mod delegation_api;
 #[cfg(test)]
 #[path = "../../../test-support/eventually.rs"]
 mod eventually;
+mod exposure;
 pub mod grant_journal;
 mod machines;
 mod machines_tool;

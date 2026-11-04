@@ -86,10 +86,10 @@ impl MachinesTool {
     }
 
     /// The group this provider's tools are announced under when deferred.
-    pub const GROUP: cookie_agent_runtime_api::ToolGroup = cookie_agent_runtime_api::ToolGroup {
-        name: "machines",
-        summary: "The user's machines: attach one to this session to work on it, detach it, or copy files between machines.",
-    };
+    pub const GROUP: cookie_agent_runtime_api::ToolGroup = cookie_agent_runtime_api::ToolGroup::new(
+        "machines",
+        "The user's machines: attach one to this session to work on it, detach it, or copy files between machines.",
+    );
 
     pub(crate) fn specs() -> Vec<ToolSpec> {
         let spec = |name: &str, description: &str, parameters| ToolSpec {
@@ -171,7 +171,7 @@ impl ToolProvider for MachinesTool {
         PROVIDER_ID
     }
 
-    fn tool_group(&self) -> Option<cookie_agent_runtime_api::ToolGroup> {
+    fn tool_group(&self, _tool: &str) -> Option<cookie_agent_runtime_api::ToolGroup> {
         Some(Self::GROUP)
     }
 

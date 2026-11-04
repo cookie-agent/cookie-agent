@@ -1013,7 +1013,7 @@ async fn record_native_compaction(scenario: &Path, fail_native: bool) {
 
 const CODING_CAPABILITIES: &str = "input = [\"text\", \"image\", \"video\"]\noutput = [\"text\"]\ncontext_tokens = 200000\noutput_tokens = 1024\ntool_calling = true\nparallel_tool_calls = true\nstructured_output = false\nreasoning = false\ntemperature = true\ntop_p = true\nseed = true\nnative_replay = \"unsupported\"\nmedia = { image = { mime_types = [\"image/png\"], max_bytes = 4194304, max_count = 4 }, video = { mime_types = [\"video/mp4\"], max_bytes = 4194304, max_count = 1 } }";
 
-const CODING_AGENT: &str = "---\ndescription: Golden coding agent\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  read: allow\n  bash: allow\n  write: ask\n  webfetch: ask\n  skill: allow\n  delegate: allow\n  message: allow\n---\nWork in the repository.\n";
+const CODING_AGENT: &str = "---\ndescription: Golden coding agent\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  read: allow\n  bash: allow\n  write: ask\n  webfetch: ask\n  delegate: allow\n  message: allow\n---\nWork in the repository.\n";
 
 /// An engine whose local runtime is the coding runtime over the runtime
 /// protocol, working in the fixture's directory, with `plugin` configured.

@@ -5,8 +5,9 @@ you come back to across machines. A session may belong to one project, and
 moves in or out of one at any time. A project carries:
 
 - a **name** and an optional **emoji** clients show before it;
-- **defaults** for a new session: the runtimes it attaches and the agent it
-  starts with;
+- **defaults** for a new session: the runtimes it attaches, the agent it
+  starts with, and its [tool groups and skills](../sessions/index.md#tool-groups-and-skills),
+  which a new session copies;
 - its own **`AGENTS.md`**, instructions every session of the project gets;
 - its **memories**, `project://<name>/…`, with an **overview** shown in full
   to its sessions.

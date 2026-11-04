@@ -1051,7 +1051,7 @@ async fn headless_preset_is_persisted_and_resume_can_override_the_next_run() {
 }
 
 #[tokio::test]
-async fn headless_skill_is_permission_checked_and_injected_before_the_prompt() {
+async fn headless_skill_is_injected_before_the_prompt() {
     let fixture = Fixture::new().await;
     fixture
         .server
@@ -1059,7 +1059,6 @@ async fn headless_skill_is_permission_checked_and_injected_before_the_prompt() {
     let mut args = run_args("check with the skill");
     args.skill = Some("release-check".into());
     args.skill_args = Some("v1.2.0".into());
-    args.allowed_tools = vec![AllowedTool::Skill("release-check".into())];
     let result = fixture.run(args, "").await;
     assert_eq!(result.code, 0, "{}", result.stderr);
     let request = fixture
@@ -1128,24 +1127,6 @@ async fn model_disabled_skill_lookup_rejects_without_leaking_hidden_hints() {
     let hints = denied.split("valid skills:").nth(1).unwrap_or_default();
     assert!(!hints.contains("hidden-model"), "{denied}");
     assert!(!hints.contains("denied-skill"), "{denied}");
-    fixture.shutdown().await;
-}
-
-#[tokio::test]
-async fn direct_skill_ask_routes_through_headless_auto_rejection() {
-    let fixture = Fixture::new().await;
-    let mut args = run_args("approval required");
-    args.skill = Some("release-check".into());
-    args.permission_mode = PermissionModeArg::Ask;
-    args.output = Some(OutputMode::Json);
-    let result = fixture.run(args, "").await;
-    assert_eq!(result.code, 3, "{}\n{}", result.stderr, result.stdout);
-    let records = parse_json_lines(&result.stdout);
-    assert!(records.iter().any(|record| {
-        record["type"] == "event"
-            && record["event"]["payload"]["type"] == "approval_step"
-            && record["event"]["payload"]["step"]["type"] == "escalated"
-    }));
     fixture.shutdown().await;
 }
 
@@ -3120,11 +3101,10 @@ permissions:
   read: ask
   write: ask
   bash: ask
-  skill:
-    "*": ask
-    denied-skill: deny
   delegate:
     reviewer: allow
+skills:
+  denied-skill: off
 ---
 Answer the user directly.
 "#,
@@ -3182,11 +3162,6 @@ enabled: true
 models:
   - { model: "custom.local/test", variant: null }
 permissions:
-  skill:
-    release-check: allow
-    fork-skill: allow
-    grant-a: allow
-    grant-b: ask
   bash: ask
   delegate: ask
 ---

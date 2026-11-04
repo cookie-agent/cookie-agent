@@ -24,6 +24,7 @@ async fn main() -> Result<(), cookie_agent_plugin_sdk::PluginError> {
                 output: Default::default(),
                 background: false,
                 background_default: false,
+                group: None,
             },
             |_call, arguments| async move {
                 let text = arguments["text"]

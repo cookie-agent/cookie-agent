@@ -45,6 +45,10 @@ pub(super) fn assert_projection_equivalent(
         "permission_overlay"
     );
     assert_eq!(
+        actual.tool_exposure, expected.tool_exposure,
+        "tool_exposure"
+    );
+    assert_eq!(
         actual.permission_mode, expected.permission_mode,
         "permission_mode"
     );
@@ -218,6 +222,7 @@ fn projection_fold_with(
         runs: HashMap::new(),
         rename_records: HashMap::new(),
         permission_overlay: SessionPermissionOverlay::default(),
+        tool_exposure: cookie_agent_protocol::ToolExposure::default(),
         permission_mode: None,
         runtime_attachments: cookie_agent_protocol::RuntimeAttachmentFold::default(),
         automatic_title_eligible: AutomaticTitleEligibility::default().eligible(),
@@ -327,6 +332,9 @@ impl SessionProjection {
         match &envelope.payload {
             EventPayload::SessionPermissionOverlaySet { overlay } => {
                 self.permission_overlay = overlay.clone();
+            }
+            EventPayload::SessionToolExposureSet { exposure } => {
+                self.tool_exposure = exposure.clone();
             }
             EventPayload::PermissionModeSet { mode } => {
                 self.permission_mode = Some(*mode);

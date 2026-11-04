@@ -5,6 +5,26 @@ The client protocol's version is `MAJOR.MINOR.PATCH`
 adds and a major breaks; before it, every minor could break the wire (see the
 [compatibility spec](../specs/compatibility-v1.md) section 3).
 
+## 1.82.0
+
+- Session tool groups and skills
+  ([spec](../specs/session-tool-groups.md)): `session.tools.get` and
+  `session.tools.set`; `ToolExposure` (`tool_groups` of
+  `ToolGroupRule { selector, state, from_project? }`, `skills` of
+  `SkillRule { skill, state, from_project? }`), `ToolGroupSelector`,
+  `ToolGroupState` (`on`, `deferred`, `off`), `SkillState`, and
+  `ExposureLayer`; `session.create`'s optional `exposure`; a project's
+  `defaults.exposure`, copied into its new sessions; the
+  `session_tool_exposure_set` event; and `AgentSnapshot.exposure`, the
+  agent document's `tool_groups` and `skills`. See
+  [Tool groups and skills](protocol.md#tool-groups-and-skills).
+- Skills take no permission: the built-in `skill` action is gone, with its
+  default (`skill: allow`), and the `skill` tool needs no rule.
+  `SkillDescriptor.permission_effect` is always `allow`; `visible` follows
+  the session's skill choices. `session.permission.set` still accepts a
+  rule for an action named `skill`, which governs nothing.
+- Built-in tool groups: `webfetch` moved from `coding` to a group of its
+  own, `web`.
 ## 1.81.0
 
 - Plugin settings ([Plugin web pages and settings](../specs/plugin-web-ui.md)

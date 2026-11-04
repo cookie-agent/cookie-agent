@@ -586,6 +586,7 @@ mod tests {
         // No defaults, or defaults that name no runtime: no second line.
         assert!(project_badges(None, Some(&listing), &homes).is_empty());
         let mut defaults = ProjectDefaults {
+            exposure: Default::default(),
             global: false,
             ..ProjectDefaults::default()
         };

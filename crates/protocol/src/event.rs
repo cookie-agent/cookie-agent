@@ -2909,6 +2909,11 @@ pub enum EventPayload {
     SessionPermissionOverlaySet {
         overlay: SessionPermissionOverlay,
     },
+    /// The session's tool exposure choices afterwards, whole
+    /// (`docs/site/specs/session-tool-groups.md` section 5.5).
+    SessionToolExposureSet {
+        exposure: crate::ToolExposure,
+    },
     /// The session was attached to a runtime instance under `name`.
     RuntimeAttached {
         name: AttachmentName,
@@ -3603,6 +3608,7 @@ crate::open_enum!(tagged EventPayload, tag = "type", tags = [
     "session_permission_overlay_set",
     "session_project_set",
     "session_title_committed",
+    "session_tool_exposure_set",
     "skill_invocation_noted",
     "skill_loaded",
     "text_delta",
@@ -3764,6 +3770,7 @@ impl EventPayload {
             | Self::ElicitationRequested { .. }
             | Self::ElicitationResolved { .. }
             | Self::SessionPermissionOverlaySet { .. }
+            | Self::SessionToolExposureSet { .. }
             | Self::PermissionModeSet { .. }
             | Self::RuntimeAttached { .. }
             | Self::RuntimeDetached { .. }
@@ -3858,6 +3865,7 @@ impl EventPayload {
             self,
             Self::SessionCreated { .. }
                 | Self::SessionPermissionOverlaySet { .. }
+                | Self::SessionToolExposureSet { .. }
                 | Self::PermissionModeSet { .. }
                 | Self::RuntimeAttached { .. }
                 | Self::RuntimeDetached { .. }
@@ -3989,6 +3997,9 @@ impl EventPayload {
             Self::SessionPermissionOverlaySet { overlay } => overlay
                 .validate()
                 .map_err(|_| EventSchemaError::InvalidSessionPermissionOverlay)?,
+            Self::SessionToolExposureSet { exposure } => exposure
+                .validate_exact()
+                .map_err(|_| EventSchemaError::InvalidSessionToolExposure)?,
             Self::SkillLoaded {
                 name,
                 rendered_body,
@@ -5460,6 +5471,7 @@ pub enum EventSchemaError {
     InvalidModelTurnCommit,
     InvalidFallback,
     InvalidSessionPermissionOverlay,
+    InvalidSessionToolExposure,
     InvalidSkillEvent,
     ZeroEventSequence,
     InvalidSessionCreatedEnvelope,
@@ -5546,6 +5558,7 @@ impl fmt::Display for EventSchemaError {
                 "fallback must advance to a distinct later model after at least one attempt"
             }
             Self::InvalidSessionPermissionOverlay => "session permission overlay is invalid",
+            Self::InvalidSessionToolExposure => "session tool exposure is invalid",
             Self::InvalidSkillEvent => "skill event is invalid",
             Self::ZeroEventSequence => "event sequence must be positive",
             Self::StoredTransientPayload => "live-only stream payloads are never stored",

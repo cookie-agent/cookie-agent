@@ -1148,6 +1148,22 @@
     {
       "direction": "to_daemon",
       "kind": "request",
+      "method": "session.tools.get",
+      "params": "SessionToolsGetParams",
+      "params_role": "command",
+      "result": "SessionToolsGetResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "session.tools.set",
+      "params": "SessionToolsSetParams",
+      "params_role": "command",
+      "result": "SessionToolsGetResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
       "method": "session.tree",
       "params": "SessionTreeParams",
       "params_role": "command",

@@ -2603,6 +2603,7 @@ mod tests {
             delegation: None,
             fallback_chain: Vec::new(),
             selected_suffix_start: 0,
+            exposure: Default::default(),
         }));
         state.model_tools = Some(std::sync::Arc::from(vec![
             "read".to_owned(),

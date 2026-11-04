@@ -906,6 +906,7 @@ pub fn syncs_on_append(payload: &EventPayload) -> bool {
         | EventPayload::SessionTitleCommitted { .. }
         | EventPayload::SessionProjectSet { .. }
         | EventPayload::SessionPermissionOverlaySet { .. }
+        | EventPayload::SessionToolExposureSet { .. }
         | EventPayload::PermissionModeSet { .. }
         | EventPayload::RuntimeAttached { .. }
         | EventPayload::RuntimeDetached { .. }
@@ -2798,6 +2799,9 @@ fn validate_record_local(path: &Path, record: &StoredEvent) -> Result<(), EventL
         EventPayload::SessionPermissionOverlaySet { .. } if record.run_id.is_some() => {
             return corrupt(path, "SessionPermissionOverlaySet must not have run_id");
         }
+        EventPayload::SessionToolExposureSet { .. } if record.run_id.is_some() => {
+            return corrupt(path, "SessionToolExposureSet must not have run_id");
+        }
         EventPayload::DelegateChildTerminated { .. } if record.run_id.is_some() => {
             return corrupt(path, "DelegateChildTerminated must not have run_id");
         }
@@ -3128,6 +3132,11 @@ fn validate_record_incremental(
         EventPayload::SessionPermissionOverlaySet { .. } => {
             if record.run_id.is_some() {
                 return corrupt(path, "SessionPermissionOverlaySet must not have run_id");
+            }
+        }
+        EventPayload::SessionToolExposureSet { .. } => {
+            if record.run_id.is_some() {
+                return corrupt(path, "SessionToolExposureSet must not have run_id");
             }
         }
         EventPayload::DelegationReserved {

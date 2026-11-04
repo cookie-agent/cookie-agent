@@ -6,12 +6,12 @@ use std::{
 
 use cookie_agent_config::{SkillContext, SkillDocument, SkillRegistry};
 use cookie_agent_protocol::{
-    AttachmentName, EventPayload, PermissionAction, PermissionEffect, PermissionRule, RunId,
-    SessionId, SessionPermissionOverlay, SkillDescriptor, SkillsGetResult, SkillsListResult,
-    ToolCallId,
+    AttachmentName, EventPayload, PermissionEffect, PermissionRule, RunId, SessionId,
+    SessionPermissionOverlay, SkillDescriptor, SkillsGetResult, SkillsListResult, ToolCallId,
 };
 
 use super::{ActiveRun, Engine, EngineError};
+use crate::exposure::Layers;
 use crate::{ToolCall, TurnAgentContext};
 use crate::{permissions, policy::FrozenRunPolicy};
 pub const RESERVED_STAGED_SKILL_PREFIX: &str = "\0cookie-staged-skill:";
@@ -52,8 +52,6 @@ pub(crate) struct SessionSkill {
     /// The attachment that contributed a project skill; `None` for a user
     /// skill.
     attachment: Option<AttachmentName>,
-    /// The workspace of the attachment that contributed a project skill.
-    workspace: Option<PathBuf>,
 }
 
 impl SessionSkill {
@@ -61,6 +59,16 @@ impl SessionSkill {
         self.registry
             .get(&self.key)
             .expect("session skills name registry winners")
+    }
+
+    /// The skill's description.
+    pub(crate) fn description(&self) -> &str {
+        &self.document().frontmatter.description
+    }
+
+    /// The attachment that contributed a project skill.
+    pub(crate) fn attachment_name(&self) -> Option<&AttachmentName> {
+        self.attachment.as_ref()
     }
 }
 
@@ -89,6 +97,30 @@ impl SessionSkills {
     fn iter(&self) -> impl Iterator<Item = (&String, &SessionSkill)> {
         self.skills.iter()
     }
+
+    /// Every discovered skill file with the name the session knows it by,
+    /// its source, whether it wins its name, and the skill that does.
+    pub(crate) fn discoveries(
+        &self,
+    ) -> impl Iterator<
+        Item = (
+            &str,
+            cookie_agent_protocol::SkillSource,
+            bool,
+            &SessionSkill,
+        ),
+    > {
+        self.discoveries.iter().filter_map(|discovery| {
+            self.skills.get(&discovery.name).map(|skill| {
+                (
+                    discovery.name.as_str(),
+                    discovery.source,
+                    discovery.precedence_winner,
+                    skill,
+                )
+            })
+        })
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -108,12 +140,6 @@ pub(crate) struct PreparedSkillInvocation {
 }
 
 impl PreparedSkillInvocation {
-    pub(super) fn grants(&self) -> Option<SessionPermissionOverlay> {
-        (!self.grants.is_empty()).then(|| SessionPermissionOverlay {
-            rules: self.grants.clone(),
-        })
-    }
-
     pub(crate) fn staged_payload(&self) -> cookie_agent_protocol::StagedSkillPayload {
         cookie_agent_protocol::StagedSkillPayload {
             provenance: cookie_agent_protocol::StagedSkillProvenance::SkillFork,
@@ -150,15 +176,11 @@ impl Engine {
             if attachment.runtime_id.as_str() == cookie_agent_protocol::RuntimeId::GLOBAL {
                 user.push(registry);
             } else {
-                let workspace = instance
-                    .info()
-                    .workspace()
-                    .map(|workspace| workspace.root().to_owned());
-                project.push((attachment.name, registry, workspace));
+                project.push((attachment.name, registry));
             }
         }
         let mut offered = HashMap::<String, usize>::new();
-        for (_, registry, _) in &project {
+        for (_, registry) in &project {
             for (name, _) in registry.skills() {
                 *offered.entry(name.clone()).or_default() += 1;
             }
@@ -172,7 +194,7 @@ impl Engine {
         };
         let mut skills = BTreeMap::new();
         let mut discoveries = Vec::new();
-        for (attachment, registry, workspace) in &project {
+        for (attachment, registry) in &project {
             for (name, _) in registry.skills() {
                 skills.insert(
                     published(attachment, name),
@@ -180,7 +202,6 @@ impl Engine {
                         registry: Arc::clone(registry),
                         key: name.clone(),
                         attachment: Some(attachment.clone()),
-                        workspace: workspace.clone(),
                     },
                 );
             }
@@ -204,7 +225,6 @@ impl Engine {
                         registry: Arc::clone(registry),
                         key: name.clone(),
                         attachment: None,
-                        workspace: None,
                     },
                 );
             }
@@ -227,27 +247,11 @@ impl Engine {
     pub fn skill_tool_available(&self, session: SessionId) -> Result<bool, EngineError> {
         let projection = self.inner.store.get(session)?;
         let policy = permissions::governing_agent_for_skills(&projection);
-        let grants = self.skill_grants_for_session(session, None);
+        let layers = Layers::new(&policy.exposure, &projection.tool_exposure, false);
         let view = self.session_skills(session)?;
-        if view.skills.is_empty() {
-            return Ok(false);
-        }
-        let merged = skill_rules(&policy, &projection.permission_overlay);
-        // Without the `skill` action offered or granted, no skill is
-        // visible, whatever each skill's rules say.
-        let grants_skill = grants.as_ref().is_some_and(|grants| {
-            grants.rules.iter().any(|grant| {
-                grant.action == PermissionAction::SKILL
-                    && grant.effect == PermissionEffect::Allow
-                    && grant.applies_to(None)
-            })
-        });
-        if !grants_skill && !merged.offers(&PermissionAction::SKILL, None) {
-            return Ok(false);
-        }
         Ok(view
             .iter()
-            .any(|(name, skill)| model_skill_visibility(&merged, grants.as_ref(), name, skill).1))
+            .any(|(name, skill)| model_sees(&layers, name, skill)))
     }
 
     /// The turn-scoped skill grants that apply to tools of `attachment`
@@ -300,7 +304,6 @@ impl Engine {
                     &discovery.name,
                     document,
                     discovery.precedence_winner,
-                    PermissionEffect::Ask,
                     discovery.precedence_winner,
                 );
                 descriptor.location = discovery.path.to_string_lossy().into_owned();
@@ -337,22 +340,18 @@ impl Engine {
     pub fn list_skills(&self, session: SessionId) -> Result<SkillsListResult, EngineError> {
         let projection = self.inner.store.get(session)?;
         let policy = permissions::governing_agent_for_skills(&projection);
-        let grants = self.skill_grants_for_session(session, None);
-        let merged = skill_rules(&policy, &projection.permission_overlay);
+        let layers = Layers::new(&policy.exposure, &projection.tool_exposure, false);
         let view = self.session_skills(session)?;
         let mut skills = view
             .discoveries
             .iter()
             .filter_map(|discovery| {
                 let skill = view.get(&discovery.name)?;
-                let (effect, visible) =
-                    model_skill_visibility(&merged, grants.as_ref(), &discovery.name, skill);
                 let mut descriptor = skill_descriptor(
                     &discovery.name,
                     skill.document(),
                     discovery.precedence_winner,
-                    effect,
-                    visible,
+                    model_sees(&layers, &discovery.name, skill),
                 );
                 descriptor.location = discovery.path.to_string_lossy().into_owned();
                 descriptor.source = discovery.source;
@@ -377,23 +376,10 @@ impl Engine {
         name: &str,
         args: &str,
     ) -> Result<SkillsGetResult, EngineError> {
-        let projection = self.inner.store.get(session)?;
-        let policy = permissions::governing_agent_for_skills(&projection);
         let view = self.session_skills(session)?;
         let skill = session_skill(&view, name)?;
-        let effect = permissions::effective_permission_with_overlay(
-            &policy,
-            Some(&projection.permission_overlay),
-            &PermissionAction::SKILL,
-            name,
-            skill.workspace.as_deref(),
-        )
-        .0;
-        if effect == PermissionEffect::Deny {
-            return Err(EngineError::Permission(format!("skill `{name}` is denied")));
-        }
         Ok(SkillsGetResult {
-            skill: skill_descriptor(name, skill.document(), true, effect, true),
+            skill: skill_descriptor(name, skill.document(), true, true),
             rendered: render_skill(skill.document(), args),
         })
     }
@@ -421,13 +407,16 @@ impl Engine {
     ) -> Result<SkillsGetResult, EngineError> {
         let projection = self.inner.store.get(session)?;
         let policy = permissions::governing_agent_for_skills(&projection);
-        let grants = self.skill_grants_for_session(session, None);
-        let merged = skill_rules(&policy, &projection.permission_overlay);
+        let layers = Layers::new(&policy.exposure, &projection.tool_exposure, false);
         let view = self.session_skills(session)?;
-        let visible = |skill_name: &str, skill: &SessionSkill| {
-            model_skill_visibility(&merged, grants.as_ref(), skill_name, skill).1
-        };
+        let visible =
+            |skill_name: &str, skill: &SessionSkill| model_sees(&layers, skill_name, skill);
         let Some(skill) = view.get(name).filter(|skill| visible(name, skill)) else {
+            if view.get(name).is_some() && !layers.skill_on(name) {
+                return Err(EngineError::ToolFailed(format!(
+                    "skill `{name}` is off in this session"
+                )));
+            }
             let hints = view
                 .iter()
                 .filter(|(skill_name, skill)| visible(skill_name, skill))
@@ -438,48 +427,24 @@ impl Engine {
                 "unknown or unavailable model skill `{name}`; valid skills: {hints}"
             )));
         };
-        let effect = model_skill_visibility(&merged, grants.as_ref(), name, skill).0;
         Ok(SkillsGetResult {
-            skill: skill_descriptor(name, skill.document(), true, effect, true),
+            skill: skill_descriptor(name, skill.document(), true, true),
             rendered: render_skill(skill.document(), args),
         })
     }
 
+    /// Loads the skill `name` for a call of the `skill` tool that its
+    /// preparation already checked: a model's call to a skill that is on, or
+    /// the user's (`docs/site/specs/session-tool-groups.md` section 7).
     pub async fn invoke_skill(
         &self,
         session: SessionId,
         run: Option<cookie_agent_protocol::RunId>,
         name: &str,
         args: &str,
-        permission_preapproved: bool,
     ) -> Result<SkillInvocation, EngineError> {
-        let projection = self.inner.store.get(session)?;
-        let policy = permissions::governing_agent_for_skills(&projection);
         let view = self.session_skills(session)?;
         let skill = session_skill(&view, name)?;
-        if !permission_preapproved && !skill.document().frontmatter.user_invocable {
-            return Err(EngineError::Permission(format!(
-                "skill `{name}` is not user-invocable"
-            )));
-        }
-        let effect = permissions::effective_permission_with_overlay(
-            &policy,
-            Some(&projection.permission_overlay),
-            &PermissionAction::SKILL,
-            name,
-            skill.workspace.as_deref(),
-        )
-        .0;
-        if !permission_preapproved && effect != PermissionEffect::Allow {
-            return Err(EngineError::Permission(format!(
-                "skill `{name}` requires {}",
-                if effect == PermissionEffect::Deny {
-                    "permission that is denied"
-                } else {
-                    "approval"
-                }
-            )));
-        }
         let plan = prepared_skill_invocation(name, skill, args);
         self.install_prepared_skill(session, run, &plan).await
     }
@@ -863,19 +828,15 @@ impl Engine {
         &self,
         session: SessionId,
         policy: &FrozenRunPolicy,
-        prospective_grants: Option<&SessionPermissionOverlay>,
         context_tokens: u64,
     ) -> Result<Option<String>, EngineError> {
         let projection = self.inner.store.get(session)?;
         let view = self.session_skills(session)?;
-        let merged = skill_rules(&policy.agent, &projection.permission_overlay);
+        let layers = Layers::of(&projection, policy);
         let visible = view
             .iter()
-            .filter_map(|(name, skill)| {
-                model_skill_visibility(&merged, prospective_grants, name, skill)
-                    .1
-                    .then_some((name.as_str(), skill.document()))
-            })
+            .filter(|(name, skill)| model_sees(&layers, name, skill))
+            .map(|(name, skill)| (name.as_str(), skill.document()))
             .collect::<Vec<_>>();
         if visible.is_empty() {
             return Ok(None);
@@ -891,7 +852,6 @@ impl Engine {
         &self,
         session: SessionId,
         policy: &FrozenRunPolicy,
-        prospective_grants: Option<&SessionPermissionOverlay>,
     ) -> Result<Option<String>, EngineError> {
         let context_tokens = policy.selected_suffix[0]
             .descriptor
@@ -899,16 +859,15 @@ impl Engine {
             .limits
             .context
             .unwrap_or(8_192);
-        self.skill_listing(session, policy, prospective_grants, context_tokens)
+        self.skill_listing(session, policy, context_tokens)
     }
 
     pub(crate) fn compose_skill_listing(
         &self,
         session: SessionId,
         policy: &mut FrozenRunPolicy,
-        prospective_grants: Option<&SessionPermissionOverlay>,
     ) -> Result<(), EngineError> {
-        let Some(listing) = self.live_skills_block(session, policy, prospective_grants)? else {
+        let Some(listing) = self.live_skills_block(session, policy)? else {
             return Ok(());
         };
         crate::runtime::prompt_blocks::append_prompt_block(
@@ -936,7 +895,6 @@ fn skill_descriptor(
     name: &str,
     skill: &SkillDocument,
     precedence_winner: bool,
-    permission_effect: PermissionEffect,
     visible: bool,
 ) -> SkillDescriptor {
     SkillDescriptor {
@@ -946,7 +904,9 @@ fn skill_descriptor(
         location: skill.path.to_string_lossy().into_owned(),
         source: skill.source,
         precedence_winner,
-        permission_effect,
+        // Skills take no permission (session tool groups spec, section 7):
+        // reported as `allow` for clients that read it.
+        permission_effect: PermissionEffect::Allow,
         visible,
         user_invocable: skill.frontmatter.user_invocable,
         argument_hint: skill.frontmatter.argument_hint.clone(),
@@ -954,31 +914,10 @@ fn skill_descriptor(
     }
 }
 
-/// The merged rules skills are decided by: `policy`'s and `overlay`'s, on
-/// the base layer, which reports no home.
-fn skill_rules<'a>(
-    policy: &'a cookie_agent_protocol::AgentSnapshot,
-    overlay: &'a SessionPermissionOverlay,
-) -> permissions::MergedRules<'a> {
-    permissions::MergedRules::of(policy, Some(overlay), None)
-}
-
-/// The effect of `skill`, known as `name`, under `merged`
-/// ([`skill_rules`]), and whether the model sees it: the `skill` action is
-/// offered or granted, the skill is not denied, and it does not opt out of
-/// model invocation.
-fn model_skill_visibility(
-    merged: &permissions::MergedRules<'_>,
-    grants: Option<&SessionPermissionOverlay>,
-    name: &str,
-    skill: &SessionSkill,
-) -> (PermissionEffect, bool) {
-    let scope = permissions::PermissionScope::from(skill.workspace.as_deref());
-    let effect = merged.decide(&PermissionAction::SKILL, name, scope).0;
-    let visible = effect != PermissionEffect::Deny
-        && !skill.document().frontmatter.disable_model_invocation
-        && permissions::PermissionPipeline::tool_visible_by(merged, grants, "skill", scope);
-    (effect, visible)
+/// Whether the model sees the skill `skill`, known as `name`: it is on for
+/// the agent in `layers`, and does not opt out of model invocation.
+fn model_sees(layers: &Layers<'_>, name: &str, skill: &SessionSkill) -> bool {
+    layers.skill_on(name) && !skill.document().frontmatter.disable_model_invocation
 }
 
 /// The plan for invoking `skill`, known to the session as `name`. A project

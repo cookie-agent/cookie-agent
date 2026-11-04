@@ -361,6 +361,22 @@ impl Engine {
         Ok(found.defaults.filter(sets_attachments))
     }
 
+    /// The tool group and skill choices of `project`'s defaults, when it
+    /// has any.
+    pub(crate) async fn project_exposure_defaults(
+        &self,
+        project: &ProjectId,
+    ) -> Result<Option<cookie_agent_protocol::ToolExposure>, EngineError> {
+        let project = project.clone();
+        let found = self
+            .projects_blocking(move |engine, _| engine.existing_project(&project))
+            .await?;
+        Ok(found
+            .defaults
+            .map(|defaults| defaults.exposure)
+            .filter(|exposure| !exposure.is_empty()))
+    }
+
     /// `session.project.set`: moves the root session `session_id` into
     /// `project`, or out of any with `None`, by recording
     /// `session_project_set`. Allowed while the session runs: runs read the

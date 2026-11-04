@@ -11,8 +11,8 @@ use super::acp::*;
 use super::support::*;
 use crate::Engine;
 
-const REVIEW: &str = "---\ndescription: Fixture, read-only\nmode: all\nacp:\n  agent: fixture\n  hide_tools: [read, webfetch]\npermissions:\n  bash: deny\n---\n";
-const OPEN: &str = "---\ndescription: Fixture, trusted\nmode: all\nacp:\n  agent: fixture\n  hide_tools: [\"web*\"]\npermissions:\n  bash: allow\n  read: { \"${workspace_dir}/*\": allow }\n---\n";
+const REVIEW: &str = "---\ndescription: Fixture, read-only\nmode: all\nacp:\n  agent: fixture\ntool_groups: { coding: off }\npermissions:\n  bash: deny\n---\n";
+const OPEN: &str = "---\ndescription: Fixture, trusted\nmode: all\nacp:\n  agent: fixture\npermissions:\n  bash: allow\n  read: { \"${workspace_dir}/*\": allow }\n---\n";
 
 fn id(id: &str) -> AgentId {
     AgentId::new(id).unwrap()
@@ -111,7 +111,8 @@ async fn two_documents_run_one_declaration_each_with_its_own_rules_and_tools() {
         turn_of(engine, open, "open", "ask", ask).await,
         "permission: yes"
     );
-    // And its `hide_tools` and rules the bridge's tools.
+    // And its `tool_groups` and rules the bridge's tools; an ACP agent
+    // gets no `web` by default.
     let listed = turn_of(engine, review, "review", "list", "mcp list").await;
     assert!(!tools(&listed).contains(&"read"), "{listed}");
     let listed = turn_of(engine, open, "open", "list", "mcp list").await;

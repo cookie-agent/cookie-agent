@@ -161,14 +161,13 @@ permissions:
   read: allow
   bash: ask
   delegate: allow
-  skill: allow
 ---
 Help.
 AGENT
     # The memory group's agent keeps memory, each user memory at most 1 KB.
     memory_config=""
     if [[ " $* " == *" memory_changes "* ]]; then
-        sed -i 's/^  skill: allow$/  skill: allow\n  memory: allow\n  memory_write: allow/' \
+        sed -i 's/^  delegate: allow$/  delegate: allow\n  memory: allow\n  memory_write: allow/' \
             "$allowing/.cookie-agent/agents/primary.md"
         memory_config="
 [memory]

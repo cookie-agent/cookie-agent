@@ -114,6 +114,11 @@ struct DefaultsFile {
     global: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     runtimes: Vec<RuntimeFile>,
+    #[serde(
+        default,
+        skip_serializing_if = "cookie_agent_protocol::ToolExposure::is_empty"
+    )]
+    exposure: cookie_agent_protocol::ToolExposure,
 }
 
 const fn attach_global() -> bool {
@@ -146,6 +151,7 @@ impl From<&ProjectDefaults> for DefaultsFile {
                     workspace: runtime.workspace.clone(),
                 })
                 .collect(),
+            exposure: defaults.exposure.clone(),
         }
     }
 }
@@ -165,6 +171,7 @@ impl From<DefaultsFile> for ProjectDefaults {
                     workspace: runtime.workspace,
                 })
                 .collect(),
+            exposure: file.exposure,
         }
     }
 }
@@ -263,13 +270,18 @@ pub(crate) fn validate_emoji(emoji: &str) -> Result<(), String> {
 }
 
 /// Checks what [`ProjectDefaults`] cannot say in its types: no runtime
-/// listed twice and no empty workspace. The runtimes need not be connected,
-/// so whether they have the capability is not checked.
+/// listed twice, no empty workspace, and exact tool group and skill
+/// choices. The runtimes need not be connected, so whether they have the
+/// capability is not checked.
 pub(crate) fn validate_defaults(defaults: &ProjectDefaults) -> Result<(), ProjectError> {
     let invalid = |reason: String| ProjectError::Invalid {
         field: "defaults",
         reason,
     };
+    defaults
+        .exposure
+        .validate_exact()
+        .map_err(|error| invalid(error.to_string()))?;
     let mut seen = BTreeSet::new();
     for runtime in &defaults.runtimes {
         if runtime

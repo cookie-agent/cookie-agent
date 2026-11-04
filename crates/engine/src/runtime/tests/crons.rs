@@ -1270,10 +1270,10 @@ helper (all) — Helper test agent
   usable for: delegate, cron
   permissions as a root run:
     bash: ask
-    defaults: read, write, webfetch, skill, mcp, delegate, list_runtimes, memory, memory_write, cron, attach, asset, message
+    defaults: read, write, webfetch, mcp, delegate, list_runtimes, memory, memory_write, cron, attach, asset, message
   permissions as a subagent:
     bash: ask
-    defaults: read, write, webfetch, skill, mcp, delegate, list_runtimes, memory, memory_write, asset, message
+    defaults: read, write, webfetch, mcp, delegate, list_runtimes, memory, memory_write, asset, message
 primary (primary) — Primary test agent
   models: custom.test/group/model
   usable for: cron
@@ -1282,19 +1282,18 @@ primary (primary) — Primary test agent
     write: ${workspace_dir}/* allow; * ask
     memory_write: agent://primary allow
     delegate: worker allow; helper allow
-    defaults: webfetch, skill, mcp, list_runtimes, memory, cron, attach, asset, message
+    defaults: webfetch, mcp, list_runtimes, memory, cron, attach, asset, message
 worker (subagent) — Worker test agent
   models: custom.test/group/model
   usable for: delegate
   permissions:
-    defaults: read, write, webfetch, skill, mcp, delegate, memory, memory_write, asset, message
+    defaults: read, write, webfetch, mcp, delegate, memory, memory_write, asset, message
 
 Defaults (for actions an agent document names no key for):
   as a root run:
     read: allow
     write: ${workspace_dir}/* allow; * ask
     webfetch: allow
-    skill: allow
     mcp: ask
     delegate: deny
     list_runtimes: allow
@@ -1308,7 +1307,6 @@ Defaults (for actions an agent document names no key for):
     read: allow
     write: ${workspace_dir}/* allow; * ask
     webfetch: allow
-    skill: allow
     mcp: ask
     delegate: deny
     list_runtimes: allow (only agents of mode all)
@@ -1330,19 +1328,18 @@ helper (all) — Helper test agent
   usable for: delegate
   permissions:
     bash: ask
-    defaults: read, write, webfetch, skill, mcp, delegate, list_runtimes, memory, memory_write, asset, message
+    defaults: read, write, webfetch, mcp, delegate, list_runtimes, memory, memory_write, asset, message
 worker (subagent) — Worker test agent
   models: custom.test/group/model
   usable for: delegate
   permissions:
-    defaults: read, write, webfetch, skill, mcp, delegate, memory, memory_write, asset, message
+    defaults: read, write, webfetch, mcp, delegate, memory, memory_write, asset, message
 
 Defaults (for actions an agent document names no key for):
   as a subagent:
     read: allow
     write: ${workspace_dir}/* allow; * ask
     webfetch: allow
-    skill: allow
     mcp: ask
     delegate: deny
     list_runtimes: allow (only agents of mode all)

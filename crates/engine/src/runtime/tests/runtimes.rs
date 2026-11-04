@@ -1130,18 +1130,6 @@ async fn same_named_project_skills_of_two_attachments_are_prefixed() {
     ];
     expected.sort();
     assert_eq!(listed(&fixture.engine), expected);
-    fixture
-        .engine
-        .set_session_permission(
-            session,
-            &cookie_agent_protocol::PermissionAction::SKILL,
-            None,
-            cookie_agent_protocol::WildcardPattern::new("*").unwrap(),
-            cookie_agent_protocol::PermissionEffect::Allow,
-            origin(),
-        )
-        .await
-        .expect("allow skills");
     let rendered = fixture
         .engine
         .get_skill(session, "labpc_api_deploy", "")

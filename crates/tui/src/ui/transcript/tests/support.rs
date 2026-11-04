@@ -592,6 +592,7 @@ pub(crate) fn session_created_from_bindings(
                 delegation: None,
                 fallback_chain: chain.into_iter().map(persisted_binding).collect(),
                 selected_suffix_start: suffix_start,
+                exposure: Default::default(),
             }),
             revisions: cookie_agent_protocol::RuntimeRevisions {
                 runtime_revision: protocol_revision("1"),
@@ -2113,6 +2114,7 @@ pub(crate) fn run_started_with_suffix(
                 delegation: None,
                 fallback_chain: snapshot_chain.clone(),
                 selected_suffix_start: 0,
+                exposure: Default::default(),
             }),
             revisions: Some(cookie_agent_protocol::RuntimeRevisions {
                 runtime_revision: protocol_revision("1"),

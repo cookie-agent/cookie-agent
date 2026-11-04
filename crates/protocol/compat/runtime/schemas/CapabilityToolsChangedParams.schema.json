@@ -18,6 +18,13 @@
     "RuntimeTools": {
       "description": "A runtime's tools and their prompt sections.",
       "properties": {
+        "groups": {
+          "description": "The groups its tools name (runtime protocol 1.16.0;\n`docs/site/specs/session-tool-groups.md` section 11.1), each once.",
+          "items": {
+            "$ref": "#/$defs/ToolGroupDeclaration"
+          },
+          "type": "array"
+        },
         "prompt_sections": {
           "default": [],
           "items": {
@@ -89,6 +96,13 @@
         "description": {
           "type": "string"
         },
+        "group": {
+          "description": "The group of `RuntimeTools::groups` the tool belongs to (runtime\nprotocol 1.16.0); its capability's group when absent.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "name": {
           "type": "string"
         },
@@ -120,6 +134,55 @@
         "parameters"
       ],
       "type": "object"
+    },
+    "ToolGroupDeclaration": {
+      "description": "A tool group a runtime declares once for the tools that name it.",
+      "properties": {
+        "default": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ToolGroupState"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The group's state before any choice: `on` (absent) or `deferred`."
+        },
+        "name": {
+          "description": "`[a-z][a-z0-9_]{0,31}`; `mcp`, `plugin`, `runtime`, and the fixed\ngroups are reserved.",
+          "type": "string"
+        },
+        "summary": {
+          "description": "What its tools are for, at most 512 bytes.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "summary"
+      ],
+      "type": "object"
+    },
+    "ToolGroupState": {
+      "description": "A tool group's state.",
+      "oneOf": [
+        {
+          "const": "on",
+          "description": "Offered, sent up front.",
+          "type": "string"
+        },
+        {
+          "const": "deferred",
+          "description": "Offered deferred, loaded with `tool_search`; `on` on a model that\ndoes not defer and for an ACP agent.",
+          "type": "string"
+        },
+        {
+          "const": "off",
+          "description": "Not offered.",
+          "type": "string"
+        }
+      ]
     },
     "ToolOutputDeclaration": {
       "oneOf": [

@@ -65,6 +65,7 @@ mod blocking_io;
 pub(crate) mod compaction;
 pub(crate) mod configuration;
 pub(crate) mod delegation;
+mod exposure_api;
 mod frozen_context;
 mod helpers;
 mod internal_agents;
@@ -319,6 +320,10 @@ pub enum EngineError {
     CacheStrategy(String),
     #[error("session permission error: {0}")]
     Permission(String),
+    /// Tool group or skill choices that were refused
+    /// (`docs/site/specs/session-tool-groups.md`).
+    #[error("tool groups: {0}")]
+    ToolExposure(String),
     #[error("goal operation rejected: {0}")]
     Goal(String),
     #[error("producer operation rejected: {0}")]

@@ -171,6 +171,7 @@ async fn a_session_in_a_project_takes_its_default_attachments_unless_runtimes_ar
     let workspace = fixture._directory.path().join("web");
     create_private_test_dir(&workspace);
     let defaults = ProjectDefaults {
+        exposure: Default::default(),
         runtimes: vec![ProjectRuntime {
             runtime_id: RuntimeId::local(),
             capability: Some(cookie_agent_protocol::CapabilityName::coding()),
@@ -228,6 +229,7 @@ async fn a_session_in_a_project_takes_its_default_attachments_unless_runtimes_ar
         &fixture,
         "agent-only",
         Some(ProjectDefaults {
+            exposure: Default::default(),
             agent: Some(selection.agent.clone()),
             ..ProjectDefaults::default()
         }),
@@ -274,6 +276,7 @@ async fn a_default_agent_must_be_listed_and_able_to_run_as_root() {
     let with_agent = |agent: &str, preset: Option<&str>| {
         let mut params = ProjectUpdateParams::new(web.id.clone(), web.revision.clone());
         params.defaults = Some(Some(ProjectDefaults {
+            exposure: Default::default(),
             agent: Some(cookie_agent_protocol::AgentId::new(agent).unwrap()),
             preset: preset.map(str::to_owned),
             ..ProjectDefaults::default()
@@ -645,4 +648,110 @@ async fn memory_writes_to_a_project_that_does_not_exist_are_refused() {
         .await
         .unwrap();
     fixture.engine.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_new_session_copies_its_projects_tool_choices_and_keeps_them() {
+    use cookie_agent_protocol::{ToolExposure, ToolGroupRule, ToolGroupState};
+    let (fixture, selection) = custom_fixture();
+    let exposure = |state| ToolExposure {
+        tool_groups: vec![ToolGroupRule {
+            selector: "memory".parse().unwrap(),
+            state,
+            from_project: false,
+        }],
+        skills: Vec::new(),
+    };
+    let defaults = ProjectDefaults {
+        exposure: exposure(ToolGroupState::Off),
+        ..ProjectDefaults::default()
+    };
+    let web = create(&fixture, "web", Some(defaults)).await;
+    let session = session_in(
+        &fixture,
+        &selection,
+        SessionRuntimes::default(),
+        Some(web.id.clone()),
+    )
+    .await
+    .unwrap();
+    let copied = fixture
+        .engine
+        .inner
+        .store
+        .get(session)
+        .unwrap()
+        .tool_exposure
+        .clone();
+    assert_eq!(copied.tool_groups.len(), 1);
+    assert!(copied.tool_groups[0].from_project);
+    assert_eq!(copied.tool_groups[0].state, ToolGroupState::Off);
+    let listed = fixture.engine.get_session_tools(session).unwrap();
+    let memory = listed
+        .groups
+        .iter()
+        .find(|group| group.name == "memory")
+        .unwrap();
+    assert_eq!(memory.layer, cookie_agent_protocol::ExposureLayer::Project);
+
+    // Editing the project later changes no existing session.
+    let mut params =
+        ProjectUpdateParams::new(web.id.clone(), project(&fixture, &web.id).await.revision);
+    params.defaults = Some(Some(ProjectDefaults {
+        exposure: exposure(ToolGroupState::Deferred),
+        ..ProjectDefaults::default()
+    }));
+    fixture.engine.update_project(params).await.unwrap();
+    assert_eq!(
+        fixture
+            .engine
+            .inner
+            .store
+            .get(session)
+            .unwrap()
+            .tool_exposure,
+        copied
+    );
+
+    // A creation that carries its own choices uses them as given.
+    let own = fixture
+        .engine
+        .create_root_session(
+            selection.clone(),
+            None,
+            Vec::new(),
+            SessionRuntimes::default(),
+            Some(web.id.clone()),
+            None,
+            Some(ToolExposure::default()),
+        )
+        .await
+        .unwrap()
+        .session_id;
+    assert!(
+        fixture
+            .engine
+            .inner
+            .store
+            .get(own)
+            .unwrap()
+            .tool_exposure
+            .is_empty()
+    );
+
+    // A project's defaults name groups exactly.
+    let mut params =
+        ProjectUpdateParams::new(web.id.clone(), project(&fixture, &web.id).await.revision);
+    params.defaults = Some(Some(ProjectDefaults {
+        exposure: ToolExposure {
+            tool_groups: vec![ToolGroupRule {
+                selector: "mcp:*".parse().unwrap(),
+                state: ToolGroupState::Off,
+                from_project: false,
+            }],
+            skills: Vec::new(),
+        },
+        ..ProjectDefaults::default()
+    }));
+    assert!(fixture.engine.update_project(params).await.is_err());
 }

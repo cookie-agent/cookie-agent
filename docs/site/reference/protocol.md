@@ -13,7 +13,7 @@ A client must call `handshake` before any other method:
 
 ```json
 { "jsonrpc": "2.0", "id": 1, "method": "handshake", "params": {
-    "protocol_version": "1.81.0",
+    "protocol_version": "1.82.0",
     "client": { "kind": "web", "instance_id": "<uuid>" },
     "token": "<the daemon's token>",
     "features": [] } }
@@ -22,7 +22,7 @@ A client must call `handshake` before any other method:
 The reply:
 
 ```json
-{ "protocol_version": "1.81.0", "engine_version": "0.3.0",
+{ "protocol_version": "1.82.0", "engine_version": "0.3.0",
   "origin": "client:web-<id>", "machine_id": "<opaque>", "features": [],
   "status": { "phase": "ready" } }
 ```
@@ -270,9 +270,11 @@ Idempotent redelivery resolves against the state preceding the original run.
 | `session.project.set` | Root session ID, required nullable `project` | The session's metadata; it moved into the project, or out of any with `null` (see [Projects](#projects)) |
 | `session.agent_option.set` | `session_id`, `option_id`, `value` | The session's ACP agent options after the change; `session/set_config_option` (or `session/set_mode` for an agent that offers modes but no mode option) with the agent, resuming its ACP session when it is not live (see [ACP agents](#acp-agents)) |
 | `session.permission.get` | Session ID | Effective permissions per action and the tree's current mode |
-| `session.permission.set` | Session ID, action, optional `runtime` selector (refused on `message` and `skill`, as in agent documents), wildcard pattern, effect | Effective permissions after the overlay change |
+| `session.permission.set` | Session ID, action, optional `runtime` selector (refused on `message`, as in agent documents), wildcard pattern, effect | Effective permissions after the overlay change |
 | `session.permission.clear` | Session ID, action, optional `runtime` selector, wildcard pattern | Effective permissions after the overlay change |
 | `session.permission.preview` | Run selection, optional overlay `rules` | Effective permissions a session created with them would have; creates nothing |
+| `session.tools.get` | `session_id`; since 1.82.0 | The session's tool `groups`, one per group per runtime, and its `skills`, each with its state and the layer that decided it, and the session's own `exposure` (see [Tool groups and skills](#tool-groups-and-skills)) |
+| `session.tools.set` | `session_id`, `exposure` (the session's choices, whole; exact selectors and skill names only); since 1.82.0 | As `session.tools.get`, afterwards |
 | `session.runtime.attach` | Session ID, `runtime_id`, optional `capability`, `workspace` when the capability takes one | The new `attachment` and the session's `runtimes` |
 | `session.runtime.detach` | Session ID, attachment `name` | The session's `runtimes` |
 | `runtimes.list` | Empty object | Every `runtimes` entry (built-in, configured, and dial-in, with lifetime, connection, capabilities, and machine) and the opened `instances` with status (see [Runtimes](#runtimes)) |
@@ -741,10 +743,13 @@ as a `ProjectInfo`: its opaque `id`, which sessions refer to it by; its
 folder; an optional `emoji`; its `revision`; its `defaults`; whether it
 `has_agents_md`; and the counts of its root `sessions` and its `memories`.
 
-`defaults` is `{ preset?, agent?, global, runtimes }`: `global` and
+`defaults` is `{ preset?, agent?, global, runtimes, exposure? }`: `global` and
 `runtimes` (`[{ runtime_id, capability?, workspace? }]`) have the shape of
 `session.create`'s members of the same names; `agent` and `preset` name an
-agent and its preset as a `RunSelection` does. `project.create` and
+agent and its preset as a `RunSelection` does; `exposure` (since 1.82.0) is
+a `ToolExposure`, the tool group and skill choices a new session copies,
+exact selectors and skill names only (see
+[Tool groups and skills](#tool-groups-and-skills)). `project.create` and
 `project.update` check them like `session.create`'s `runtimes`, except that
 the runtimes need not be connected, and refuse an agent the daemon does not
 list in that preset, or one that cannot run as root (`project_invalid`). An
@@ -764,7 +769,9 @@ has is `project_name_taken`; an unknown ID is `project_not_found`.
   checked before anything is attached. When the creation omits `runtimes`
   and the project's defaults name runtimes or leave out `global`, the
   session attaches the defaults' `global` and `runtimes`; an explicit
-  `runtimes`, even an empty one, wins. The daemon never applies the default
+  `runtimes`, even an empty one, wins. When the creation carries no
+  `exposure`, the session starts with a copy of the defaults' `exposure`,
+  each rule marked `from_project`. The daemon never applies the default
   `agent` and `preset`: the creation's selection is the client's to set.
 - **Membership.** `SessionMeta.project` is the project a session belongs to:
   a root's own, a delegated session's root's. A session whose project no
@@ -1812,12 +1819,48 @@ A client can configure permissions before a session exists.
 `session.create` accepts an optional `permission_mode` for the new tree and
 optional `permission_rules`, which are validated like any overlay (no duplicate
 action, runtime selector, and pattern, at most 256, and no runtime selector on
-`message` or `skill`) before the session is created and committed as
+`message`) before the session is created and committed as
 its first `session_permission_overlay_set` event, so the first run already sees
 them. `session.permission.preview { selection, rules }` returns the effective
 permissions such a session would have, computed from the selection's frozen
 agent policy exactly as `session.permission.get` computes them for a live
 session.
+
+### Tool groups and skills
+
+Since 1.82.0 (`docs/site/specs/session-tool-groups.md`). A `ToolExposure`
+is `{ tool_groups?, skills? }`: `tool_groups` a list of
+`{ selector, state, from_project? }`, where `selector` is a
+`ToolGroupSelector` string (`coding`, `coding@labpc`, `mcp:exa`,
+`mcp:playwright@local`, `plugin:browser`) and `state` is `on`, `deferred`,
+or `off`; `skills` a list of `{ skill, state, from_project? }`, where
+`skill` is a skill name and `state` is `on` or `off`. Each list holds at
+most 256 rules, one per selector or name. A session's and a project's
+exposure take exact selectors and names only; a pattern (`*`, `?`) or a
+fixed group (`artifacts`, `background`, `loader`, `tool_search`, `skills`)
+is refused, as is any other invalid rule, with the engine's error.
+
+- **`session.create`** takes an optional `exposure`, recorded as the
+  session's first `session_tool_exposure_set`; without one, a project's
+  defaults' are copied.
+- **`session.tools.get { session_id }`** returns `groups`, `skills`, and
+  `exposure`, the session's own choices. Each group is one group on one
+  runtime: its exact `selector`, `kind` (`builtin`, `mcp`, or `plugin`),
+  `name`, `runtime` (absent for the base layer, `global`, and top-level
+  MCP servers), `attachment`, `summary`, `state`, the `layer` that decided
+  it (`default`, `agent`, `project`, or `session`), `below` and
+  `below_layer` (what the layers under the session's choice give: what a
+  reset returns to), `hidden_by_permissions` when the rules hide every
+  tool of it, its `tools` by the names the model sees, and a
+  `token_estimate` of its definitions sent up front. The defaults' state
+  is `on` or `deferred` as the deferral defaults say. Fixed groups and the
+  loader are not listed. Each skill has its `name`, `description`,
+  `source`, `attachment` for a project skill, `state`, `layer`, `below`,
+  `below_layer`, and `shadowed` when a skill of the same name wins.
+- **`session.tools.set { session_id, exposure }`** replaces the session's
+  choices whole and returns what `session.tools.get` would. It takes
+  effect from the session's next request. The appended
+  `session_tool_exposure_set` reaches every client with the session open.
 
 Background jobs report through the `tool { tool_call_id }` producer owner (the
 completion report of a job a tool call started, such as a `bash` call with

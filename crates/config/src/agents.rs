@@ -376,6 +376,10 @@ pub struct AgentFrontmatter {
     /// into it (`AcpDocumentSettings::models`), leaving `models` empty.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub acp: Option<AcpDocumentSettings>,
+    /// The document's `tool_groups` and `skills`
+    /// (`docs/site/specs/session-tool-groups.md` section 5.3), in order.
+    #[serde(skip)]
+    pub exposure: cookie_agent_protocol::ToolExposure,
 }
 
 /// The `acp` block of an ACP agent's document.
@@ -394,11 +398,6 @@ pub struct AcpDocumentSettings {
     /// Initial values of the agent's config options, by option ID.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub config: BTreeMap<String, String>,
-    /// Patterns (`*`, `?`) over cookie's tool names the agent does not get
-    /// on any machine; `webfetch` when absent, since a fetch reads the same
-    /// page from nearly any machine and the harness has its own.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub hide_tools: Option<Vec<String>>,
     /// The document's top-level `models`, a fallback chain over the values
     /// of the agent's model option, each with a value of its effort
     /// (`thought_level`) option. Read from `models`, never from the `acp`
@@ -476,25 +475,10 @@ impl<'de> Deserialize<'de> for AcpModelChoice {
 }
 
 impl AcpDocumentSettings {
-    /// The tools an ACP agent does not get when its document names none:
-    /// the coding runtime's, which the agent has its own of.
-    pub const DEFAULT_HIDE_TOOLS: [&'static str; 1] = ["webfetch"];
-
     /// The declaration the document `id` runs: `agent`, else `id`.
     #[must_use]
     pub fn declaration<'a>(&'a self, id: &'a AgentId) -> &'a AgentId {
         self.agent.as_ref().unwrap_or(id)
-    }
-
-    /// The patterns of the tools the agent does not get.
-    #[must_use]
-    pub fn hidden_tools(&self) -> Vec<String> {
-        self.hide_tools.clone().unwrap_or_else(|| {
-            Self::DEFAULT_HIDE_TOOLS
-                .iter()
-                .map(|tool| (*tool).to_owned())
-                .collect()
-        })
     }
 }
 
@@ -527,6 +511,14 @@ impl<'de> Deserialize<'de> for AgentFrontmatter {
             agent_md: Option<bool>,
             #[serde(default)]
             acp: Option<AcpDocumentSettings>,
+            #[serde(default)]
+            tool_groups: IndexMap<
+                cookie_agent_protocol::ToolGroupSelector,
+                cookie_agent_protocol::ToolGroupState,
+            >,
+            #[serde(default)]
+            skills:
+                IndexMap<cookie_agent_protocol::SkillPattern, cookie_agent_protocol::SkillState>,
         }
 
         const fn enabled_by_default() -> bool {
@@ -553,6 +545,26 @@ impl<'de> Deserialize<'de> for AgentFrontmatter {
             permissions: raw.permissions,
             agent_md: raw.agent_md,
             acp: raw.acp,
+            exposure: cookie_agent_protocol::ToolExposure {
+                tool_groups: raw
+                    .tool_groups
+                    .into_iter()
+                    .map(|(selector, state)| cookie_agent_protocol::ToolGroupRule {
+                        selector,
+                        state,
+                        from_project: false,
+                    })
+                    .collect(),
+                skills: raw
+                    .skills
+                    .into_iter()
+                    .map(|(skill, state)| cookie_agent_protocol::SkillRule {
+                        skill,
+                        state,
+                        from_project: false,
+                    })
+                    .collect(),
+            },
         })
     }
 }
@@ -713,13 +725,6 @@ fn validate_acp_settings(
             .any(|(id, value)| !valid_acp_label(id) || !valid_acp_label(value))
     {
         Some("acp")
-    } else if acp.hide_tools.as_ref().is_some_and(|patterns| {
-        patterns.len() > MAX_LIST
-            || patterns.iter().any(|pattern| {
-                pattern.is_empty() || pattern.len() > 128 || pattern.chars().any(char::is_control)
-            })
-    }) {
-        Some("acp.hide_tools")
     } else {
         None
     };
@@ -743,6 +748,19 @@ fn validate_agent_document(
     all: &BTreeMap<AgentId, AgentDocument>,
 ) -> Result<(), ConfigError> {
     let frontmatter = &document.frontmatter;
+    if frontmatter.mode == AgentMode::Internal && !frontmatter.exposure.is_empty() {
+        return Err(ConfigError::AgentExposure {
+            agent: document.id.clone(),
+            message: "internal agents take no `tool_groups` or `skills`".to_owned(),
+        });
+    }
+    frontmatter
+        .exposure
+        .validate()
+        .map_err(|error| ConfigError::AgentExposure {
+            agent: document.id.clone(),
+            message: error.to_string(),
+        })?;
     if matches!(
         document.id.as_str(),
         BUILT_IN_APPROVAL_AGENT_ID | BUILT_IN_COMPACTION_AGENT_ID | BUILT_IN_TITLE_AGENT_ID

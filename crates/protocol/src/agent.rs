@@ -43,7 +43,6 @@ impl PermissionAction {
     pub const DELEGATE: Self = Self(Cow::Borrowed("delegate"));
     pub const MESSAGE: Self = Self(Cow::Borrowed("message"));
     pub const MCP: Self = Self(Cow::Borrowed("mcp"));
-    pub const SKILL: Self = Self(Cow::Borrowed("skill"));
     pub const WEBFETCH: Self = Self(Cow::Borrowed("webfetch"));
     /// Searching and reading memory (`memory_search`, `memory_read`).
     pub const MEMORY: Self = Self(Cow::Borrowed("memory"));
@@ -67,14 +66,13 @@ impl PermissionAction {
     pub const ASSET: Self = Self(Cow::Borrowed("asset"));
 
     /// The actions of the tools Cookie Agent ships, in display order.
-    pub const BUILT_IN: [Self; 14] = [
+    pub const BUILT_IN: [Self; 13] = [
         Self::READ,
         Self::WRITE,
         Self::BASH,
         Self::DELEGATE,
         Self::MESSAGE,
         Self::MCP,
-        Self::SKILL,
         Self::WEBFETCH,
         Self::MEMORY,
         Self::MEMORY_WRITE,
@@ -133,12 +131,12 @@ impl PermissionAction {
     /// delegation that gives the child that runtime.
     #[must_use]
     pub fn is_base_layer(&self) -> bool {
-        *self == Self::DELEGATE || *self == Self::MESSAGE || *self == Self::SKILL
+        *self == Self::DELEGATE || *self == Self::MESSAGE
     }
 
     /// Whether a rule for the action may carry a runtime selector
-    /// (`action@runtime_id`): every action but `message` and `skill`, which
-    /// belong to the base layer. `delegate@<runtime>` limits where a root
+    /// (`action@runtime_id`): every action but `message`, which belongs to
+    /// the base layer. `delegate@<runtime>` limits where a root
     /// delegates (`docs/site/specs/runtime-delegation.md` section 3).
     #[must_use]
     pub fn takes_runtime_selector(&self) -> bool {
@@ -150,7 +148,7 @@ impl PermissionAction {
     pub fn check_runtime_selector(&self, runtime: Option<&RuntimeId>) -> Result<(), String> {
         match runtime {
             Some(runtime) if !self.takes_runtime_selector() => Err(format!(
-                "`{self}@{runtime}`: `message` and `skill` belong to the base layer and take no runtime selector"
+                "`{self}@{runtime}`: `message` belongs to the base layer and takes no runtime selector"
             )),
             _ => Ok(()),
         }
@@ -411,6 +409,11 @@ pub struct AgentSnapshot {
     /// Where the run's fallback starts in `fallback_chain`: the run's model
     /// is that entry, and its fallbacks are the entries after it.
     pub selected_suffix_start: u32,
+    /// The document's `tool_groups` and `skills`
+    /// (`docs/site/specs/session-tool-groups.md` section 5.3); empty when it
+    /// names none, and in snapshots written before them.
+    #[serde(default, skip_serializing_if = "crate::ToolExposure::is_empty")]
+    pub exposure: crate::ToolExposure,
 }
 
 impl AgentSnapshot {
@@ -494,6 +497,8 @@ impl<'de> Deserialize<'de> for AgentSnapshot {
             delegation: Option<FrozenDelegationPolicy>,
             fallback_chain: Vec<PersistedModelBinding>,
             selected_suffix_start: u32,
+            #[serde(default)]
+            exposure: crate::ToolExposure,
         }
 
         let w = Wire::deserialize(d)?;
@@ -510,6 +515,7 @@ impl<'de> Deserialize<'de> for AgentSnapshot {
             delegation: w.delegation,
             fallback_chain: w.fallback_chain,
             selected_suffix_start: w.selected_suffix_start,
+            exposure: w.exposure,
         };
         value.validate().map_err(serde::de::Error::custom)?;
         Ok(value)

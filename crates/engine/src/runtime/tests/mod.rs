@@ -24,6 +24,7 @@ mod deferred_tools;
 mod delegation;
 mod delegation_queue;
 mod delegation_revert;
+mod exposure;
 mod goal_reminders;
 mod goal_selection;
 mod golden_history;

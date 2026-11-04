@@ -519,6 +519,7 @@ impl crate::runtime::Engine {
     /// agent (client protocol 1.26.0): checked before anything is created,
     /// and recorded as `acp_session_updated.starting_options` with the
     /// session. Refused for an agent that is not an ACP agent.
+    #[allow(clippy::too_many_arguments)]
     pub async fn create_session_with_agent_options(
         &self,
         selection: cookie_agent_protocol::RunSelection,
@@ -527,6 +528,7 @@ impl crate::runtime::Engine {
         runtimes: crate::runtime::attachments::SessionRuntimes,
         project: Option<cookie_agent_protocol::ProjectId>,
         agent_options: Vec<AcpOptionChoice>,
+        exposure: Option<cookie_agent_protocol::ToolExposure>,
     ) -> Result<cookie_agent_protocol::SessionMeta, crate::EngineError> {
         if !agent_options.is_empty() {
             AcpOptionChoice::validate_list(&agent_options).map_err(crate::EngineError::Acp)?;
@@ -543,7 +545,7 @@ impl crate::runtime::Engine {
             }
         }
         let meta = self
-            .create_session_in_project(selection, mode, rules, runtimes, project)
+            .create_root_session(selection, mode, rules, runtimes, project, None, exposure)
             .await?;
         if !agent_options.is_empty() {
             self.append(

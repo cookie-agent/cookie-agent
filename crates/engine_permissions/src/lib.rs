@@ -942,7 +942,7 @@ pub fn expand_home_pattern<'p>(pattern: &'p str, home: Option<&str>) -> Cow<'p, 
 /// `docs/site/specs/runtimes.md` section 7.1), each applying only to an
 /// action its document names no key for. Every agent but an internal one
 /// reads every file, edits files in its workspace and asks for any other
-/// path, fetches the web, uses every skill, calls MCP tools after asking, and
+/// path, fetches the web, calls MCP tools after asking, and
 /// delegates to nobody; `primary` and `all` agents also list runtimes.
 /// Internal agents, which call no tools, are denied every action. Memory's defaults
 /// depend on whether the run is delegated, so they are
@@ -958,7 +958,6 @@ pub fn mode_default_rules(mode: AgentMode) -> Vec<PermissionRule> {
         ),
         (PermissionAction::WRITE, "*", PermissionEffect::Ask),
         (PermissionAction::WEBFETCH, "*", PermissionEffect::Allow),
-        (PermissionAction::SKILL, "*", PermissionEffect::Allow),
         (PermissionAction::MCP, "*", PermissionEffect::Ask),
         (PermissionAction::DELEGATE, "*", PermissionEffect::Deny),
     ];

@@ -1,7 +1,9 @@
 # Session tool groups and skills
 
 Status: **approved** (2026-11-03), with the user's decisions in
-[section 3](#3-decisions); not implemented. Builds on
+[section 3](#3-decisions); phases 1 and 2 implemented (client protocol
+1.82.0, plugin protocol 1.42.0, runtime protocol 1.16.0), see
+[implementation notes](#17-implementation-notes). Builds on
 [permission consolidation](permission-consolidation.md) (session overlays),
 [MCP tool filters](mcp-tool-filters.md),
 [deferred tools in cookie](deferred-tools-cookie.md) (tool groups and
@@ -701,3 +703,30 @@ lifecycle, `[mcp] idle_stop_after`), `concepts/permissions.md`, `concepts/machin
 `reference/runtime-protocol.md`, `reference/events.md`,
 `engine/deferred_tools.md`, `clients/tui.md`, `clients/web.md`,
 `clients/cli.md`.
+
+## 17. Implementation notes
+
+### 17.1 Phases 1 and 2 (2026-11-03)
+
+- **Phases 1 and 2 landed together,** with the runtime-declared groups of
+  phase 4 (section 11.1): the daemon reaches its own `local` coding
+  runtime over the runtime protocol, as every other runtime, so without
+  declared groups its tools had no `coding` or `web` group and the ACP
+  default `web: off` matched nothing.
+- **Wire names.** `session.create`, `session.tools.set`, and a project's
+  `defaults` carry one `exposure` (`ToolExposure { tool_groups, skills }`)
+  rather than separate `tool_groups` and `skills` members. A rule copied
+  from a project carries `from_project`, which `session.tools.get` reports
+  as the `project` layer.
+- **A runtime tool naming an undeclared or invalid group** belongs to its
+  capability's group, without a diagnostic (section 11.1 said it is left
+  out).
+- **Agent document edits** reach a session at its next run: a run's agent
+  rules are frozen into its snapshot when it starts. A session's choices
+  apply from its next request, also during a run.
+- **The ACP bridge** refuses a call to a tool the session no longer
+  offers with "`<tool>` is no longer available in this session".
+- **Not yet:** the notice for eager tools that leave (section 8.2),
+  MCP servers on demand (section 10) and `mcp/wanted`, the cache of a
+  runtime's groups (section 4.4), and the clients (section 12).
+

@@ -128,6 +128,7 @@ pub(crate) fn assert_workspace_rule_allows(
         delegation: None,
         fallback_chain: Vec::new(),
         selected_suffix_start: 0,
+        exposure: Default::default(),
     };
     let decision = cookie_agent_engine::permissions::PermissionPipeline::default()
         .decide_operation(
@@ -280,11 +281,12 @@ pub fn runtime_options(workspace: impl Into<PathBuf>) -> RuntimeOptions {
 }
 
 impl BuiltinTools {
-    /// The group this provider's tools are announced under when deferred.
-    pub const GROUP: cookie_agent_runtime_api::ToolGroup = cookie_agent_runtime_api::ToolGroup {
-        name: "coding",
-        summary: "The workspace: reading, writing, and editing files, running shell commands, and fetching web pages.",
-    };
+    /// The group of the workspace tools: `read`, `write`, `edit`, and
+    /// `bash`.
+    pub const GROUP: cookie_agent_runtime_api::ToolGroup = cookie_agent_runtime_api::ToolGroup::new(
+        "coding",
+        "The workspace: reading, writing, and editing files, and running shell commands.",
+    );
 }
 #[async_trait]
 impl ToolProvider for BuiltinTools {
@@ -292,8 +294,12 @@ impl ToolProvider for BuiltinTools {
         "builtin.tools"
     }
 
-    fn tool_group(&self) -> Option<cookie_agent_runtime_api::ToolGroup> {
-        Some(Self::GROUP)
+    fn tool_group(&self, tool: &str) -> Option<cookie_agent_runtime_api::ToolGroup> {
+        Some(if tool == "webfetch" {
+            webfetch::WebfetchTool::GROUP
+        } else {
+            Self::GROUP
+        })
     }
 
     fn tools_for_session(&self, ctx: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {

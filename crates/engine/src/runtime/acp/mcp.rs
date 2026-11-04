@@ -6,7 +6,7 @@
 //! relays every message of each connection to it as `agent/mcp`. The
 //! daemon answers them here: `initialize`, `ping`, `tools/list` with the
 //! session's tools as cookie composes them for a model request (the merged
-//! rules hide what they deny) minus the agent document's `acp.hide_tools`,
+//! rules hide what they deny, and groups that are off are not composed),
 //! and `tools/call` through the same preparation, permission decision,
 //! approval, and execution as a model's call, inside the agent's turn.
 //!
@@ -346,13 +346,6 @@ pub(crate) fn message(engine: Engine, client: RuntimeClient, params: AgentMcpPar
     });
 }
 
-/// Whether `tool` matches one of the `hidden` patterns (`*`, `?`).
-fn hidden(tool: &str, patterns: &[String]) -> bool {
-    patterns
-        .iter()
-        .any(|pattern| cookie_agent_config::simple_wildcard_match(pattern, tool))
-}
-
 impl Engine {
     async fn mcp_answer(
         &self,
@@ -399,16 +392,6 @@ impl Engine {
         }
     }
 
-    /// The patterns of the tools the agent of `binding` does not get.
-    fn hidden_tools(&self, binding: &BridgeBinding) -> Vec<String> {
-        self.current_runtime()
-            .agents
-            .get(&binding.agent.id)
-            .and_then(|agent| agent.document.frontmatter.acp.clone())
-            .unwrap_or_default()
-            .hidden_tools()
-    }
-
     /// The active run of `binding`'s session, if one runs.
     fn bridge_run(
         &self,
@@ -425,22 +408,17 @@ impl Engine {
     }
 
     /// The tools of `session` a run of `policy` offers its ACP agent over
-    /// the bridge, `hide` left out, by the provider that publishes them.
+    /// the bridge, by the provider that publishes them.
     pub(crate) fn offered_tools(
         &self,
         session: SessionId,
         policy: &super::super::FrozenRunPolicy,
-        hide: &[String],
     ) -> Result<super::super::tool_prompts::OfferedTools, crate::EngineError> {
         let composition = self.compose_for_policy(session, policy)?;
         let mut offered = super::super::tool_prompts::OfferedTools::default();
-        for tool in composition
-            .tools
-            .iter()
-            .filter(|tool| !hidden(&tool.name, hide))
-        {
+        for tool in &composition.tools {
             let provider = tool.source.provider.provider_id();
-            offered.skill |= tool.spec.permission_name.as_deref() == Some("skill");
+            offered.skill |= provider == crate::base_tools::SKILL_PROVIDER_ID;
             if provider == crate::memory_tools::PROVIDER_ID {
                 offered.memory = true;
                 offered.memory_write |=
@@ -458,16 +436,13 @@ impl Engine {
     }
 
     /// The tools of `session` a run of `policy` offers its ACP agent over
-    /// the bridge: its tool definitions without `hide`.
+    /// the bridge: its tool definitions.
     pub(crate) fn bridged_tool_definitions(
         &self,
         session: SessionId,
         policy: &super::super::FrozenRunPolicy,
-        hide: &[String],
     ) -> Result<Vec<oven_sdk::ToolDefinition>, crate::EngineError> {
-        let mut tools = self.tool_definitions(session, policy)?;
-        tools.retain(|tool| !hidden(&tool.name, hide));
-        Ok(tools)
+        self.tool_definitions(session, policy)
     }
 
     /// The session's tools as the agent gets them.
@@ -486,9 +461,8 @@ impl Engine {
                 Arc::new(self.freeze_root_selection(&selection, true, &memory)?.0)
             }
         };
-        let hide = self.hidden_tools(binding);
         Ok(self
-            .bridged_tool_definitions(binding.session, &policy, &hide)?
+            .bridged_tool_definitions(binding.session, &policy)?
             .into_iter()
             .map(|tool| {
                 json!({
@@ -755,8 +729,14 @@ impl Engine {
         let Some(name) = params.get("name").and_then(Value::as_str) else {
             return failed("the call names no tool".to_owned());
         };
-        if hidden(name, &self.hidden_tools(binding)) {
-            return failed(format!("tool `{name}` is not offered to this agent"));
+        // A tool the session's choices or rules took away since the agent
+        // fetched its list is refused, not run.
+        if !self.bridge_tools(binding).is_ok_and(|tools| {
+            tools
+                .iter()
+                .any(|tool| tool.get("name").and_then(Value::as_str) == Some(name))
+        }) {
+            return failed(format!("`{name}` is no longer available in this session"));
         }
         let outside_turns =
             || failed("these tools can be called only during your turns".to_owned());

@@ -152,7 +152,10 @@ fn project_skill_grants_apply_to_the_contributing_attachment_only() {
         Some(labpc.clone()),
         vec![
             grant(cookie_agent_protocol::PermissionAction::BASH, "make *"),
-            grant(cookie_agent_protocol::PermissionAction::SKILL, "release"),
+            grant(
+                cookie_agent_protocol::PermissionAction::DELEGATE,
+                "reviewer",
+            ),
         ],
     );
     fixture.engine.install_skill_grants_for_test(
@@ -176,8 +179,8 @@ fn project_skill_grants_apply_to_the_contributing_attachment_only() {
         resources.sort();
         resources
     };
-    assert_eq!(granted(Some(&labpc)), ["make *", "notes *", "release"]);
+    assert_eq!(granted(Some(&labpc)), ["make *", "notes *", "reviewer"]);
     assert_eq!(granted(Some(&local)), ["notes *"]);
     // The base layer sees the project skill's grants for base actions only.
-    assert_eq!(granted(None), ["notes *", "release"]);
+    assert_eq!(granted(None), ["notes *", "reviewer"]);
 }

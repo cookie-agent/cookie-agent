@@ -847,6 +847,7 @@ impl Engine {
                     },
                     title,
                 )),
+                None,
             )
             .await?;
         Ok(meta.session_id)

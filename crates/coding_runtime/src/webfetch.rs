@@ -77,6 +77,13 @@ impl WebfetchArgs {
     }
 }
 
+impl WebfetchTool {
+    /// The group of `webfetch`, apart from `coding` so a session can keep
+    /// one without the other.
+    pub const GROUP: cookie_agent_runtime_api::ToolGroup =
+        cookie_agent_runtime_api::ToolGroup::new("web", "Fetching web pages.");
+}
+
 #[async_trait]
 impl ToolProvider for WebfetchTool {
     fn provider_id(&self) -> &'static str {
@@ -84,6 +91,10 @@ impl ToolProvider for WebfetchTool {
             ToolCollision::Fallback => "global.webfetch",
             ToolCollision::Prefix | ToolCollision::Override => "builtin.webfetch",
         }
+    }
+
+    fn tool_group(&self, _tool: &str) -> Option<cookie_agent_runtime_api::ToolGroup> {
+        Some(Self::GROUP)
     }
 
     fn tools_for_session(&self, _ctx: &SessionToolContext) -> Result<Vec<ToolSpec>, ToolError> {
@@ -682,6 +693,7 @@ mod tests {
             delegation: None,
             fallback_chain: Vec::new(),
             selected_suffix_start: 0,
+            exposure: Default::default(),
         };
         let pipeline = cookie_agent_engine::permissions::PermissionPipeline::default();
         let decide = |policy: &AgentSnapshot| {

@@ -298,12 +298,10 @@ impl Engine {
                 (name, args)
             });
         original_input = original_input.filter(|original| original != &params.content);
-        let direct_plan = direct_skill
-            .as_ref()
-            .map(|(name, args)| self.prepare_user_skill_invocation(params.session_id, name, args))
-            .transpose()?;
-        let prospective_plan = staged_skill.as_ref().or(direct_plan.as_ref());
-        let prospective_grants = prospective_plan.and_then(|plan| plan.grants());
+        // A skill the user cannot invoke is refused before the run starts.
+        if let Some((name, args)) = &direct_skill {
+            self.prepare_user_skill_invocation(params.session_id, name, args)?;
+        }
         if let Some(run) = session
             .runs
             .values()
@@ -514,11 +512,7 @@ impl Engine {
             self.compose_runtimes_prompt(&mut run_policy, params.session_id);
             self.compose_attachments_prompt(&mut run_policy, params.session_id);
             self.compose_tool_prompt_sections(&mut run_policy, params.session_id)?;
-            self.compose_skill_listing(
-                params.session_id,
-                &mut run_policy,
-                prospective_grants.as_ref(),
-            )?;
+            self.compose_skill_listing(params.session_id, &mut run_policy)?;
         }
         let context_id = crate::plugin::plugin_context_id();
         let mut prompt_replaced = false;

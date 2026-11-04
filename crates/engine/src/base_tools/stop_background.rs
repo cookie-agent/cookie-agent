@@ -60,10 +60,10 @@ impl StopBackgroundTool {
 
 impl StopBackgroundTool {
     /// The group this provider's tools are announced under when deferred.
-    pub const GROUP: cookie_agent_runtime_api::ToolGroup = cookie_agent_runtime_api::ToolGroup {
-        name: "background",
-        summary: "Calls running in the background, and stopping them.",
-    };
+    pub const GROUP: cookie_agent_runtime_api::ToolGroup = cookie_agent_runtime_api::ToolGroup::new(
+        "background",
+        "Calls running in the background, and stopping them.",
+    );
 }
 #[async_trait]
 impl ToolProvider for StopBackgroundTool {
@@ -71,7 +71,7 @@ impl ToolProvider for StopBackgroundTool {
         "builtin.stop_background"
     }
 
-    fn tool_group(&self) -> Option<cookie_agent_runtime_api::ToolGroup> {
+    fn tool_group(&self, _tool: &str) -> Option<cookie_agent_runtime_api::ToolGroup> {
         Some(Self::GROUP)
     }
 

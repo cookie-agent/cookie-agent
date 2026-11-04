@@ -215,7 +215,9 @@ mode: all
 models: [{ model: "gpt-5", variant: "high" }]
 acp:
   mode: auto
-  hide_tools: [webfetch]
+tool_groups:
+  "mcp:*": off
+  "mcp:exa": on
 permissions:
   read: allow
   write: { "${workspace_dir}/*": allow, "*": ask }
@@ -236,7 +238,8 @@ You review changes for this project before they are committed.
   its prompt is the reference document below, without the harness's name.
   With official agents off (`[agents] official = false`) and no
   `agents/_acp.md`, the agent has mode `all`, the rules every agent gets
-  for actions it names no key for, the default `hide_tools`, and no prompt.
+  for actions it names no key for, the ACP default `web: off`, and no
+  prompt.
 - **Change only some keys** with `inherit: ../official_agents/_acp.md`
   (or `inherit: _acp.md` for your own template): the rest follows the
   template as it is refreshed.
@@ -274,7 +277,7 @@ You review changes for this project before they are committed.
 ### Several documents over one agent
 
 One declaration can serve several documents, each its own agent with its
-own permissions, mode, `hide_tools`, and body. `acp.agent` names the
+own permissions, mode, `tool_groups`, and body. `acp.agent` names the
 declaration a document runs; without it, a document runs the declaration
 of its own ID:
 
@@ -363,7 +366,7 @@ out when it is empty:
 2. the machines block a model's system prompt has
    ([machines on demand](../specs/machines-on-demand.md) section 5.4): every
    machine the session attaches, with its directory and the tools it
-   offers (less those `hide_tools` hides), each tool's default machine
+   offers (less the groups that are off), each tool's default machine
    marked; the agent's own machine marked `builtin_tools="true"`; and a
    paragraph saying its harness's own tools reach only that machine and
    working directory, to prefer them there, and to use the `cookie` MCP
@@ -377,13 +380,14 @@ out when it is empty:
    [System prompt](../reference/system-prompt.md#attachments));
 4. the tool instructions cookie would give a model for the tools the agent
    is offered over the [bridge](#cookies-tools-for-the-agent-the-mcp-bridge),
-   after `hide_tools` and the rules (`<tool_instructions provider=...>`
+   after the tool groups and the rules (`<tool_instructions provider=...>`
    sections, such as memory's: how memory is included, and the rubric for
    writing it when a write tool is offered);
 5. the skills a model would see (`<available_skills>`: each skill's name,
    description, and file), when the agent is offered cookie's `skill` tool
    over the bridge, with the same rules a model's listing follows (a
-   denied skill, or one that opts out of model invocation, is left out);
+   skill that is off, or one that opts out of model invocation, is left
+   out);
 6. the session's memory as a model would see it at the start of a session
    (the `# Memory` reminder), as it is when cookie starts the agent's
    session.
@@ -564,14 +568,18 @@ the start of a turn. Claude Code fetches the new list and can call the new
 tools in the same turn. Codex ignores the notification and sees a change
 only in a new session.
 
-`acp.hide_tools` lists cookie's tools the agent does not get on any
-machine, with `*` and `?`. By default it hides only `webfetch`, since a
-fetch reads the same page from nearly any machine and the agent has its
-own; `[]` offers it too. Cookie's `read`, `write`, `edit`, and `bash` are
-offered for every attached machine, the agent's own included, so that the
-agent can work on the machines its own tools cannot reach (see
-[Several machines](#several-machines)). `hide_tools` only hides: your
-`deny` rules still refuse calls.
+Which of cookie's tool groups the agent gets is the document's and the
+session's [tool groups](agents.md#tool-groups-and-skills). By default an
+ACP agent gets every group but `web`, since a fetch reads the same page
+from nearly any machine and the agent has its own; `web: on` brings it
+back. Cookie's `read`, `write`, `edit`, and `bash` (`coding`) are offered
+for every attached machine, the agent's own included, so that the agent
+can work on the machines its own tools cannot reach (see
+[Several machines](#several-machines)); `coding: off` leaves the agent its
+own tools only. A group that is `deferred` is offered as `on`: the harness
+chooses its own deferral. Tool groups only take away: your `deny` rules
+still refuse calls. The former `acp.hide_tools` is removed, and a document
+that declares it fails.
 
 ## Several machines
 

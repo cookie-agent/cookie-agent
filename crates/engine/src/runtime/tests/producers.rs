@@ -2645,7 +2645,7 @@ async fn goal_tools_run_without_approval_under_an_agent_that_denies_or_asks_ever
     let (endpoint, responses, captured) = scripted_channel_server(4).await;
     let (fixture, selection) = custom_fixture_with_endpoint_and_primary_agent(
         &endpoint,
-        "---\ndescription: Restrictive goal agent\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  read: deny\n  write: ask\n  bash: ask\n  delegate: deny\n  message: deny\n  skill: deny\n  mcp: deny\n  webfetch: deny\n---\nPursue the goal.\n",
+        "---\ndescription: Restrictive goal agent\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  read: deny\n  write: ask\n  bash: ask\n  delegate: deny\n  message: deny\n  mcp: deny\n  webfetch: deny\n---\nPursue the goal.\n",
     );
     fixture.engine.register_base_layer().expect("base layer");
     let session_id = fixture

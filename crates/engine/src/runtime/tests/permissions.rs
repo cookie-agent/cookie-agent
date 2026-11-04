@@ -258,13 +258,10 @@ async fn an_overlay_rule_takes_a_runtime_selector_only_where_agent_documents_do(
                 .await
         }
     };
-    for action in [PermissionAction::MESSAGE, PermissionAction::SKILL] {
-        let error = set(action.clone()).await.expect_err("base-layer selector");
-        assert!(
-            error.to_string().contains(&format!("`{action}@labpc`")),
-            "{error}"
-        );
-    }
+    let error = set(PermissionAction::MESSAGE)
+        .await
+        .expect_err("base-layer selector");
+    assert!(error.to_string().contains("`message@labpc`"), "{error}");
     for action in [
         PermissionAction::BASH,
         PermissionAction::DELEGATE,
@@ -273,7 +270,7 @@ async fn an_overlay_rule_takes_a_runtime_selector_only_where_agent_documents_do(
         set(action).await.expect("selector allowed");
     }
     let rule = PermissionRule {
-        action: PermissionAction::SKILL,
+        action: PermissionAction::MESSAGE,
         runtime: Some(labpc.clone()),
         resource: WildcardPattern::new("*").expect("wildcard"),
         effect: PermissionEffect::Allow,

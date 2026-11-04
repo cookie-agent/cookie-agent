@@ -115,6 +115,7 @@ fn test_agent_document(id: &AgentId) -> AgentDocument {
         official_version: None,
         id: id.clone(),
         frontmatter: AgentFrontmatter {
+            exposure: Default::default(),
             description: "Test primary agent".into(),
             mode: AgentMode::Primary,
             enabled: true,
@@ -266,6 +267,68 @@ pub(crate) fn connect_counting(server: &Arc<Server>) -> (crate::Client, Subscrib
     (client, log, Sever(sever))
 }
 
+/// An OpenAI-compatible endpoint whose first streamed reply calls `tool`
+/// with `arguments`, and whose later replies say `done`.
+pub(crate) async fn tool_call_model(tool: &'static str, arguments: &'static str) -> String {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("model listener");
+    let address = listener.local_addr().expect("model address");
+    tokio::spawn(async move {
+        let mut first = true;
+        while let Ok((mut socket, _)) = listener.accept().await {
+            // Read the request: headers, then the body its length names.
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 8192];
+            loop {
+                let read = socket.read(&mut buffer).await.unwrap_or(0);
+                if read == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buffer[..read]);
+                let text = String::from_utf8_lossy(&request);
+                if let Some((head, body)) = text.split_once("\r\n\r\n") {
+                    let length = head
+                        .lines()
+                        .find_map(|line| {
+                            let (name, value) = line.split_once(':')?;
+                            name.eq_ignore_ascii_case("content-length")
+                                .then(|| value.trim().parse::<usize>().ok())
+                                .flatten()
+                        })
+                        .unwrap_or(0);
+                    if body.len() >= length {
+                        break;
+                    }
+                }
+            }
+            let frames = if std::mem::take(&mut first) {
+                let call = serde_json::json!({"choices": [{"index": 0, "delta": {"tool_calls": [{
+                    "index": 0, "id": "call_approval", "type": "function",
+                    "function": {"name": tool, "arguments": arguments}
+                }]}, "finish_reason": null}]});
+                let end = serde_json::json!({"choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]});
+                format!("data: {call}\n\ndata: {end}\n\ndata: [DONE]\n\n")
+            } else {
+                let text = serde_json::json!({"choices": [{"index": 0, "delta": {"content": "done"}, "finish_reason": null}]});
+                let end = serde_json::json!({"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]});
+                format!("data: {text}\n\ndata: {end}\n\ndata: [DONE]\n\n")
+            };
+            let _ = socket
+                .write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\n{frames}"
+                    )
+                    .as_bytes(),
+                )
+                .await;
+            let _ = socket.shutdown().await;
+        }
+    });
+    format!("http://{address}/v1")
+}
+
 /// An in-process server whose test model streams reasoning and text from
 /// `endpoint`, with first-turn title generation off so the only model call a
 /// run makes is its reply.
@@ -339,13 +402,7 @@ fn build_in_process_server(
     }
     // The local coding runtime discovers the workspace's project skills.
     let skills = cookie_agent_config::SkillRegistry::default();
-    let mut agent = test_agent_document(&agent_id);
-    if with_skills {
-        agent.frontmatter.permissions.insert(
-            PermissionAction::SKILL.into(),
-            cookie_agent_config::PermissionValue::Effect(PermissionEffect::Ask),
-        );
-    }
+    let agent = test_agent_document(&agent_id);
     let config = LoadedConfiguration {
         official_agent_diagnostics: Vec::new(),
         templates: Default::default(),
@@ -898,7 +955,14 @@ async fn an_unsubscribed_session_sends_this_connection_nothing_more() {
 async fn same_connection_approval_response_and_finalization_run_end_to_end() {
     const STAGE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
 
-    let (_directory, server) = in_process_server_with_skills(true);
+    // The model first writes another agent's memory, which no rule
+    // allows, so the call waits on the user's approval; then it answers.
+    let endpoint = tool_call_model(
+        "memory_write",
+        r#"{"url":"agent://reviewer","body":"Approved by the user."}"#,
+    )
+    .await;
+    let (_directory, server) = in_process_streaming_server(&endpoint);
     let setup = server.clone().connect_in_process();
     setup.handshake().await.expect("setup handshake");
     let session = setup
@@ -935,13 +999,13 @@ async fn same_connection_approval_response_and_finalization_run_end_to_end() {
             ))
             .expect("client run ID"),
             selection: test_run_selection(),
-            content: cookie_agent_protocol::encode_skill_submission("fresh-skill", "value").into(),
+            content: "run the command".into(),
         })
         .await
     {
         Ok(started) => started,
         Err(error) => panic!(
-            "start direct skill run failed: {:?} {error} ({:?})",
+            "start run failed: {:?} {error} ({:?})",
             error.error_code(),
             error.detail()
         ),
@@ -1044,29 +1108,29 @@ async fn same_connection_approval_response_and_finalization_run_end_to_end() {
     response
         .expect("same-connection approval response RPC timed out")
         .expect("approval response task panicked")
-        .expect("approve direct skill");
+        .expect("approve the memory write");
     finalized.expect("approval finalization event timed out");
 
     tokio::time::timeout(STAGE_TIMEOUT, async {
-            loop {
-                let event = match deliveries.recv().await.expect("skill delivery") {
-                    crate::ClientDelivery::Live { message, .. } => match message.as_ref() {
-                        cookie_agent_protocol::EventSubscriptionMessage::Event { event } => {
-                            Some(Box::new((**event).clone()))
-                        }
-                        _ => None,
-                    },
-                    crate::ClientDelivery::ReplayEvent { event, .. } => Some(event),
+        loop {
+            let event = match deliveries.recv().await.expect("tool delivery") {
+                crate::ClientDelivery::Live { message, .. } => match message.as_ref() {
+                    cookie_agent_protocol::EventSubscriptionMessage::Event { event } => {
+                        Some(Box::new((**event).clone()))
+                    }
                     _ => None,
-                };
-                let Some(event) = event else { continue };
-                if matches!(event.payload, EventPayload::SkillLoaded { ref name, .. } if name == "fresh-skill") {
-                    break;
-                }
+                },
+                crate::ClientDelivery::ReplayEvent { event, .. } => Some(event),
+                _ => None,
+            };
+            let Some(event) = event else { continue };
+            if matches!(event.payload, EventPayload::ToolCallTerminated { .. }) {
+                break;
             }
-        })
-        .await
-        .expect("skill-loaded event timed out after approval");
+        }
+    })
+    .await
+    .expect("the approved call's end timed out");
     runner
         .cancel_run(cookie_agent_protocol::RunCancelParams {
             run_id: started.run_id,

@@ -176,6 +176,7 @@ pub(crate) async fn run_project_with<I: MemoryIo>(
                 .await
                 .map_err(anyhow::Error::new)?;
             let defaults = ProjectDefaults {
+                exposure: Default::default(),
                 preset: session.session.creation_selection.preset.clone(),
                 agent: Some(session.session.creation_selection.agent.clone()),
                 global: session

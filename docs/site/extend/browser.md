@@ -356,10 +356,10 @@ carrying the session's tools as cookie composes them for a model, the browser
 tools of every attached runtime included. Claude Code lists them as
 `mcp__cookie__my_chrome_browser_navigate` and so on.
 
-- **`acp.hide_tools`** in the agent's [document](agents.md#acp-agent-documents)
-  removes tools from the bridge. Its default hides only `webfetch`, so the
-  browser tools pass through; add `"my_chrome_*"` to keep them from an agent that has a browser of
-  its own.
+- **`tool_groups`** in the agent's [document](agents.md#tool-groups-and-skills)
+  removes groups from the bridge. An ACP agent's default turns off only
+  `web`, so the browser tools pass through; `"mcp:my_chrome": off` keeps
+  them from an agent that has a browser of its own.
 - **Permissions** work as for a model: a tool the merged rules hide is not
   listed, and each call is decided by the agent document's `mcp` rules.
 - When an agent asks permission for one of cookie's own tools (Claude Code's

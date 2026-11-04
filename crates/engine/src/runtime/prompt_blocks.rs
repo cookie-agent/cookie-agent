@@ -133,7 +133,7 @@ impl Engine {
         if let Some(block) = self.live_tool_instructions_block_with(policy, session, composition)? {
             blocks.push((TOOL_INSTRUCTIONS_BLOCK.to_owned(), block));
         }
-        if let Some(block) = self.live_skills_block(session, policy, None)? {
+        if let Some(block) = self.live_skills_block(session, policy)? {
             blocks.push((SKILLS_BLOCK.to_owned(), block));
         }
         Ok(blocks)

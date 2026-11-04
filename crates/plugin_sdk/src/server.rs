@@ -135,6 +135,7 @@ impl Handlers {
                 .map(|tool| tool.declaration.clone())
                 .collect(),
             prompt_sections: Vec::new(),
+            groups: Vec::new(),
         }
     }
 }

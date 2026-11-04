@@ -553,6 +553,7 @@ fn freeze_with_bindings(
             .map(persisted_binding)
             .collect::<Result<_, _>>()?,
         selected_suffix_start: 0,
+        exposure: document.frontmatter.exposure.clone(),
     };
     let run_selection = protocol::RunSelection {
         agent: document.id.clone(),
@@ -1551,6 +1552,7 @@ pub(crate) fn freeze_acp_agent_policy(
         delegation,
         fallback_chain: vec![binding.clone()],
         selected_suffix_start: 0,
+        exposure: document.frontmatter.exposure.clone(),
     };
     let selection = protocol::RunSelection {
         agent: document.id.clone(),

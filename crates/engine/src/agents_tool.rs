@@ -483,10 +483,10 @@ pub(crate) fn render_agent_list(
 
 impl AgentsTool {
     /// The group this provider's tools are announced under when deferred.
-    pub const GROUP: cookie_agent_runtime_api::ToolGroup = cookie_agent_runtime_api::ToolGroup {
-        name: "agents",
-        summary: "The agents this session can delegate to or schedule, and what each is for.",
-    };
+    pub const GROUP: cookie_agent_runtime_api::ToolGroup = cookie_agent_runtime_api::ToolGroup::new(
+        "agents",
+        "The agents this session can delegate to or schedule, and what each is for.",
+    );
 }
 #[async_trait]
 impl ToolProvider for AgentsTool {
@@ -494,7 +494,7 @@ impl ToolProvider for AgentsTool {
         PROVIDER_ID
     }
 
-    fn tool_group(&self) -> Option<cookie_agent_runtime_api::ToolGroup> {
+    fn tool_group(&self, _tool: &str) -> Option<cookie_agent_runtime_api::ToolGroup> {
         Some(Self::GROUP)
     }
 

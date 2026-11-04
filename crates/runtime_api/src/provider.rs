@@ -99,12 +99,29 @@ pub struct ToolCall {
     pub arguments: Value,
 }
 
-/// A built-in provider's tool group: the name its deferred tools are
-/// announced under, and what its tools are for.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// A built-in provider's tool group, or one a runtime declares: the name
+/// its deferred tools are announced under and a session's choices name,
+/// what its tools are for, and whether it is deferred by default.
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ToolGroup {
-    pub name: &'static str,
-    pub summary: &'static str,
+    pub name: std::borrow::Cow<'static, str>,
+    pub summary: std::borrow::Cow<'static, str>,
+    /// Deferred unless a choice says otherwise: a runtime's group that
+    /// declares `default: deferred`. The built-in groups' deferral is
+    /// `DEFERRED_BUILTIN_GROUPS`.
+    pub deferred: bool,
+}
+
+impl ToolGroup {
+    /// A built-in group, eager unless `DEFERRED_BUILTIN_GROUPS` names it.
+    #[must_use]
+    pub const fn new(name: &'static str, summary: &'static str) -> Self {
+        Self {
+            name: std::borrow::Cow::Borrowed(name),
+            summary: std::borrow::Cow::Borrowed(summary),
+            deferred: false,
+        }
+    }
 }
 
 #[async_trait]
@@ -133,11 +150,13 @@ pub trait ToolProvider: Send + Sync {
         None
     }
 
-    /// The group a built-in provider's tools are announced under when they
-    /// are deferred, with its summary (deferred tools in cookie, section
-    /// 7.1). `None` groups them under the provider's ID with no summary; an
-    /// MCP server's or a plugin's tools group under their own source.
-    fn tool_group(&self) -> Option<ToolGroup> {
+    /// The group a built-in provider's tool `_tool` belongs to, with its
+    /// summary: the group deferred tools are announced under (deferred tools
+    /// in cookie, section 7.1) and a session's choices name (session tool
+    /// groups, section 4). `None` groups them under the provider's ID with no
+    /// summary; an MCP server's or a plugin's tools group under their own
+    /// source.
+    fn tool_group(&self, _tool: &str) -> Option<ToolGroup> {
         None
     }
 
