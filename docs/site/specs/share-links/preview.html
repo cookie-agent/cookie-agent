@@ -1,0 +1,290 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Share link landing page — mockup</title>
+<style>
+  :root {
+    --bg: #ffffff; --bg2: #fafafa; --raised: #ffffff; --sunken: #f4f4f5;
+    --fg: #09090b; --fg2: #3f3f46; --muted: #71717a; --faint: #a1a1aa;
+    --line: rgba(0,0,0,.075); --line2: rgba(0,0,0,.13);
+    --accent: #5b5bd6; --accent-fg: #ffffff; --accent-soft: rgba(91,91,214,.10);
+    --warn: #b26b00;
+    --shadow: 0 1px 2px rgba(0,0,0,.04), 0 4px 16px rgba(0,0,0,.05);
+  }
+  :root[data-theme="dark"] {
+    --bg: #0e0e10; --bg2: #0a0a0c; --raised: #17171a; --sunken: #1b1b1f;
+    --fg: #ededef; --fg2: #b4b4bc; --muted: #86868f; --faint: #5c5c66;
+    --line: rgba(255,255,255,.07); --line2: rgba(255,255,255,.12);
+    --accent: #7c7cff; --accent-fg: #0e0e10; --accent-soft: rgba(124,124,255,.14);
+    --warn: #e5a93b;
+    --shadow: 0 1px 2px rgba(0,0,0,.3), 0 8px 24px rgba(0,0,0,.35);
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body {
+    background: var(--bg2); color: var(--fg);
+    font: 14.5px/1.5 Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* ---- mockup controls (not part of the design) ---- */
+  .mock {
+    position: sticky; top: 0; z-index: 10;
+    display: flex; flex-wrap: wrap; gap: 6px; align-items: center;
+    padding: 8px 16px; background: repeating-linear-gradient(45deg, var(--sunken) 0 8px, var(--bg2) 8px 16px);
+    border-bottom: 1px dashed var(--line2); font-size: 12px; color: var(--muted);
+  }
+  .mock b { color: var(--fg2); margin-right: 4px; font-weight: 600; }
+  .mock button {
+    font: inherit; font-size: 12px; padding: 3px 9px; border-radius: 6px; cursor: pointer;
+    border: 1px solid var(--line2); background: var(--raised); color: var(--fg2);
+  }
+  .mock button[aria-pressed="true"] { background: var(--accent); color: var(--accent-fg); border-color: transparent; }
+  .mock .sep { width: 1px; height: 16px; background: var(--line2); margin: 0 6px; }
+
+  /* ---- the landing page ---- */
+  .page { max-width: 980px; margin: 0 auto; padding: 20px 20px 40px; }
+  .brand { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12.5px; text-decoration: none; }
+  .brand svg { width: 20px; height: 20px; }
+  .head { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 12px 24px; margin: 22px 0 16px; }
+  .head h1 { font-size: 22px; line-height: 1.25; font-weight: 600; letter-spacing: -.01em; margin: 0 0 4px; }
+  .meta { color: var(--muted); font-size: 12.5px; display: flex; flex-wrap: wrap; gap: 4px 10px; }
+  .meta span + span::before { content: "·"; margin-right: 10px; color: var(--faint); }
+  .actions { display: flex; gap: 8px; }
+  .btn {
+    display: inline-flex; align-items: center; gap: 6px; padding: 7px 12px; border-radius: 8px;
+    font: 500 13.5px/1 inherit; font-family: inherit; text-decoration: none; cursor: pointer;
+    border: 1px solid var(--line2); background: var(--raised); color: var(--fg);
+  }
+  .btn:hover { background: var(--sunken); }
+  .btn.primary { background: var(--accent); color: var(--accent-fg); border-color: transparent; }
+  .btn.primary:hover { filter: brightness(1.08); }
+  .btn svg { width: 15px; height: 15px; }
+
+  .card { background: var(--raised); border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--shadow); overflow: hidden; }
+  .bar { display: flex; justify-content: space-between; align-items: center; padding: 6px 10px 6px 14px; border-bottom: 1px solid var(--line); font-size: 12px; color: var(--muted); }
+  .bar a { color: var(--muted); text-decoration: none; }
+  .bar a:hover { color: var(--fg); }
+
+  .frame { display: block; width: 100%; height: min(72vh, 620px); border: 0; background: #fff; }
+  .img { display: grid; place-items: center; padding: 20px; background:
+      conic-gradient(var(--sunken) 25%, transparent 0 50%, var(--sunken) 0 75%, transparent 0) 0 0 / 16px 16px; }
+  .img svg { max-width: 100%; height: auto; display: block; background: #fff; border-radius: 6px; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+  .doc { padding: 28px clamp(20px, 5vw, 56px) 36px; max-width: 760px; margin: 0 auto; color: var(--fg); }
+  .doc h1 { font-size: 22px; margin: 0 0 12px; }
+  .doc h2 { font-size: 16px; margin: 26px 0 8px; }
+  .doc p, .doc li { color: var(--fg2); }
+  .doc table { border-collapse: collapse; font-size: 13.5px; margin: 8px 0; }
+  .doc th, .doc td { border-bottom: 1px solid var(--line); padding: 6px 14px 6px 0; text-align: left; }
+  .doc th { color: var(--muted); font-weight: 500; }
+  .doc code { background: var(--sunken); padding: 1px 5px; border-radius: 6px; font-size: 12.5px; }
+  .doc pre { background: var(--sunken); padding: 12px 14px; border-radius: 8px; overflow: auto; font-size: 12.5px; }
+
+  .file { display: flex; flex-direction: column; align-items: center; gap: 14px; padding: 56px 20px 60px; text-align: center; }
+  .file .icon { width: 64px; height: 76px; border-radius: 10px; background: var(--sunken); border: 1px solid var(--line2);
+    display: grid; place-items: end center; padding-bottom: 10px; font: 600 11px/1 ui-monospace, monospace; color: var(--muted); position: relative; }
+  .file .icon::before { content: ""; position: absolute; top: -1px; right: -1px; width: 18px; height: 18px;
+    background: linear-gradient(225deg, var(--bg2) 50%, var(--line2) 50%); border-top-right-radius: 10px; }
+  .file .name { font-weight: 500; }
+  .file .sub { color: var(--muted); font-size: 12.5px; margin-top: -8px; }
+
+  .gone { max-width: 420px; margin: 18vh auto 0; text-align: center; }
+  .gone h1 { font-size: 22px; font-weight: 600; margin: 18px 0 6px; }
+  .gone p { color: var(--muted); margin: 0; }
+  .gone svg { width: 44px; height: 44px; opacity: .85; }
+
+  .foot { margin-top: 18px; display: flex; flex-wrap: wrap; justify-content: space-between; gap: 6px 16px; color: var(--faint); font-size: 12px; }
+  .foot .exp { color: var(--muted); }
+
+  [hidden] { display: none !important; }
+  @media (max-width: 640px) {
+    .page { padding: 14px 12px 28px; }
+    .actions { width: 100%; }
+    .actions .btn { flex: 1; justify-content: center; }
+    .frame { height: 64vh; }
+  }
+</style>
+</head>
+<body>
+
+<div class="mock" role="toolbar" aria-label="Mockup controls">
+  <b>Mockup</b>
+  <button data-kind="html" aria-pressed="true">HTML page</button>
+  <button data-kind="image">Image</button>
+  <button data-kind="md">Markdown</button>
+  <button data-kind="video">Video</button>
+  <button data-kind="file">Other file</button>
+  <button data-kind="gone">Not available</button>
+  <span class="sep"></span>
+  <button id="theme">Dark</button>
+</div>
+
+<main class="page" id="landing">
+  <a class="brand" href="#" aria-label="cookie agent">
+    <svg viewBox="0 0 100 100" aria-hidden="true"><defs><mask id="bite"><rect width="100" height="100" fill="#fff"/><circle cx="64" cy="14" r="7.5" fill="#000"/><circle cx="72.6" cy="23.9" r="8" fill="#000"/><circle cx="82.2" cy="32.4" r="7" fill="#000"/></mask></defs><circle cx="50" cy="50" r="36" fill="#ECB86E" mask="url(#bite)"/><g fill="#5E3A26"><circle cx="49.8" cy="54" r="4.8"/><circle cx="35.2" cy="28.8" r="3.9"/><circle cx="49.8" cy="34.6" r="3.5"/><circle cx="70.5" cy="46.4" r="4.7"/><circle cx="25.7" cy="47.7" r="4.8"/><circle cx="34.4" cy="70.5" r="4.7"/><circle cx="67.3" cy="69.7" r="4.7"/><circle cx="51.1" cy="71.7" r="3.4"/></g></svg>
+    cookie agent
+  </a>
+
+  <header class="head">
+    <div>
+      <h1 id="title"></h1>
+      <div class="meta" id="meta"></div>
+    </div>
+    <div class="actions">
+      <a class="btn" id="open" href="#" target="_blank" rel="noopener">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></svg>
+        Open full page
+      </a>
+      <a class="btn primary" id="download" href="#">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15V3"/><path d="m7 10 5 5 5-5"/><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/></svg>
+        Download
+      </a>
+    </div>
+  </header>
+
+  <section class="card" id="preview"></section>
+
+  <footer class="foot">
+    <span>Shared from cookie agent</span>
+    <span class="exp" id="expiry" title="Expires Nov 10, 2026, 21:14">Link expires in 7 days · Nov 10, 2026</span>
+  </footer>
+</main>
+
+<main class="gone" id="gone" hidden>
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" style="color:var(--muted)"><path d="M9 17H7A5 5 0 0 1 7 7"/><path d="M15 7h2a5 5 0 0 1 4 8"/><path d="M8 12h4"/><path d="m2 2 20 20"/></svg>
+  <h1>This link isn't available</h1>
+  <p>It may have expired or been revoked. Ask whoever shared it for a new link.</p>
+</main>
+
+<template id="t-html">
+  <div class="bar"><span>Interactive page · runs sandboxed</span><a href="#" target="_blank" rel="noopener">Reload</a></div>
+  <iframe class="frame" sandbox="allow-scripts allow-popups" title="Shared page"></iframe>
+</template>
+
+<template id="t-image">
+  <div class="img">
+    <svg viewBox="0 0 640 360" width="640" height="360" font-family="Inter, system-ui, sans-serif">
+      <rect width="640" height="360" fill="#fff"/>
+      <text x="32" y="36" font-size="15" font-weight="600" fill="#09090b">Grasp success by object (100 trials each)</text>
+      <g stroke="#e4e4e7"><line x1="60" y1="300" x2="612" y2="300"/><line x1="60" y1="240" x2="612" y2="240"/><line x1="60" y1="180" x2="612" y2="180"/><line x1="60" y1="120" x2="612" y2="120"/><line x1="60" y1="60" x2="612" y2="60"/></g>
+      <g font-size="11" fill="#71717a" text-anchor="end"><text x="52" y="304">0%</text><text x="52" y="244">25%</text><text x="52" y="184">50%</text><text x="52" y="124">75%</text><text x="52" y="64">100%</text></g>
+      <g font-size="11" fill="#3f3f46" text-anchor="middle"><text x="125" y="320">mug</text><text x="235" y="320">bottle</text><text x="345" y="320">bowl</text><text x="455" y="320">drill</text><text x="560" y="320">banana</text></g>
+      <g fill="#a1a1aa"><rect x="96" y="132" width="26" height="168" rx="3"/><rect x="206" y="156" width="26" height="144" rx="3"/><rect x="316" y="108" width="26" height="192" rx="3"/><rect x="426" y="204" width="26" height="96" rx="3"/><rect x="531" y="168" width="26" height="132" rx="3"/></g>
+      <g fill="#5b5bd6"><rect x="128" y="84" width="26" height="216" rx="3"/><rect x="238" y="98" width="26" height="202" rx="3"/><rect x="348" y="72" width="26" height="228" rx="3"/><rect x="458" y="137" width="26" height="163" rx="3"/><rect x="563" y="110" width="26" height="190" rx="3"/></g>
+      <g font-size="11.5" fill="#3f3f46"><rect x="430" y="24" width="10" height="10" rx="2" fill="#a1a1aa"/><text x="446" y="33">baseline (joint pos.)</text><rect x="430" y="42" width="10" height="10" rx="2" fill="#5b5bd6"/><text x="446" y="51">v8</text></g>
+    </svg>
+  </div>
+</template>
+
+<template id="t-md">
+  <article class="doc">
+    <h1>Eval summary — v8</h1>
+    <p>Run <code>eval/2026-11-03-v8</code> on 5 YCB objects, 100 trials each, against the end-to-end baseline trained on joint position targets.</p>
+    <h2>Results</h2>
+    <table>
+      <tr><th>Object</th><th>Baseline</th><th>v8</th><th>Δ</th></tr>
+      <tr><td>mug</td><td>56%</td><td>72%</td><td>+16</td></tr>
+      <tr><td>bottle</td><td>48%</td><td>67%</td><td>+19</td></tr>
+      <tr><td>bowl</td><td>64%</td><td>76%</td><td>+12</td></tr>
+      <tr><td>drill</td><td>32%</td><td>54%</td><td>+22</td></tr>
+      <tr><td>banana</td><td>44%</td><td>63%</td><td>+19</td></tr>
+    </table>
+    <h2>Notes</h2>
+    <ul>
+      <li>Failures on the drill are mostly slips during lift, not missed grasps.</li>
+      <li>Same seeds and object poses as the v7 run.</li>
+    </ul>
+    <pre>python -m ucma.eval --ckpt runs/v8/last.ckpt --trials 100</pre>
+  </article>
+</template>
+
+<template id="t-video">
+  <div class="img" style="padding:0;background:#000">
+    <svg viewBox="0 0 960 540" width="960" height="540" style="border-radius:0;box-shadow:none;background:#18181b">
+      <rect width="960" height="540" fill="#18181b"/>
+      <rect x="0" y="380" width="960" height="160" fill="#27272a"/>
+      <rect x="430" y="300" width="70" height="80" rx="8" fill="#5b5bd6" opacity=".8"/>
+      <path d="M560 120 L560 240 L500 290" stroke="#a1a1aa" stroke-width="14" fill="none" stroke-linecap="round"/>
+      <circle cx="480" cy="270" r="44" fill="rgba(255,255,255,.14)"/>
+      <path d="M468 250 L498 270 L468 290 Z" fill="#fff"/>
+      <rect x="20" y="510" width="920" height="4" rx="2" fill="rgba(255,255,255,.2)"/>
+      <rect x="20" y="510" width="300" height="4" rx="2" fill="#7c7cff"/>
+      <text x="20" y="498" font-size="13" fill="#d4d4d8" font-family="Inter, system-ui">0:12 / 0:38</text>
+    </svg>
+  </div>
+</template>
+
+<template id="t-file">
+  <div class="file">
+    <div class="icon">NPZ</div>
+    <div class="name">eval_results_v8.npz</div>
+    <div class="sub">NumPy archive · 18.4 MB · no preview for this type</div>
+    <a class="btn primary" href="#">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15V3"/><path d="m7 10 5 5 5-5"/><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/></svg>
+      Download
+    </a>
+  </div>
+</template>
+
+<script>
+// Mockup only: the real landing page is static HTML rendered by the daemon, with no script.
+const pageHtml = `<!doctype html><html><head><style>
+  body{margin:0;font:14px/1.45 system-ui,sans-serif;color:#18181b;padding:22px 26px}
+  h2{font-size:17px;margin:0 0 4px} p{color:#52525b;margin:0 0 14px;font-size:13px}
+  canvas{width:100%;height:420px;display:block} .tip{position:fixed;pointer-events:none;background:#18181b;color:#fff;
+  font-size:12px;padding:4px 7px;border-radius:5px;display:none}
+  .legend{display:flex;gap:16px;font-size:12px;color:#3f3f46;margin-bottom:6px}
+  .legend i{display:inline-block;width:10px;height:3px;border-radius:2px;vertical-align:middle;margin-right:6px}
+</style></head><body>
+<h2>Training loss: v8 vs baseline</h2><p>Hover to read values. Smoothed over 50 steps.</p>
+<div class="legend"><span><i style="background:#a1a1aa"></i>baseline (joint position targets)</span><span><i style="background:#5b5bd6"></i>v8</span></div>
+<canvas id="c"></canvas><div class="tip" id="t"></div>
+<script>
+const c=document.getElementById('c'),t=document.getElementById('t'),x=c.getContext('2d');
+const N=200,a=[],b=[];for(let i=0;i<N;i++){const s=i/N;a.push(1.6*Math.exp(-2.2*s)+.32+.018*(Math.sin(i*1.7)+Math.sin(i*.37)));b.push(1.6*Math.exp(-3.6*s)+.18+.012*(Math.sin(i*1.9)+Math.sin(i*.41)));}
+function draw(h){const r=devicePixelRatio,W=c.clientWidth,H=c.clientHeight;c.width=W*r;c.height=H*r;x.setTransform(r,0,0,r,0,0);
+x.clearRect(0,0,W,H);const L=40,B=24,px=i=>L+(W-L-8)*i/(N-1),py=v=>(H-B)-(H-B-8)*v/2;
+x.strokeStyle='#eee';x.fillStyle='#71717a';x.font='11px system-ui';for(let v=0;v<=2;v+=.5){x.beginPath();x.moveTo(L,py(v));x.lineTo(W,py(v));x.stroke();x.fillText(v.toFixed(1),8,py(v)+4);}
+for(const [d,col] of [[a,'#a1a1aa'],[b,'#5b5bd6']]){x.strokeStyle=col;x.lineWidth=2;x.beginPath();d.forEach((v,i)=>i?x.lineTo(px(i),py(v)):x.moveTo(px(i),py(v)));x.stroke();}
+if(h!=null){x.strokeStyle='#d4d4d8';x.lineWidth=1;x.beginPath();x.moveTo(px(h),8);x.lineTo(px(h),H-B);x.stroke();}}
+c.onmousemove=e=>{const R=c.getBoundingClientRect(),i=Math.max(0,Math.min(N-1,Math.round((e.clientX-R.left-40)/(R.width-48)*(N-1))));draw(i);
+t.style.display='block';t.style.left=(e.clientX+12)+'px';t.style.top=(e.clientY+12)+'px';t.textContent='step '+(i*250)+' · baseline '+a[i].toFixed(3)+' · v8 '+b[i].toFixed(3);};
+c.onmouseleave=()=>{t.style.display='none';draw();};addEventListener('resize',()=>draw());draw();
+<\/script></body></html>`;
+
+const kinds = {
+  html:  { title: "Training loss: v8 vs baseline", meta: ["HTML page", "48 KB", "loss-curves.html"], open: true },
+  image: { title: "Grasp success by object", meta: ["PNG image", "640 × 360", "212 KB", "grasp-success.png"], open: true },
+  md:    { title: "Eval summary — v8", meta: ["Markdown", "3 KB", "eval-summary.md"], open: false },
+  video: { title: "v8 rollout: drill, trial 17", meta: ["MP4 video", "0:38", "6.2 MB", "rollout-drill-17.mp4"], open: true },
+  file:  { title: "eval_results_v8.npz", meta: ["NumPy archive", "18.4 MB"], open: false },
+};
+
+function show(kind) {
+  document.querySelectorAll('.mock [data-kind]').forEach(b => b.setAttribute('aria-pressed', b.dataset.kind === kind));
+  const gone = kind === 'gone';
+  document.getElementById('landing').hidden = gone;
+  document.getElementById('gone').hidden = !gone;
+  if (gone) return;
+  const k = kinds[kind];
+  document.getElementById('title').textContent = k.title;
+  document.title = k.title;
+  const meta = document.getElementById('meta'); meta.replaceChildren();
+  for (const m of k.meta) { const s = document.createElement('span'); s.textContent = m; meta.append(s); }
+  document.getElementById('open').hidden = !k.open;
+  const p = document.getElementById('preview');
+  p.replaceChildren(document.getElementById('t-' + kind).content.cloneNode(true));
+  if (kind === 'html') p.querySelector('iframe').srcdoc = pageHtml;
+}
+document.querySelectorAll('.mock [data-kind]').forEach(b => b.onclick = () => show(b.dataset.kind));
+
+const themeBtn = document.getElementById('theme');
+function setTheme(t) { document.documentElement.dataset.theme = t; themeBtn.textContent = t === 'dark' ? 'Light' : 'Dark'; }
+themeBtn.onclick = () => setTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark');
+setTheme(matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+show('html');
+</script>
+</body>
+</html>
