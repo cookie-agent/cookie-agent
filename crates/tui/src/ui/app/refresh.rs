@@ -1014,6 +1014,19 @@ impl App {
                     Err(error) => self.status = format!("permission update failed: {error}"),
                 }
             }
+            RpcUpdate::SessionToolsLoaded { session_id, result } => {
+                if self.selected != Some(session_id) {
+                    return;
+                }
+                match result {
+                    Ok(result) => {
+                        self.session_tools = Some(result);
+                        self.clamp_group_focus();
+                    }
+                    // A daemon without tool groups leaves the panel as it was.
+                    Err(error) => self.status = format!("tool groups: {error}"),
+                }
+            }
             RpcUpdate::SkillsLoaded {
                 session_id,
                 read,
@@ -1793,6 +1806,42 @@ impl App {
                 generation,
                 result,
             });
+        });
+    }
+
+    /// Reads the selected session's tool groups and skills for the
+    /// `/runtime` panel.
+    pub(super) fn load_session_tools(&mut self) {
+        let Some(session_id) = self.selected else {
+            return;
+        };
+        let client = self.client.clone();
+        let updates = self.rpc_updates_tx.clone();
+        self.spawn_rpc(async move {
+            let result = client
+                .get_session_tools(cookie_agent_protocol::SessionToolsGetParams { session_id })
+                .await
+                .map_err(|error| error.to_string());
+            let _ = updates.send(RpcUpdate::SessionToolsLoaded { session_id, result });
+        });
+    }
+
+    /// Writes the selected session's tool group and skill choices.
+    pub(super) fn write_session_tools(&mut self, exposure: cookie_agent_protocol::ToolExposure) {
+        let Some(session_id) = self.selected else {
+            return;
+        };
+        let client = self.client.clone();
+        let updates = self.rpc_updates_tx.clone();
+        self.spawn_rpc(async move {
+            let result = client
+                .set_session_tools(cookie_agent_protocol::SessionToolsSetParams {
+                    session_id,
+                    exposure,
+                })
+                .await
+                .map_err(|error| format!("not changed: {error}"));
+            let _ = updates.send(RpcUpdate::SessionToolsLoaded { session_id, result });
         });
     }
 

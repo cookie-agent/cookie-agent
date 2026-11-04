@@ -1022,6 +1022,7 @@ fn runtime_panel_renders_attachments_with_status_and_failure_reason() {
                 frame.area(),
                 &mut panel,
                 &rows,
+                None,
                 &crate::theme::Theme::default(),
             );
         })
@@ -1058,6 +1059,7 @@ fn runtime_panel_renders_attachments_with_status_and_failure_reason() {
                 frame.area(),
                 &mut panel,
                 &rows,
+                None,
                 &crate::theme::Theme::default(),
             );
         })
@@ -1099,6 +1101,7 @@ fn runtime_panel_shows_workspaces_under_their_runtime_home() {
                 frame.area(),
                 &mut panel,
                 &rows,
+                None,
                 &crate::theme::Theme::default(),
             );
         })
@@ -1173,6 +1176,7 @@ fn render_runtime_panel(
                 frame.area(),
                 panel,
                 rows,
+                None,
                 &crate::theme::Theme::default(),
             );
         })
@@ -1551,4 +1555,60 @@ fn about_panel_shows_the_notices_wrapped_and_scrolls_to_their_end() {
     assert_eq!(panel.scroll, at_end);
     panel.page_up();
     assert!(panel.scroll < at_end);
+}
+
+#[test]
+fn runtime_panel_lists_the_selected_attachments_tool_groups() {
+    let listing = runtime_listing();
+    let attached = [
+        attachment("global", "global", "global", None),
+        attachment("labpc_api", "labpc", "coding", Some("/srv/api")),
+    ];
+    let rows = super::runtime_rows(&attached, Some(&listing));
+    let tools: cookie_agent_protocol::SessionToolsGetResult = serde_json::from_value(serde_json::json!({
+        "groups": [
+            {"selector": "coding@labpc", "kind": "builtin", "name": "coding", "runtime": "labpc",
+             "attachment": "labpc_api", "state": "off", "layer": "session", "below": "on",
+             "below_layer": "default", "tools": ["read", "bash"], "token_estimate": 1200},
+            {"selector": "mcp:exa", "kind": "mcp", "name": "exa",
+             "state": "deferred", "layer": "default", "below": "deferred",
+             "below_layer": "default", "tools": ["exa_search"], "token_estimate": 300}
+        ],
+        "skills": [],
+        "exposure": {"tool_groups": [{"selector": "coding@labpc", "state": "off"}]}
+    }))
+    .expect("session tools");
+    let mut panel = super::RuntimePanel::default();
+    panel.install(listing);
+    panel.selection.select(Some(1));
+    panel.group_focus = Some(ratatui::widgets::ListState::default().with_selected(Some(0)));
+    let mut terminal = Terminal::new(TestBackend::new(110, 30)).expect("terminal");
+    terminal
+        .draw(|frame| {
+            super::render_runtimes(
+                frame,
+                frame.area(),
+                &mut panel,
+                &rows,
+                Some(&tools),
+                &crate::theme::Theme::default(),
+            );
+        })
+        .expect("render runtime panel");
+    let text = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+    assert!(text.contains("Tool groups:"), "{text}");
+    assert!(
+        text.contains("> off       coding@labpc  set for this session · 2 tools"),
+        "{text}"
+    );
+    assert!(text.contains("read · bash"), "{text}");
+    // The daemon's own groups sit on global's row.
+    assert!(!text.contains("mcp:exa"), "{text}");
+    assert!(text.contains("←→ on/deferred/off"), "{text}");
 }

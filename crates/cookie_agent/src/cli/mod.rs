@@ -329,10 +329,25 @@ enum Command {
     /// or nightly.
     #[command(visible_alias = "upgrade")]
     Update(update::UpdateArgs),
-    /// Manage the session history this machine stores.
+    /// Manage the session history this machine stores, or show a
+    /// session's tool groups and skills.
     Sessions {
         #[command(subcommand)]
         command: sessions::SessionsCommand,
+        /// The daemon's client URL (for `tools`); `[server] url` in this
+        /// machine's `config.toml`, or the local daemon, when omitted.
+        #[arg(long, global = true)]
+        url: Option<String>,
+        /// The daemon's bearer token (for `tools`); `[server] token` in this
+        /// machine's `config.toml` when omitted.
+        #[arg(
+            long,
+            global = true,
+            env = "COOKIE_DAEMON_TOKEN",
+            hide_env_values = true,
+            allow_hyphen_values = true
+        )]
+        token: Option<String>,
     },
     /// List MCP servers or start remote-server OAuth.
     Mcp {
@@ -453,7 +468,15 @@ pub(crate) async fn dispatch(cli: Cli, launch: &mut Launch) -> anyhow::Result<()
         }
         Some(Command::Runtime { command }) => runtime::run_runtime(command).await,
         Some(Command::Update(args)) => update::run_update(args).await,
-        Some(Command::Sessions { command }) => sessions::run_sessions(command),
+        Some(Command::Sessions {
+            command: sessions::SessionsCommand::Tools { session_id },
+            url,
+            token,
+        }) => {
+            let target = daemon_target(url, token)?;
+            sessions::run_session_tools(&target.url, &target.token, session_id).await
+        }
+        Some(Command::Sessions { command, .. }) => sessions::run_sessions(command),
         Some(Command::Onboard { args, url, token }) => {
             let target = daemon_target(url, token)?;
             onboard::run_onboard(&target.url, &target.token, args).await

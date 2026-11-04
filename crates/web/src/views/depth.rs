@@ -407,6 +407,7 @@ pub fn background_sheet(workspace: Workspace) -> impl IntoView {
 }
 
 pub fn skills_sheet(workspace: Workspace) -> impl IntoView {
+    workspace.poll_session_tools();
     let list = move || match workspace.skills.get() {
         None => loading("Reading skills…").into_any(),
         Some(Err(error)) => view! { <p class=super::ERROR>{error}</p> }.into_any(),
@@ -429,7 +430,10 @@ pub fn skills_sheet(workspace: Workspace) -> impl IntoView {
                             .skill_pick
                             .with(|pick| pick.as_ref().is_some_and(|pick| pick.name == name))
                     };
+                    // The switch sits over the row's corner, beside rather
+                    // than inside its button.
                     view! {
+                        <div class="relative">
                         <button
                             type="button"
                             class=ROW
@@ -437,7 +441,7 @@ pub fn skills_sheet(workspace: Workspace) -> impl IntoView {
                             data-skill=skill.name.clone()
                             on:click=move |_| workspace.skill_pick.set(Some(picked.clone()))
                         >
-                            <span class="font-mono text-sm font-bold">{skill.name.clone()}</span>
+                            <span class="pr-20 font-mono text-sm font-bold">{skill.name.clone()}</span>
                             {(skill.source == cookie_agent_protocol::SkillSource::Official)
                                 .then(|| {
                                     view! {
@@ -448,6 +452,10 @@ pub fn skills_sheet(workspace: Workspace) -> impl IntoView {
                                 })}
                             <span class=NOTE>{skill.description.clone()}</span>
                         </button>
+                        <span class="absolute right-2 top-1.5">
+                            {super::tool_groups::skill_switch(workspace, skill.name.clone())}
+                        </span>
+                        </div>
                     }
                 })
                 .collect_view()
@@ -499,8 +507,7 @@ pub fn skills_sheet(workspace: Workspace) -> impl IntoView {
 }
 
 /// Why the runtime field is off for an action that takes no runtime.
-const NO_RUNTIME: &str =
-    "message and skill run in the daemon itself, on no runtime, so their rules name none";
+const NO_RUNTIME: &str = "message runs in the daemon itself, on no runtime, so its rules name none";
 
 /// The new-rule form's fields, which an edited rule fills.
 #[derive(Clone, Copy)]

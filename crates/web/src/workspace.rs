@@ -58,6 +58,7 @@ mod rename;
 mod restart;
 mod selection;
 mod skills;
+mod tool_groups;
 mod tree;
 mod unread;
 
@@ -261,6 +262,23 @@ pub struct Workspace {
     pub user_menu: RwSignal<Option<UserMenu>>,
     pub goal_draft: RwSignal<String>,
     pub skills: RwSignal<Option<Result<Vec<cookie_agent_protocol::SkillDescriptor>, String>>>,
+    /// The viewed session's tool groups and skills with their states
+    /// (`session.tools.get`), which the Runtimes and Skills tabs show.
+    pub session_tools:
+        RwSignal<Option<Result<cookie_agent_protocol::SessionToolsGetResult, String>>>,
+    /// The new session's tool group and skill choices: its project's
+    /// defaults (marked `from_project`) until the user changes one.
+    pub draft_exposure: RwSignal<cookie_agent_protocol::ToolExposure>,
+    /// The project editor's tool group and skill choices for new sessions.
+    pub editor_exposure: RwSignal<cookie_agent_protocol::ToolExposure>,
+    /// What each runtime capability offers (`runtimes.groups`), by
+    /// runtime, capability, and workspace; `None` while it is read.
+    pub runtime_groups: RwSignal<
+        HashMap<
+            tool_groups::GroupsKey,
+            Option<Result<cookie_agent_protocol::RuntimeGroupsResult, String>>,
+        >,
+    >,
     pub skill_query: RwSignal<String>,
     /// The Skills view's listing: the daemon's skills, or with
     /// [`Self::skill_list_session`] the open session's, its workspace's
@@ -605,6 +623,10 @@ impl Workspace {
             user_menu: RwSignal::new(None),
             goal_draft: RwSignal::new(String::new()),
             skills: RwSignal::new(None),
+            session_tools: RwSignal::new(None),
+            draft_exposure: RwSignal::new(Default::default()),
+            editor_exposure: RwSignal::new(Default::default()),
+            runtime_groups: RwSignal::new(HashMap::new()),
             skill_query: RwSignal::new(String::new()),
             skill_list: RwSignal::new(None),
             skill_list_session: RwSignal::new(false),
@@ -1616,6 +1638,9 @@ impl Workspace {
         self.tree.set(None);
         self.follow_composer_slot();
         self.draft_rules.set(Vec::new());
+        self.draft_exposure.set(Default::default());
+        // What runtimes offer is read again for each draft.
+        self.runtime_groups.set(HashMap::new());
         self.draft_agent_options.set(Default::default());
         self.draft.set(self.default_draft());
         self.panel.set(None);
@@ -2241,6 +2266,7 @@ impl Workspace {
                 agent_options: self
                     .draft_agent_options
                     .with_untracked(|draft| draft.for_agent(&selection.agent).to_vec()),
+                exposure: self.draft_exposure_to_send(),
                 ..SessionCreateParams::new(selection)
             })
             .await
@@ -2283,6 +2309,7 @@ impl Workspace {
         }
         self.new_session_mode.set(None);
         self.draft_rules.set(Vec::new());
+        self.draft_exposure.set(Default::default());
         self.draft_agent_options.set(Default::default());
         self.draft_error.set(None);
         self.card_errors.set(HashMap::new());

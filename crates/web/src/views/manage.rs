@@ -84,8 +84,13 @@ pub(super) fn area_value(id: &str) -> String {
 /// The session's attached runtimes (`/runtime`); the daemon's machines and
 /// runtimes are a view of their own.
 pub fn runtimes_sheet(workspace: Workspace) -> impl IntoView {
-    poll_while_open(RUNTIMES_POLL, move || workspace.tick_runtimes());
+    workspace.poll_session_tools();
+    poll_while_open(RUNTIMES_POLL, move || {
+        workspace.tick_runtimes();
+        workspace.poll_session_tools();
+    });
     view! {
+        {super::tool_groups::tools_summary(workspace)}
         {attachments_view(workspace)}
         <button
             type="button"
@@ -120,6 +125,7 @@ fn attachments_view(workspace: Workspace) -> impl IntoView {
                 });
                 let detach_name = row.attachment.name.clone();
                 let retry_row = row.clone();
+                let chips = super::tool_groups::group_chips(workspace, row.attachment.name.to_string());
                 view! {
                     <div class="runtime-row flex flex-col gap-1 border-b border-line py-2" data-attachment=row.attachment.name.to_string()>
                         <div class="flex items-center gap-2">
@@ -147,6 +153,7 @@ fn attachments_view(workspace: Workspace) -> impl IntoView {
                         </span>
                         {row.description.clone().map(|description| view! { <span class=NOTE>{description}</span> })}
                         {message.map(|message| view! { <span class=ERROR>{message}</span> })}
+                        {chips}
                         {(!servers.is_empty()).then(|| runtime_mcp_servers(servers, None, None))}
                         <div class="flex gap-2">
                             <button type="button" class=BUTTON data-retry on:click=move |_| workspace.retry_runtime(retry_row.clone())>

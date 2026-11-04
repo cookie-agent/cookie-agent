@@ -127,6 +127,53 @@ pub(in crate::ui) struct RuntimePanel {
     pub(in crate::ui) agents: Vec<AgentDescriptor>,
     /// A runtime's ACP agents, open over the machines view.
     pub(in crate::ui) agents_view: Option<super::runtime_agents::AgentsView>,
+    /// The selected attachment's tool groups have the keys: which one is
+    /// highlighted.
+    pub(in crate::ui) group_focus: Option<ListState>,
+}
+
+/// The tool groups of the attachment `row` in the session's `tools`: the
+/// daemon's own groups and top-level MCP servers sit on `global`.
+pub(in crate::ui) fn row_groups<'t>(
+    tools: Option<&'t cookie_agent_protocol::SessionToolsGetResult>,
+    row: &RuntimeRow,
+) -> Vec<&'t cookie_agent_protocol::SessionToolGroup> {
+    let name = row.attachment.name.as_str();
+    tools
+        .map(|tools| {
+            tools
+                .groups
+                .iter()
+                .filter(|group| match group.attachment.as_deref() {
+                    Some(own) => own == name,
+                    None => name == "global",
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn state_word(state: cookie_agent_protocol::ToolGroupState) -> &'static str {
+    match state {
+        cookie_agent_protocol::ToolGroupState::On => "on",
+        cookie_agent_protocol::ToolGroupState::Deferred => "deferred",
+        cookie_agent_protocol::ToolGroupState::Off => "off",
+    }
+}
+
+/// One group's line in the details: its state, who set it, its size.
+fn group_line(group: &cookie_agent_protocol::SessionToolGroup) -> String {
+    if group.hidden_by_permissions {
+        return format!("{:<9} {}  hidden by permissions", "-", group.selector);
+    }
+    format!(
+        "{:<9} {}  {} · {} tools · ~{:.1}k tok",
+        state_word(group.state),
+        group.selector,
+        crate::ui::app::layer_label(group.layer),
+        group.tools.len(),
+        group.token_estimate as f64 / 1000.0
+    )
 }
 
 impl RuntimePanel {
@@ -345,6 +392,7 @@ pub(in crate::ui) fn render_runtimes(
     area: Rect,
     panel: &mut RuntimePanel,
     rows: &[RuntimeRow],
+    tools: Option<&cookie_agent_protocol::SessionToolsGetResult>,
     theme: &Theme,
 ) -> RuntimeHits {
     let mut hits = RuntimeHits::default();
@@ -359,7 +407,7 @@ pub(in crate::ui) fn render_runtimes(
         .areas(area);
     render_tabs(frame, tabs, panel, theme, &mut hits);
     match panel.view {
-        RuntimeView::Attachments => render_attachments(frame, body, panel, rows, theme),
+        RuntimeView::Attachments => render_attachments(frame, body, panel, rows, tools, theme),
         RuntimeView::Machines => match panel.agents_view.as_mut() {
             Some(view) => super::runtime_agents::render_agents(frame, body, view, theme),
             None => render_machines(frame, body, panel, theme, &mut hits),
@@ -402,6 +450,7 @@ fn render_attachments(
     area: Rect,
     panel: &mut RuntimePanel,
     rows: &[RuntimeRow],
+    tools: Option<&cookie_agent_protocol::SessionToolsGetResult>,
     theme: &Theme,
 ) {
     panel.clamp(rows.len());
@@ -447,7 +496,13 @@ fn render_attachments(
                     .title(crate::ui::panel_title("Attached runtimes"))
                     .title_bottom(crate::ui::panel_title(
                         Line::from(Span::styled(
-                            "a attach | d detach | r retry | m machines | esc close",
+                            if panel.group_focus.is_some() {
+                                "↑↓ group | ←→ on/deferred/off | d reset | tab back"
+                            } else if tools.is_some() {
+                                "a attach | d detach | r retry | tab tools | m machines | esc close"
+                            } else {
+                                "a attach | d detach | r retry | m machines | esc close"
+                            },
                             theme.internal(),
                         ))
                         .right_aligned(),
@@ -468,7 +523,14 @@ fn render_attachments(
                     "No runtimes attached. Press a to attach one.".to_owned()
                 }
             },
-            |row| row_detail(row, panel),
+            |row| {
+                let mut detail = row_detail(row, panel);
+                detail.push_str(&groups_detail(
+                    &row_groups(tools, row),
+                    panel.group_focus.as_ref(),
+                ));
+                detail
+            },
         );
     frame.render_widget(
         Paragraph::new(detail).wrap(Wrap { trim: false }).block(
@@ -822,6 +884,27 @@ fn row_detail(row: &RuntimeRow, panel: &RuntimePanel) -> String {
         text.push_str(message);
     }
     text.push_str(&mcp_detail(&panel.row_mcp_servers(row), panel));
+    text
+}
+
+/// The tool groups of a runtime row's details, the highlighted one marked
+/// with its tools.
+fn groups_detail(
+    groups: &[&cookie_agent_protocol::SessionToolGroup],
+    focus: Option<&ListState>,
+) -> String {
+    if groups.is_empty() {
+        return String::new();
+    }
+    let mut text = "\n\nTool groups:".to_owned();
+    let highlighted = focus.and_then(ListState::selected);
+    for (index, group) in groups.iter().enumerate() {
+        let mark = if highlighted == Some(index) { ">" } else { " " };
+        text.push_str(&format!("\n{mark} {}", group_line(group)));
+        if highlighted == Some(index) {
+            text.push_str(&format!("\n      {}", group.tools.join(" · ")));
+        }
+    }
     text
 }
 

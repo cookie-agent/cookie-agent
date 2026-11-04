@@ -20,6 +20,7 @@ pub mod cron;
 pub mod cut_points;
 pub mod daemon_status;
 pub mod elicitation;
+pub mod exposure;
 pub mod format;
 pub mod held;
 pub mod history;
@@ -1319,6 +1320,9 @@ pub struct SessionState {
     /// The deferred tools announcements since the latest checkpoint, each
     /// as the model reads it: the deferred tools prompt.
     pub deferred_announcements: Vec<String>,
+    /// The session's own tool group and skill choices
+    /// (`session_tool_exposure_set`).
+    pub tool_exposure: cookie_agent_protocol::ToolExposure,
     /// The group each announced, still-loadable deferred tool belongs to.
     pub deferred_tool_groups: std::collections::BTreeMap<String, String>,
     pub model_selection: cookie_agent_protocol::SessionModelState,

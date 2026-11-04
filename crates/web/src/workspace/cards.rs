@@ -26,6 +26,10 @@ pub struct CardSet {
     pub selection: RwSignal<Selection>,
     /// Refusals by card key and workspace field (the new session's only).
     pub errors: RwSignal<HashMap<(String, usize), String>>,
+    /// The tool group and skill choices made on the cards.
+    pub exposure: RwSignal<cookie_agent_protocol::ToolExposure>,
+    /// The cards edit a project's defaults rather than a new session.
+    pub project: bool,
 }
 
 impl Workspace {
@@ -34,6 +38,8 @@ impl Workspace {
         CardSet {
             selection: self.selection,
             errors: self.card_errors,
+            exposure: self.draft_exposure,
+            project: false,
         }
     }
 

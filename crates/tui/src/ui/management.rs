@@ -1258,7 +1258,7 @@ pub(super) fn action_label(action: &PermissionAction) -> &str {
 mod runtimes;
 pub(super) use runtimes::{
     AttachStep, DraftRuntime, MachineAction, MachineRequest, RuntimeHits, RuntimePanel, RuntimeRow,
-    RuntimeView, draft_runtime_rows, render_runtimes, runtime_rows,
+    RuntimeView, draft_runtime_rows, render_runtimes, row_groups, runtime_rows,
 };
 
 mod runtime_agents;

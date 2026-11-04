@@ -59,6 +59,7 @@ mod session_rows;
 mod shell;
 mod sidebar;
 mod skills;
+mod tool_groups;
 
 pub(crate) use install::{Install, InstallAction, InstallBanner};
 pub(crate) use media_viewer::MediaViewer;
@@ -3828,10 +3829,11 @@ const fn chip_of(panel: Panel) -> Option<&'static str> {
 /// The session panel's tabs (docs/site/specs/quiet-ink.md, D5): the sheets
 /// about the open session, each opened through its command as the
 /// Session commands sheet opens it, with what it reads.
-const SESSION_TABS: [(Panel, Command, &str); 6] = [
+const SESSION_TABS: [(Panel, Command, &str); 7] = [
     (Panel::Usage, Command::Usage, "Usage"),
     (Panel::Permissions, Command::Permissions, "Permissions"),
     (Panel::Runtimes, Command::Runtime, "Runtimes"),
+    (Panel::Skills, Command::Skills, "Skills"),
     (Panel::Goal, Command::Goal, "Goal"),
     (Panel::Background, Command::Background, "Background"),
     (Panel::Events, Command::Events, "Events"),
@@ -3863,6 +3865,26 @@ fn session_tabs(workspace: Workspace) -> impl IntoView {
                 Panel::Background => {
                     Some(background.get()).filter(|count| *count > 0).map(|count| count.to_string())
                 }
+                // The groups and the skills that are off.
+                Panel::Runtimes | Panel::Skills => workspace.session_tools.with(|tools| {
+                    let Some(Ok(tools)) = tools else {
+                        return None;
+                    };
+                    let off = if panel == Panel::Runtimes {
+                        tools
+                            .groups
+                            .iter()
+                            .filter(|group| group.state == cookie_agent_protocol::ToolGroupState::Off)
+                            .count()
+                    } else {
+                        tools
+                            .skills
+                            .iter()
+                            .filter(|skill| skill.state == cookie_agent_protocol::SkillState::Off)
+                            .count()
+                    };
+                    (off > 0).then(|| off.to_string())
+                }),
                 _ => None,
             };
             view! {

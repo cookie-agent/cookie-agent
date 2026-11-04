@@ -212,7 +212,15 @@ fn edit_line(input: &mut InputState, key: KeyEvent) -> LineEdit {
     LineEdit::Changed
 }
 
-fn skill_label(skill: &cookie_agent_protocol::SkillDescriptor) -> String {
+fn skill_label(
+    skill: &cookie_agent_protocol::SkillDescriptor,
+    state: Option<&cookie_agent_protocol::SessionSkill>,
+) -> String {
+    let switch = match state.map(|state| state.state) {
+        Some(cookie_agent_protocol::SkillState::Off) => "○ off  ",
+        Some(cookie_agent_protocol::SkillState::On) => "● on   ",
+        None => "",
+    };
     let hint = skill
         .argument_hint
         .as_deref()
@@ -222,7 +230,20 @@ fn skill_label(skill: &cookie_agent_protocol::SkillDescriptor) -> String {
     } else {
         ""
     };
-    format!("/{}{}{official} — {}", skill.name, hint, skill.description)
+    format!(
+        "{switch}/{}{}{official} — {}",
+        skill.name, hint, skill.description
+    )
+}
+
+/// Who set a skill's or a group's state, for the details line.
+pub(in crate::ui) fn layer_label(layer: cookie_agent_protocol::ExposureLayer) -> &'static str {
+    match layer {
+        cookie_agent_protocol::ExposureLayer::Default => "default",
+        cookie_agent_protocol::ExposureLayer::Agent => "set by the agent",
+        cookie_agent_protocol::ExposureLayer::Project => "from the project",
+        cookie_agent_protocol::ExposureLayer::Session => "set for this session",
+    }
 }
 
 /// What Enter on the palette's current step acts on, captured before any
@@ -331,26 +352,105 @@ impl App {
                     }
                 })
                 .collect(),
-            Some(PaletteStep::Skills { .. }) => {
-                self.palette_skills().into_iter().map(skill_label).collect()
-            }
+            Some(PaletteStep::Skills { .. }) => self
+                .palette_skills()
+                .into_iter()
+                .map(|skill| skill_label(skill, self.session_skill(&skill.name)))
+                .collect(),
             Some(PaletteStep::Text { .. }) => Vec::new(),
         }
     }
 
-    /// Source, permission effect, and location of the highlighted skill.
+    /// The session's state of the skill `name`, as `session.tools.get`
+    /// last read it.
+    fn session_skill(&self, name: &str) -> Option<&cookie_agent_protocol::SessionSkill> {
+        self.session_tools.as_ref().and_then(|tools| {
+            tools
+                .skills
+                .iter()
+                .find(|skill| skill.name == name && !skill.shadowed)
+        })
+    }
+
+    /// Source, state, and location of the highlighted skill.
     pub(in crate::ui) fn palette_skill_detail(&self) -> Option<String> {
         let Some(PaletteStep::Skills { list, .. }) = self.palette_step() else {
             return None;
         };
         let skills = self.palette_skills();
         let skill = skills.get(list.selected()?)?;
+        let state = self
+            .session_skill(&skill.name)
+            .map_or(String::new(), |state| {
+                format!(
+                    " · {} for the agent, {}",
+                    if state.state == cookie_agent_protocol::SkillState::On {
+                        "on"
+                    } else {
+                        "off"
+                    },
+                    layer_label(state.layer)
+                )
+            });
         Some(format!(
-            "{} · permission {:?} · {}",
+            "{}{state} · {}",
             cookie_agent_client_state::onboarding::skill_origin(skill),
-            skill.permission_effect,
             skill.location
         ))
+    }
+
+    /// Switches the highlighted skill on or off for the agent in the
+    /// selected session; it can still be run either way.
+    async fn toggle_palette_skill(&mut self) {
+        let Some(PaletteStep::Skills { list, .. }) = self.palette_step() else {
+            return;
+        };
+        let Some(name) = list.selected().and_then(|index| {
+            self.palette_skills()
+                .get(index)
+                .map(|skill| skill.name.clone())
+        }) else {
+            return;
+        };
+        let (Some(session_id), Some(tools)) = (self.selected, self.session_tools.as_ref()) else {
+            self.status = "this daemon does not switch skills".into();
+            return;
+        };
+        let Some(state) = self.session_skill(&name).cloned() else {
+            return;
+        };
+        let next = if state.state == cookie_agent_protocol::SkillState::On {
+            cookie_agent_protocol::SkillState::Off
+        } else {
+            cookie_agent_protocol::SkillState::On
+        };
+        let exposure = cookie_agent_client_state::exposure::with_skill(
+            tools.exposure.clone(),
+            &name,
+            Some(next),
+            state.below,
+        );
+        match self
+            .client
+            .set_session_tools(cookie_agent_protocol::SessionToolsSetParams {
+                session_id,
+                exposure,
+            })
+            .await
+        {
+            Ok(result) => {
+                self.session_tools = Some(result);
+                self.status = format!(
+                    "skill {name} {} for the agent",
+                    if next == cookie_agent_protocol::SkillState::On {
+                        "on"
+                    } else {
+                        "off: you can still run it"
+                    }
+                );
+            }
+            Err(error) => self.status = format!("skill not switched: {error}"),
+        }
     }
 
     pub(in crate::ui) fn clamp_palette_selection(&mut self) {
@@ -392,6 +492,15 @@ impl App {
             }
             KeyCode::Up | KeyCode::Down if palette.active_list().is_some() => {
                 self.move_palette_selection(key.code == KeyCode::Up);
+                return;
+            }
+            // Skill names hold no spaces: space switches the highlighted
+            // skill on or off.
+            KeyCode::Char(' ')
+                if is_printable_key(key)
+                    && matches!(palette.steps.last(), Some(PaletteStep::Skills { .. })) =>
+            {
+                self.toggle_palette_skill().await;
                 return;
             }
             // `/` in an empty command search is the way to start a prompt
@@ -624,6 +733,12 @@ impl App {
         {
             Ok(result) => {
                 self.skills = result.skills;
+                // A daemon without tool groups has no switches.
+                self.session_tools = self
+                    .client
+                    .get_session_tools(cookie_agent_protocol::SessionToolsGetParams { session_id })
+                    .await
+                    .ok();
                 true
             }
             Err(error) => {

@@ -1255,7 +1255,9 @@ impl App {
                 } else {
                     self.modal = Modal::Runtimes;
                     self.runtime_panel.form = None;
+                    self.runtime_panel.group_focus = None;
                     self.poll_runtimes();
+                    self.load_session_tools();
                 }
             }
             SlashCommand::Permissions => {

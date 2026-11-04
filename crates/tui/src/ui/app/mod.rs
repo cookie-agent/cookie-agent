@@ -23,6 +23,7 @@ mod machines;
 pub(in crate::ui) mod memory_panel;
 pub(in crate::ui) mod onboarding;
 mod pickers;
+pub(in crate::ui) use pickers::layer_label;
 mod plugins;
 mod pointer;
 mod presence;
@@ -875,6 +876,9 @@ pub struct App {
     pub(super) models: Vec<AvailableModelDescriptor>,
     pub(super) providers: Vec<ProviderDescriptor>,
     pub(super) skills: Vec<cookie_agent_protocol::SkillDescriptor>,
+    /// The selected session's tool groups and skills with their states
+    /// (`session.tools.get`), read when `/skills` or `/runtime` opens.
+    pub(super) session_tools: Option<cookie_agent_protocol::SessionToolsGetResult>,
     /// The `skills.list` reads: only the newest one's answer is installed.
     pub(super) skills_reads: cookie_agent_client_state::refresh::Latest,
     /// The session permission reads and changes on their way, each of which
@@ -1470,6 +1474,11 @@ pub(in crate::ui) enum RpcUpdate {
         read: cookie_agent_client_state::refresh::Ticket,
         result: Result<SessionPermissionGetResult, String>,
     },
+    /// `session.tools.get` or `session.tools.set` answered.
+    SessionToolsLoaded {
+        session_id: SessionId,
+        result: Result<cookie_agent_protocol::SessionToolsGetResult, String>,
+    },
     SkillsLoaded {
         session_id: SessionId,
         read: cookie_agent_client_state::refresh::Ticket,
@@ -1738,6 +1747,7 @@ impl App {
             models: Vec::new(),
             providers: Vec::new(),
             skills: Vec::new(),
+            session_tools: None,
             skills_reads: Default::default(),
             permission_reads: Default::default(),
             #[cfg(test)]

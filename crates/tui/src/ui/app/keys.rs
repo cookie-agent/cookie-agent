@@ -211,6 +211,9 @@ impl App {
             return;
         }
         let rows = self.runtime_rows();
+        if self.handle_group_key(key, &rows) {
+            return;
+        }
         match key.code {
             KeyCode::Esc => self.modal = Modal::None,
             KeyCode::Char('m') => {
@@ -278,6 +281,95 @@ impl App {
                 }
             }
             _ => {}
+        }
+    }
+
+    /// The selected attachment's tool groups: Tab moves the keys to them
+    /// and back; there ↑↓ pick a group, ←→ step its state, and `d` resets
+    /// it to the layers below. Whether the key was theirs.
+    fn handle_group_key(
+        &mut self,
+        key: KeyEvent,
+        rows: &[crate::ui::management::RuntimeRow],
+    ) -> bool {
+        if self.new_session_draft.is_some() {
+            return false;
+        }
+        let groups = self
+            .runtime_panel
+            .selection
+            .selected()
+            .and_then(|index| rows.get(index))
+            .map(|row| {
+                crate::ui::management::row_groups(self.session_tools.as_ref(), row)
+                    .into_iter()
+                    .cloned()
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let Some(focus) = self.runtime_panel.group_focus.as_mut() else {
+            if key.code == KeyCode::Tab && !groups.is_empty() {
+                self.runtime_panel.group_focus = Some(ListState::default().with_selected(Some(0)));
+                return true;
+            }
+            return false;
+        };
+        let highlighted = focus
+            .selected()
+            .and_then(|index| groups.get(index))
+            .cloned();
+        match key.code {
+            KeyCode::Tab | KeyCode::Esc => self.runtime_panel.group_focus = None,
+            KeyCode::Up => move_picker_selection(focus, groups.len(), true),
+            KeyCode::Down => move_picker_selection(focus, groups.len(), false),
+            KeyCode::Left | KeyCode::Right | KeyCode::Char('d') => {
+                let (Some(group), Some(tools)) = (highlighted, self.session_tools.as_ref()) else {
+                    return true;
+                };
+                if group.hidden_by_permissions {
+                    self.status = format!(
+                        "{} is hidden by permissions: /permissions decides",
+                        group.selector
+                    );
+                    return true;
+                }
+                let state = match key.code {
+                    KeyCode::Char('d') => None,
+                    code => Some(cookie_agent_client_state::exposure::step_group_state(
+                        group.state,
+                        code == KeyCode::Right,
+                    )),
+                };
+                let exposure = cookie_agent_client_state::exposure::with_group(
+                    tools.exposure.clone(),
+                    group.selector.clone(),
+                    state,
+                    group.below,
+                );
+                self.write_session_tools(exposure);
+            }
+            _ => return false,
+        }
+        true
+    }
+
+    /// Keeps the highlighted tool group within the selected attachment's.
+    pub(super) fn clamp_group_focus(&mut self) {
+        let rows = self.runtime_rows();
+        let count = self
+            .runtime_panel
+            .selection
+            .selected()
+            .and_then(|index| rows.get(index))
+            .map_or(0, |row| {
+                crate::ui::management::row_groups(self.session_tools.as_ref(), row).len()
+            });
+        if let Some(focus) = self.runtime_panel.group_focus.as_mut() {
+            if count == 0 {
+                self.runtime_panel.group_focus = None;
+            } else {
+                focus.select(Some(focus.selected().unwrap_or(0).min(count - 1)));
+            }
         }
     }
 

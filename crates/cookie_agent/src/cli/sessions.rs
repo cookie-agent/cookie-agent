@@ -14,12 +14,89 @@ pub(super) enum SessionsCommand {
     /// them as `events.jsonl.v<N>.bak`. A session another cookie process
     /// holds is left for it to convert.
     Upgrade,
+    /// Print a session's tool groups and skills with their states and who
+    /// set them.
+    Tools {
+        /// The session.
+        session_id: cookie_agent_protocol::SessionId,
+    },
+}
+
+/// `cookie sessions tools <id>` against a daemon.
+pub(super) async fn run_session_tools(
+    url: &str,
+    token: &str,
+    session_id: cookie_agent_protocol::SessionId,
+) -> anyhow::Result<()> {
+    let client =
+        cookie_agent_protocol_transport::Client::connect_websocket_with_token(url, token).await?;
+    super::handshake_ready(&client, super::client_identity("cli")).await?;
+    let tools = client
+        .get_session_tools(cookie_agent_protocol::SessionToolsGetParams { session_id })
+        .await
+        .context("session.tools.get failed")?;
+    for line in session_tools_lines(&tools) {
+        println!("{line}");
+    }
+    Ok(())
+}
+
+fn layer_word(layer: cookie_agent_protocol::ExposureLayer) -> &'static str {
+    match layer {
+        cookie_agent_protocol::ExposureLayer::Default => "default",
+        cookie_agent_protocol::ExposureLayer::Agent => "agent",
+        cookie_agent_protocol::ExposureLayer::Project => "project",
+        cookie_agent_protocol::ExposureLayer::Session => "session",
+    }
+}
+
+/// What `cookie sessions tools` prints: a line per group, then per skill,
+/// tab-separated.
+pub(super) fn session_tools_lines(
+    tools: &cookie_agent_protocol::SessionToolsGetResult,
+) -> Vec<String> {
+    let mut lines = vec!["GROUP\tSTATE\tSET BY\tTOOLS\tTOKENS".to_owned()];
+    for group in &tools.groups {
+        let state = if group.hidden_by_permissions {
+            "hidden by permissions".to_owned()
+        } else {
+            match group.state {
+                cookie_agent_protocol::ToolGroupState::On => "on",
+                cookie_agent_protocol::ToolGroupState::Deferred => "deferred",
+                cookie_agent_protocol::ToolGroupState::Off => "off",
+            }
+            .to_owned()
+        };
+        lines.push(format!(
+            "{}\t{state}\t{}\t{}\t~{}",
+            group.selector,
+            layer_word(group.layer),
+            group.tools.len(),
+            group.token_estimate
+        ));
+    }
+    lines.push(String::new());
+    lines.push("SKILL\tSTATE\tSET BY".to_owned());
+    for skill in tools.skills.iter().filter(|skill| !skill.shadowed) {
+        let state = match skill.state {
+            cookie_agent_protocol::SkillState::On => "on",
+            cookie_agent_protocol::SkillState::Off => "off",
+        };
+        lines.push(format!(
+            "{}\t{state}\t{}",
+            skill.name,
+            layer_word(skill.layer)
+        ));
+    }
+    lines
 }
 
 /// `cookie sessions upgrade`: converts session trees on disk and reports
 /// each one that needed it, or could not be converted.
 pub(super) fn run_sessions(command: SessionsCommand) -> anyhow::Result<()> {
-    let SessionsCommand::Upgrade = command;
+    let SessionsCommand::Upgrade = command else {
+        unreachable!("`cookie sessions tools` asks a daemon");
+    };
     let data_root = data_dir()?;
     let upgrades =
         cookie_agent_engine::session::upgrade_sessions(&data_root).context("upgrade sessions")?;

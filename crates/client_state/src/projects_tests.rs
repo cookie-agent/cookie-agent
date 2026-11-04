@@ -237,7 +237,15 @@ fn defaults_attach_when_they_name_runtimes_or_drop_global() {
 
 #[test]
 fn the_editor_saves_defaults_only_when_they_say_something() {
-    assert_eq!(editor_defaults(true, &[], None, None), None);
+    let none = cookie_agent_protocol::ToolExposure::default();
+    assert_eq!(editor_defaults(true, &[], None, None, &none), None);
+    // Tool group choices alone are worth keeping.
+    let exposure: cookie_agent_protocol::ToolExposure = serde_json::from_value(
+        serde_json::json!({"tool_groups": [{"selector": "mcp:github", "state": "off"}]}),
+    )
+    .unwrap();
+    let saved = editor_defaults(true, &[], None, None, &exposure).expect("defaults");
+    assert_eq!(saved.exposure, exposure);
     let local = RuntimeAttachRequest {
         runtime_id: RuntimeId::new("local").unwrap(),
         capability: Some(CapabilityName::coding()),
@@ -253,6 +261,7 @@ fn the_editor_saves_defaults_only_when_they_say_something() {
         &[global, local.clone(), local],
         Some(&AgentId::new("builder").unwrap()),
         Some("rust"),
+        &none,
     )
     .expect("defaults");
     assert!(!saved.global);

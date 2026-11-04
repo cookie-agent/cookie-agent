@@ -114,6 +114,8 @@ fn cli_commands_and_removed_flags_are_exact() {
             .command,
         Some(Command::Sessions {
             command: SessionsCommand::Upgrade,
+            url: None,
+            token: None,
         })
     );
     // Sessions are no longer kept per directory, so there is nothing to
@@ -280,6 +282,8 @@ fn cli_commands_and_removed_flags_are_exact() {
                     run::AllowedTool::Action(cookie_agent_protocol::PermissionAction::READ),
                     run::AllowedTool::Action(cookie_agent_protocol::PermissionAction::BASH)
                 ],
+                tool_groups: Vec::new(),
+                skill_states: Vec::new(),
                 skill: None,
                 skill_args: None,
                 max_turns: 7,
@@ -353,6 +357,42 @@ fn cli_commands_and_removed_flags_are_exact() {
         ])
         .is_err()
     );
+    // Tool groups and skills by exact name, each a state.
+    let Command::Run { args } = Cli::try_parse_from([
+        "cookie",
+        "run",
+        "prompt",
+        "--tool-group",
+        "mcp:exa=off",
+        "--tool-group",
+        "coding@labpc=deferred",
+        "--skill-state",
+        "deploy=off",
+    ])
+    .unwrap()
+    .command
+    .unwrap() else {
+        panic!("run command");
+    };
+    assert_eq!(args.tool_groups.len(), 2);
+    assert_eq!(args.tool_groups[1].selector.to_string(), "coding@labpc");
+    assert_eq!(
+        args.tool_groups[1].state,
+        cookie_agent_protocol::ToolGroupState::Deferred
+    );
+    assert_eq!(args.skill_states[0].skill.as_str(), "deploy");
+    for wrong in [
+        ["--tool-group", "mcp:*=off"],
+        ["--tool-group", "mcp:exa=maybe"],
+        ["--tool-group", "mcp:exa"],
+        ["--skill-state", "deploy=deferred"],
+        ["--skill-state", "dep*=off"],
+    ] {
+        assert!(
+            Cli::try_parse_from(["cookie", "run", "prompt", wrong[0], wrong[1]]).is_err(),
+            "{wrong:?}"
+        );
+    }
     assert!(Cli::try_parse_from(["cookie", "run", "prompt", "--skill-args", "orphan"]).is_err());
     assert!(Cli::try_parse_from(["cookie", "run"]).is_err());
     assert!(Cli::try_parse_from(["cookie", "run", "positional", "-p", "named"]).is_err());

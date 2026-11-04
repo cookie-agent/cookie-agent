@@ -87,6 +87,64 @@ impl std::str::FromStr for AllowedTool {
     }
 }
 
+/// One `--tool-group` entry: a tool group's state in the run's session.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ToolGroupArg {
+    pub selector: cookie_agent_protocol::ToolGroupSelector,
+    pub state: cookie_agent_protocol::ToolGroupState,
+}
+
+impl std::str::FromStr for ToolGroupArg {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let (selector, state) = value
+            .rsplit_once('=')
+            .ok_or_else(|| "expected SELECTOR=on|deferred|off, such as mcp:exa=off".to_owned())?;
+        let selector = selector
+            .parse::<cookie_agent_protocol::ToolGroupSelector>()
+            .map_err(|error| error.to_string())?;
+        if selector.is_pattern() {
+            return Err(format!("`{selector}` is a pattern; name one group"));
+        }
+        let state = match state {
+            "on" => cookie_agent_protocol::ToolGroupState::On,
+            "deferred" => cookie_agent_protocol::ToolGroupState::Deferred,
+            "off" => cookie_agent_protocol::ToolGroupState::Off,
+            _ => return Err("a tool group's state is on, deferred, or off".into()),
+        };
+        Ok(Self { selector, state })
+    }
+}
+
+/// One `--skill-state` entry: whether the agent sees a skill.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SkillStateArg {
+    pub skill: cookie_agent_protocol::SkillPattern,
+    pub state: cookie_agent_protocol::SkillState,
+}
+
+impl std::str::FromStr for SkillStateArg {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let (name, state) = value
+            .rsplit_once('=')
+            .ok_or_else(|| "expected NAME=on|off, such as deploy=off".to_owned())?;
+        let skill =
+            cookie_agent_protocol::SkillPattern::new(name).map_err(|error| error.to_string())?;
+        if skill.is_pattern() {
+            return Err(format!("`{name}` is a pattern; name one skill"));
+        }
+        let state = match state {
+            "on" => cookie_agent_protocol::SkillState::On,
+            "off" => cookie_agent_protocol::SkillState::Off,
+            _ => return Err("a skill's state is on or off".into()),
+        };
+        Ok(Self { skill, state })
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Args)]
 #[command(group(
     ArgGroup::new("prompt_source")
@@ -121,6 +179,14 @@ pub struct RunArgs {
     /// Permission action to allow. May be repeated or comma-delimited.
     #[arg(long, value_delimiter = ',')]
     pub allowed_tools: Vec<AllowedTool>,
+    /// A tool group's state in the session, as SELECTOR=on|deferred|off
+    /// (such as mcp:exa=off or coding@labpc=deferred). May be repeated.
+    #[arg(long = "tool-group", value_name = "SELECTOR=STATE")]
+    pub tool_groups: Vec<ToolGroupArg>,
+    /// Whether the agent sees a skill in the session, as NAME=on|off. May
+    /// be repeated.
+    #[arg(long = "skill-state", value_name = "NAME=STATE")]
+    pub skill_states: Vec<SkillStateArg>,
     /// Load a user-invocable skill before running the prompt.
     #[arg(long)]
     pub skill: Option<String>,
@@ -473,6 +539,9 @@ async fn prepare_run(
     apply_allowed_tools(engine, session.session_id, &args.allowed_tools)
         .await
         .map_err(PrepareError::setup)?;
+    apply_exposure(engine, session.session_id, args)
+        .await
+        .map_err(PrepareError::setup)?;
     let prompt = args.skill.as_ref().map_or(prompt.clone(), |skill| {
         cookie_agent_protocol::encode_skill_submission_with_prompt(
             skill,
@@ -739,6 +808,47 @@ async fn apply_allowed_tools(
             .await
             .context("apply headless allowed-tools policy")?;
     }
+    Ok(())
+}
+
+/// `--tool-group` and `--skill-state`, over the session's own choices (a
+/// resumed session's included).
+async fn apply_exposure(
+    engine: &Engine,
+    session_id: SessionId,
+    args: &RunArgs,
+) -> anyhow::Result<()> {
+    if args.tool_groups.is_empty() && args.skill_states.is_empty() {
+        return Ok(());
+    }
+    let mut exposure = engine
+        .get_session_tools(session_id)
+        .context("read the session's tool groups")?
+        .exposure;
+    for group in &args.tool_groups {
+        exposure
+            .tool_groups
+            .retain(|rule| rule.selector != group.selector);
+        exposure
+            .tool_groups
+            .push(cookie_agent_protocol::ToolGroupRule {
+                selector: group.selector.clone(),
+                state: group.state,
+                from_project: false,
+            });
+    }
+    for skill in &args.skill_states {
+        exposure.skills.retain(|rule| rule.skill != skill.skill);
+        exposure.skills.push(cookie_agent_protocol::SkillRule {
+            skill: skill.skill.clone(),
+            state: skill.state,
+            from_project: false,
+        });
+    }
+    engine
+        .set_session_tools(session_id, exposure, headless_origin())
+        .await
+        .context("apply --tool-group and --skill-state")?;
     Ok(())
 }
 

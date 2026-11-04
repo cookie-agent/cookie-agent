@@ -69,8 +69,36 @@ pub fn NewSessionCards(workspace: Workspace) -> impl IntoView {
             class:opacity-60=move || workspace.creating.get()
             class:pointer-events-none=move || workspace.creating.get()
         >
-            // The title bar names the view: no heading here.
-            <super::projects::NewSessionProject workspace=workspace />
+            // The title bar names the view: no heading here. The links
+            // beside the project picker jump between the cards and the
+            // skills, and stay in view.
+            <div class="sticky -top-2 z-10 flex items-end gap-2 bg-surface pt-2 pb-1">
+                <div class="min-w-0 flex-1">
+                    <super::projects::NewSessionProject workspace=workspace />
+                </div>
+                <div class="ml-auto inline-flex gap-0.5 rounded-md border border-line-2 bg-sunken p-0.5 text-xs" data-jump="">
+                    <button
+                        type="button"
+                        class="rounded px-2.5 py-1 text-muted hover:bg-hover"
+                        data-jump-to="runtimes"
+                        on:click=move |_| crate::browser::jump("#new-session")
+                    >
+                        "Runtimes"
+                    </button>
+                    <button
+                        type="button"
+                        class="rounded px-2.5 py-1 text-muted hover:bg-hover"
+                        data-jump-to="skills"
+                        on:click=move |_| crate::browser::jump("#new-session-skills")
+                    >
+                        "Skills"
+                        {move || {
+                            let off = super::tool_groups::cards_skills_off(workspace, workspace.new_cards());
+                            (off > 0).then(|| view! { <span class="ml-1 font-semibold text-warn">{format!("{off} off")}</span> })
+                        }}
+                    </button>
+                </div>
+            </div>
             <p class=NOTE>
                 "Pick where the new session works: click a card to select it, and give a coding runtime its workspace. With only global, the session has no workspace: it hands work that needs files or commands to subagents on the runtimes it names. The first message creates the session, starting the runtimes that are not running."
             </p>
@@ -95,7 +123,9 @@ pub fn NewSessionCards(workspace: Workspace) -> impl IntoView {
                         {move || workspace.places_label().unwrap_or_default()}
                     </span>
                 </p>
+                {super::tool_groups::draft_figures(workspace, workspace.new_cards())}
             </div>
+            {super::tool_groups::cards_skills(workspace, workspace.new_cards(), "Skills", "new-session-skills")}
         </section>
     }
 }
@@ -184,7 +214,7 @@ fn card_view(workspace: Workspace, card: Card, set: CardSet) -> impl IntoView {
                 .and_then(|target| target.dyn_into::<web_sys::Element>().ok())
                 .and_then(|target| {
                     target
-                        .closest("input, button, a, [data-card-fields]")
+                        .closest("input, button, a, [data-card-fields], [data-card-tools]")
                         .ok()
                         .flatten()
                 })
@@ -244,6 +274,7 @@ fn card_view(workspace: Workspace, card: Card, set: CardSet) -> impl IntoView {
                 (selected.get() && fields.takes_workspace)
                     .then(|| workspace_fields(workspace, fields.clone(), set))
             }}
+            {super::tool_groups::card_tools(workspace, card.clone(), set, selected)}
             {
                 let key = key.clone();
                 move || {

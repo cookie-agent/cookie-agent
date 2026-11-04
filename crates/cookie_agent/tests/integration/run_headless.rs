@@ -1051,6 +1051,53 @@ async fn headless_preset_is_persisted_and_resume_can_override_the_next_run() {
 }
 
 #[tokio::test]
+async fn headless_tool_groups_and_skill_states_shape_the_session() {
+    let fixture = Fixture::new().await;
+    fixture
+        .server
+        .enqueue(MockResponse::Sse(final_response("without coding")));
+    let mut args = run_args("look around");
+    args.tool_groups = vec!["coding=off".parse().unwrap()];
+    args.skill_states = vec!["release-check=off".parse().unwrap()];
+    args.output = Some(OutputMode::Json);
+    let result = fixture.run(args, "").await;
+    assert_eq!(result.code, 0, "{}", result.stderr);
+    let request = fixture
+        .server
+        .requests()
+        .into_iter()
+        .next()
+        .expect("model request");
+    assert!(!request.contains("\"name\":\"bash\""), "{request}");
+    assert!(!request.contains("release-check"), "{request}");
+    let records = parse_json_lines(&result.stdout);
+    let session_id: SessionId =
+        serde_json::from_value(records.last().expect("summary")["session_id"].clone())
+            .expect("session ID");
+    let tools = fixture
+        .engine
+        .get_session_tools(session_id)
+        .expect("session tools");
+    assert_eq!(tools.exposure.tool_groups.len(), 1);
+    assert_eq!(tools.exposure.skills.len(), 1);
+
+    // A resumed session's choices change on top of its own.
+    fixture
+        .server
+        .enqueue(MockResponse::Sse(final_response("with coding")));
+    let mut resumed = run_args("look again");
+    resumed.resume_session = Some(session_id);
+    resumed.tool_groups = vec!["coding=on".parse().unwrap()];
+    resumed.skill_states = vec!["release-check=on".parse().unwrap()];
+    let result = fixture.run(resumed, "").await;
+    assert_eq!(result.code, 0, "{}", result.stderr);
+    let request = fixture.server.requests().pop().expect("second request");
+    assert!(request.contains("\"name\":\"bash\""), "{request}");
+    assert!(request.contains("release-check"), "{request}");
+    fixture.shutdown().await;
+}
+
+#[tokio::test]
 async fn headless_skill_is_injected_before_the_prompt() {
     let fixture = Fixture::new().await;
     fixture
@@ -2890,6 +2937,8 @@ fn run_args(prompt: &str) -> RunArgs {
         variant: None,
         permission_mode: PermissionModeArg::AutoApprove,
         allowed_tools: Vec::new(),
+        tool_groups: Vec::new(),
+        skill_states: Vec::new(),
         skill: None,
         skill_args: None,
         max_turns: 100,

@@ -38,6 +38,8 @@ pub(super) struct Reads {
     pub skills: Latest,
     /// The Skills view's listing.
     pub skill_list: Latest,
+    /// `session.tools.get` of the viewed session.
+    pub session_tools: Latest,
     /// The Assets tab's listing.
     pub assets: Latest,
     /// The `/usage` panel's figures, of the session it opened on.

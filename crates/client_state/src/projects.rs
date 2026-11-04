@@ -243,8 +243,8 @@ pub fn defaults_requests(defaults: &ProjectDefaults) -> (bool, Vec<RuntimeAttach
 }
 
 /// The defaults a project editor saves: the attachments (`global` and the
-/// other runtimes, a runtime listed twice kept once), the agent, and the
-/// preset. `None` when that is all the daemon's usual defaults, so the
+/// other runtimes, a runtime listed twice kept once), the agent, the
+/// preset, and new sessions' tool group and skill choices. `None` when that is all the daemon's usual defaults, so the
 /// project keeps none.
 #[must_use]
 pub fn editor_defaults(
@@ -252,6 +252,7 @@ pub fn editor_defaults(
     requests: &[RuntimeAttachRequest],
     agent: Option<&cookie_agent_protocol::AgentId>,
     preset: Option<&str>,
+    exposure: &cookie_agent_protocol::ToolExposure,
 ) -> Option<ProjectDefaults> {
     let mut runtimes = Vec::<ProjectRuntime>::new();
     for request in requests
@@ -273,7 +274,7 @@ pub fn editor_defaults(
         }
     }
     let defaults = ProjectDefaults {
-        exposure: Default::default(),
+        exposure: exposure.clone(),
         preset: preset.map(str::to_owned),
         agent: agent.cloned(),
         global,

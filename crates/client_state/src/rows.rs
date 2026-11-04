@@ -323,6 +323,15 @@ pub fn system_prompt_summary(
 /// latest model request, or for an ACP agent the cookie tools its MCP
 /// bridge offers beside the agent's own.
 pub fn model_tools_summary(state: &SessionState, tools: &[String]) -> String {
+    let summary = model_tools_counts(state, tools);
+    match crate::exposure::groups_off(&state.tool_exposure) {
+        0 => summary,
+        1 => format!("{summary} · 1 group off"),
+        off => format!("{summary} · {off} groups off"),
+    }
+}
+
+fn model_tools_counts(state: &SessionState, tools: &[String]) -> String {
     if bridged_tools(state) {
         format!("cookie tools · {} offered to the agent", tools.len())
     } else if state.model_deferred_tools.is_empty() {

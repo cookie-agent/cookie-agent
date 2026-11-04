@@ -32,6 +32,8 @@ pub struct EditorFields {
     pub agent: Option<AgentId>,
     pub preset: Option<String>,
     pub agents_md: String,
+    /// New sessions' tool group and skill choices.
+    pub exposure: cookie_agent_protocol::ToolExposure,
 }
 
 /// The project editor: a project's fields, or a new project's.
@@ -76,8 +78,13 @@ impl ProjectEditor {
             agent: defaults
                 .as_ref()
                 .and_then(|defaults| defaults.agent.clone()),
-            preset: defaults.and_then(|defaults| defaults.preset),
+            preset: defaults
+                .as_ref()
+                .and_then(|defaults| defaults.preset.clone()),
             agents_md: String::new(),
+            exposure: defaults
+                .map(|defaults| defaults.exposure)
+                .unwrap_or_default(),
         };
         Self {
             agents_md_loaded: project
@@ -98,9 +105,14 @@ impl ProjectEditor {
         }
     }
 
-    /// The fields now, with the cards' `selection`.
-    pub fn fields(&self, selection: &Selection) -> EditorFields {
+    /// The fields now, with the cards' `selection` and `exposure`.
+    pub fn fields(
+        &self,
+        selection: &Selection,
+        exposure: &cookie_agent_protocol::ToolExposure,
+    ) -> EditorFields {
         EditorFields {
+            exposure: exposure.clone(),
             name: self.name.clone(),
             emoji: self.emoji.clone(),
             selection: selection.clone(),
@@ -111,8 +123,12 @@ impl ProjectEditor {
     }
 
     /// Whether anything changed since the editor opened or saved.
-    pub fn dirty(&self, selection: &Selection) -> bool {
-        self.fields(selection) != self.initial
+    pub fn dirty(
+        &self,
+        selection: &Selection,
+        exposure: &cookie_agent_protocol::ToolExposure,
+    ) -> bool {
+        self.fields(selection, exposure) != self.initial
     }
 }
 
@@ -230,6 +246,13 @@ impl Workspace {
         // Cards still as the previous project's defaults left them follow
         // the project; cards the user picked stay.
         let homes = untrack(|| self.homes());
+        // Tool group and skill choices still as the previous project's
+        // defaults left them follow the project too.
+        let previous = self.new_project.get_untracked();
+        if self.draft_exposure.get_untracked() == self.project_exposure(previous.as_ref()) {
+            self.draft_exposure
+                .set(self.project_exposure(project.as_ref()));
+        }
         let kept_defaults = untrack(|| self.draft_project_defaults()).is_some_and(|defaults| {
             self.selection
                 .with_untracked(|selection| *selection == Selection::of_project(&defaults, &homes))
@@ -326,11 +349,9 @@ impl Workspace {
                 |defaults| Selection::of_project(defaults, &untrack(|| self.homes())),
             );
         self.editor_selection.set(selection.clone());
-        self.project_editor.set(Some(ProjectEditor::new(
-            info.clone(),
-            selection,
-            for_new_session,
-        )));
+        let editor = ProjectEditor::new(info.clone(), selection, for_new_session);
+        self.editor_exposure.set(editor.initial.exposure.clone());
+        self.project_editor.set(Some(editor));
         self.project_error.set(None);
         self.poll_runtimes();
         // The sessions shown as the page give way to the editor.
@@ -391,6 +412,7 @@ impl Workspace {
                     editor.initial.agents_md = text;
                     editor.agents_md_loaded = true;
                     self.editor_selection.set(selection);
+                    self.editor_exposure.set(editor.initial.exposure.clone());
                     self.project_editor.set(Some(editor));
                 }
                 Err(error) => self.edit_editor(|editor| {
@@ -413,8 +435,10 @@ impl Workspace {
     pub fn editor_dirty(self) -> bool {
         self.project_editor.with(|editor| {
             editor.as_ref().is_some_and(|editor| {
-                self.editor_selection
-                    .with(|selection| editor.dirty(selection))
+                self.editor_selection.with(|selection| {
+                    self.editor_exposure
+                        .with(|exposure| editor.dirty(selection, exposure))
+                })
             })
         })
     }
@@ -464,7 +488,7 @@ impl Workspace {
             return;
         };
         let selection = self.editor_selection.get_untracked();
-        let fields = editor.fields(&selection);
+        let fields = editor.fields(&selection, &self.editor_exposure.get_untracked());
         let name = match ProjectName::new(fields.name.trim()) {
             Ok(name) => name,
             Err(_) => {
@@ -492,6 +516,7 @@ impl Workspace {
                 &requests,
                 fields.agent.as_ref(),
                 fields.preset.as_deref(),
+                &fields.exposure,
             )
         };
         self.edit_editor(|editor| {

@@ -581,6 +581,9 @@ impl App {
                     centered(frame.area(), 88, 70),
                     &mut self.runtime_panel,
                     &rows,
+                    self.session_tools
+                        .as_ref()
+                        .filter(|_| self.new_session_draft.is_none()),
                     &self.theme,
                 );
             }
@@ -1999,7 +2002,7 @@ impl App {
                     area,
                     crate::ui::slash::ListChrome {
                         title: "Skills",
-                        hint: "↑↓ move · enter: choose · esc: back",
+                        hint: "↑↓ move · enter: run · space: on/off · esc: back",
                         empty_message: "No matching skills",
                         detail,
                     },

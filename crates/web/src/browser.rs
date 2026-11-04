@@ -389,6 +389,22 @@ pub async fn copy_text(text: &str) -> bool {
     wasm_bindgen_futures::JsFuture::from(promise).await.is_ok()
 }
 
+/// Scrolls to the top of the element `selector` finds, on the
+/// next frame.
+pub fn jump(selector: &str) {
+    let selector = selector.to_owned();
+    leptos::prelude::request_animation_frame(move || {
+        if let Some(element) = window()
+            .and_then(|window| window.document())
+            .and_then(|document| document.query_selector(&selector).ok().flatten())
+        {
+            let options = web_sys::ScrollIntoViewOptions::new();
+            options.set_block(web_sys::ScrollLogicalPosition::Start);
+            element.scroll_into_view_with_scroll_into_view_options(&options);
+        }
+    });
+}
+
 /// Scrolls the element `selector` finds into view on the next frame, as
 /// little as it takes.
 pub fn reveal(selector: &str) {

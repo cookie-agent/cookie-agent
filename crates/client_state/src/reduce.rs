@@ -1943,6 +1943,14 @@ pub(super) fn reduce_event_from(
                 text,
             );
         }
+        EventPayload::SessionToolExposureSet { exposure } => {
+            let text =
+                crate::exposure::change_text(&state.tool_exposure, &exposure, origin.as_ref());
+            state.tool_exposure = exposure;
+            if let Some(text) = text {
+                push_event(state, EventLevel::Info, text, timestamp);
+            }
+        }
         EventPayload::PromptBlocksAnnounced { blocks } => {
             let (header, text) = crate::model_input::prompt_blocks(&blocks);
             push_model_input(
@@ -1962,7 +1970,6 @@ pub(super) fn reduce_event_from(
         | EventPayload::InternalAgentUsageRecorded { .. }
         | EventPayload::ToolCallLinked { .. }
         | EventPayload::SessionPermissionOverlaySet { .. }
-        | EventPayload::SessionToolExposureSet { .. }
         | EventPayload::PermissionModeSet { .. }
         | EventPayload::SessionProjectSet { .. }
         | EventPayload::DelegatedAttachmentsAdded { .. }

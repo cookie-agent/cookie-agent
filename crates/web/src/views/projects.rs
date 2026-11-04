@@ -757,6 +757,8 @@ pub(super) fn editor_sheet(workspace: Workspace) -> impl IntoView {
     let errors = RwSignal::new(std::collections::HashMap::new());
     let set = CardSet {
         selection: workspace.editor_selection,
+        exposure: workspace.editor_exposure,
+        project: true,
         errors,
     };
     let field = move |read: fn(&crate::workspace::ProjectEditor) -> String| {
@@ -923,6 +925,7 @@ pub(super) fn editor_sheet(workspace: Workspace) -> impl IntoView {
                         .collect_view()
                         .into_any()
                 }}
+                {super::tool_groups::cards_skills(workspace, set, "New sessions' skills", "project-skills")}
             </div>
             <div class="flex flex-col gap-1">
                 <span class="text-sm font-bold">"Default agent"</span>
