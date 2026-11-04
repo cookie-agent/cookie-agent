@@ -171,6 +171,24 @@ impl Workspace {
         self.poll_runtimes();
     }
 
+    /// Reads `machines.runtime_token` into `token`: what a runtime that
+    /// dials in presents instead of this page's token. It stays `None` when
+    /// the daemon serves without one or cannot say.
+    pub fn read_runtime_token(self, token: RwSignal<Option<String>>) {
+        let Some(client) = self.client() else {
+            return;
+        };
+        spawn_local(async move {
+            match client.runtime_token().await {
+                Ok(result) => token.set(result.token),
+                Err(error) => self.status.set(format!(
+                    "runtime token unavailable: {}",
+                    crate::errors::describe(&error)
+                )),
+            }
+        });
+    }
+
     /// Reads `runtimes.list`, `machines.list`, and `mcp.server.list`.
     pub fn poll_runtimes(self) {
         let Some(client) = self.client() else {

@@ -534,30 +534,73 @@ fn websocket_subcommands_take_the_daemon_from_flags_or_the_configuration() {
     let explicit = resolve_daemon_target(
         Some("wss://daemon.example:7419/ws".into()),
         Some("from-flag".into()),
+        Presenter::Client,
         || panic!("the configuration is not read when both are given"),
     )
     .unwrap();
     assert_eq!(explicit.url, "wss://daemon.example:7419/ws");
     assert_eq!(explicit.token.as_str(), "from-flag");
     // Each missing one comes from `[server]`: its url, else the local daemon.
-    let local = resolve_daemon_target(None, None, || Ok(server(None, Some(TEST_TOKEN)))).unwrap();
+    let local = resolve_daemon_target(None, None, Presenter::Client, || {
+        Ok(server(None, Some(TEST_TOKEN)))
+    })
+    .unwrap();
     assert_eq!(local.url, "ws://127.0.0.1:7419/ws");
     assert_eq!(local.token.as_str(), TEST_TOKEN);
-    let remote = resolve_daemon_target(None, Some("from-flag".into()), || {
+    let remote = resolve_daemon_target(None, Some("from-flag".into()), Presenter::Client, || {
         Ok(server(Some("ws://laptop:7419/ws"), Some(TEST_TOKEN)))
     })
     .unwrap();
     assert_eq!(remote.url, "ws://laptop:7419/ws");
     assert_eq!(remote.token.as_str(), "from-flag");
-    let error = resolve_daemon_target(None, None, || Ok(server(None, None)))
+    let error = resolve_daemon_target(None, None, Presenter::Client, || Ok(server(None, None)))
         .err()
         .expect("no token anywhere");
     assert!(error.to_string().contains("[server]"), "{error}");
     assert!(
-        resolve_daemon_target(Some("ws://laptop/other".into()), Some("x".into()), || {
-            panic!("unread")
-        })
+        resolve_daemon_target(
+            Some("ws://laptop/other".into()),
+            Some("x".into()),
+            Presenter::Client,
+            || { panic!("unread") }
+        )
         .is_err()
+    );
+}
+
+/// A runtime that dials in takes `[server] runtime_token` before `token`.
+#[test]
+fn a_dial_in_runtime_prefers_the_runtime_token() {
+    const RUNTIME_TOKEN: &str = "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB-_0";
+    let server =
+        |token: Option<&str>, runtime_token: Option<&str>| cookie_agent_config::ServerConfig {
+            token: token.map(str::to_owned),
+            runtime_token: runtime_token.map(str::to_owned),
+            ..Default::default()
+        };
+    let both = resolve_daemon_target(None, None, Presenter::Runtime, || {
+        Ok(server(Some(TEST_TOKEN), Some(RUNTIME_TOKEN)))
+    })
+    .unwrap();
+    assert_eq!(both.token.as_str(), RUNTIME_TOKEN);
+    let client_only = resolve_daemon_target(None, None, Presenter::Runtime, || {
+        Ok(server(Some(TEST_TOKEN), None))
+    })
+    .unwrap();
+    assert_eq!(client_only.token.as_str(), TEST_TOKEN);
+    // A client never takes the runtime token.
+    let error = resolve_daemon_target(None, None, Presenter::Client, || {
+        Ok(server(None, Some(RUNTIME_TOKEN)))
+    })
+    .err()
+    .expect("a client needs the client token");
+    assert!(error.to_string().contains("no daemon token"), "{error}");
+    let error = resolve_daemon_target(None, None, Presenter::Runtime, || Ok(server(None, None)))
+        .err()
+        .expect("no token anywhere");
+    assert!(
+        error.to_string().contains("COOKIE_RUNTIME_TOKEN"),
+        "{error}"
     );
 }
 

@@ -8,6 +8,7 @@ Complete `config.toml`:
 host = "127.0.0.1"
 port = 7419
 token = "<43-char base64url>"
+runtime_token = "<another 43-char base64url>"
 url = "ws://127.0.0.1:7419/ws"
 page_url = "https://cookie.example.com/"
 session_idle_eviction_after = "30m"
@@ -28,6 +29,12 @@ machine read it from the same `config.toml`; elsewhere, pass `--token`, set
 `COOKIE_DAEMON_TOKEN`, or copy it into that machine's `[server] token`. See the
 [security contract](../daemon/security.md#daemon-authentication-token).
 
+Runtimes that dial in present `[server] runtime_token` instead, which opens
+`/runtime` and nothing else, so a machine that serves as a runtime never
+holds the client token. The daemon creates it the same way, and
+`cookie machine runtime-token` prints it. See
+[Runtimes that dial in](../runtimes/dial-in.md).
+
 Plain `cookie` on this machine uses a daemon listening at
 `ws://<host>:<port>/ws` of this table, when `token` is set, instead of
 starting an engine of its own; it never reads `url` for that. See
@@ -43,6 +50,7 @@ and TLS options; see [Remote access](../daemon/remote-access.md).
 | `host` | string | `"127.0.0.1"` | Interface the daemon listens on. Must be non-empty and at most 255 characters. The `cookie` binary additionally requires exactly `"127.0.0.1"` at startup; use `--listen` to bind another address. |
 | `port` | integer | `7419` | TCP port for the WebSocket daemon. |
 | `token` | string | *(none)* | The daemon's bearer token, exactly 43 base64url characters. The daemon writes a fresh one here when there is none; clients and dial-in runtimes on this machine use it when given no `--token`. |
+| `runtime_token` | string | *(none)* | The token [runtimes that dial in](../runtimes/dial-in.md) present on `/runtime`: exactly 43 base64url characters, different from `token`. It opens `/runtime` and nothing else; `/runtime` takes `token` too. The daemon writes a fresh one here when there is none; a dial-in runtime on this machine uses it, else `token`, when given no `--token`. Change or remove it and restart the daemon to rotate it. |
 | `url` | string | `ws://<host>:<port>/ws` | The daemon clients and dial-in runtimes on this machine connect to when given no `--url` (or URL after `--daemon`): a `ws://` or `wss://` URL whose path is `/ws`. Set it on a machine whose daemon runs elsewhere. The daemon itself ignores it. |
 | `page_url` | string | *(none)* | Where this daemon's web page can be reached, such as a tunnel's address: an `http://` or `https://` URL with no credentials, query, or fragment. The daemon reads it and sends it to clients in the handshake, and the TUI builds its links to [assets](../specs/assets.md) from it. Unset, clients build links from the URL they reached the daemon at. Clients on this machine do not read it, unlike `url`. |
 | `session_idle_eviction_after` | duration string | `"30m"` | How long a root session's tree sits unused (no new event, nobody watching it, no pending work) before it is paged out of memory. Using the session again reloads it from disk. Compact `ms`, `s`, `m`, `h`, and `d` suffixes are accepted; `"0s"` pages a tree out at the next check, made every minute, once nobody watches it. Unlike the rest of the table, a change applies at once, from the next check. |

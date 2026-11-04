@@ -8,7 +8,7 @@ use clap::Subcommand;
 use tokio_util::sync::CancellationToken;
 
 use super::daemon::stop_on_signal;
-use super::{DaemonTarget, daemon_target, host_name};
+use super::{DaemonTarget, host_name, runtime_daemon_target};
 
 #[derive(Debug, PartialEq, Eq, Subcommand)]
 pub(super) enum RuntimeCommand {
@@ -31,11 +31,12 @@ pub(super) enum RuntimeCommand {
         /// omitted.
         #[arg(long, value_name = "RUNTIME_ID", conflicts_with = "stdio")]
         id: Option<String>,
-        /// The daemon's bearer token, for `--daemon`; `[server] token` in
+        /// The daemon's runtime token, for `--daemon` (its client token
+        /// works too); `[server] runtime_token`, else `[server] token`, in
         /// this machine's `config.toml` when omitted.
         #[arg(
             long,
-            env = "COOKIE_DAEMON_TOKEN",
+            env = "COOKIE_RUNTIME_TOKEN",
             hide_env_values = true,
             allow_hyphen_values = true
         )]
@@ -86,7 +87,7 @@ pub(super) async fn run_runtime(command: RuntimeCommand) -> anyhow::Result<()> {
         })
         .collect::<anyhow::Result<Vec<_>>>()?;
     if !stdio && let Some(daemon) = daemon {
-        let DaemonTarget { url: daemon, token } = daemon_target(daemon, token)?;
+        let DaemonTarget { url: daemon, token } = runtime_daemon_target(daemon, token)?;
         let id = id.unwrap_or_else(|| host_runtime_id("", &host_name()));
         dial_in_id(&id)?;
         cookie_agent_protocol_transport::runtime_dial_in_url(&daemon, &id)?;

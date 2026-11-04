@@ -1,6 +1,6 @@
 use std::fs;
 
-use cookie_agent_config::{load_from_user_root, write_server_token};
+use cookie_agent_config::{load_from_user_root, write_server_tokens};
 
 fn root(config: &str) -> tempfile::TempDir {
     let directory = tempfile::tempdir().expect("tempdir");
@@ -44,7 +44,7 @@ fn writing_the_server_token_keeps_the_rest_of_the_file() {
     let directory =
         root("# my settings\n[server]\nport = 7420\n\n[producers]\nmax_body_bytes = 1024\n");
     let path = directory.path().join("config.toml");
-    write_server_token(&path, TOKEN).expect("write the token");
+    write_server_tokens(&path, Some(TOKEN), None).expect("write the token");
     let text = fs::read_to_string(&path).unwrap();
     assert!(text.contains("# my settings"), "{text}");
     let loaded = load_from_user_root(Some(directory.path())).expect("reload");
@@ -63,9 +63,47 @@ fn writing_the_server_token_keeps_the_rest_of_the_file() {
     // A file that does not exist yet is created; an invalid token is refused.
     let empty = tempfile::tempdir().unwrap();
     let path = empty.path().join("config.toml");
-    write_server_token(&path, TOKEN).expect("create the file");
+    write_server_tokens(&path, Some(TOKEN), None).expect("create the file");
     assert!(fs::read_to_string(&path).unwrap().contains(TOKEN));
-    assert!(write_server_token(&path, "short").is_err());
+    assert!(write_server_tokens(&path, Some("short"), None).is_err());
+    assert!(write_server_tokens(&path, None, Some("short")).is_err());
+}
+
+const RUNTIME_TOKEN: &str = "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB-_0";
+
+#[test]
+fn the_runtime_token_is_a_second_token_unlike_the_client_one() {
+    let authored = root(&format!(
+        "[server]\ntoken = \"{TOKEN}\"\nruntime_token = \"{RUNTIME_TOKEN}\"\n"
+    ));
+    let loaded = load_from_user_root(Some(authored.path())).expect("both tokens");
+    assert_eq!(
+        loaded.runtime.server.runtime_token.as_deref(),
+        Some(RUNTIME_TOKEN)
+    );
+    assert!(!format!("{:?}", loaded.runtime.server).contains("BBBB"));
+    let short = root("[server]\nruntime_token = \"short\"\n");
+    assert!(load_from_user_root(Some(short.path())).is_err());
+    let same = root(&format!(
+        "[server]\ntoken = \"{TOKEN}\"\nruntime_token = \"{TOKEN}\"\n"
+    ));
+    let error = load_from_user_root(Some(same.path()))
+        .expect_err("the same token twice")
+        .to_string();
+    assert!(error.contains("must differ"), "{error}");
+}
+
+#[test]
+fn writing_the_runtime_token_keeps_the_client_token() {
+    let directory = root(&format!("[server]\ntoken = \"{TOKEN}\"\n"));
+    let path = directory.path().join("config.toml");
+    write_server_tokens(&path, None, Some(RUNTIME_TOKEN)).expect("write the runtime token");
+    let loaded = load_from_user_root(Some(directory.path())).expect("reload");
+    assert_eq!(loaded.runtime.server.token.as_deref(), Some(TOKEN));
+    assert_eq!(
+        loaded.runtime.server.runtime_token.as_deref(),
+        Some(RUNTIME_TOKEN)
+    );
 }
 
 #[test]

@@ -1648,15 +1648,14 @@ fn add_runtime(workspace: Workspace, adding: RwSignal<bool>) -> impl IntoView {
     let dial_id = RwSignal::new(String::new());
     let template = move || SshTemplate::new(&id.get(), &host.get(), &root.get());
     let daemon_url = StoredValue::new(browser::load(crate::connect::DAEMON_URL_KEY));
-    // The token this page connected with, so the command runs as it is.
-    let token = StoredValue::new(daemon_url.with_value(|url| {
-        url.as_deref()
-            .and_then(|url| browser::load(&crate::connect::token_key(url)))
-    }));
+    // The daemon's runtime token, never this page's own: it opens
+    // `/runtime` and nothing else (`docs/site/specs/runtime-token.md`).
+    let token = RwSignal::new(None::<String>);
+    workspace.read_runtime_token(token);
     let show_token = RwSignal::new(false);
     let command = move || {
         daemon_url.with_value(|daemon_url| {
-            token.with_value(|token| {
+            token.with(|token| {
                 dial_in_command(daemon_url.as_deref(), &dial_id.get(), token.as_deref())
             })
         })
@@ -1666,7 +1665,7 @@ fn add_runtime(workspace: Workspace, adding: RwSignal<bool>) -> impl IntoView {
         if show_token.get() {
             command
         } else {
-            token.with_value(|token| masked_token(&command, token.as_deref()))
+            token.with(|token| masked_token(&command, token.as_deref()))
         }
     };
     let field = |label: &'static str,
@@ -1783,10 +1782,10 @@ fn add_runtime(workspace: Workspace, adding: RwSignal<bool>) -> impl IntoView {
                     "Let one dial in"
                 </h4>
                 <p class=NOTE>
-                    {move || if token.with_value(Option::is_some) {
-                        "Run this on the other machine: it connects to this daemon and stays connected. It carries the token this page connected with; keep it private. If the address is a placeholder, use the daemon's address as that machine reaches it (the daemon listens there with cookie daemon --listen 0.0.0.0:7419)."
+                    {move || if token.with(Option::is_some) {
+                        "Run this on the other machine: it connects to this daemon and stays connected. It carries the daemon's runtime token, which lets a machine serve as a runtime and nothing more; keep it private. If the address is a placeholder, use the daemon's address as that machine reaches it (the daemon listens there with cookie daemon --listen 0.0.0.0:7419)."
                     } else {
-                        "Run this on the other machine: it connects to this daemon and stays connected. Replace the placeholders with the daemon's address as that machine reaches it (the daemon listens there with cookie daemon --listen 0.0.0.0:7419) and its token ([server] token in the daemon's config.toml)."
+                        "Run this on the other machine: it connects to this daemon and stays connected. Replace the placeholders with the daemon's address as that machine reaches it (the daemon listens there with cookie daemon --listen 0.0.0.0:7419) and its runtime token (cookie machine runtime-token on the daemon's machine prints it)."
                     }}
                 </p>
                 {field("Runtime ID (optional; the host's name otherwise)", "dial-id", "labpc", dial_id)}
@@ -1820,7 +1819,7 @@ fn add_runtime(workspace: Workspace, adding: RwSignal<bool>) -> impl IntoView {
                     <Glyph icon=icondata::LuCopy />
                     "Copy"
                 </button>
-                <Show when=move || token.with_value(Option::is_some)>
+                <Show when=move || token.with(Option::is_some)>
                     <button
                         type="button"
                         id="dial-in-reveal"

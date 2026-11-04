@@ -428,6 +428,14 @@
     {
       "direction": "to_daemon",
       "kind": "request",
+      "method": "machines.runtime_token",
+      "params": "MachinesRuntimeTokenParams",
+      "params_role": "command",
+      "result": "MachinesRuntimeTokenResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
       "method": "machines.unassign",
       "params": "MachinesUnassignParams",
       "params_role": "command",

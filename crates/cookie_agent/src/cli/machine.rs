@@ -36,6 +36,10 @@ pub(crate) enum MachineCommand {
     /// Forget where an offline runtime ran, so it is no longer listed on
     /// its machine.
     ForgetRuntime { runtime: RuntimeId },
+    /// Print the daemon's runtime token, which a runtime that dials in
+    /// presents (`cookie runtime serve --daemon <url> --token <token>`)
+    /// instead of the client token.
+    RuntimeToken,
 }
 
 pub(crate) async fn run_machine(
@@ -109,6 +113,15 @@ pub(crate) async fn run_machine_with(
                 .await
                 .context("machines.forget_runtime failed")?;
             Ok(vec![format!("Forgot where runtime {runtime} ran.")])
+        }
+        MachineCommand::RuntimeToken => {
+            let token = client
+                .runtime_token()
+                .await
+                .context("machines.runtime_token failed")?
+                .token
+                .context("this daemon serves without a runtime token")?;
+            Ok(vec![token])
         }
     }
 }

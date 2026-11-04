@@ -168,6 +168,7 @@ nav:
   - Specs:
       - Status and scope: specs/index.md
       - Implemented:
+          - The runtime token: specs/runtime-token.md
           - Share links: specs/share-links.md
           - Plugin web pages and settings: specs/plugin-web-ui.md
           - "Quiet Ink: a new look for both clients": specs/quiet-ink.md

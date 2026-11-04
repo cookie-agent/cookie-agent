@@ -1,5 +1,5 @@
 //! `cookie daemon`: serving the composed daemon over WebSocket until a stop
-//! signal or a restart, and the token it serves with.
+//! signal or a restart, and the tokens it serves with.
 
 use std::{
     path::{Path, PathBuf},
@@ -13,21 +13,54 @@ use zeroize::Zeroizing;
 
 use crate::{Launch, daemon_restart};
 
-/// The daemon's token: `[server] token` from its configuration, or a fresh
-/// one written there when there is none, so it stays the same across
-/// restarts.
-pub(super) fn daemon_token(
-    configured: Option<String>,
+/// The daemon's tokens: `[server] token`, which clients present, and
+/// `[server] runtime_token`, which dial-in runtimes may present instead.
+pub(super) struct DaemonTokens {
+    pub(super) token: Zeroizing<String>,
+    pub(super) runtime_token: Zeroizing<String>,
+    /// The token was created by this start, not read from the configuration.
+    pub(super) token_created: bool,
+    /// The runtime token was created by this start.
+    pub(super) runtime_token_created: bool,
+}
+
+/// The daemon's tokens from its configuration, with a fresh one written
+/// there for each that is missing, so they stay the same across restarts.
+pub(super) fn daemon_tokens(
+    server: &cookie_agent_config::ServerConfig,
     config_path: Option<&Path>,
-) -> anyhow::Result<Zeroizing<String>> {
-    if let Some(token) = configured {
-        return Ok(Zeroizing::new(token));
+) -> anyhow::Result<DaemonTokens> {
+    let fresh = |configured: &Option<String>| -> anyhow::Result<Option<Zeroizing<String>>> {
+        match configured {
+            Some(_) => Ok(None),
+            None => generate_token()
+                .map(Some)
+                .context("generate daemon authentication token"),
+        }
+    };
+    let new_token = fresh(&server.token)?;
+    let new_runtime_token = fresh(&server.runtime_token)?;
+    if new_token.is_some() || new_runtime_token.is_some() {
+        let path = config_path.context("no user config.toml to keep the daemon tokens in")?;
+        cookie_agent_config::write_server_tokens(
+            path,
+            new_token.as_deref().map(String::as_str),
+            new_runtime_token.as_deref().map(String::as_str),
+        )
+        .with_context(|| format!("keep the daemon tokens in {}", path.display()))?;
     }
-    let token = generate_token().context("generate daemon authentication token")?;
-    let path = config_path.context("no user config.toml to keep the daemon token in")?;
-    cookie_agent_config::write_server_token(path, &token)
-        .with_context(|| format!("keep the daemon token in {}", path.display()))?;
-    Ok(token)
+    let token_created = new_token.is_some();
+    let runtime_token_created = new_runtime_token.is_some();
+    Ok(DaemonTokens {
+        token: new_token
+            .or_else(|| server.token.clone().map(Zeroizing::new))
+            .context("a daemon token")?,
+        runtime_token: new_runtime_token
+            .or_else(|| server.runtime_token.clone().map(Zeroizing::new))
+            .context("a runtime token")?,
+        token_created,
+        runtime_token_created,
+    })
 }
 
 /// What the daemon prints after its ready line about its web page: where
@@ -57,9 +90,8 @@ pub(super) async fn serve(
     };
     let configuration =
         cookie_agent_config::load().context("load user configuration, agents, and skills")?;
-    let configured_token = configuration.runtime.server.token.clone();
-    let token = daemon_token(
-        configured_token.clone(),
+    let tokens = daemon_tokens(
+        &configuration.runtime.server,
         configuration.config_paths.user.as_deref(),
     )?;
     let address = listen.unwrap_or_else(|| {
@@ -74,8 +106,7 @@ pub(super) async fn serve(
         DaemonListen {
             address,
             tls,
-            token,
-            token_configured: configured_token.is_some(),
+            tokens,
         },
         launch,
     )
@@ -88,9 +119,7 @@ pub(super) async fn serve(
 pub(super) struct DaemonListen {
     address: std::net::SocketAddr,
     tls: Option<cookie_agent_server::TlsConfig>,
-    token: Zeroizing<String>,
-    /// The token comes from the configuration, not this start.
-    token_configured: bool,
+    tokens: DaemonTokens,
 }
 
 /// Why the daemon stopped.
@@ -114,8 +143,13 @@ pub(super) async fn run_daemon(
     let DaemonListen {
         address,
         tls,
-        token,
-        token_configured,
+        tokens:
+            DaemonTokens {
+                token,
+                runtime_token,
+                token_created,
+                runtime_token_created,
+            },
     } = options;
     let scheme = if tls.is_some() { "wss" } else { "ws" };
     // A restarted daemon waits for the process it replaces to let go of the
@@ -129,6 +163,7 @@ pub(super) async fn run_daemon(
         cookie_agent_engine::status::StatusBoard::new(cookie_agent_protocol::DaemonPhase::Starting),
     )
     .with_page_url(configuration.runtime.server.page_url.clone())
+    .with_runtime_token(runtime_token.clone())
     .with_share_url(
         configuration
             .runtime
@@ -204,10 +239,12 @@ pub(super) async fn run_daemon(
             return Err(error);
         }
     };
-    if !token_configured {
-        runtime.engine.note_served_server_token(token.as_str());
-    }
+    runtime.engine.note_served_server_tokens(
+        token_created.then_some(token.as_str()),
+        runtime_token_created.then_some(runtime_token.as_str()),
+    );
     drop(token);
+    drop(runtime_token);
     // Only a daemon that knows how it was started can start itself again.
     let restart = CancellationToken::new();
     if launch.relaunch.is_some() {

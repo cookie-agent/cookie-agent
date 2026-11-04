@@ -5,6 +5,7 @@ use clap::Parser;
 /// The environment variable a daemon token may come from, which clap reads
 /// into the `--token` arguments.
 const DAEMON_TOKEN_ENV: &str = "COOKIE_DAEMON_TOKEN";
+const RUNTIME_TOKEN_ENV: &str = "COOKIE_RUNTIME_TOKEN";
 
 /// How this process was started, for `cookie daemon` to restart itself.
 struct Launch {
@@ -61,15 +62,18 @@ fn main() {
     cli::update::remove_replaced_binaries();
     // SAFETY: as for the token below, no other thread exists yet.
     unsafe { env::remove_var(daemon_restart::RESTARTED_ENV) };
-    // Clap has read the token into `cli`. Drop the variable so no process
+    // Clap has read the tokens into `cli`. Drop the variables so no process
     // cookie starts (the `bash` tool, MCP servers, plugins, runtime
-    // templates, editors) inherits the daemon's credential.
+    // templates, editors) inherits the daemon's credentials.
     //
     // SAFETY: `remove_var` races only with other threads using the
     // environment. This runs on the main thread before the Tokio runtime or
     // anything else that starts a thread exists; argument parsing starts
     // none.
-    unsafe { env::remove_var(DAEMON_TOKEN_ENV) };
+    unsafe {
+        env::remove_var(DAEMON_TOKEN_ENV);
+        env::remove_var(RUNTIME_TOKEN_ENV);
+    }
     let mut builder = tokio::runtime::Builder::new_multi_thread();
     if env::var_os("TOKIO_WORKER_THREADS").is_none() {
         let cores = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);

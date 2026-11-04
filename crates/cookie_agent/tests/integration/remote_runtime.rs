@@ -1285,7 +1285,7 @@ async fn a_refused_dial_in_prints_the_reason_and_stops_when_it_is_permanent() {
     assert!(!success, "{stderr}");
     assert!(
         stderr.contains(
-            "the daemon refused the runtime (HTTP 401): the daemon token is missing or wrong"
+            "the daemon refused the runtime (HTTP 401): the runtime token is missing or wrong"
         ),
         "{stderr}"
     );

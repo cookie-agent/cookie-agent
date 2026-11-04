@@ -5,6 +5,13 @@ The client protocol's version is `MAJOR.MINOR.PATCH`
 adds and a major breaks; before it, every minor could break the wire (see the
 [compatibility spec](../specs/compatibility-v1.md) section 3).
 
+## 1.87.0
+
+- `machines.runtime_token` (`MachinesRuntimeTokenParams`,
+  `MachinesRuntimeTokenResult`): the token runtimes that dial in present on
+  `/runtime`, which `/ws` refuses
+  ([The runtime token](../specs/runtime-token.md)).
+
 ## 1.86.0
 
 - Share links ([spec](../specs/share-links.md)): `shares.list`,

@@ -861,6 +861,19 @@ impl ServerProtocol for Server {
         Ok(self.machines_list())
     }
 
+    async fn runtime_token(
+        &self,
+        _params: cookie_agent_protocol::MachinesRuntimeTokenParams,
+    ) -> Result<cookie_agent_protocol::MachinesRuntimeTokenResult> {
+        Ok(cookie_agent_protocol::MachinesRuntimeTokenResult {
+            token: self
+                .shared
+                .runtime_token
+                .get()
+                .map(|token| token.as_str().to_owned()),
+        })
+    }
+
     async fn rename_machine(
         &self,
         params: cookie_agent_protocol::MachinesRenameParams,

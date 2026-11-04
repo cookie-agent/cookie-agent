@@ -27,8 +27,8 @@ protocol over either:
 - **Spawned**: it runs a template's command and frames the child's stdio,
   one message per line, as above.
 - **Dial-in**: the runtime opens a WebSocket to the daemon's
-  `/runtime?id=<runtime ID>` endpoint with the daemon's bearer token in an
-  `Authorization: Bearer` header, one message per text frame. The daemon
+  `/runtime?id=<runtime ID>` endpoint with the daemon's runtime token (or
+  its client token) in an `Authorization: Bearer` header, one message per text frame. The daemon
   then sends `runtime/initialize` exactly as for a spawned runtime, with no
   MCP servers: a dial-in runtime hosts its own. A dial-in runtime gets 30
   seconds to answer `runtime/initialize` and each `capability/open`, and 3
@@ -50,7 +50,7 @@ WebSocket upgrade with an HTTP status and the reason as the plain-text body:
 | Status | Reason | Permanent |
 |---|---|---|
 | 400 | The runtime ID does not match `[a-z][a-z0-9_]{0,31}`. | yes |
-| 401 | The bearer token is missing or wrong. | yes |
+| 401 | The bearer token is missing or wrong: neither the daemon's runtime token nor its client token. | yes |
 | 403 | The ID is reserved (`global`, `local`) or names a `[runtimes.<id>]` template the daemon configures, or the request carries an `Origin` header. | yes |
 | 409 | A runtime is connected under the ID, or being accepted under it, now. The daemon may not have noticed yet that an earlier connection of the same runtime ended. | no |
 

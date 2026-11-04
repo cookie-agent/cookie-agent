@@ -307,8 +307,8 @@ pub fn has_template(config_text: &str, id: &RuntimeId) -> bool {
 }
 
 /// What a runtime with `id` (the host's name when empty) runs on its own
-/// machine to dial in to the daemon at `daemon_url`, with `token`, the one
-/// this page connected with, or a placeholder when the page keeps none. A
+/// machine to dial in to the daemon at `daemon_url`, with `token`, the
+/// daemon's runtime token, or a placeholder when the page has none. A
 /// loopback URL is the page's own view of the daemon, which another machine
 /// cannot reach, so its host becomes a placeholder.
 pub fn dial_in_command(daemon_url: Option<&str>, id: &str, token: Option<&str>) -> String {
@@ -344,7 +344,7 @@ pub fn dial_in_command(daemon_url: Option<&str>, id: &str, token: Option<&str>) 
 }
 
 /// What stands for the token when the page keeps none.
-const TOKEN_PLACEHOLDER: &str = "<the daemon's token>";
+const TOKEN_PLACEHOLDER: &str = "<the daemon's runtime token>";
 
 /// `command` with `token` hidden, for showing it on screen: copying takes the
 /// command itself.
@@ -591,10 +591,10 @@ mod tests {
     }
 
     #[test]
-    fn the_dial_in_command_names_the_daemon_and_carries_the_page_s_token() {
+    fn the_dial_in_command_names_the_daemon_and_carries_the_runtime_token() {
         assert_eq!(
             dial_in_command(Some("ws://127.0.0.1:7420/ws"), "", None),
-            "cookie runtime serve --daemon ws://<daemon host>:7420/ws --token \"<the daemon's token>\""
+            "cookie runtime serve --daemon ws://<daemon host>:7420/ws --token \"<the daemon's runtime token>\""
         );
         assert_eq!(
             dial_in_command(Some("wss://box.tail.ts.net/ws"), "labpc", Some("s3cr3t")),

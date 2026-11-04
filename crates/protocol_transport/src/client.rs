@@ -1596,6 +1596,17 @@ impl Client {
         .await
     }
 
+    /// `machines.runtime_token`: the token runtimes that dial in present.
+    pub async fn runtime_token(
+        &self,
+    ) -> Result<cookie_agent_protocol::MachinesRuntimeTokenResult, ClientError> {
+        self.call(
+            cookie_agent_protocol::MACHINES_RUNTIME_TOKEN_METHOD,
+            &cookie_agent_protocol::MachinesRuntimeTokenParams {},
+        )
+        .await
+    }
+
     /// The memory files `params` asks for, valid or not.
     pub async fn list_memory(
         &self,

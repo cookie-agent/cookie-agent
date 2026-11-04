@@ -24,6 +24,7 @@ use cookie_agent_protocol_transport::{Authentication, Client};
 use thiserror::Error;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
+use zeroize::Zeroizing;
 
 /// Protocol service composed with one coherent engine runtime.
 #[derive(Clone)]
@@ -71,6 +72,10 @@ pub(crate) struct Shared {
     /// The page ticket of the token the daemon's listener serves with,
     /// which handshakes report once the daemon is ready.
     pub(crate) page_ticket: std::sync::RwLock<Option<String>>,
+    /// The daemon's `[server] runtime_token`, which `/runtime` takes as
+    /// well as the client token, and `/ws` never
+    /// (`docs/site/specs/runtime-token.md`).
+    pub(crate) runtime_token: std::sync::OnceLock<Zeroizing<String>>,
     /// The base of the daemon's share links, `[share] url` or `[server]
     /// page_url`, which handshakes report while the daemon starts.
     pub(crate) share_url: std::sync::RwLock<Option<String>>,
@@ -90,6 +95,7 @@ impl DaemonListener {
                 connections: Arc::new(tokio::sync::watch::Sender::new(())),
                 page_url: std::sync::RwLock::new(None),
                 page_ticket: std::sync::RwLock::new(None),
+                runtime_token: std::sync::OnceLock::new(),
                 share_url: std::sync::RwLock::new(None),
             }),
         }
@@ -104,6 +110,14 @@ impl DaemonListener {
             .page_url
             .write()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = page_url;
+        self
+    }
+
+    /// Lets dial-in runtimes present `runtime_token` on `/runtime`, as
+    /// well as the client token.
+    #[must_use]
+    pub fn with_runtime_token(self, runtime_token: Zeroizing<String>) -> Self {
+        let _ = self.shared.runtime_token.set(runtime_token);
         self
     }
 

@@ -20,13 +20,23 @@ enum CommitStep {
     ParentSynced,
 }
 
-/// Set `[server] token` to `token` while preserving every unrelated item and
-/// comment, as the daemon does when it has none. The file is written
+/// Sets `[server] token` and `[server] runtime_token` to the ones given,
+/// leaving a key given `None` as it is and preserving every unrelated item
+/// and comment, as the daemon does when it has none. The file is written
 /// owner-only.
-pub fn write_server_token(path: &Path, token: &str) -> Result<(), ConfigError> {
-    if !crate::valid_daemon_token(token) {
+pub fn write_server_tokens(
+    path: &Path,
+    token: Option<&str>,
+    runtime_token: Option<&str>,
+) -> Result<(), ConfigError> {
+    if token.is_some_and(|token| !crate::valid_daemon_token(token)) {
         return Err(ConfigError::InvalidRuntime(
             "server.token must be 43 base64url characters",
+        ));
+    }
+    if runtime_token.is_some_and(|token| !crate::valid_daemon_token(token)) {
+        return Err(ConfigError::InvalidRuntime(
+            "server.runtime_token must be 43 base64url characters",
         ));
     }
     let original = read_original(path)?;
@@ -42,7 +52,11 @@ pub fn write_server_token(path: &Path, token: &str) -> Result<(), ConfigError> {
     if !document.as_table().contains_key("server") {
         document["server"] = Item::Table(Table::new());
     }
-    document["server"]["token"] = toml_edit::value(token);
+    for (key, value) in [("token", token), ("runtime_token", runtime_token)] {
+        if let Some(value) = value {
+            document["server"][key] = toml_edit::value(value);
+        }
+    }
     let candidate = document.to_string();
     let mut tree = ConfigTree::read(path.parent())?;
     tree.put(ConfigPath::config(), candidate.as_bytes().to_vec())?;

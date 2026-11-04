@@ -937,9 +937,10 @@ See [Share links](../sessions/sharing.md).
       [Runtimes that dial in](../runtimes/dial-in.md)),
       with an optional runtime ID and **Copy**. The daemon's address is
       the page's own unless the page reached it on a loopback address,
-      when it is a placeholder. The command carries the token this page
+      when it is a placeholder. The command carries the daemon's
+      [runtime token](../runtimes/dial-in.md), never the token this page
       connected with: it shows as dots until **Show token**, and **Copy**
-      takes the real one. A page that keeps no token shows a placeholder.
+      takes the real one. A daemon without one shows a placeholder.
     - **Guides:** links to the runtimes, ssh, dial-in, remote access, and
       service guides of the released documentation.
 - **Skills.** The sidebar's **Skills** view lists the skills every session

@@ -166,6 +166,14 @@ async fn cookie_machine_lists_and_regroups_the_daemon_machines() {
         listed.iter().filter(|line| !line.starts_with(' ')).count(),
         1
     );
+    // An engine served in process has no runtime token to give.
+    let error = run_machine_with(&client, MachineCommand::RuntimeToken)
+        .await
+        .expect_err("no runtime token");
+    assert!(
+        error.to_string().contains("without a runtime token"),
+        "{error}"
+    );
 
     drop(client);
     server_task.await.unwrap().unwrap();

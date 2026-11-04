@@ -25,13 +25,16 @@ cookie runtime serve --daemon <daemon-url> --id <id> --token <token>
 - `--id <id>` names the runtime; without it, it is the host name. Only one
   runtime may be connected under an ID. See
   [Runtimes that dial in](dial-in.md).
-- `--token <token>` is the daemon's token: copy it from `[server] token`
-  in the daemon's `config.toml`. The examples below put it in the service
+- `--token <token>` is the daemon's runtime token: `cookie machine
+  runtime-token` on the daemon's machine prints it (`[server] runtime_token`
+  in its `config.toml`). It opens no client connection, so this machine
+  never holds the daemon's client token. The examples below put it in the service
   definition. An inline token is visible in that definition and in the
   process's command line on that machine; the runtime does not pass it on
   to the processes it starts, such as its `bash` calls and MCP servers.
-  `COOKIE_DAEMON_TOKEN` and `[server] token` in this machine's
-  `config.toml` work too; see [Reaching a daemon](../clients/cli.md#reaching-a-daemon).
+  `COOKIE_RUNTIME_TOKEN`, and `[server] runtime_token`, else `[server]
+  token`, in this machine's `config.toml` work too; see
+  [Runtimes that dial in](dial-in.md).
 - `--root <dir>`, repeated, limits the workspaces the runtime serves.
 
 Four things decide how a service has to be set up:

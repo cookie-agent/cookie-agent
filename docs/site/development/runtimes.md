@@ -30,7 +30,9 @@ and [Framing](../reference/runtime-protocol.md#framing).
   The template's `startup_timeout_ms` bounds starting and initializing.
 - **Dialing in.** Your program opens a WebSocket to the daemon's
   `/runtime?id=<runtime ID>` route, the client URL with its path replaced,
-  with `Authorization: Bearer <token>`; one message per text frame. A runtime
+  with `Authorization: Bearer <token>`, the daemon's runtime token
+  (`[server] runtime_token`; the client token works too); one message per
+  text frame. A runtime
   ID is a lowercase letter and up to 31 lowercase letters, digits, or
   underscores; `global`, `local`, and the IDs of configured templates are
   taken, as is an ID already connected. The daemon allows 30 seconds for

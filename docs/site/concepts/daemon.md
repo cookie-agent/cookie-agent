@@ -46,7 +46,9 @@ and [Remote access](../daemon/remote-access.md).
 Every connection presents the daemon's bearer token, `[server] token`. Clients
 and runtimes on the daemon's machine read it from the same `config.toml`;
 elsewhere it is passed with `--token` or `COOKIE_DAEMON_TOKEN`. Anyone holding
-the token is a fully trusted client. See
+the token is a fully trusted client. Runtimes that dial in may present a
+second token, `[server] runtime_token`, which opens nothing but the runtime
+route. See
 [Security](../daemon/security.md#daemon-authentication-token).
 
 ## One store, one owner

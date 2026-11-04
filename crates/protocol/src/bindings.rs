@@ -352,6 +352,7 @@ fn client_methods() -> Vec<MethodSpec> {
         request!(MACHINES_MERGE_METHOD, ToDaemon, MachinesMergeParams => MachinesListResult),
         request!(MACHINES_FORGET_METHOD, ToDaemon, MachinesForgetParams => MachinesListResult),
         request!(MACHINES_FORGET_RUNTIME_METHOD, ToDaemon, MachinesForgetRuntimeParams => MachinesListResult),
+        request!(MACHINES_RUNTIME_TOKEN_METHOD, ToDaemon, MachinesRuntimeTokenParams => MachinesRuntimeTokenResult),
         request!(MEMORY_LIST_METHOD, ToDaemon, MemoryListParams => MemoryListResult),
         request!(MEMORY_READ_METHOD, ToDaemon, MemoryReadParams => MemoryReadResult),
         request!(MEMORY_WRITE_METHOD, ToDaemon, MemoryWriteParams => MemoryWriteResult),

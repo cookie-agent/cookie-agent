@@ -63,4 +63,4 @@ pub use tree::{
     CONFIG_FILE, ConfigDocument, ConfigPath, ConfigTree, OFFICIAL_AGENTS_RECORD, template_name,
 };
 pub use wildcard::simple_wildcard_match;
-pub use writer::{write_beside, write_server_token, write_tree};
+pub use writer::{write_beside, write_server_tokens, write_tree};

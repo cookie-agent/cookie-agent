@@ -125,6 +125,17 @@ loopback unless `--listen` names another address; off loopback, serve TLS
 a plaintext `ws://` connection carries the token in the clear. Anyone holding
 the token is a fully trusted client and may also offer a runtime.
 
+**The runtime token.** Runtimes that dial in may present a second token,
+`[server] runtime_token`, instead. It opens `/runtime` and nothing else:
+`/ws` refuses it in the header and in the handshake, and it opens no plugin
+page. A machine that serves as a runtime, often a shared or less trusted
+one, then never holds the client token. Its holder can still offer a
+runtime under any ID the daemon would accept from a dial-in (not `global`,
+`local`, a configured template, or an ID connected now), and so receive the
+tool calls sessions send that runtime: treat it as a secret too. Every
+client may read it (`machines.runtime_token`, `cookie machine
+runtime-token`), which the web page's dial-in command does.
+
 **Web pages.** `/ws` does not check a browser's `Origin` header (see
 [Web clients](remote-access.md#web-clients)): any page in any browser on a
 machine that can reach the daemon can open a connection, and the token is the
@@ -140,10 +151,12 @@ operating system at its first start and writes it there, rewriting the file
 owner-only (`0600` on Unix), so it stays the same across restarts and a
 runtime that dials in can reconnect after one. The WebSocket subcommands
 (`attach`, `connect`, `disconnect`, `mcp`) and `cookie runtime serve --daemon`
-read it from the same file unless given `--token` / `COOKIE_DAEMON_TOKEN`.
+read it from the same file unless given `--token` / `COOKIE_DAEMON_TOKEN`
+(`cookie runtime serve --daemon` reads `runtime_token` first, and takes
+`COOKIE_RUNTIME_TOKEN`). The runtime token is kept and created the same way.
 Any process that can read your `config.toml` can therefore connect to the
-daemon; keep the file private, and replace the token (delete the line and
-restart the daemon) if it leaks. Plain `cookie` sends the token to whatever
+daemon; keep the file private, and replace a token (delete its line and
+restart the daemon) if it leaks. Replacing one leaves the other working. Plain `cookie` sends the token to whatever
 listens at `[server] host` and `port` when it looks for a running daemon (see
 [A daemon already running](persistent.md#a-daemon-already-running)), as
 `cookie attach` with default settings does; it looks only when the token is

@@ -13,7 +13,7 @@ A client must call `handshake` before any other method:
 
 ```json
 { "jsonrpc": "2.0", "id": 1, "method": "handshake", "params": {
-    "protocol_version": "1.86.0",
+    "protocol_version": "1.87.0",
     "client": { "kind": "web", "instance_id": "<uuid>" },
     "token": "<the daemon's token>",
     "features": [] } }
@@ -22,7 +22,7 @@ A client must call `handshake` before any other method:
 The reply:
 
 ```json
-{ "protocol_version": "1.86.0", "engine_version": "0.3.0",
+{ "protocol_version": "1.87.0", "engine_version": "0.3.0",
   "origin": "client:web-<id>", "machine_id": "<opaque>", "features": [],
   "status": { "phase": "ready" } }
 ```
@@ -296,6 +296,7 @@ Idempotent redelivery resolves against the state preceding the original run.
 | `machines.merge` | `from`, `into` | The `machines` afterwards; `from`'s IDs, pins, and memories moved to `into` |
 | `machines.forget` | `machine` | The `machines` afterwards, without the machine |
 | `machines.forget_runtime` | `runtime` ID | The `machines` afterwards; the daemon no longer remembers where the offline runtime ran |
+| `machines.runtime_token` | none (since 1.87.0) | `token`: the daemon's `[server] runtime_token`, which a [runtime that dials in](../runtimes/dial-in.md) presents on `/runtime` instead of the client token; `null` when the daemon serves without one. `/ws` never takes it |
 | `memory.list` | Optional `layer`, and at most one of `agent`, `machine`, and `project` | The `memories`, valid or not, and the `ignored` entries of the memory folder (see [Memory](#memory)) |
 | `memory.read` | Memory `url` | The file's whole `text`, its `revision`, and why it is `invalid` when it is |
 | `memory.write` | Memory `url`, whole-file `text`, `revision` of the file it replaces | The new `revision`, and a `notice` when an `agent://` file kept the daemon's description or keywords; without `revision` the memory must not exist |

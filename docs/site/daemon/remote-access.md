@@ -20,9 +20,12 @@ For clients and runtimes on other machines, `cookie daemon` takes:
 | `--tls-cert <path>`, `--tls-key <path>` | Serve `wss` with this PEM certificate chain and private key; the ready line then shows a `wss://` URL. Both or neither. |
 
 The daemon serves clients on `/ws` and [dial-in runtimes](../runtimes/dial-in.md)
-on `/runtime?id=<runtime ID>`. Both present the same bearer token: a runtime
-in the `Authorization` header, a client there or in its
+on `/runtime?id=<runtime ID>`. A client presents the daemon's token
+(`[server] token`) in the `Authorization` header or in its
 [handshake](../reference/protocol.md#handshake-and-authentication). A
+runtime presents the runtime token (`[server] runtime_token`), which opens
+`/runtime` and nothing else, or the client token, in the `Authorization`
+header. A
 request to `/runtime` carrying a browser `Origin` header is refused; `/ws`
 ignores the header.
 

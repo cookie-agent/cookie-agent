@@ -717,6 +717,15 @@ pub trait ServerProtocol: Send + Sync + 'static {
         &self,
         params: cookie_agent_protocol::MachinesForgetRuntimeParams,
     ) -> Result<cookie_agent_protocol::MachinesListResult, ServerFault>;
+    /// The token runtimes that dial in present.
+    async fn runtime_token(
+        &self,
+        _params: cookie_agent_protocol::MachinesRuntimeTokenParams,
+    ) -> Result<cookie_agent_protocol::MachinesRuntimeTokenResult, ServerFault> {
+        Err(ServerFault::method_not_found(
+            cookie_agent_protocol::MACHINES_RUNTIME_TOKEN_METHOD,
+        ))
+    }
     /// Lists memory files.
     async fn list_memory(
         &self,
@@ -1883,6 +1892,9 @@ async fn dispatch<S: ServerProtocol>(
         }
         cookie_agent_protocol::MACHINES_FORGET_RUNTIME_METHOD => {
             value(server.forget_machine_runtime(decode(params)?).await?)
+        }
+        cookie_agent_protocol::MACHINES_RUNTIME_TOKEN_METHOD => {
+            value(server.runtime_token(decode_default(params)?).await?)
         }
         cookie_agent_protocol::MEMORY_LIST_METHOD => {
             value(server.list_memory(decode_default(params)?).await?)

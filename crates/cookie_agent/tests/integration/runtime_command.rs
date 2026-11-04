@@ -185,8 +185,8 @@ async fn a_missing_root_fails_on_stderr_with_nothing_on_stdout() {
     assert!(stderr.contains("unavailable"), "{stderr}");
 }
 
-/// The daemon token reaches cookie through `COOKIE_DAEMON_TOKEN` but goes no
-/// further: a process the runtime starts, here the `bash` tool's shell, does
+/// The daemon tokens reach cookie through `COOKIE_DAEMON_TOKEN` and
+/// `COOKIE_RUNTIME_TOKEN` but go no further: a process the runtime starts, here the `bash` tool's shell, does
 /// not inherit it, while the rest of the environment does.
 #[cfg(unix)]
 #[tokio::test]
@@ -207,6 +207,7 @@ async fn processes_the_runtime_starts_do_not_inherit_the_daemon_token() {
         .args(["runtime", "serve", "--stdio"])
         .env("HOME", home.path())
         .env("COOKIE_DAEMON_TOKEN", "secret-daemon-token")
+        .env("COOKIE_RUNTIME_TOKEN", "secret-runtime-token")
         .env("COOKIE_TEST_INHERITED", "inherited")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -260,6 +261,7 @@ async fn processes_the_runtime_starts_do_not_inherit_the_daemon_token() {
                     name: "bash".into(),
                     arguments: serde_json::json!({
                         "command": "printf '%s' \"${COOKIE_DAEMON_TOKEN-unset}\" > token.txt; \
+                                    printf '%s' \"${COOKIE_RUNTIME_TOKEN-unset}\" > runtime_token.txt; \
                                     printf '%s' \"${COOKIE_TEST_INHERITED-unset}\" > inherited.txt"
                     }),
                 }],
@@ -299,6 +301,7 @@ async fn processes_the_runtime_starts_do_not_inherit_the_daemon_token() {
     let read = |name: &str| std::fs::read_to_string(workspace.path().join(name)).unwrap();
     assert_eq!(read("inherited.txt"), "inherited");
     assert_eq!(read("token.txt"), "unset");
+    assert_eq!(read("runtime_token.txt"), "unset");
 
     let _: Empty = tokio::time::timeout(WAIT, peer.request(method::SHUTDOWN, &Empty {}))
         .await

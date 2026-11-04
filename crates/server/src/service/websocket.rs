@@ -566,10 +566,11 @@ pub(super) struct WebSocketState {
     pub(super) tls: bool,
 }
 
-/// Refuses a runtime's request that carries a browser `Origin` or lacks the
-/// daemon's token in `Authorization`, saying why in the body. The token is
-/// the only gate: the daemon listens where it is told to.
-fn refused(headers: &HeaderMap, token: &str) -> Option<Response> {
+/// Refuses a runtime's request that carries a browser `Origin` or lacks
+/// one of the daemon's tokens in `Authorization`, the client token or the
+/// runtime token, saying why in the body. The tokens are the only gate: the
+/// daemon listens where it is told to.
+fn refused(headers: &HeaderMap, token: &str, runtime_token: Option<&str>) -> Option<Response> {
     if headers.contains_key(header::ORIGIN) {
         return Some(
             (
@@ -579,10 +580,12 @@ fn refused(headers: &HeaderMap, token: &str) -> Option<Response> {
                 .into_response(),
         );
     }
-    (!authorized(headers, token)).then(|| {
+    let accepted = authorized(headers, token)
+        || runtime_token.is_some_and(|runtime_token| authorized(headers, runtime_token));
+    (!accepted).then(|| {
         (
             StatusCode::UNAUTHORIZED,
-            "the daemon token is missing or wrong",
+            "the runtime token is missing or wrong",
         )
             .into_response()
     })
@@ -687,7 +690,8 @@ async fn runtime_upgrade(
     headers: HeaderMap,
     upgrade: IncomingUpgrade,
 ) -> Response {
-    if let Some(refused) = refused(&headers, state.token.as_str()) {
+    let runtime_token = state.shared.runtime_token.get().map(|token| token.as_str());
+    if let Some(refused) = refused(&headers, state.token.as_str(), runtime_token) {
         return refused;
     }
     // A daemon that is starting takes runtimes once it is ready; they dial
@@ -931,6 +935,7 @@ mod authentication_tests {
     struct Daemon {
         running: crate::RunningServer,
         token: zeroize::Zeroizing<String>,
+        runtime_token: zeroize::Zeroizing<String>,
         fixture: crate::tests::Harness,
     }
 
@@ -942,6 +947,12 @@ mod authentication_tests {
         async fn start_on(port: u16) -> Self {
             let fixture = crate::tests::harness();
             let token = crate::generate_token().unwrap();
+            let runtime_token = crate::generate_token().unwrap();
+            let _ = fixture
+                .server
+                .shared
+                .runtime_token
+                .set(runtime_token.clone());
             let running = Arc::clone(&fixture.server)
                 .serve_on(
                     std::net::SocketAddr::from(([127, 0, 0, 1], port)),
@@ -953,6 +964,7 @@ mod authentication_tests {
             Self {
                 running,
                 token,
+                runtime_token,
                 fixture,
             }
         }
@@ -1081,6 +1093,58 @@ mod authentication_tests {
         assert!(
             closes(&mut socket).await,
             "the daemon closed the connection"
+        );
+        daemon.stop().await;
+    }
+
+    /// The runtime token opens `/runtime` and nothing else; the client token
+    /// opens both, and any client may read the runtime token
+    /// (`docs/site/specs/runtime-token.md`).
+    #[tokio::test]
+    async fn the_runtime_token_opens_only_the_runtime_route() {
+        let daemon = Daemon::start().await;
+        let runtime_token = Some(daemon.runtime_token.as_str());
+        for (id, token) in [
+            ("devbox", runtime_token),
+            ("labbox", Some(daemon.token.as_str())),
+        ] {
+            let mut socket = daemon
+                .connect(&format!("/runtime?id={id}"), token, None)
+                .await
+                .expect("a runtime dials in");
+            let initialize = tokio::time::timeout(std::time::Duration::from_secs(5), socket.next())
+                .await
+                .expect("initialize in time")
+                .expect("a frame")
+                .expect("a readable frame");
+            let Message::Text(initialize) = initialize else {
+                panic!("initialize is text: {initialize:?}");
+            };
+            let initialize: Value = serde_json::from_str(&initialize).unwrap();
+            assert_eq!(initialize["method"], "runtime/initialize", "{id}");
+        }
+
+        // Not on `/ws`: neither in the header nor in the handshake.
+        let error = daemon
+            .connect("/ws", runtime_token, None)
+            .await
+            .expect_err("a runtime token on /ws");
+        assert!(error.to_string().contains("401"), "{error}");
+        let mut socket = daemon.connect("/ws", None, None).await.unwrap();
+        let reply = call(&mut socket, 1, "handshake", hello(runtime_token)).await;
+        assert_eq!(reply["error"]["code"], -32003, "{reply}");
+        assert!(closes(&mut socket).await);
+
+        let mut socket = daemon
+            .connect("/ws", Some(daemon.token.as_str()), None)
+            .await
+            .expect("a client");
+        call(&mut socket, 1, "handshake", hello(None)).await;
+        let reply = call(&mut socket, 2, "machines.runtime_token", json!({})).await;
+        assert_eq!(
+            reply["result"]["token"],
+            json!(daemon.runtime_token.as_str()),
+            "{reply}"
         );
         daemon.stop().await;
     }
@@ -1560,7 +1624,7 @@ mod authentication_tests {
             .expect_err("a wrong token");
         assert_eq!(
             refusal(error),
-            (401, "the daemon token is missing or wrong".to_owned())
+            (401, "the runtime token is missing or wrong".to_owned())
         );
 
         // A runtime of another major version does not initialize.

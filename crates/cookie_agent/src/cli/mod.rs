@@ -695,33 +695,68 @@ struct DaemonTarget {
     token: Zeroizing<String>,
 }
 
+/// Who presents the token to the daemon.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Presenter {
+    /// A client, on `/ws`: `[server] token`.
+    Client,
+    /// A runtime that dials in, on `/runtime`: `[server] runtime_token`,
+    /// else `[server] token`, which `/runtime` takes too.
+    Runtime,
+}
+
 /// The daemon to connect to: `--url` and `--token` (or
 /// `COOKIE_DAEMON_TOKEN`), each falling back to this machine's `config.toml`:
 /// `[server] url`, else the local daemon it describes, and `[server] token`.
 fn daemon_target(url: Option<String>, token: Option<String>) -> anyhow::Result<DaemonTarget> {
-    resolve_daemon_target(url, token, || {
-        Ok(cookie_agent_config::load()
-            .context("load configuration")?
-            .runtime
-            .server)
-    })
+    resolve_daemon_target(url, token, Presenter::Client, configured_server)
+}
+
+/// The daemon a runtime dials in to: as [`daemon_target`], with the token
+/// from `--token` (or `COOKIE_RUNTIME_TOKEN`), else `[server] runtime_token`,
+/// else `[server] token` (`docs/site/specs/runtime-token.md`).
+fn runtime_daemon_target(
+    url: Option<String>,
+    token: Option<String>,
+) -> anyhow::Result<DaemonTarget> {
+    resolve_daemon_target(url, token, Presenter::Runtime, configured_server)
+}
+
+fn configured_server() -> anyhow::Result<cookie_agent_config::ServerConfig> {
+    Ok(cookie_agent_config::load()
+        .context("load configuration")?
+        .runtime
+        .server)
 }
 
 fn resolve_daemon_target(
     url: Option<String>,
     token: Option<String>,
+    presenter: Presenter,
     configured: impl FnOnce() -> anyhow::Result<cookie_agent_config::ServerConfig>,
 ) -> anyhow::Result<DaemonTarget> {
     let (url, token) = match (url, token) {
         (Some(url), Some(token)) => (url, token),
         (url, token) => {
             let server = configured()?;
-            let token = token.or_else(|| server.token.clone()).ok_or_else(|| {
-                anyhow::anyhow!(
-                    "no daemon token: pass --token, set COOKIE_DAEMON_TOKEN, or set `token` \
-                     under [server] in config.toml"
-                )
-            })?;
+            let token = match presenter {
+                Presenter::Client => token.or_else(|| server.token.clone()).ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "no daemon token: pass --token, set COOKIE_DAEMON_TOKEN, or set `token` \
+                         under [server] in config.toml"
+                    )
+                })?,
+                Presenter::Runtime => token
+                    .or_else(|| server.runtime_token.clone())
+                    .or_else(|| server.token.clone())
+                    .ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "no runtime token: pass --token, set COOKIE_RUNTIME_TOKEN, or set \
+                             `runtime_token` under [server] in config.toml (`cookie machine \
+                             runtime-token` on the daemon's machine prints it)"
+                        )
+                    })?,
+            };
             (url.unwrap_or_else(|| server.client_url()), token)
         }
     };

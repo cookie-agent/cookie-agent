@@ -11,16 +11,23 @@ cookie daemon --listen 0.0.0.0:7419
 
 ```sh
 # On labpc: dial in, named after the host, and stay connected.
-cookie runtime serve --daemon ws://laptop:7419/ws --token <token>
+cookie runtime serve --daemon ws://laptop:7419/ws --token <runtime token>
 ```
 
 - **Daemon.** `--daemon` takes the daemon's client URL, or, without one,
   `[server] url` of this machine's `config.toml`, else the local daemon that
-  table describes. `--token` is the daemon's token, `[server] token` in its
-  `config.toml`, where the daemon keeps it so it survives restarts.
-  `COOKIE_DAEMON_TOKEN` and `[server] token` on labpc work too; flags
+  table describes.
+- **Token.** `--token` is the daemon's runtime token, `[server]
+  runtime_token` in its `config.toml`, where the daemon keeps it so it
+  survives restarts; `cookie machine runtime-token` prints it. It lets a
+  machine serve as a runtime and nothing more: it opens no client
+  connection, so labpc never holds the daemon's client token. The client
+  token (`[server] token`) is accepted too. `COOKIE_RUNTIME_TOKEN`, and
+  `[server] runtime_token`, else `[server] token`, on labpc work too; flags
   override the configuration. The runtime does not pass the token on to the
-  processes it starts.
+  processes it starts. To rotate the runtime token, change or remove it in
+  the daemon's `config.toml` and restart the daemon; runtimes then need the
+  new one.
 - **Identity.** `--id` is the runtime ID, `[a-z][a-z0-9_]{0,31}`; without
   it, the host name, sanitized (`host_` in front when it does not start with
   a letter). It must not be `global`, `local`, or a `[runtimes.<id>]`

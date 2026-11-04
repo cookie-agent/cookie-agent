@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "The daemon's `[server] runtime_token`: what a runtime that dials in\npresents on `/runtime` instead of the client token, which it never opens\n`/ws` with. `None` when the daemon serves without one.",
+  "properties": {
+    "token": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "title": "MachinesRuntimeTokenResult",
+  "type": "object"
+}

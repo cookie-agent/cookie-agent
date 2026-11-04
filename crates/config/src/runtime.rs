@@ -914,6 +914,13 @@ pub struct ServerConfig {
     /// one here when there is none.
     #[serde(default)]
     pub token: Option<String>,
+    /// The token dial-in runtimes present instead of `token`, which gives
+    /// them `/runtime` and nothing else: 43 base64url characters, unlike
+    /// `token`. Runtimes on this machine read it from here; the daemon
+    /// writes a fresh one here when there is none
+    /// (`docs/site/specs/runtime-token.md`).
+    #[serde(default)]
+    pub runtime_token: Option<String>,
     /// The daemon clients and runtimes on this machine connect to: a `ws://`
     /// or `wss://` URL ending in `/ws`. The daemon itself ignores it.
     #[serde(default)]
@@ -939,6 +946,7 @@ impl Default for ServerConfig {
             host: default_host(),
             port: default_port(),
             token: None,
+            runtime_token: None,
             url: None,
             page_url: None,
             session_idle_eviction_after: default_session_idle_eviction_after(),
@@ -1001,6 +1009,10 @@ impl std::fmt::Debug for ServerConfig {
             .field("host", &self.host)
             .field("port", &self.port)
             .field("token", &self.token.as_ref().map(|_| "<redacted>"))
+            .field(
+                "runtime_token",
+                &self.runtime_token.as_ref().map(|_| "<redacted>"),
+            )
             .field("url", &self.url)
             .field("page_url", &self.page_url)
             .field(
@@ -2258,6 +2270,19 @@ pub(crate) fn validate_runtime(runtime: &EngineConfig) -> Result<(), ConfigError
                 .as_deref()
                 .is_some_and(|token| !valid_daemon_token(token)),
             "server.token must be 43 base64url characters",
+        ),
+        (
+            runtime
+                .server
+                .runtime_token
+                .as_deref()
+                .is_some_and(|token| !valid_daemon_token(token)),
+            "server.runtime_token must be 43 base64url characters",
+        ),
+        (
+            runtime.server.runtime_token.is_some()
+                && runtime.server.runtime_token == runtime.server.token,
+            "server.runtime_token must differ from server.token",
         ),
         (
             runtime

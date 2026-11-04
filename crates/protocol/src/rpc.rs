@@ -551,6 +551,7 @@ pub const MACHINES_UNASSIGN_METHOD: &str = "machines.unassign";
 pub const MACHINES_MERGE_METHOD: &str = "machines.merge";
 pub const MACHINES_FORGET_METHOD: &str = "machines.forget";
 pub const MACHINES_FORGET_RUNTIME_METHOD: &str = "machines.forget_runtime";
+pub const MACHINES_RUNTIME_TOKEN_METHOD: &str = "machines.runtime_token";
 pub const MACHINES_CHANGED_METHOD: &str = "machines.changed";
 pub const MEMORY_LIST_METHOD: &str = "memory.list";
 pub const MEMORY_READ_METHOD: &str = "memory.read";
@@ -985,6 +986,28 @@ pub struct MachinesForgetParams {
 #[serde(deny_unknown_fields)]
 pub struct MachinesForgetRuntimeParams {
     pub runtime: RuntimeId,
+}
+
+/// Ask for the daemon's runtime token (client protocol 1.87.0).
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct MachinesRuntimeTokenParams {}
+
+/// The daemon's `[server] runtime_token`: what a runtime that dials in
+/// presents on `/runtime` instead of the client token, which it never opens
+/// `/ws` with. `None` when the daemon serves without one.
+#[derive(Clone, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct MachinesRuntimeTokenResult {
+    pub token: Option<String>,
+}
+
+impl std::fmt::Debug for MachinesRuntimeTokenResult {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("MachinesRuntimeTokenResult")
+            .field("token", &self.token.as_ref().map(|_| "<redacted>"))
+            .finish()
+    }
 }
 
 /// The machine registry changed, or a runtime was assigned to a new

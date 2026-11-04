@@ -2740,14 +2740,17 @@ def views_2026(browser):
     assert "[runtimes.e2essh]" in written and '"me@localhost"' in written, written
     browser.click("#ssh-add")
     browser.wait("the second add refused", lambda: "already" in browser.text("#ssh-outcome"))
-    # The command carries the token this page connected with, hidden on
-    # screen until revealed.
-    token = LINK.split("#token=", 1)[1]
+    # The command carries the daemon's runtime token, never the token this
+    # page connected with, hidden on screen until revealed.
+    page_token = LINK.split("#token=", 1)[1]
+    token = re.search(r'^runtime_token = "([^"]+)"', written, re.M).group(1)
+    browser.wait("the runtime token", lambda: "••••" in browser.script("return document.querySelector('#dial-in-command').value"))
     command = browser.script("return document.querySelector('#dial-in-command').value")
     assert command.startswith("cookie runtime serve --daemon ws://<daemon host>:"), command
-    assert token not in command and "••••" in command, command
+    assert token not in command and page_token not in command, command
     browser.click("#dial-in-reveal")
     browser.wait("the revealed token", lambda: token in browser.script("return document.querySelector('#dial-in-command').value"))
+    assert page_token not in browser.script("return document.querySelector('#dial-in-command').value")
     browser.click("#dial-in-reveal")
     guides = browser.script("return [...document.querySelectorAll('#add-runtime [data-guide]')].map((a) => a.href)")
     assert len(guides) == 5 and all(g.startswith("https://cookie-agent.github.io/doc/latest/") for g in guides), guides
