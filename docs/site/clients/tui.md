@@ -153,7 +153,7 @@ Esc in a step returns to the command list with the search intact.
 | `/sessions` (also `resume`, `load`, `continue`) | Choose a session, rename or delete one, or list every directory's; see [Session picker](#session-picker) |
 | `/project` (also `projects`) | Choose the project of the selected session, or of a new session before its first prompt; see [Projects](#projects) |
 | `/rename` (also `title`) | Rename the selected session: `/rename <title>` sets the title, `/rename --auto` goes back to the generated title, and `/rename` alone asks for the title in a field holding the current one; see [Renaming](#renaming) |
-| `/skills` | Search user-invocable skills, pick one, then enter optional arguments; see [Skills](../extend/skills.md) |
+| `/skills` | Search user-invocable skills, pick one, then enter optional arguments; space switches the highlighted skill on or off for the agent (you can still run it); see [Skills](../extend/skills.md) |
 | `/attach` (also `file`, `image`) | Ask for a file's path and attach it to the next message; listed once a model is selected; see [Attachments](#attachments) |
 | `/usage` | Show selected-session and session-tree usage |
 | `/about` (also `version`, `licenses`, `notices`) | Show this TUI's version and client protocol, cookie's license, and the third-party notices: every crate cookie is built from, with its license and source, and the license texts |
@@ -902,6 +902,16 @@ When an MCP server or runtime instance a session uses fails to connect, or
 drops and does not reconnect, the TUI adds an error row to each affected
 session naming the server or runtime and the reason (see
 [MCP connection lifecycle](../extend/mcp.md#connection-lifecycle)).
+
+**Tool groups.** The details of a session's attachment end with its
+[tool groups](../sessions/index.md#tool-groups-and-skills) (`global`'s
+row has the daemon's own groups and top-level MCP servers): each one's state
+(`on`, `deferred`, `off`), who set it (the defaults, the agent, the project,
+or this session), tool count, and token estimate. Tab moves the keys to
+them: ↑↓ pick a group (its tools show under it), ←→ step it through on,
+deferred, and off, and `d` resets it to what the layers below give; Tab or
+Esc moves the keys back to the attachments. A group the permissions hide
+says so; `/permissions` decides it.
 
 ## Usage dashboard
 

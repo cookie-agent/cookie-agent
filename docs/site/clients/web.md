@@ -367,7 +367,10 @@ refreshes no longer change). Reset and Replace ask once more.
   - **The project editor** opens on the right (filling a phone's screen):
     the name; the emoji; the runtime cards a new session in the project
     starts with, as on New session, with **Use this session's
-    attachments**; the default agent, with its preset, or **None**; the
+    attachments**, each selected card with its **Tools** row and a **New
+    sessions' skills** list under them, which choose the groups and skills
+    a new session in the project starts with (the accent dot marks the
+    project's own); the default agent, with its preset, or **None**; the
     project's `AGENTS.md`; and a way to its memory folder. **Save** sends
     the whole change at once; if the project changed meanwhile, in another
     client or on disk, the editor says so and offers **Reload**, which
@@ -437,6 +440,17 @@ refreshes no longer change). Reset and Replace ask once more.
     back to the daemon's own directory.
   - **Runtimes** in the ⋮ menu points at the cards while a new session is
     composed.
+  - **Tool groups and skills.** Each selected card has the same **Tools**
+    row as the Runtimes tab, and a card that is not selected says what it
+    would bring ("Brings coding, web"). A runtime that is not running shows
+    the groups it offered the last time it ran, dotted, with when; one that
+    never ran says its tools are known once it starts. Under the cards, the
+    up-front, deferred, and off figures, and in a project the choices it
+    gives, with **reset to the project's**. Then **Skills**: those the
+    selected cards bring (each card's project skills, then the user's and
+    the official ones), each with a switch. **Runtimes · Skills** beside
+    the project picker jump between the two, and Skills counts the skills
+    that are off. The session is created with these choices.
 - **Subagents.** Only the open session's row has its subagents nested
   under it, each with its status (a turning circle while it runs, a check,
   failed, or cancelled), its agent, its short handle, and its task. Click
@@ -691,7 +705,10 @@ refreshes no longer change). Reset and Replace ask once more.
     **Downscale and attach**: the page redraws it smaller and attaches that.
     Video is never downscaled.
 - **Skills.** **Skills** lists the skills you can run, searched as you
-  type. Pick one, give its arguments, and run it.
+  type. Pick one, give its arguments, and run it. Each has a switch: off
+  leaves it out of what the agent sees in this session (you can still run
+  it), and ↺ resets it to what the agent document or the project gave. The
+  tab's count is the skills that are off.
 - **Permissions.** **Permission rules** shows the session's rules by action, and
   where each comes from: the agent, the default, or a session override. A
   rule limited to one runtime shows its key as agent documents write it,
@@ -701,8 +718,8 @@ refreshes no longer change). Reset and Replace ask once more.
   name a tool declares (`[a-z][a-z0-9_]{0,31}`), suggested from the
   actions the session's tools and rules use. The runtime is optional: empty
   applies the rule on every runtime, and suggestions come from the
-  daemon's runtimes. `message` and `skill` take no runtime, so the field
-  turns off for them. A name the daemon would refuse is flagged before it
+  daemon's runtimes. `message` takes no runtime, so the field
+  turns off for it. A name the daemon would refuse is flagged before it
   is sent. While a new session is composed, the same table edits the
   rules it will be created with, previewed against its agent.
 - **Working.** While the session runs, the transcript's last line says
@@ -823,6 +840,17 @@ download, or delete it (after asking).
     (`connected`, `connecting`, `needs_auth`, `failed`, …), tool count, and
     why it failed or what it waits for; a server its runtime shares across
     workspaces (`scope = "runtime"`) is marked `runtime-wide`.
+  - **Tools.** Each runtime has a **Tools** row of its
+    [tool groups](../sessions/index.md#tool-groups-and-skills) as chips
+    (`global`'s holds the daemon's own groups and top-level MCP servers,
+    the untouched built-in ones folded into **+N**): plain when on, in the
+    accent when deferred, struck through when off, faint when the
+    permissions hide it. A dot says who set it: the accent for this
+    session, dark grey for its project, light grey for the agent. Click
+    one for **On**, **Deferred**, **Off**, and **Reset** (to what the
+    layers below give), with its tools and token estimate. Above the
+    runtimes, the up-front, deferred, and off figures. The tab's count is
+    the groups that are off.
   - The open panel reads the runtimes again as `runtimes.changed` and
     `machines.changed` announce changes, and every ten seconds in case a
     notice was missed, and links to the Machines & runtimes view.

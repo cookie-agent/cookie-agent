@@ -762,3 +762,22 @@ lifecycle, `[mcp] idle_stop_after`), `concepts/permissions.md`, `concepts/machin
 - **Refreshed** whenever a session gathers its tool sources, at most once a
   minute per instance.
 
+### 17.4 Clients (phase 5, 2026-11-03)
+
+- **The web client** follows the preview: the Runtimes tab's **Tools** row
+  per attachment and the Skills tab's switches change the open session;
+  the New session page and the project editor change a draft
+  (`session.create`'s `exposure`, a project's `defaults.exposure`). A draft
+  still holding exactly its project's copy sends none, and the daemon
+  copies the project's itself. The New session cards' chips show each
+  group's runtime default, not the agent's: the agent is applied once the
+  session exists.
+- **The TUI** lists an attachment's groups in `/runtime`'s details, reached
+  with Tab (the panel's `d` already detaches), and does not yet edit a
+  draft's or a project's groups: they are set once the session exists, or
+  from the web client.
+- **The transcript's tools row** counts the groups the session's own
+  choices turn off, and each change is an info row ("tool groups changed by
+  client:web: mcp:exa off").
+- **`cookie sessions tools <id>`** asks a daemon (`--url`, `--token`), unlike
+  `cookie sessions upgrade`.

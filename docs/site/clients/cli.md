@@ -31,6 +31,7 @@ attaching clients to it.
 | [`cookie agents`](#cookie-agents) | List the daemon's agents, refresh the official ones, and check agent documents |
 | [`cookie update`](#cookie-update) | Replace this binary with the newest stable or nightly release |
 | [`cookie sessions upgrade`](#cookie-sessions-upgrade) | Convert stored sessions to this build's history format |
+| [`cookie sessions tools`](#cookie-sessions-tools) | Print a session's tool groups and skills with their states |
 | [`cookie mcp`](#cookie-mcp) | List MCP servers and authorize a remote one |
 
 `cookie --help`, and `--help` after any subcommand, prints clap's usage;
@@ -117,6 +118,8 @@ describes each option.
 | `--variant <VARIANT>` | | Named model variant, or `base` for none. |
 | `--permission-mode <MODE>` | `auto-approve` | `auto-approve`, `auto-approve-n`, `auto-approve-y`, `ask`, or `yolo`; the underscore spellings are aliases. |
 | `--allowed-tools <ACTION,...>` | | Permission actions to allow; repeatable and comma-delimited. |
+| `--tool-group <SELECTOR=STATE>` | | A tool group's state in the session: `on`, `deferred`, or `off`, such as `mcp:exa=off` or `coding@labpc=deferred`; repeatable, exact (no patterns). |
+| `--skill-state <NAME=STATE>` | | Whether the agent sees a skill: `on` or `off`; repeatable, exact. |
 | `--skill <NAME>` | | Load a user-invocable skill before the prompt. |
 | `--skill-args <TEXT>` | | Arguments of `--skill`; requires it. |
 | `--max-turns <N>` | `100` | Most committed root model turns, at least 1. |
@@ -814,6 +817,24 @@ files directly, without a daemon. It prints a line per tree it converted or
 could not convert and a summary, and exits `1` when any session could not be
 converted. See [Sessions](../sessions/index.md).
 
+### `cookie sessions tools`
+
+```text
+cookie sessions tools [--url <URL>] [--token <TOKEN>] <SESSION_ID>
+```
+
+Asks a daemon (`session.tools.get`) for a session's tool groups and skills
+and prints them tab-separated: each group's selector, state (`on`,
+`deferred`, `off`, or `hidden by permissions`), who set it (`default`,
+`agent`, `project`, or `session`), tool count, and token estimate; then each
+skill's name, state, and who set it. See
+[Tool groups and skills](../sessions/index.md#tool-groups-and-skills).
+
+| Option | Default | Meaning |
+|---|---|---|
+| `--url <URL>` | `[server] url`, else the local daemon | The daemon's client URL. |
+| `--token <TOKEN>` | `[server] token` | The daemon's bearer token (`COOKIE_DAEMON_TOKEN`). |
+
 ### `cookie mcp`
 
 ```text
@@ -901,6 +922,14 @@ replaces only the agent's rule with the same pattern: `--allowed-tools bash`
 turns the agent's `bash: ask` into `allow`, but a narrower agent rule such as
 `delegate: {reviewer: ask}` still decides the calls it matches (see
 [How the levels combine](../concepts/permissions.md#how-the-levels-combine)).
+
+### Tool groups
+
+`--tool-group 'mcp:exa=off'` and `--skill-state 'deploy=off'` set the
+session's own choices before the prompt runs: a new session's, or with
+`--resume-session` the resumed one's, on top of what it chose before. Each
+names one group or skill exactly. See
+[Tool groups and skills](../sessions/index.md#tool-groups-and-skills).
 
 ### Skills
 
