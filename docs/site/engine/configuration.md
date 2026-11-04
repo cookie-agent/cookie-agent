@@ -120,8 +120,8 @@ The [official agents](../extend/agents.md#official-agents) use them in tiers:
 
 | Field | Official agents on it |
 |---|---|
-| `default_model` | the root agents, `primary` and `coder` |
-| `small_model` | the subagents that carry out work, `worker` and `explore`, then `default_model` |
+| `default_model` | the root agent, `primary` |
+| `small_model` | the subagents `worker` and `explore`; to fall back to `default_model`, list `"${default_model}"` after its model |
 | `utility_model` | the internal `approval` and `title` agents, then the session's own model; an ACP session's approval reviewer |
 
 The variant chosen for `utility_model` is the approval reviewer's effort.

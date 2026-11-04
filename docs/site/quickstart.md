@@ -60,7 +60,7 @@ reviews pass to you: those internal agents need a model provider.
 
 There is no starter kit to install. The daemon keeps cookie's
 [official agents](extend/agents.md#official-agents) (`primary`, the assistant
-new sessions start with, `coder`, `explore`, `worker`, and the internal ones)
+new sessions start with, `explore`, `worker`, and the internal ones)
 and [official skills](extend/skills.md#official-skills) up to date by itself,
 and **Finish** fetches the agents first when it has none yet. A document of
 your own in `~/.cookie-agent/agents/` replaces the official one of its name.

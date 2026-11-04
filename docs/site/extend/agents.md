@@ -441,10 +441,9 @@ once; a run in progress keeps the agent it started with.
 
 | Agent | Mode | `models` | What it does |
 |---|---|---|---|
-| `primary` | `primary` | `${default_model}` | The user's assistant across their devices, and the default agent: answers, works on machines through subagents, and delegates to `explore`, `worker`, and `coder` |
-| `coder` | `all` | `${default_model}` | The coding agent: reads, writes, runs commands, and delegates to `explore` and `worker`; name it in a repository project's defaults |
-| `explore` | `subagent` | `${small_model}`, then `${default_model}` | Reads and searches, never writes, and reports what it found |
-| `worker` | `subagent` | `${small_model}`, then `${default_model}` | Carries out one delegated task, implementation included |
+| `primary` | `primary` | `${default_model}` | The user's assistant across their devices, and the default agent: answers and does the work, attaches machines as it needs, and delegates to `explore` and `worker` |
+| `explore` | `subagent` | `${small_model}` | Reads and searches, never writes, and reports what it found |
+| `worker` | `subagent` | `${small_model}` | Carries out one delegated task, implementation included |
 | `approval` | `internal` | `${utility_model}`, then `${parent_model}` | The [approval reviewer](#the-approval-reviewer) |
 | `title` | `internal` | `${utility_model}`, then `${parent_model}` | Session titles |
 | `compaction` | `internal` | `${parent_model}` | Checkpoint summaries |
@@ -457,7 +456,9 @@ line with a comment saying whether it is a default and what it does, so a
 document shows its whole policy. `bash` asks, except a list of read-only
 commands (`ls *`, `cat *`, `rg *`, `git status*`, `git diff*`, …); such a
 pattern also matches a longer command that starts the same way, so narrow it
-if that matters to you.
+if that matters to you. `explore` also calls the tools of the read-only MCP
+servers onboarding offers (`exa_*`, `context7_*`, `deepwiki_*`) without
+asking; other MCP tools ask.
 
 - **Your own document wins.** A document in `agents/` with an official
   agent's ID replaces it whole, frontmatter and body; no refresh touches
