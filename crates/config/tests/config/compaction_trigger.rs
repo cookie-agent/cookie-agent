@@ -409,6 +409,25 @@ fn server_session_idle_eviction_is_a_duration() {
 }
 
 #[test]
+fn mcp_idle_stop_after_is_a_duration_and_zero_or_less_keeps_servers() {
+    let temp = TempDir::new().unwrap();
+    let authored = temp.path().join("mcp-idle-authored");
+    for (value, expected) in [
+        ("\"30m\"", Some(std::time::Duration::from_secs(30 * 60))),
+        ("90", Some(std::time::Duration::from_secs(90))),
+        ("\"0s\"", None),
+        ("0", None),
+        ("-1", None),
+    ] {
+        write_config(&authored, &format!("[mcp]\nidle_stop_after = {value}\n"));
+        let loaded = load_from_user_root(Some(&authored)).unwrap();
+        assert_eq!(loaded.runtime.mcp_idle_stop_after.0, expected, "{value}");
+    }
+    write_config(&authored, "[mcp]\nidle_stop_after = \"soon\"\n");
+    assert!(load_from_user_root(Some(&authored)).is_err());
+}
+
+#[test]
 fn pricing_rejects_invalid_rates() {
     let temp = TempDir::new().unwrap();
     let authored = temp.path().join("pricing-authored");

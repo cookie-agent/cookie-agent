@@ -257,6 +257,9 @@ impl Engine {
         self.inner.mcp.await_eager_ready().await;
         self.inner.plugins.await_eager_ready().await;
         self.ensure_session_runtimes_logged(params.session_id).await;
+        // The servers the session wants connect now, if they have not.
+        self.refresh_mcp_wanted();
+        self.inner.mcp.await_eager_ready().await;
         self.await_session_mcp(params.session_id).await;
         if let Some((invocation_id, generation)) = admission
             && !self.admission_generation_live(invocation_id, generation)

@@ -5,6 +5,13 @@ The client protocol's version is `MAJOR.MINOR.PATCH`
 adds and a major breaks; before it, every minor could break the wire (see the
 [compatibility spec](../specs/compatibility-v1.md) section 3).
 
+## 1.85.0
+
+- MCP servers connect on demand
+  ([Session tool groups](../specs/session-tool-groups.md) section 10):
+  `McpServerState` gains `stopped`, a server no session wants, listed with
+  the tools of its last connection.
+
 ## 1.84.0
 
 - `runtimes.groups` (`RuntimeGroupsParams`, `RuntimeGroupsResult`,

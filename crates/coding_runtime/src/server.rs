@@ -364,6 +364,9 @@ struct Initialized {
     /// The runtime-scoped MCP servers, hosted once for the runtime, once it
     /// has any.
     runtime_mcp: Mutex<Option<Arc<RuntimeMcp>>>,
+    /// The daemon offered MCP servers on demand (runtime protocol 1.17.0):
+    /// none starts until `mcp/wanted` names it.
+    mcp_on_demand: bool,
 }
 
 /// The MCP servers and ACP agents a runtime hosts, as configured.
@@ -716,6 +719,10 @@ impl Server {
                 let result = self.reconnect_runtime_mcp(&state, &request).await;
                 reply(request, result).await;
             }
+            method::MCP_WANTED => {
+                let result = self.want_mcp(&state, &request).await;
+                reply(request, result).await;
+            }
             other if other.starts_with("fs/") => self.handle_files(request).await,
             other if other.starts_with("agent/") => match self.acp.handle_request(&request).await {
                 Some(result) => reply(request, result).await,
@@ -846,6 +853,7 @@ impl Server {
                     &state.runtime_id,
                     hosted.runtime_servers.clone(),
                     Vec::new(),
+                    state.mcp_on_demand,
                 )?);
                 *lock(&state.runtime_mcp) = Some(Arc::clone(&mcp));
                 tokio::spawn(Arc::clone(&self).report_runtime_mcp(Arc::clone(&mcp)));
@@ -1031,6 +1039,10 @@ impl Server {
         // A daemon older than runtime protocol 1.5.0 knows no tools outside
         // an instance: every server is hosted per workspace for it.
         let shared_mcp = params.protocol_version >= RUNTIME_SCOPED_MCP;
+        let mcp_on_demand = params
+            .features
+            .iter()
+            .any(|feature| feature == cookie_agent_protocol::runtime_protocol::MCP_ON_DEMAND);
         // Before any process starts: they wait for the capture.
         cookie_agent_runtime_api::shell_environment::configure(
             params.settings.shell_environment.as_ref(),
@@ -1045,6 +1057,7 @@ impl Server {
                 &params.runtime_id,
                 hosted.runtime_servers.clone(),
                 configured.clone(),
+                mcp_on_demand,
             )?))
         };
         let mcp_reports = match &runtime_mcp {
@@ -1065,6 +1078,7 @@ impl Server {
             settings: Mutex::new(params.settings),
             hosted: Mutex::new(hosted),
             runtime_mcp: Mutex::new(runtime_mcp),
+            mcp_on_demand,
         });
         if let Err(initialized) = self.state.set(initialized) {
             if let Some(mcp) = initialized.runtime_mcp() {
@@ -1074,7 +1088,11 @@ impl Server {
         }
         Ok(InitializeResult {
             protocol_version: RUNTIME_PROTOCOL_VERSION,
-            features: Vec::new(),
+            features: if mcp_on_demand {
+                vec![cookie_agent_protocol::runtime_protocol::MCP_ON_DEMAND.to_owned()]
+            } else {
+                Vec::new()
+            },
             platform: Some(std::env::consts::OS.to_owned()),
             machine: cookie_agent_protocol::runtime_protocol::RuntimeMachine::this_machine(),
             home: crate::runtime_home()
@@ -1130,6 +1148,7 @@ impl Server {
         runtime_id: &str,
         servers: BTreeMap<String, LoadedMcpServer>,
         configured: Vec<McpServerReport>,
+        on_demand: bool,
     ) -> Result<RuntimeMcp, String> {
         let registry = McpRegistry::new(
             servers,
@@ -1143,7 +1162,9 @@ impl Server {
             registry.set_reconnect_policy(policy.clone());
         }
         let watch = (registry.subscribe_changes(), registry.subscribe_failures());
-        registry.start_eager(&tokio::runtime::Handle::current());
+        if !on_demand {
+            registry.start_eager(&tokio::runtime::Handle::current());
+        }
         let info = RuntimeInfo::new(
             runtime_id,
             cookie_agent_protocol::CapabilityName::coding(),
@@ -1349,7 +1370,10 @@ impl Server {
         if let Some(policy) = &self.options.mcp_reconnect {
             mcp.set_reconnect_policy(policy.clone());
         }
-        mcp.start_eager(&tokio::runtime::Handle::current());
+        // On demand, the daemon's `mcp/wanted` starts them.
+        if !state.mcp_on_demand {
+            mcp.start_eager(&tokio::runtime::Handle::current());
+        }
         tokio::select! {
             () = mcp.await_eager_ready() => {}
             () = self.stop.cancelled() => {
@@ -1818,6 +1842,7 @@ fn mcp_report(status: McpServerStatus) -> McpServerReport {
             State::Connecting => Wire::Connecting,
             State::Connected => Wire::Connected,
             State::Reconnecting => Wire::Reconnecting,
+            State::Stopped => Wire::Stopped,
             // A runtime's servers never use OAuth.
             State::NeedsAuth | State::Failed => Wire::Failed,
         },
@@ -1846,6 +1871,31 @@ impl Server {
                 Ok(())
             }
         }))
+    }
+}
+
+impl Server {
+    /// `mcp/wanted`: connects the servers some session wants, of an
+    /// instance or of the runtime, stops the others, and answers once the
+    /// attempts have finished.
+    async fn want_mcp(
+        &self,
+        state: &Initialized,
+        request: &IncomingRequest,
+    ) -> Result<Outcome, RpcError> {
+        let params: cookie_agent_protocol::runtime_protocol::McpWantedParams = request.params()?;
+        let wanted = params.servers.into_iter().collect();
+        let registry = match &params.instance {
+            Some(instance) => self.instance(Some(instance))?.mcp.clone(),
+            None => match state.runtime_mcp() {
+                Some(mcp) => mcp.registry.clone(),
+                None => return Ok(Outcome::of(Ok(()))),
+            },
+        };
+        let handle = tokio::runtime::Handle::current();
+        registry.set_wanted(&wanted, &handle);
+        registry.await_eager_ready().await;
+        Ok(Outcome::of(Ok(())))
     }
 }
 

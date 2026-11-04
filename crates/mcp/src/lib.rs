@@ -89,6 +89,10 @@ pub enum McpServerState {
     Reconnecting,
     NeedsAuth,
     Failed,
+    /// No session wants the server (`docs/site/specs/session-tool-groups.md`
+    /// section 10): disconnected on purpose, its last listing kept for the
+    /// panels, its tools not published.
+    Stopped,
 }
 
 /// An MCP server that failed to connect, or dropped and did not reconnect.
@@ -698,6 +702,41 @@ impl McpRegistry {
         }
     }
 
+    /// Connects the enabled servers of `wanted` that are not connected (not
+    /// started, or stopped), as startup connections that the next run waits
+    /// for, and stops the connected ones `wanted` leaves out, on `runtime`
+    /// (`docs/site/specs/session-tool-groups.md` section 10). A server that
+    /// failed is stopped when unwanted and otherwise left to
+    /// [`Self::retry_failed`]; one waiting for OAuth is left as it is.
+    pub fn set_wanted(
+        &self,
+        wanted: &std::collections::BTreeSet<String>,
+        runtime: &tokio::runtime::Handle,
+    ) {
+        for server in self.servers() {
+            if !server.loaded.config.enabled {
+                continue;
+            }
+            let state = server.current_state();
+            if wanted.contains(&server.name) {
+                if matches!(
+                    state,
+                    McpServerState::Disconnected | McpServerState::Stopped
+                ) {
+                    server.set_status(McpServerState::Connecting, None);
+                    self.inner.eager_pending.fetch_add(1, Ordering::AcqRel);
+                    let readiness = EagerConnect(Arc::clone(&self.inner));
+                    let _ = self.spawn_connection(server, runtime, Some(readiness));
+                }
+            } else if matches!(
+                state,
+                McpServerState::Connected | McpServerState::Reconnecting | McpServerState::Failed
+            ) {
+                runtime.spawn(async move { server.stop().await });
+            }
+        }
+    }
+
     /// Retries every enabled server whose last connection attempt failed, as
     /// when a session that uses them is created or opened. The retries count
     /// as startup connections: the next run waits for them to finish.
@@ -1289,6 +1328,33 @@ impl ServerRuntime {
         }
     }
 
+    /// Disconnects the server because no session wants it: its tools leave,
+    /// its last listing stays in its status for the panels.
+    async fn stop(&self) {
+        self.cancel_tool_refresh();
+        self.retire_connection();
+        self.clear_claims();
+        let listed = {
+            let status = self.status.lock().unwrap_or_else(|p| p.into_inner());
+            (
+                status.tools.clone(),
+                status.server_tools.clone(),
+                status.filtered_tools,
+            )
+        };
+        self.tools.lock().unwrap_or_else(|p| p.into_inner()).clear();
+        if let Some(mut service) = self.service.lock().await.take() {
+            let _ = service.close_with_timeout(Duration::from_secs(4)).await;
+        }
+        {
+            let mut status = self.status.lock().unwrap_or_else(|p| p.into_inner());
+            status.state = McpServerState::Stopped;
+            status.message = Some("no session uses it".to_owned());
+            (status.tools, status.server_tools, status.filtered_tools) = listed;
+        }
+        self.notify_changed();
+    }
+
     fn supersede(&self) {
         self.superseded.cancel();
         self.cancel_tool_refresh_task();
@@ -1368,6 +1434,7 @@ impl ServerRuntime {
                 )));
             }
             McpServerState::Disconnected
+            | McpServerState::Stopped
             | McpServerState::Connecting
             | McpServerState::Reconnecting
             | McpServerState::Failed => {}

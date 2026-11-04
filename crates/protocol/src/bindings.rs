@@ -15,9 +15,9 @@ use crate::runtime_protocol::{
     ExecuteParams, ExecuteResult, FsCopyParams, FsHandle, FsPrepareParams, FsPrepareResult,
     FsReadChunkParams, FsReadChunkResult, FsReadOpenParams, FsReadOpenResult, FsWriteChunkParams,
     FsWriteCommitParams, FsWriteOpenParams, FsWritten, InitializeParams, InitializeResult,
-    McpChangedParams, McpReconnectParams, Outcome, PrepareParams, PrepareResult, PreparedRef,
-    RuntimeMcpChangedParams, RuntimeMcpReconnectParams, RuntimeSettingsChangedParams, RuntimeTools,
-    ShellEnvironmentReport, ToolProgressParams, method as runtime_method,
+    McpChangedParams, McpReconnectParams, McpWantedParams, Outcome, PrepareParams, PrepareResult,
+    PreparedRef, RuntimeMcpChangedParams, RuntimeMcpReconnectParams, RuntimeSettingsChangedParams,
+    RuntimeTools, ShellEnvironmentReport, ToolProgressParams, method as runtime_method,
 };
 use crate::*;
 
@@ -533,6 +533,7 @@ fn runtime_methods() -> Vec<MethodSpec> {
         declaration!(runtime_method::TOOLS_CHANGED, RuntimeTools),
         declaration!(runtime_method::RUNTIME_MCP_CHANGED, RuntimeMcpChangedParams),
         request!(runtime_method::RUNTIME_MCP_RECONNECT, FromDaemon, RuntimeMcpReconnectParams => Outcome),
+        request!(runtime_method::MCP_WANTED, FromDaemon, McpWantedParams => Outcome),
         declaration!(runtime_method::AGENTS_CHANGED, AgentsChangedParams),
         request!(runtime_method::AGENT_START, FromDaemon, AgentRef => Empty),
         request!(runtime_method::AGENT_STOP, FromDaemon, AgentRef => Empty),

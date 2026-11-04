@@ -70,6 +70,7 @@ mod frozen_context;
 mod helpers;
 mod internal_agents;
 mod loop_guard;
+mod mcp_wanted;
 mod model_loop;
 mod output_capture;
 mod permission_api;
@@ -1059,6 +1060,9 @@ pub(crate) struct Inner {
     /// What each runtime capability offered the last time it ran
     /// (`docs/site/specs/session-tool-groups.md` section 4.4).
     pub(crate) runtime_groups: Arc<crate::runtime_groups::RuntimeGroupsCache>,
+    /// When each MCP server was last wanted, and what each host was told
+    /// (`docs/site/specs/session-tool-groups.md` section 10).
+    pub(crate) mcp_wanted: mcp_wanted::McpWanted,
     /// The projects sessions belong to.
     pub(crate) projects: Arc<crate::projects::ProjectStore>,
     /// The asset stores of session trees, projects, and sessions in no
@@ -1417,6 +1421,7 @@ impl Engine {
                 runtimes,
                 machines,
                 runtime_groups,
+                mcp_wanted: mcp_wanted::McpWanted::default(),
                 projects,
                 assets,
                 message_attachments: Default::default(),
@@ -1509,11 +1514,13 @@ impl Engine {
         // After the first start above and before any run: every agent's
         // memory file exists when the first snapshot is taken.
         engine.install_agent_memory_sync();
+        // MCP servers connect when a session wants them
+        // (`docs/site/specs/session-tool-groups.md` section 10).
         if let Some(runtime) = &engine.inner.runtime {
-            engine.inner.mcp.start_eager(runtime);
             engine.inner.plugins.start_eager(runtime);
         }
         engine.start_subagent_janitor();
+        engine.start_mcp_wanted_watch();
         engine.start_cron_scheduler();
         engine.start_cache_expiry_scheduler();
         engine.install_acp();

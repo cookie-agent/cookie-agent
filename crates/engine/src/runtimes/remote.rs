@@ -695,6 +695,32 @@ impl InstanceConnection {
         }
     }
 
+    /// The MCP servers some session may want of this instance: its own
+    /// (workspace-scoped) ones and its runtime's runtime-scoped ones, by
+    /// name; `None` unless the runtime takes servers on demand.
+    pub(crate) fn mcp_candidates(&self) -> Option<(Vec<String>, Vec<String>)> {
+        let instance = self.instance.as_deref()?;
+        if !self.client.mcp_on_demand() {
+            return None;
+        }
+        Some(self.client.mcp_candidates(instance))
+    }
+
+    /// Tells the runtime which servers some session wants: the instance's
+    /// own, or with `runtime_scope` its runtime's; [`Self::mcp_settled`]
+    /// waits for the attempts.
+    pub(crate) fn want_mcp(&self, runtime_scope: bool, servers: Vec<String>) {
+        let instance = if runtime_scope {
+            None
+        } else {
+            let Some(instance) = self.instance.clone() else {
+                return;
+            };
+            Some(instance)
+        };
+        self.client.want_mcp(instance, servers);
+    }
+
     /// Waits for the MCP retries of the connection.
     pub(crate) async fn mcp_settled(&self) {
         self.client.mcp_settled().await;
@@ -771,6 +797,9 @@ struct ClientInner {
     /// The runtime answers transfers' `fs/*` requests, from its initialize
     /// reply.
     files: std::sync::atomic::AtomicBool,
+    /// The runtime takes MCP servers on demand (runtime protocol 1.17.0):
+    /// it starts none until `mcp/wanted` names it.
+    mcp_on_demand: std::sync::atomic::AtomicBool,
     /// How the runtime's latest capture of the user's shell environment
     /// went, from its latest `runtime/shell_environment`.
     shell_environment: Mutex<Option<protocol::ShellEnvironmentReport>>,
@@ -963,6 +992,7 @@ impl RuntimeClient {
             acp_agents: Mutex::default(),
             protocol_version: OnceLock::new(),
             files: std::sync::atomic::AtomicBool::new(false),
+            mcp_on_demand: std::sync::atomic::AtomicBool::new(false),
             shell_environment: Mutex::default(),
         });
         tokio::spawn(handle_incoming(Arc::downgrade(&inner), incoming));
@@ -973,7 +1003,7 @@ impl RuntimeClient {
                 &InitializeParams {
                     protocol_version: cookie_agent_protocol::RUNTIME_PROTOCOL_VERSION,
                     engine_version: env!("CARGO_PKG_VERSION").to_owned(),
-                    features: Vec::new(),
+                    features: vec![protocol::MCP_ON_DEMAND.to_owned()],
                     runtime_id: runtime_id.to_owned(),
                     settings: settings.clone(),
                 },
@@ -987,8 +1017,13 @@ impl RuntimeClient {
         inner
             .files
             .store(result.files, std::sync::atomic::Ordering::Release);
-        // No runtime feature is defined yet.
         for feature in &result.features {
+            if feature == protocol::MCP_ON_DEMAND {
+                inner
+                    .mcp_on_demand
+                    .store(true, std::sync::atomic::Ordering::Release);
+                continue;
+            }
             eprintln!(
                 "cookie-agent: runtime `{runtime_id}` declares feature `{feature}`, which this \
                  daemon does not know; ignoring it"
@@ -1183,6 +1218,7 @@ impl RuntimeClient {
             acp_agents: Mutex::default(),
             protocol_version: OnceLock::new(),
             files: std::sync::atomic::AtomicBool::new(false),
+            mcp_on_demand: std::sync::atomic::AtomicBool::new(false),
             shell_environment: Mutex::default(),
         });
         tokio::spawn(handle_incoming(Arc::downgrade(&inner), incoming));
@@ -1652,6 +1688,51 @@ impl RuntimeClient {
                     &params,
                     MCP_RECONNECT_DEADLINE,
                 )
+                .await;
+            drop(retry);
+        });
+    }
+
+    fn mcp_on_demand(&self) -> bool {
+        self.inner
+            .mcp_on_demand
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// The servers of `instance` and of its runtime, by name.
+    fn mcp_candidates(&self, instance: &str) -> (Vec<String>, Vec<String>) {
+        let mcp = lock(&self.inner.mcp);
+        let own = mcp
+            .instances
+            .get(instance)
+            .and_then(|hosted| hosted.servers.as_ref())
+            .into_iter()
+            .flatten()
+            .filter(|server| server.scope != Some(McpServerScope::Runtime))
+            .map(|server| server.name.clone())
+            .collect();
+        let shared = mcp
+            .runtime
+            .iter()
+            .filter(|server| server.scope == Some(McpServerScope::Runtime))
+            .map(|server| server.name.clone())
+            .collect();
+        (own, shared)
+    }
+
+    /// `mcp/wanted` for `instance` (`None`: the runtime-scoped servers),
+    /// counted as a retry that runs wait for.
+    fn want_mcp(&self, instance: Option<String>, servers: Vec<String>) {
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        self.inner.mcp_retries.fetch_add(1, Ordering::AcqRel);
+        let retry = McpRetry(Arc::clone(&self.inner));
+        let params = protocol::McpWantedParams { instance, servers };
+        handle.spawn(async move {
+            let _ = retry
+                .0
+                .request_within::<_, Outcome>(method::MCP_WANTED, &params, MCP_RECONNECT_DEADLINE)
                 .await;
             drop(retry);
         });

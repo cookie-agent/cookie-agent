@@ -991,24 +991,6 @@ async fn a_configured_runtime_hosts_its_template_mcp_servers() {
     .await;
     let session = fixture.session().await;
 
-    // The runtime connected its server before the session was created.
-    let canonical = fixture.repo.canonicalize().unwrap();
-    let servers = fixture.engine.list_mcp_servers();
-    let hosted = servers
-        .iter()
-        .find(|server| server.runtime_id.as_str() == "remote")
-        .unwrap_or_else(|| panic!("the remote runtime's server is listed: {servers:?}"));
-    assert_eq!(hosted.name, "fixture");
-    assert_eq!(
-        hosted.workspace.as_deref(),
-        Some(canonical.to_string_lossy().as_ref())
-    );
-    assert_eq!(
-        hosted.state,
-        cookie_agent_protocol::McpServerState::Connected
-    );
-    assert_eq!(hosted.tool_count, 2);
-
     // Its tools reach the model under their `<server>_<tool>` names, and a
     // call runs on the runtime's machine.
     fixture.model.enqueue(tool_call(
@@ -1028,6 +1010,25 @@ async fn a_configured_runtime_hosts_its_template_mcp_servers() {
         ),
         "{ended:?}"
     );
+    // The run's session wanted the server, so the runtime connected it
+    // (servers connect on demand).
+    let canonical = fixture.repo.canonicalize().unwrap();
+    let servers = fixture.engine.list_mcp_servers();
+    let hosted = servers
+        .iter()
+        .find(|server| server.runtime_id.as_str() == "remote")
+        .unwrap_or_else(|| panic!("the remote runtime's server is listed: {servers:?}"));
+    assert_eq!(hosted.name, "fixture");
+    assert_eq!(
+        hosted.workspace.as_deref(),
+        Some(canonical.to_string_lossy().as_ref())
+    );
+    assert_eq!(
+        hosted.state,
+        cookie_agent_protocol::McpServerState::Connected
+    );
+    assert_eq!(hosted.tool_count, 2);
+
     let requests = fixture.model.requests();
     assert_eq!(requests.len(), 2, "{requests:#?}");
     let tools = offered_tools(&requests[0]);

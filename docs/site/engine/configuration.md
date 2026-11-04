@@ -64,7 +64,7 @@ Every key is optional. Unknown keys, including removed top-level `pricing`, fail
 | `agents` | [Official agents](../extend/agents.md#official-agents): `official`, whether the daemon keeps the official agents up to date and offers them, and `default`, the agent new sessions start with |
 | `headers` | [Request Header](headers.md) |
 | `providers` | [Providers](../extend/providers.md) |
-| `mcp` | [MCP](../extend/mcp.md) |
+| `mcp` | [MCP](../extend/mcp.md): `servers`, and `idle_stop_after` (how long a server no session wants stays connected) |
 | `plugins` | [Plugins](../extend/plugins.md) |
 | `runtimes` | [Runtimes](../runtimes/templates.md) |
 

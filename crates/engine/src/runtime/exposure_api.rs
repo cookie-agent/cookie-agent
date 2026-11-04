@@ -172,6 +172,9 @@ impl Engine {
                 EventPayload::SessionToolExposureSet { exposure },
             )
             .await?;
+            // A server turned back on connects; one turned off stops once
+            // no session wants it.
+            self.refresh_mcp_wanted();
         }
         self.get_session_tools(session_id)
     }

@@ -171,6 +171,7 @@ impl Engine {
                     McpServerState::Reconnecting => WireMcpServerState::Reconnecting,
                     McpServerState::NeedsAuth => WireMcpServerState::NeedsAuth,
                     McpServerState::Failed => WireMcpServerState::Failed,
+                    McpServerState::Stopped => WireMcpServerState::Stopped,
                 });
                 McpServerInfo {
                     runtime_id: cookie_agent_protocol::RuntimeId::new(
@@ -303,6 +304,9 @@ impl Engine {
         name: String,
     ) -> Result<Option<McpServerInfo>, EngineError> {
         let _mutation = self.inner.mcp_mutation.lock().await;
+        // Started by hand, it stops again once nobody wanted it for
+        // `[mcp] idle_stop_after`.
+        self.inner.mcp_wanted.touch_global(&name);
         self.inner
             .mcp
             .reconnect_server(&name)
@@ -487,6 +491,7 @@ pub(crate) fn hosted_to_wire(server: crate::runtimes::HostedMcpServer) -> Option
             Hosted::Connected => WireMcpServerState::Connected,
             Hosted::Reconnecting => WireMcpServerState::Reconnecting,
             Hosted::Failed => WireMcpServerState::Failed,
+            Hosted::Stopped => WireMcpServerState::Stopped,
         },
         tool_count: u32::try_from(server.report.tools.len()).unwrap_or(u32::MAX),
         filtered_tools: server

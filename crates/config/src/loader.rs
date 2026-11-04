@@ -202,6 +202,7 @@ pub fn load_from_tree(tree: &ConfigTree) -> Result<LoadedConfiguration, ConfigEr
         skills: crate::SkillsConfig::default(),
         agents: crate::AgentsConfig::default(),
         transfer: crate::TransferConfig::default(),
+        mcp_idle_stop_after: crate::runtime::McpIdleStop::default(),
         pricing: Default::default(),
         model_cache_ttls: BTreeMap::new(),
         headers: BTreeMap::new(),

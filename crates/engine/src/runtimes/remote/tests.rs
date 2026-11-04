@@ -1243,6 +1243,23 @@ async fn open_with_local_mcp(
     .expect("engine with [runtimes.local.mcp]")
 }
 
+/// Opens a new session as a client does, so that the MCP servers it reaches
+/// are wanted and connect (session tool groups spec, section 10), and
+/// waits for the attempts.
+async fn open_wanting_session(
+    engine: &crate::Engine,
+    selection: &cookie_agent_protocol::RunSelection,
+) -> cookie_agent_protocol::SessionId {
+    let session = engine
+        .create_session(selection.clone())
+        .expect("a session that wants the servers")
+        .session_id;
+    engine.connect_session(session).await;
+    engine.inner.mcp.await_eager_ready().await;
+    engine.await_session_mcp(session).await;
+    session
+}
+
 fn hosted_fixture(engine: &crate::Engine) -> cookie_agent_protocol::McpServerInfo {
     engine
         .list_mcp_servers()
@@ -1264,8 +1281,9 @@ async fn the_local_runtime_hosts_its_template_mcp_servers() {
         .to_string_lossy()
         .into_owned();
 
-    // The server connected before the engine opened, and its tools are the
+    // A session that wants the server connects it, and its tools are the
     // local runtime's.
+    open_wanting_session(&engine, &selection).await;
     let listed = hosted_fixture(&engine);
     assert_eq!(listed.workspace.as_deref(), Some(workspace.as_str()));
     assert_eq!(
@@ -1379,7 +1397,7 @@ async fn the_local_runtime_hosts_its_template_mcp_servers() {
 /// runtime applies their tool filters itself and reports what they left out.
 #[tokio::test]
 async fn servers_the_runtimes_machine_defines_are_listed_as_machine_servers() {
-    let (fixture, _) = custom_fixture();
+    let (fixture, selection) = custom_fixture();
     fixture.engine.shutdown().await;
     let directory = fixture._directory.path();
     let mut machine_config = local_mcp_config(&fixture.config, &directory.join("refuse"));
@@ -1422,6 +1440,7 @@ async fn servers_the_runtimes_machine_defines_are_listed_as_machine_servers() {
     })
     .await
     .expect("engine whose local runtime hosts its machine's servers");
+    open_wanting_session(&engine, &selection).await;
     let listed = hosted_fixture(&engine);
     assert_eq!(
         listed.source,
@@ -3022,6 +3041,7 @@ async fn a_runtime_scoped_server_is_listed_and_composed_once_per_runtime() {
         Vec::new(),
     )
     .await;
+    open_wanting_session(&engine, &selection).await;
     let local = engine
         .inner
         .runtimes
@@ -3201,7 +3221,9 @@ async fn a_connected_runtime_lists_its_servers_before_any_workspace_opens() {
         )
         .await
         .expect("dialed in");
-    let servers = eventually_some(WAIT, "labpc's browser server connected", || {
+    // Listed before any session wants them, so not started yet: servers
+    // connect on demand (session tool groups spec, section 10).
+    let servers = eventually_some(WAIT, "labpc's browser server listed", || {
         let servers = fixture
             .engine
             .list_mcp_servers()
@@ -3210,10 +3232,7 @@ async fn a_connected_runtime_lists_its_servers_before_any_workspace_opens() {
             .collect::<Vec<_>>();
         servers
             .iter()
-            .any(|server| {
-                server.name == "browser"
-                    && server.state == cookie_agent_protocol::McpServerState::Connected
-            })
+            .any(|server| server.name == "browser")
             .then_some(servers)
     })
     .await;
@@ -3239,8 +3258,8 @@ async fn a_connected_runtime_lists_its_servers_before_any_workspace_opens() {
                 None,
                 Some(Scope::Runtime),
                 cookie_agent_protocol::McpConfigSource::Machine,
-                cookie_agent_protocol::McpServerState::Connected,
-                2,
+                cookie_agent_protocol::McpServerState::Disconnected,
+                0,
                 None
             ),
             (
@@ -3261,7 +3280,7 @@ async fn a_connected_runtime_lists_its_servers_before_any_workspace_opens() {
 /// wherever the daemon started.
 #[tokio::test]
 async fn a_global_server_runs_in_the_daemon_users_home() {
-    let (fixture, _) = custom_fixture();
+    let (fixture, selection) = custom_fixture();
     fixture.engine.shutdown().await;
     let cwd_file = fixture._directory.path().join("global.cwd");
     let engine = open_with_servers(
@@ -3273,6 +3292,7 @@ async fn a_global_server_runs_in_the_daemon_users_home() {
         )],
     )
     .await;
+    open_wanting_session(&engine, &selection).await;
     eventually(WAIT, "the server to start", || cwd_file.exists()).await;
     let started = std::path::PathBuf::from(std::fs::read_to_string(&cwd_file).unwrap())
         .canonicalize()
@@ -3315,7 +3335,7 @@ async fn template_and_global_servers_publish_only_the_tools_their_filters_keep()
         vec![("fixture", filtered(None, None, &["echo/?ext"]))],
     )
     .await;
-    engine.inner.mcp.await_eager_ready().await;
+    open_wanting_session(&engine, &selection).await;
     let mut counts = engine
         .list_mcp_servers()
         .into_iter()
@@ -3374,7 +3394,7 @@ async fn template_and_global_servers_publish_only_the_tools_their_filters_keep()
 /// (`docs/site/specs/runtime-management.md` section 3.1).
 #[tokio::test(flavor = "multi_thread")]
 async fn a_dial_in_runtime_hosts_its_daemon_table_and_follows_changes() {
-    let (fixture, _) = custom_fixture();
+    let (fixture, selection) = custom_fixture();
     fixture.engine.shutdown().await;
     let directory = fixture._directory.path();
     let local = local_mcp_config(&fixture.config, &directory.join("refuse"));
@@ -3436,6 +3456,20 @@ async fn a_dial_in_runtime_hosts_its_daemon_table_and_follows_changes() {
         .accept_dial_in_runtime("labpc", Box::new(daemon))
         .await
         .expect("labpc dials in");
+    // A session attached to it wants its servers: they connect on demand.
+    let workspace = private_tempdir();
+    let session = engine.create_session(selection).unwrap().session_id;
+    engine
+        .attach_runtime(
+            session,
+            "labpc",
+            None,
+            Some(workspace.path().to_owned()),
+            cookie_agent_protocol::EventOrigin::new("user").unwrap(),
+        )
+        .await
+        .expect("attach labpc");
+    engine.connect_session(session).await;
     let connected = |engine: &crate::Engine| {
         let mut names = engine
             .list_mcp_servers()
@@ -3564,4 +3598,54 @@ async fn shell_environment_reports_are_kept_and_refreshes_reach_capturing_runtim
             assert!(sent.is_err(), "{version} is not asked to capture");
         }
     }
+}
+
+/// A top-level server connects when a session that wants it opens, stays
+/// connected for `[mcp] idle_stop_after` once no session wants it, then
+/// stops, and connects again when wanted (session tool groups spec,
+/// section 10).
+#[tokio::test]
+async fn a_global_server_connects_on_demand_and_stops_after_the_idle_delay() {
+    let (fixture, selection) = custom_fixture();
+    fixture.engine.shutdown().await;
+    let engine = open_with_servers(
+        &fixture,
+        Vec::new(),
+        vec![("docs", fixture_server(&[], None))],
+    )
+    .await;
+    let state = |engine: &crate::Engine| {
+        engine
+            .list_mcp_servers()
+            .into_iter()
+            .find(|server| server.name == "docs")
+            .expect("docs is listed")
+            .state
+    };
+    use cookie_agent_protocol::McpServerState as State;
+    assert_eq!(state(&engine), State::Disconnected);
+    let session = open_wanting_session(&engine, &selection).await;
+    assert_eq!(state(&engine), State::Connected);
+
+    let origin = cookie_agent_protocol::EventOrigin::new("user").unwrap();
+    let off: cookie_agent_protocol::ToolExposure = serde_json::from_value(serde_json::json!({
+        "tool_groups": [{"selector": "mcp:docs", "state": "off"}]
+    }))
+    .unwrap();
+    engine
+        .set_session_tools(session, off, origin.clone())
+        .await
+        .expect("docs off");
+    // Kept for the idle delay.
+    assert_eq!(state(&engine), State::Connected);
+    engine.refresh_mcp_wanted_at(std::time::Instant::now() + Duration::from_secs(601));
+    eventually(WAIT, "docs stops", || state(&engine) == State::Stopped).await;
+
+    engine
+        .set_session_tools(session, Default::default(), origin)
+        .await
+        .expect("docs on again");
+    engine.inner.mcp.await_eager_ready().await;
+    assert_eq!(state(&engine), State::Connected);
+    engine.shutdown().await;
 }

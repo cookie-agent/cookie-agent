@@ -115,6 +115,11 @@
           "const": "reconnecting",
           "description": "The connection dropped and is being re-established: its tools stay\ndeclared and calls fail with `runtime_unavailable`.",
           "type": "string"
+        },
+        {
+          "const": "stopped",
+          "description": "No session wants it (runtime protocol 1.17.0): disconnected on the\ndaemon's `mcp/wanted`, its tools those of its last connection.",
+          "type": "string"
         }
       ],
       "x-open": true

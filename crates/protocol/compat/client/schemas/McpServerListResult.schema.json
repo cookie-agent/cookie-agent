@@ -284,6 +284,11 @@
           "const": "reconnecting",
           "description": "The connection dropped and is being re-established. The server's\ntools stay published; calls fail with `runtime_unavailable`.",
           "type": "string"
+        },
+        {
+          "const": "stopped",
+          "description": "No session wants it: disconnected until one does (client\nprotocol 1.85.0). Its tools are those of its last connection.",
+          "type": "string"
         }
       ],
       "x-open": true

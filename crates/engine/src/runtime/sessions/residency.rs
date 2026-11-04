@@ -56,6 +56,9 @@ impl Engine {
                 if let Err(error) = engine.evict_idle_roots_with(idle_after).await {
                     eprintln!("root session janitor failed: {error}");
                 }
+                // Servers of sessions paged out, or nobody wants any more,
+                // stop after `[mcp] idle_stop_after`.
+                engine.refresh_mcp_wanted();
                 let sweeper = engine.clone();
                 if let Err(error) = crate::runtime::blocking_io::run(move || {
                     sweeper.sweep_upload_leases(std::time::Instant::now());

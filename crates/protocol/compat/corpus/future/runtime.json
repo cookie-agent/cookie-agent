@@ -11,7 +11,7 @@
      "agent_md": {"max_bytes": 4096, "follow_links": true},
      "mcp_servers": [], "plugins": [], "sandbox": {"profile": "strict"},
      "shell_environment": {"capture": "on_demand", "timeout_ms": 0}}}},
-   "answer": {"result": {"protocol_version": "1.16.0"}}
+   "answer": {"result": {"protocol_version": "1.17.0"}}
   },
   {
    "about": "a capability opened with members this build does not know",

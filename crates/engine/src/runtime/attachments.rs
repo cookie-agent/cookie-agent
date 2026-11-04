@@ -476,6 +476,7 @@ impl Engine {
                 connection.retry_failed_mcp();
             }
         }
+        self.refresh_mcp_wanted();
     }
 
     /// Waits until the MCP servers of `session`'s attached runtime instances

@@ -781,3 +781,24 @@ lifecycle, `[mcp] idle_stop_after`), `concepts/permissions.md`, `concepts/machin
   client:web: mcp:exa off").
 - **`cookie sessions tools <id>`** asks a daemon (`--url`, `--token`), unlike
   `cookie sessions upgrade`.
+
+### 17.5 MCP servers on demand (phase 4, 2026-11-03)
+
+- **`mcp/wanted` is a request,** answered once the runtime's connection
+  attempts have finished, not a notification: a run then waits for the
+  servers its session wants the way it waits for `mcp/reconnect`. The
+  daemon sends it when an instance's or a runtime's wanted set changes.
+- **The handshake uses `features`** (`mcp_on_demand`, both ways) rather
+  than a new member: the daemon offers it, and a runtime that lists it back
+  starts no MCP server until `mcp/wanted` names it.
+- **The idle delay is the daemon's:** it keeps a server in the set it sends
+  for `idle_stop_after` after the last session wanted it, and the runtime
+  stops a server as soon as a set leaves it out. The daemon's own servers
+  follow the same rule. The wanted sets are worked out again when a session
+  opens, a run starts, a session's choices change, an MCP server's
+  configuration or status changes anywhere, and every minute.
+- **`idle_stop_after`** takes a duration or a number of seconds; `0` or
+  less keeps servers once started.
+- **A server never connected** shows as `disconnected`, as before; a stopped
+  one as `stopped`, with the message *no session uses it* and its last
+  tools.

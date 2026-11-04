@@ -187,6 +187,7 @@ fn harness_built(
             model_cache_ttls: std::collections::BTreeMap::new(),
             agents: cookie_agent_config::AgentsConfig::default(),
             transfer: cookie_agent_config::TransferConfig::default(),
+            mcp_idle_stop_after: Default::default(),
             utility_model: None,
             shell_environment: cookie_agent_config::ShellEnvironmentConfig {
                 capture: cookie_agent_protocol::runtime_protocol::ShellCapture::Off,
@@ -464,6 +465,7 @@ fn harness_with_catalog_and_mcp(
             model_cache_ttls: std::collections::BTreeMap::new(),
             agents: cookie_agent_config::AgentsConfig::default(),
             transfer: cookie_agent_config::TransferConfig::default(),
+            mcp_idle_stop_after: Default::default(),
             utility_model: None,
             shell_environment: cookie_agent_config::ShellEnvironmentConfig {
                 capture: cookie_agent_protocol::runtime_protocol::ShellCapture::Off,

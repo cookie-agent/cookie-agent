@@ -2692,6 +2692,9 @@ crate::open_enum! {
         NeedsAuth,
         Disabled,
         Disconnected,
+        /// No session wants it: disconnected until one does (client
+        /// protocol 1.85.0). Its tools are those of its last connection.
+        Stopped,
     }
 }
 

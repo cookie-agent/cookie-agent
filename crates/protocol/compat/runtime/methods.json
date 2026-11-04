@@ -178,6 +178,14 @@
       "result": "Outcome"
     },
     {
+      "direction": "from_daemon",
+      "kind": "request",
+      "method": "mcp/wanted",
+      "params": "McpWantedParams",
+      "params_role": "information",
+      "result": "Outcome"
+    },
+    {
       "direction": "to_daemon",
       "kind": "request",
       "method": "producer/discard",

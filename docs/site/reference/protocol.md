@@ -13,7 +13,7 @@ A client must call `handshake` before any other method:
 
 ```json
 { "jsonrpc": "2.0", "id": 1, "method": "handshake", "params": {
-    "protocol_version": "1.84.0",
+    "protocol_version": "1.85.0",
     "client": { "kind": "web", "instance_id": "<uuid>" },
     "token": "<the daemon's token>",
     "features": [] } }
@@ -22,7 +22,7 @@ A client must call `handshake` before any other method:
 The reply:
 
 ```json
-{ "protocol_version": "1.84.0", "engine_version": "0.3.0",
+{ "protocol_version": "1.85.0", "engine_version": "0.3.0",
   "origin": "client:web-<id>", "machine_id": "<opaque>", "features": [],
   "status": { "phase": "ready" } }
 ```
@@ -1727,7 +1727,7 @@ listed for each instance that hosts it, with the instance's `workspace`,
 and, while no instance of a connected runtime hosts it, once without one,
 `disconnected` with the message "starts when a workspace opens".
 `state` is `connected`, `connecting`, `reconnecting`,
-`failed`, `needs_auth`, `disabled`, or `disconnected`. A `reconnecting` server
+`failed`, `needs_auth`, `disabled`, `disconnected`, or (since 1.85.0) `stopped`, a server no session wants (see [MCP](../extend/mcp.md#connection-lifecycle)). A `reconnecting` server
 dropped and is being restarted: its tools stay published and calls fail with
 the `runtime_unavailable` failure code until it reconnects or, after every
 attempt failed, becomes `failed` and its tools are dropped (see

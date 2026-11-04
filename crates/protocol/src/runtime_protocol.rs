@@ -142,6 +142,12 @@ pub mod method {
     /// daemon → runtime: reconnect one runtime-scoped MCP server, or retry
     /// every failed one (since 1.5.0).
     pub const RUNTIME_MCP_RECONNECT: &str = "runtime/mcp_reconnect";
+    /// daemon → runtime: the MCP servers some session wants, of one
+    /// instance or of the runtime's runtime-scoped servers; the runtime
+    /// connects them and stops the others, and answers once the attempts
+    /// have finished (since 1.17.0, to a runtime whose `runtime/initialize`
+    /// result lists the [`super::MCP_ON_DEMAND`] feature).
+    pub const MCP_WANTED: &str = "mcp/wanted";
     /// runtime → daemon: register a named producer for a session attached
     /// to the runtime.
     pub const PRODUCER_REGISTER: &str = "producer/register";
@@ -217,8 +223,8 @@ pub struct InitializeParams {
     pub protocol_version: crate::SemVer,
     /// The daemon's own version, for logs and diagnostics.
     pub engine_version: String,
-    /// What the daemon's configuration enables for this runtime. None are
-    /// defined yet; a runtime ignores one it does not know.
+    /// What the daemon offers the runtime: [`MCP_ON_DEMAND`]. A runtime
+    /// ignores one it does not know.
     #[serde(default)]
     pub features: Vec<String>,
     /// The runtime's ID.
@@ -549,6 +555,9 @@ pub enum McpServerState {
     /// declared and calls fail with `runtime_unavailable`.
     Reconnecting,
     Failed,
+    /// No session wants it (runtime protocol 1.17.0): disconnected on the
+    /// daemon's `mcp/wanted`, its tools those of its last connection.
+    Stopped,
     #[serde(other)]
     Disconnected,
 }
@@ -595,6 +604,22 @@ pub struct RuntimeMcpReconnectParams {
     pub server: Option<String>,
 }
 
+/// The feature, in `runtime/initialize`'s `features` both ways, of MCP
+/// servers connected on demand (runtime protocol 1.17.0): the daemon offers
+/// it, and a runtime that lists it back starts no MCP server until
+/// `mcp/wanted` names it.
+pub const MCP_ON_DEMAND: &str = "mcp_on_demand";
+
+/// `mcp/wanted`: the whole set of servers some session wants.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize, schemars::JsonSchema)]
+pub struct McpWantedParams {
+    /// The instance whose workspace-scoped servers these are; absent for
+    /// the runtime's runtime-scoped servers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instance: Option<String>,
+    pub servers: Vec<String>,
+}
+
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize, schemars::JsonSchema)]
 pub struct McpReconnectParams {
     pub instance: String,
@@ -607,8 +632,8 @@ pub struct McpReconnectParams {
 pub struct InitializeResult {
     /// The runtime's [`crate::RUNTIME_PROTOCOL_VERSION`].
     pub protocol_version: crate::SemVer,
-    /// What the runtime's own configuration enables. None are defined yet;
-    /// the daemon ignores one it does not know, with a diagnostic.
+    /// What the runtime takes of the daemon's offer: [`MCP_ON_DEMAND`]. The
+    /// daemon ignores one it does not know, with a diagnostic.
     #[serde(default)]
     pub features: Vec<String>,
     /// Operating system, as Rust's `std::env::consts::OS` names it, for a

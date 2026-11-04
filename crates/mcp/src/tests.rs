@@ -1835,3 +1835,46 @@ fn long_instructions_are_cut_and_marked() {
     assert!(cut.ends_with(" [truncated]"));
     assert_eq!(bounded_instructions("short"), "short");
 }
+
+#[tokio::test]
+async fn a_wanted_server_connects_and_an_unwanted_one_stops_keeping_its_listing() {
+    let registry = McpRegistry::new(
+        BTreeMap::from([(
+            "fixture".into(),
+            LoadedMcpServer {
+                source: McpServerSource::UserFile,
+                config: fixture_config(),
+            },
+        )]),
+        McpRegistryOptions::default(),
+    )
+    .expect("registry");
+    let handle = tokio::runtime::Handle::current();
+    let context = SessionToolContext::new(SessionId::new_v7());
+    // Nothing connects until it is wanted.
+    assert_eq!(registry.statuses()[0].state, McpServerState::Disconnected);
+    let wanted = std::collections::BTreeSet::from(["fixture".to_owned()]);
+    registry.set_wanted(&wanted, &handle);
+    registry.await_eager_ready().await;
+    assert_eq!(registry.statuses()[0].state, McpServerState::Connected);
+    assert_eq!(registry.tools_for_session(&context).unwrap().len(), 2);
+
+    // Unwanted, it stops: no tools, its last listing kept for the panels.
+    registry.set_wanted(&std::collections::BTreeSet::new(), &handle);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    while registry.statuses()[0].state != McpServerState::Stopped {
+        assert!(tokio::time::Instant::now() < deadline, "the server stops");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let status = registry.statuses().remove(0);
+    assert_eq!(status.tools.len(), 2);
+    assert_eq!(status.message.as_deref(), Some("no session uses it"));
+    assert!(registry.tools_for_session(&context).unwrap().is_empty());
+
+    // Wanted again, it connects again.
+    registry.set_wanted(&wanted, &handle);
+    registry.await_eager_ready().await;
+    assert_eq!(registry.statuses()[0].state, McpServerState::Connected);
+    assert_eq!(registry.tools_for_session(&context).unwrap().len(), 2);
+    registry.shutdown().await;
+}

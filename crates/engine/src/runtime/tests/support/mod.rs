@@ -574,6 +574,7 @@ pub(crate) fn empty_configuration() -> LoadedConfiguration {
         runtime: EngineConfig {
             agents: cookie_agent_config::AgentsConfig::default(),
             transfer: cookie_agent_config::TransferConfig::default(),
+            mcp_idle_stop_after: Default::default(),
             utility_model: None,
             shell_environment: cookie_agent_config::ShellEnvironmentConfig {
                 capture: cookie_agent_protocol::runtime_protocol::ShellCapture::Off,

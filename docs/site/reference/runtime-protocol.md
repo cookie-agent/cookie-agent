@@ -131,7 +131,7 @@ plugin protocol adds its own (see
 
 ## Version
 
-The protocol version is a semver string, currently **1.16.0**
+The protocol version is a semver string, currently **1.17.0**
 (`cookie_agent_protocol::RUNTIME_PROTOCOL_VERSION`). The daemon sends its
 version in `runtime/initialize` and the runtime answers with its own. Each end
 reads the other's `protocol_version` from the raw JSON before it decodes
@@ -229,6 +229,9 @@ does not know reads as `off`.
 never needs to send one.
 1.16.0 added tool groups: `tools.groups` and each tool's optional `group`
 ([session tool groups](../specs/session-tool-groups.md) section 11.1).
+1.17.0 added MCP servers on demand: the `mcp_on_demand` feature, the
+`mcp/wanted` request, and the `stopped` MCP server state
+([session tool groups](../specs/session-tool-groups.md) section 11.2).
 
 ## Capabilities and instances
 
@@ -314,7 +317,7 @@ connection it keeps (an in-process `local` runtime's aside):
   in flight fail with `runtime_unavailable`, a dial-in runtime shows as
   disconnected, and its instances reconnect, then fail, as below.
 - Every request has a deadline. `tool/prepare`, `tool/revalidate`, and
-  `runtime/context` get **30 s**; `mcp/reconnect` gets 6 minutes, since it
+  `runtime/context` get **30 s**; `mcp/reconnect` and `mcp/wanted` get 6 minutes, since they
   may wait for a server to start or a user to sign in; `runtime/initialize`
   and `capability/open` get the template's `startup_timeout_ms`, or 30 s for
   a dial-in runtime; `runtime/shutdown` gets the shutdown grace. A request
@@ -381,6 +384,7 @@ that dials in after its instances failed reopens them. Calls are never retried t
 | `runtime/tools_changed` | runtime → daemon | notification | The runtime's own tools, those of its runtime-scoped MCP servers; since 1.5.0 |
 | `runtime/mcp_changed` | runtime → daemon | notification | The status of every MCP server the runtime is configured with, and the runtime-scoped ones that failed; since 1.5.0 |
 | `runtime/mcp_reconnect` | daemon → runtime | request | Reconnect one runtime-scoped MCP server, or retry every failed one; since 1.5.0 |
+| `mcp/wanted` | daemon → runtime | request | The whole set of MCP servers some session wants, of one instance (`instance`) or of the runtime's runtime-scoped servers (no `instance`), as `servers`: the runtime connects those not connected and stops the others (`stopped` in `mcp/changed` and `runtime/mcp_changed`), and answers once the attempts have finished; since 1.17.0, sent only to a runtime that took the `mcp_on_demand` feature |
 | `producer/recovery/start` | daemon → runtime | notification | Producer messaging is open; restore tracked work, then report |
 | `producer/recovery/complete` | runtime → daemon | request | The runtime's recovery outcome |
 | `producer/register` | runtime → daemon | request | Register a named producer for an attached session |
@@ -411,7 +415,7 @@ ignored.
 |---|---|
 | `protocol_version` | The daemon's protocol version (see [Version](#version)). |
 | `engine_version` | The daemon's own version, for logs. |
-| `features` | What the daemon's configuration enables for the runtime; none are defined yet. |
+| `features` | What the daemon offers the runtime: `mcp_on_demand` (since 1.17.0), MCP servers that start only when `mcp/wanted` names them. A runtime ignores a feature it does not know. |
 | `runtime_id` | The runtime's ID, `[a-z][a-z0-9_]{0,31}`. |
 | `settings.tool_output` | The `[tool_output]` preview limits: `max_lines`, `max_bytes`, `head_lines`, `tail_lines`. |
 | `settings.agent_md` | `max_bytes`: files larger than this are skipped. At most the `AGENTS.md` event bound. |
@@ -426,7 +430,7 @@ or enables OAuth, which stays with the daemon's global runtime.
 | Result field | Meaning |
 |---|---|
 | `protocol_version` | The runtime's protocol version. |
-| `features` | Optional: what the runtime's configuration enables; none are defined yet. |
+| `features` | Optional: what the runtime takes of the daemon's offer: `mcp_on_demand` when it starts no MCP server until `mcp/wanted` names it. A runtime that does not list it connects every server as before, and is never sent `mcp/wanted`. |
 | `platform` | Optional: the operating system, as Rust's `std::env::consts::OS` names it, for a runtime where it matters. Shown in the system prompt with the runtime's machine. |
 | `machine` | Optional, since 1.1.0: the machine the runtime runs on, `{ id, host_name? }`. `id` is a stable, opaque ID of 1 to 128 printable ASCII bytes; runtimes reporting one ID belong to one machine. `host_name` (at most 255 bytes) names a machine the daemon has not seen. `cookie runtime serve` reports the digest `cookie` uses as its machine ID and the host name; a runtime that cannot tell leaves it out, and the daemon reads a malformed one as left out. See [Machines](#machines). |
 | `home` | Optional, since 1.3.0: the home directory of the user the runtime runs as, a canonical absolute path on its machine (`/home/ada`, `C:\Users\ada`), at most 4096 bytes without control characters. The coding runtime reports its user's home, canonicalized. The daemon reads one that is not an absolute path as left out. See [Home](#home). |

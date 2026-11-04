@@ -23,6 +23,53 @@ const DEFAULT_PORT: u16 = 7419;
 pub struct McpConfig {
     #[serde(default)]
     pub servers: BTreeMap<String, McpServerConfig>,
+    /// How long a server stays connected after the last session that wants
+    /// it stops wanting it (`docs/site/specs/session-tool-groups.md`
+    /// section 10).
+    #[serde(default)]
+    pub idle_stop_after: Option<McpIdleStop>,
+}
+
+/// `[mcp] idle_stop_after`: a duration such as `"10m"`, or a number of
+/// seconds; zero or less keeps servers connected once started.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct McpIdleStop(pub Option<Duration>);
+
+impl Default for McpIdleStop {
+    fn default() -> Self {
+        Self(Some(Duration::from_secs(10 * 60)))
+    }
+}
+
+impl<'de> Deserialize<'de> for McpIdleStop {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Raw {
+            Seconds(i64),
+            Text(String),
+        }
+        match Raw::deserialize(deserializer)? {
+            Raw::Seconds(seconds) => Ok(Self(
+                u64::try_from(seconds)
+                    .ok()
+                    .filter(|seconds| *seconds > 0)
+                    .map(Duration::from_secs),
+            )),
+            Raw::Text(text) if text.trim_start().starts_with('-') => Ok(Self(None)),
+            Raw::Text(text) => parse_duration(text.trim())
+                .map(|duration| Self((!duration.is_zero()).then_some(duration)))
+                .ok_or_else(|| {
+                    serde::de::Error::custom(
+                        "idle_stop_after must be an integer followed by ms, s, m, h, or d, \
+                         or a number of seconds",
+                    )
+                }),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -733,6 +780,10 @@ pub struct EngineConfig {
     /// `[transfer]`: the `transfer` tool's limit.
     #[serde(default)]
     pub transfer: TransferConfig,
+    /// `[mcp] idle_stop_after`: how long an MCP server no session wants
+    /// stays connected; `None` keeps it.
+    #[serde(skip)]
+    pub mcp_idle_stop_after: McpIdleStop,
     #[serde(skip)]
     pub pricing: PricingConfig,
     /// Each model's authored `cache_ttl`: zero is a cache that never
@@ -2060,6 +2111,9 @@ pub(crate) fn apply_settings(runtime: &mut EngineConfig, layer: &RawRuntimeLayer
     }
     if let Some(value) = layer.transfer {
         runtime.transfer = value;
+    }
+    if let Some(value) = layer.mcp.as_ref().and_then(|mcp| mcp.idle_stop_after) {
+        runtime.mcp_idle_stop_after = value;
     }
     if let Some(value) = &layer.skills {
         runtime.skills = value.clone();

@@ -10,7 +10,8 @@ on this page.
 
 ## Configuration
 
-`mcp` accepts one optional `servers` map, empty by default. Define entries in
+`mcp` accepts an optional `servers` map, empty by default, and
+`idle_stop_after` (see [Connection lifecycle](#connection-lifecycle)). Define entries in
 `~/.cookie-agent/config.toml`; this is a complete illustrative file:
 
 ```toml
@@ -195,19 +196,41 @@ once and sends the server `notifications/cancelled` for its request.
 
 ## Connection lifecycle
 
-Every enabled server connects eagerly, in every runtime: there is no deferred
-connection, and an authored `lazy` key is an unknown field.
+A server connects when a session wants it, and stops once none has for
+`[mcp] idle_stop_after`
+([Session tool groups](../specs/session-tool-groups.md) section 10). An
+authored `lazy` key is an unknown field.
 
-- **At startup** every enabled server connects, in parallel: the global
-  runtime's when the daemon starts, a coding runtime's runtime-scoped ones
-  when the runtime starts, and its workspace-scoped ones when an instance
-  opens, before the instance answers the daemon (so the template's
-  `startup_timeout_ms` must cover them, and the runtime-scoped ones' first
-  attempt, which every open waits for). The first run waits for every
-  server's initial connection and `tools/list` attempt to finish, so its tool
-  context is not built from a partial startup snapshot. Each wait is bounded
-  by that server's `timeout_ms`; one server's failure does not block the
-  others.
+- **Wanted.** A server is wanted while a loaded session that reaches it
+  leaves its tool group (`mcp:<name>`, or `mcp:<name>@<runtime>` for a
+  runtime's) on or deferred: a top-level server through the session's
+  `global` attachment, a runtime-scoped one through an attachment to its
+  runtime, and a workspace-scoped one through an attachment to the instance
+  that hosts it. A session paged out of memory does not count; ACP sessions
+  do.
+- **Start.** Nothing connects when the daemon starts. A server connects when
+  a client opens a session that wants it (usually while you type), when a
+  run starts, when a session's choices turn its group back on, and when a
+  runtime reports a new server. The run waits for every wanted server's
+  connection and `tools/list` attempt to finish, so its tool context is not
+  built from a partial snapshot. Each wait is bounded by that server's
+  `timeout_ms`; one server's failure does not block the others.
+- **Stop.** Once no session has wanted it for `idle_stop_after` (default
+  `"10m"`; a duration, or a number of seconds; `0` or less keeps servers
+  connected once started), the server disconnects and shows as `stopped`
+  (*no session uses it*) with its tools from its last connection. `r` in
+  `/mcp` (or `mcp.server.reconnect`) starts it, and it stops again after the
+  same delay. A session that wants it again starts it.
+- **Runtimes.** The daemon tells each runtime which of its servers some
+  session wants (`mcp/wanted`, runtime protocol 1.17.0); a runtime older
+  than that connects every server as before: its runtime-scoped ones when
+  it starts, its workspace-scoped ones when an instance opens.
+
+```toml
+[mcp]
+idle_stop_after = "30m"
+```
+
 - **A failed server** publishes no tools. It is retried when a session that
   uses its runtime instance is created or opened (and when the instance is
   attached to a session or retried from `/runtime`), and the session's next

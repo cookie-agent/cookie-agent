@@ -194,7 +194,7 @@
     },
     "features": {
       "default": [],
-      "description": "What the daemon's configuration enables for this runtime. None are\ndefined yet; a runtime ignores one it does not know.",
+      "description": "What the daemon offers the runtime: [`MCP_ON_DEMAND`]. A runtime\nignores one it does not know.",
       "items": {
         "type": "string"
       },

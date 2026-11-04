@@ -480,6 +480,7 @@ pub const fn state_label(state: McpServerState) -> &'static str {
         McpServerState::NeedsAuth => "needs_auth",
         McpServerState::Disabled => "disabled",
         McpServerState::Disconnected => "disconnected",
+        McpServerState::Stopped => "stopped",
         McpServerState::Unknown => "unknown",
     }
 }
@@ -564,7 +565,8 @@ pub enum StateTone {
     Pending,
     /// Failed: its tools are missing.
     Failed,
-    /// Disabled, disconnected, or a state this build does not know.
+    /// Disabled, disconnected, stopped because no session uses it, or a
+    /// state this build does not know.
     Off,
 }
 
@@ -575,9 +577,10 @@ pub const fn state_tone(state: McpServerState) -> StateTone {
             StateTone::Pending
         }
         McpServerState::Failed => StateTone::Failed,
-        McpServerState::Disabled | McpServerState::Disconnected | McpServerState::Unknown => {
-            StateTone::Off
-        }
+        McpServerState::Disabled
+        | McpServerState::Disconnected
+        | McpServerState::Stopped
+        | McpServerState::Unknown => StateTone::Off,
     }
 }
 
