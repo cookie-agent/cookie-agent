@@ -717,6 +717,7 @@ fn item_html_in(
                 ModelInputKind::InheritedContext => icondata::LuCornerDownRight,
                 ModelInputKind::Refresh => icondata::LuRefreshCw,
                 ModelInputKind::ReasoningCut => icondata::LuScissors,
+                ModelInputKind::ToolsAvailability => icondata::LuWrench,
             };
             let row = collapsible(view.expanded.block(&key), &key, icon, header, None, text);
             format!("<div data-model-input=\"{}\">{row}</div>", kind.as_str())

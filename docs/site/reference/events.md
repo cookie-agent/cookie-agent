@@ -246,7 +246,7 @@ never stored.
 | `run_started`, `run_finished` | state | run | A run's start and end |
 | `model_attempt_started`, `attempt_abandoned`, `model_fallback` | state | run | A model attempt's lifecycle |
 | `model_request_prepared`, `model_tools_published`, `model_output_started`, `model_replay_evaluated` | audit | run | Request and streaming bookkeeping |
-| `tool_round_started`, `deferred_tools_announced` | audit | run | [Deferred tools](#deferred-tools): a tool round's eager tools, and what the model was told it can load |
+| `tool_round_started`, `deferred_tools_announced`, `tools_availability_announced` | audit | run | [Deferred tools](#deferred-tools): a tool round's eager tools, what the model was told it can load, and which of the round's tools left or came back |
 | `prompt_blocks_recorded`, `prompt_blocks_announced` | audit | run | [Prompt blocks](#prompt-blocks): where a run's prompt carries its blocks, and what changed since |
 | `context_refreshed` | audit | run | [Prompt blocks](#prompt-blocks): the context before the conversation was composed again between compactions, and why |
 | `model_turn_committed`, `model_usage_recorded` | state | run | A committed turn and its usage |
@@ -823,6 +823,18 @@ defer):
   and an optional `summary`; `untrusted` is retired and never set. Model
   history renders it in place as a user turn; only the first one since the
   latest checkpoint that adds groups explains `tool_search`.
+- `tools_availability_announced` (client protocol 1.83.0), on any model,
+  carries `unavailable` and `available_again`, lists of groups: `name`,
+  `source`, `tools`, an optional `machine` (absent: every machine), and,
+  for a group that left one machine, `available_on`, the machines that
+  still offer it. It names the round's tools that left since the round
+  started, a machine of a routed tool included, once each, and those that
+  came back while still declared ([session tool groups](../specs/session-tool-groups.md)
+  section 8.2). Each round tool records its `group` and, when routed, the
+  `machines` it was offered on (client protocol 1.83.0), which is what the
+  notice compares with. Model history renders it in place as a user turn
+  until the next checkpoint or refresh; the clients show it as a
+  transcript row.
 
 A checkpoint starts the round, the announcements, and the loads over. The
 first request after it records a new round, which declares the tools the

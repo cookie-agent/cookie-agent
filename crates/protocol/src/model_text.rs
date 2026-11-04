@@ -9,7 +9,9 @@
 
 pub mod memory_snapshot;
 
-use crate::{AgentMdEntry, AnnouncedPromptBlock, AnnouncedToolGroup, ToolGroupSource};
+use crate::{
+    AgentMdEntry, AnnouncedPromptBlock, AnnouncedToolGroup, ToolGroupSource, UnavailableToolGroup,
+};
 
 pub use memory_snapshot::{machine_memory_turn, snapshot_turn as memory_snapshot_turn};
 
@@ -292,6 +294,83 @@ pub fn deferred_tools_announcement(
         parts.push(text);
     }
     system_reminder(&parts.join("\n\n"))
+}
+
+/// The user turn a `tools_availability_announced` event renders as (session
+/// tool groups spec, section 8.2): tools the round declared that left, on
+/// one machine (with where they still are) or everywhere, then those that
+/// came back.
+#[must_use]
+pub fn tools_availability_notice(
+    unavailable: &[UnavailableToolGroup],
+    available_again: &[UnavailableToolGroup],
+) -> String {
+    fn group(text: &mut String, group: &UnavailableToolGroup) {
+        text.push_str(&format!(
+            "<group name=\"{}\" source=\"{}\"",
+            escape_attribute(&group.name),
+            source_label(group.source)
+        ));
+        if !group.available_on.is_empty() {
+            text.push_str(&format!(
+                " available_on=\"{}\"",
+                escape_attribute(&group.available_on.join(", "))
+            ));
+        }
+        text.push_str(">\n");
+        for tool in &group.tools {
+            text.push_str(tool);
+            text.push('\n');
+        }
+        text.push_str("</group>");
+    }
+    /// The parts of `groups`, one per machine (every machine first), each
+    /// opened by `header(machine)`.
+    fn parts(
+        groups: &[UnavailableToolGroup],
+        header: impl Fn(Option<&str>) -> String,
+    ) -> Vec<String> {
+        let mut machines = Vec::<Option<&str>>::new();
+        for group in groups {
+            let machine = group.machine.as_deref();
+            if !machines.contains(&machine) {
+                machines.push(machine);
+            }
+        }
+        machines.sort();
+        machines
+            .into_iter()
+            .map(|machine| {
+                let mut text = format!("{}\n", header(machine));
+                for (index, member) in groups
+                    .iter()
+                    .filter(|group| group.machine.as_deref() == machine)
+                    .enumerate()
+                {
+                    if index > 0 {
+                        text.push('\n');
+                    }
+                    group(&mut text, member);
+                }
+                text
+            })
+            .collect()
+    }
+    let mut text = parts(unavailable, |machine| {
+        match machine {
+        Some(machine) => format!(
+            "The following tool groups are no longer available on the machine \"{machine}\" in this session. Calls to them with machine=\"{machine}\" will fail; they are still available on the machines each group lists:"
+        ),
+        None => "The following tool groups are no longer available in this session. Their tools stay listed until the context is next refreshed, but calls to them will fail:".to_owned(),
+    }
+    });
+    text.extend(parts(available_again, |machine| match machine {
+        Some(machine) => format!(
+            "The following tool groups are available again on the machine \"{machine}\" in this session:"
+        ),
+        None => "The following tool groups are available again in this session:".to_owned(),
+    }));
+    system_reminder(&text.join("\n\n"))
 }
 
 fn source_label(source: ToolGroupSource) -> &'static str {

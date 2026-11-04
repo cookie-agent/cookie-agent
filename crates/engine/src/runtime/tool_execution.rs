@@ -1515,6 +1515,18 @@ impl Engine {
                     label,
                     tool: spec.name.clone(),
                 });
+            // A routed tool's machines, recorded with the round so a notice
+            // can say where it left (session tool groups spec, section 8.2).
+            let machines = routes
+                .as_ref()
+                .map(|routes| {
+                    routes
+                        .machines
+                        .iter()
+                        .map(|(machine, _)| machine.clone())
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
             if defers {
                 if source.provider.provider_id() == crate::base_tools::LOADER_PROVIDER_ID {
                     loaders.push(definition);
@@ -1530,6 +1542,7 @@ impl Engine {
                             exposure.forced(&source, &spec.name),
                         ),
                         source: round_source,
+                        machines,
                     });
                 }
             } else {
@@ -1537,6 +1550,8 @@ impl Engine {
                     definition,
                     provider: provider_key(&source),
                     source: round_source,
+                    group: crate::deferred_tools::group_of(&source, &spec.name),
+                    machines,
                 });
             }
             published.insert(
@@ -1550,13 +1565,35 @@ impl Engine {
             );
         }
         let fold = self.inner.store.get(session)?.log.deferral();
+        // What each published tool is offered on now, for the notice of
+        // round tools that left (session tool groups spec, section 8.2).
+        let current = published
+            .iter()
+            .map(|(name, tool)| {
+                (
+                    name.clone(),
+                    tool.routes
+                        .as_ref()
+                        .map(|routes| {
+                            routes
+                                .machines
+                                .iter()
+                                .map(|(machine, _)| machine.clone())
+                                .collect()
+                        })
+                        .unwrap_or_default(),
+                )
+            })
+            .collect::<std::collections::HashMap<_, Vec<String>>>();
+        let availability = crate::deferred_tools::availability_announcement(&current, &fold);
         if !defers {
             let drift = crate::deferred_tools::round_drift(
                 fold.round.as_ref(),
                 output.iter().map(|candidate| &candidate.definition),
                 true,
             );
-            let plan = crate::deferred_tools::plan_eager(output, &fold);
+            let mut plan = crate::deferred_tools::plan_eager(output, &fold);
+            plan.pending.extend(availability);
             declared_defaults(&mut published, &plan.definitions, &routed_names);
             return Ok(PublishedToolSet {
                 definitions: plan.definitions,
@@ -1580,6 +1617,7 @@ impl Engine {
         );
         let previous = self.deferral_view(session);
         let mut plan = crate::deferred_tools::plan_reusing(candidates, &loaders, &fold, &previous);
+        plan.pending.extend(availability);
         let unloaded = plan
             .view
             .deferred

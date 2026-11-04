@@ -5,6 +5,15 @@ The client protocol's version is `MAJOR.MINOR.PATCH`
 adds and a major breaks; before it, every minor could break the wire (see the
 [compatibility spec](../specs/compatibility-v1.md) section 3).
 
+## 1.83.0
+
+- Tools sent up front that leave mid-round are announced
+  ([Session tool groups](../specs/session-tool-groups.md) section 8.2): the
+  `tools_availability_announced` event (`unavailable` and `available_again`,
+  lists of `UnavailableToolGroup { name, source, machine?, available_on,
+  tools }`), and `RoundToolDefinition` gains `group` (`RoundToolGroup`) and
+  `machines`.
+
 ## 1.82.0
 
 - Session tool groups and skills

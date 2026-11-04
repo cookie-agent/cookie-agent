@@ -1,8 +1,8 @@
 # Session tool groups and skills
 
 Status: **approved** (2026-11-03), with the user's decisions in
-[section 3](#3-decisions); phases 1 and 2 implemented (client protocol
-1.82.0, plugin protocol 1.42.0, runtime protocol 1.16.0), see
+[section 3](#3-decisions); phases 1 to 3 implemented (client protocol
+1.83.0, plugin protocol 1.43.0, runtime protocol 1.16.0), see
 [implementation notes](#17-implementation-notes). Builds on
 [permission consolidation](permission-consolidation.md) (session overlays),
 [MCP tool filters](mcp-tool-filters.md),
@@ -726,7 +726,25 @@ lifecycle, `[mcp] idle_stop_after`), `concepts/permissions.md`, `concepts/machin
   apply from its next request, also during a run.
 - **The ACP bridge** refuses a call to a tool the session no longer
   offers with "`<tool>` is no longer available in this session".
-- **Not yet:** the notice for eager tools that leave (section 8.2),
-  MCP servers on demand (section 10) and `mcp/wanted`, the cache of a
-  runtime's groups (section 4.4), and the clients (section 12).
+- **Not yet:** MCP servers on demand (section 10) and `mcp/wanted`, the
+  cache of a runtime's groups (section 4.4), and the clients (section 12).
+
+### 17.2 Phase 3 (2026-11-03)
+
+- **The notice is an event of its own,** `tools_availability_announced`
+  (`unavailable`, `available_again`), rendered as its own
+  `<system-reminder>` turn, rather than parts of
+  `deferred_tools_announced`: what a request announces about deferred tools
+  and about tools that left are then two turns in a row, not one.
+- **Each round tool records its group and its machines** (`group`,
+  `machines` of `RoundToolDefinition`), which the notice compares with what
+  the request publishes. A round recorded before them only learns of tools
+  that left every machine, named by their own name as the group.
+- **The clients show it as a transcript row** (a model-input row,
+  `tools no longer available · coding on labpc`), its text the notice.
+- **Refusals keep today's words:** "`<tool>` is no longer available in
+  this session" for a tool gone everywhere, and the routed tools' "is not
+  on `<machine>`; it is on: ..." for one machine.
+- **ACP agents** get no notice: the bridge's list changes and says so
+  (`tools/list_changed`), and a call to a tool no longer offered is refused.
 

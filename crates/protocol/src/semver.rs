@@ -21,9 +21,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// The client protocol version this build speaks.
-pub const CLIENT_PROTOCOL_VERSION: SemVer = SemVer::new(1, 82, 0);
+pub const CLIENT_PROTOCOL_VERSION: SemVer = SemVer::new(1, 83, 0);
 /// The plugin protocol version this build speaks.
-pub const PLUGIN_PROTOCOL_VERSION: SemVer = SemVer::new(1, 42, 0);
+pub const PLUGIN_PROTOCOL_VERSION: SemVer = SemVer::new(1, 43, 0);
 /// The runtime protocol version this build speaks.
 pub const RUNTIME_PROTOCOL_VERSION: SemVer = SemVer::new(1, 16, 0);
 

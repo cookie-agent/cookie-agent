@@ -1177,3 +1177,94 @@ async fn a_machine_attached_between_runs_adds_its_agents_md_in_place() {
     assert_eq!(loaded, 1);
     fixture.engine.shutdown().await;
 }
+
+/// An eager group a session turns off mid-round stays declared, is
+/// announced once before the next request, and the model reads the notice
+/// in its history (session tool groups spec, section 8.2).
+#[tokio::test]
+async fn an_eager_group_turned_off_mid_round_is_announced_once() {
+    let (endpoint, responses, captured) = scripted_channel_server(3).await;
+    for input in ["one", "two", "three"] {
+        responses
+            .send(MatchedScriptedResponse::last_message_contains(
+                input,
+                scripted_text_body("done"),
+            ))
+            .expect("scripted reply");
+    }
+    let capabilities = NATIVE_CAPABILITIES.replace(
+        "deferred_tools = \"native\"",
+        "deferred_tools = \"unsupported\"",
+    );
+    let (fixture, selection) = custom_fixture_with_capabilities_and_variants(
+        &endpoint,
+        "---\ndescription: Notice test\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\n---\nWork.\n",
+        None,
+        None,
+        false,
+        None,
+        None,
+        64_000,
+        None,
+        "openai-compatible",
+        Some(&capabilities),
+        None,
+    );
+    fixture.engine.register_base_layer().expect("base layer");
+    let session = fixture
+        .engine
+        .create_session(selection.clone())
+        .expect("notice session")
+        .session_id;
+    run(&fixture, session, &selection, "notice-1", "one").await;
+    fixture
+        .engine
+        .set_session_tools(
+            session,
+            cookie_agent_protocol::ToolExposure {
+                tool_groups: vec![cookie_agent_protocol::ToolGroupRule {
+                    selector: "memory".parse().unwrap(),
+                    state: cookie_agent_protocol::ToolGroupState::Off,
+                    from_project: false,
+                }],
+                skills: Vec::new(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
+        .await
+        .unwrap();
+    run(&fixture, session, &selection, "notice-2", "two").await;
+    run(&fixture, session, &selection, "notice-3", "three").await;
+    let requests = with_watchdog("captured notice requests", captured)
+        .await
+        .expect("captured requests")
+        .iter()
+        .map(|request| body(request))
+        .collect::<Vec<_>>();
+    // The round keeps declaring the memory tools.
+    assert!(tool_names(&requests[1]).contains(&"memory_read".to_owned()));
+    let text = requests[1].to_string();
+    assert!(
+        text.contains("no longer available in this session")
+            && text.contains("<group name=\\\"memory\\\""),
+        "{text}"
+    );
+    let notices = fixture
+        .engine
+        .inner
+        .store
+        .get(session)
+        .unwrap()
+        .log
+        .events()
+        .iter()
+        .filter(|event| {
+            matches!(
+                event.payload,
+                EventPayload::ToolsAvailabilityAnnounced { .. }
+            )
+        })
+        .count();
+    assert_eq!(notices, 1, "announced once");
+    fixture.engine.shutdown().await;
+}

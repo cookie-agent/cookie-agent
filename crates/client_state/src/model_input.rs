@@ -27,6 +27,9 @@ pub enum ModelInputKind {
     /// Earlier reasoning the model is no longer sent (frozen context spec,
     /// section 7.1).
     ReasoningCut,
+    /// Tools declared up front that left mid-round, or came back (session
+    /// tool groups spec, section 8.2).
+    ToolsAvailability,
 }
 
 impl ModelInputKind {
@@ -38,6 +41,7 @@ impl ModelInputKind {
             Self::InheritedContext => "inherited-context",
             Self::Refresh => "refresh",
             Self::ReasoningCut => "reasoning-cut",
+            Self::ToolsAvailability => "tools-availability",
         }
     }
 }
@@ -54,6 +58,39 @@ pub fn memory_header(text: &str) -> String {
 
 /// A changed instructions row's heading and body: the blocks that changed,
 /// then the turn the model reads.
+/// The tools availability row's heading and text: `tools no longer
+/// available · coding on labpc, exa`, and the notice as the model reads it.
+pub fn tools_availability(
+    unavailable: &[cookie_agent_protocol::UnavailableToolGroup],
+    available_again: &[cookie_agent_protocol::UnavailableToolGroup],
+) -> (String, String) {
+    let name = |group: &cookie_agent_protocol::UnavailableToolGroup| match &group.machine {
+        Some(machine) => format!("{} on {machine}", group.name),
+        None => group.name.clone(),
+    };
+    let mut parts = Vec::new();
+    if !unavailable.is_empty() {
+        parts.push(format!(
+            "tools no longer available · {}",
+            unavailable.iter().map(name).collect::<Vec<_>>().join(", ")
+        ));
+    }
+    if !available_again.is_empty() {
+        parts.push(format!(
+            "tools available again · {}",
+            available_again
+                .iter()
+                .map(name)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    (
+        parts.join("; "),
+        model_text::tools_availability_notice(unavailable, available_again),
+    )
+}
+
 pub fn prompt_blocks(blocks: &[AnnouncedPromptBlock]) -> (String, String) {
     let keys = blocks
         .iter()

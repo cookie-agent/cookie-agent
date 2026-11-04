@@ -225,7 +225,9 @@ forms:
 
 - **The engine's own notices** come inside `<system-reminder>` tags:
   changed instructions (`<instructions_changed>`), deferred tools that
-  became loadable or left, a goal's reminders and the user pausing or
+  became loadable or left, tools sent up front that are no longer
+  available (on one machine or everywhere) or are available again, a
+  goal's reminders and the user pausing or
   cancelling it, attachments of a reply that failed, an ACP agent's
   `<machines_changed>`, and the repeated-call warning after a tool result.
 - **What other agents and jobs send** keeps its own element:

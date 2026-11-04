@@ -2082,6 +2082,49 @@ crate::open_enum! {
     }
 }
 
+/// One group of a `tools_availability_announced` event: tools of one group
+/// that left, or came back, on one machine or everywhere (client protocol
+/// 1.83.0).
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct UnavailableToolGroup {
+    #[schemars(length(min = 1, max = 256))]
+    pub name: String,
+    pub source: ToolGroupSource,
+    /// The machine the tools left, or came back on; absent: every machine.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(length(max = 256))]
+    pub machine: Option<String>,
+    /// The machines that still offer the tools, for a group that left one
+    /// machine.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[schemars(length(max = 256))]
+    pub available_on: Vec<String>,
+    #[schemars(length(min = 1, max = 1024))]
+    pub tools: Vec<String>,
+}
+
+impl UnavailableToolGroup {
+    fn valid(&self) -> bool {
+        !self.name.is_empty()
+            && self.name.len() <= MAX_MODEL_TOOL_NAME_BYTES
+            && self
+                .machine
+                .as_ref()
+                .is_none_or(|machine| !machine.is_empty() && machine.len() <= 256)
+            && self.available_on.len() <= 256
+            && !self.tools.is_empty()
+            && valid_model_tool_names(&self.tools)
+    }
+}
+
+/// The group a round's tool belongs to (client protocol 1.83.0).
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct RoundToolGroup {
+    #[schemars(length(min = 1, max = 256))]
+    pub name: String,
+    pub source: ToolGroupSource,
+}
+
 /// One group of a `deferred_tools_announced` event: the tools of one source
 /// that became loadable, or that left (client protocol 1.44.0).
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
@@ -2134,6 +2177,15 @@ pub struct RoundToolDefinition {
     /// for the round (client protocol 1.53.0); absent for base tools.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<RoundToolSource>,
+    /// The tool's group (client protocol 1.83.0), so a notice can name it
+    /// once the tool has left.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<RoundToolGroup>,
+    /// The machines a routed tool was offered on when it was declared
+    /// (client protocol 1.83.0); empty for a tool not routed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[schemars(length(max = 256))]
+    pub machines: Vec<String>,
 }
 
 /// Where one prompt block sits in a run's `composed_prompt`, in bytes.
@@ -3183,6 +3235,18 @@ pub enum EventPayload {
         #[schemars(length(max = 1024))]
         removed: Vec<AnnouncedToolGroup>,
     },
+    /// Tools the round declares up front that left mid-round, on one
+    /// machine or everywhere, and ones that came back while still declared
+    /// (client protocol 1.83.0; session tool groups spec, section 8.2).
+    /// Rendered in place as a user turn of the model's history.
+    ToolsAvailabilityAnnounced {
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        #[schemars(length(max = 1024))]
+        unavailable: Vec<UnavailableToolGroup>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        #[schemars(length(max = 1024))]
+        available_again: Vec<UnavailableToolGroup>,
+    },
     /// Where a run's system prompt carries its prompt blocks, the parts
     /// composed from the session's state (client protocol 1.54.0, stable
     /// prefix spec, section 6). `composed_live` says whether the run
@@ -3582,6 +3646,7 @@ crate::open_enum!(tagged EventPayload, tag = "type", tags = [
     "model_request_prepared",
     "model_tools_published",
     "deferred_tools_announced",
+    "tools_availability_announced",
     "tool_round_started",
     "context_refreshed",
     "prompt_blocks_recorded",
@@ -3738,6 +3803,7 @@ impl EventPayload {
             // not know them defers nothing, so skipping them changes nothing
             // it builds.
             | Self::DeferredToolsAnnounced { .. }
+            | Self::ToolsAvailabilityAnnounced { .. }
             | Self::ToolRoundStarted { .. }
             // Likewise an engine that does not freeze the context composes
             // every run afresh.
@@ -4071,6 +4137,17 @@ impl EventPayload {
             Self::DeferredToolsAnnounced { added, removed }
                 if added.len() + removed.len() > MAX_MODEL_TOOL_NAMES
                     || !added.iter().chain(removed).all(AnnouncedToolGroup::valid) =>
+            {
+                return Err(EventSchemaError::InvalidModelTools);
+            }
+            Self::ToolsAvailabilityAnnounced {
+                unavailable,
+                available_again,
+            } if unavailable.len() + available_again.len() > MAX_MODEL_TOOL_NAMES
+                || !unavailable
+                    .iter()
+                    .chain(available_again)
+                    .all(UnavailableToolGroup::valid) =>
             {
                 return Err(EventSchemaError::InvalidModelTools);
             }

@@ -24,6 +24,7 @@ fn eager(name: &str) -> Candidate {
         provider: ("runtime.protocol".into(), Some("local".into())),
         deferred: false,
         source: None,
+        machines: Vec::new(),
     }
 }
 
@@ -34,6 +35,7 @@ fn mcp(name: &str, server: &str) -> Candidate {
         provider: (format!("mcp.{server}"), None),
         deferred: true,
         source: None,
+        machines: Vec::new(),
     }
 }
 
@@ -115,7 +117,7 @@ fn fold_with_round(tools: &[&str]) -> DeferralFold {
         round: Some(ToolRound {
             tools: tools
                 .iter()
-                .map(|name| round_definition(&definition(name), None))
+                .map(|name| round_definition(&definition(name), None, None, &[]))
                 .collect(),
             prompt_groups: Vec::new(),
             engine_build: None,
@@ -317,6 +319,8 @@ fn eager_candidate(name: &str) -> EagerCandidate {
         definition: definition(name),
         provider: ("builtin.test".into(), None),
         source: None,
+        group: group("test", ToolGroupSource::Builtin, None),
+        machines: Vec::new(),
     }
 }
 
@@ -352,6 +356,8 @@ fn without_deferral_departures_stay_declared_and_arrivals_join_up_front() {
                 definition: changed,
                 provider: ("builtin.test".into(), None),
                 source: None,
+                group: group("test", ToolGroupSource::Builtin, None),
+                machines: Vec::new(),
             },
             eager_candidate("bash"),
         ],
@@ -399,4 +405,119 @@ fn a_tool_that_stays_deferred_keeps_its_entry_until_it_changes() {
         &typed
     ));
     assert_eq!(typed.description, "Types into an element.");
+}
+
+/// A round of `tools`, each `(name, group, machines)`.
+fn round_with_machines(tools: &[(&str, &str, &[&str])]) -> DeferralFold {
+    DeferralFold {
+        round: Some(ToolRound {
+            tools: tools
+                .iter()
+                .map(|(name, group_name, machines)| {
+                    round_definition(
+                        &definition(name),
+                        None,
+                        Some(&group(group_name, ToolGroupSource::Builtin, None)),
+                        &machines
+                            .iter()
+                            .map(|machine| (*machine).to_owned())
+                            .collect::<Vec<_>>(),
+                    )
+                })
+                .collect(),
+            prompt_groups: Vec::new(),
+            engine_build: None,
+        }),
+        ..DeferralFold::default()
+    }
+}
+
+fn now(tools: &[(&str, &[&str])]) -> std::collections::HashMap<String, Vec<String>> {
+    tools
+        .iter()
+        .map(|(name, machines)| {
+            (
+                (*name).to_owned(),
+                machines
+                    .iter()
+                    .map(|machine| (*machine).to_owned())
+                    .collect(),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn a_round_tool_that_left_one_machine_or_every_machine_is_announced_once() {
+    let mut fold = round_with_machines(&[
+        ("bash", "coding", &["laptop", "labpc"]),
+        ("read", "coding", &["laptop", "labpc"]),
+        ("cron_list", "cron", &[]),
+    ]);
+    let current = now(&[("bash", &["laptop"]), ("read", &["laptop"])]);
+    let Some(EventPayload::ToolsAvailabilityAnnounced {
+        unavailable,
+        available_again,
+    }) = availability_announcement(&current, &fold)
+    else {
+        panic!("a notice");
+    };
+    assert!(available_again.is_empty());
+    let summary = unavailable
+        .iter()
+        .map(|group| {
+            (
+                group.name.as_str(),
+                group.machine.as_deref(),
+                group.tools.clone(),
+                group.available_on.clone(),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        summary,
+        [
+            (
+                "cron",
+                None,
+                vec!["cron_list".to_owned()],
+                Vec::<String>::new()
+            ),
+            (
+                "coding",
+                Some("labpc"),
+                vec!["bash".to_owned(), "read".to_owned()],
+                vec!["laptop".to_owned()]
+            ),
+        ]
+    );
+    // Once announced, it is not announced again.
+    // As the fold records the notice.
+    for group in &unavailable {
+        for tool in &group.tools {
+            fold.unavailable
+                .insert((tool.clone(), group.machine.clone()));
+        }
+    }
+    assert!(availability_announcement(&current, &fold).is_none());
+    // Back on labpc while still declared: available again.
+    let back = now(&[
+        ("bash", &["laptop", "labpc"]),
+        ("read", &["laptop", "labpc"]),
+    ]);
+    let Some(EventPayload::ToolsAvailabilityAnnounced {
+        unavailable,
+        available_again,
+    }) = availability_announcement(&back, &fold)
+    else {
+        panic!("a notice");
+    };
+    assert!(unavailable.is_empty());
+    assert_eq!(available_again.len(), 1);
+    assert_eq!(available_again[0].machine.as_deref(), Some("labpc"));
+}
+
+#[test]
+fn no_round_no_notice() {
+    assert!(availability_announcement(&now(&[]), &DeferralFold::default()).is_none());
 }

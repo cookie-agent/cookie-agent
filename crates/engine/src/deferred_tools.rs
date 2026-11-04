@@ -143,6 +143,8 @@ pub(crate) struct Candidate {
     pub(crate) deferred: bool,
     /// Where a runtime tool comes from, recorded with the round.
     pub(crate) source: Option<RoundToolSource>,
+    /// The machines a routed tool is offered on, recorded with the round.
+    pub(crate) machines: Vec<String>,
 }
 
 /// A composed tool on a model that does not defer.
@@ -150,6 +152,9 @@ pub(crate) struct EagerCandidate {
     pub(crate) definition: ToolDefinition,
     pub(crate) provider: ProviderKey,
     pub(crate) source: Option<RoundToolSource>,
+    pub(crate) group: Group,
+    /// The machines a routed tool is offered on, recorded with the round.
+    pub(crate) machines: Vec<String>,
 }
 
 /// A deferred tool of a request, as the loader tools read it.
@@ -256,6 +261,8 @@ pub(crate) fn round_drift<'a>(
 fn round_definition(
     definition: &ToolDefinition,
     source: Option<&RoundToolSource>,
+    group: Option<&Group>,
+    machines: &[String],
 ) -> RoundToolDefinition {
     RoundToolDefinition {
         name: definition.name.clone(),
@@ -263,6 +270,11 @@ fn round_definition(
         parameters: definition.input_schema.as_value().clone(),
         provider_options: definition.provider_options.clone(),
         source: source.cloned(),
+        group: group.map(|group| cookie_agent_protocol::RoundToolGroup {
+            name: group.name.clone(),
+            source: group.source,
+        }),
+        machines: machines.to_vec(),
     }
 }
 
@@ -312,10 +324,21 @@ pub(crate) fn plan_reusing(
             let mut tools = candidates
                 .iter()
                 .filter(|candidate| !candidate.deferred)
-                .map(|candidate| round_definition(&candidate.definition, candidate.source.as_ref()))
+                .map(|candidate| {
+                    round_definition(
+                        &candidate.definition,
+                        candidate.source.as_ref(),
+                        Some(&candidate.group),
+                        &candidate.machines,
+                    )
+                })
                 .collect::<Vec<_>>();
             if candidates.iter().any(|candidate| candidate.deferred) {
-                tools.extend(loaders.iter().map(|loader| round_definition(loader, None)));
+                tools.extend(
+                    loaders
+                        .iter()
+                        .map(|loader| round_definition(loader, None, None, &[])),
+                );
             }
             tools.sort_by(|left, right| left.name.cmp(&right.name));
             let mut prompt_groups = candidates
@@ -360,7 +383,11 @@ pub(crate) fn plan_reusing(
     {
         // The loader tool joins mid-round, once.
         let tools = round.to_mut();
-        tools.extend(loaders.iter().map(|loader| round_definition(loader, None)));
+        tools.extend(
+            loaders
+                .iter()
+                .map(|loader| round_definition(loader, None, None, &[])),
+        );
         tools.sort_by(|left, right| left.name.cmp(&right.name));
         pending.push(EventPayload::ToolRoundStarted {
             tools: round.to_vec(),
@@ -459,7 +486,14 @@ pub(crate) fn plan_eager(candidates: Vec<EagerCandidate>, fold: &DeferralFold) -
         None => {
             let mut tools = candidates
                 .iter()
-                .map(|candidate| round_definition(&candidate.definition, candidate.source.as_ref()))
+                .map(|candidate| {
+                    round_definition(
+                        &candidate.definition,
+                        candidate.source.as_ref(),
+                        Some(&candidate.group),
+                        &candidate.machines,
+                    )
+                })
                 .collect::<Vec<_>>();
             tools.sort_by(|left, right| left.name.cmp(&right.name));
             let mut prompt_groups = candidates
@@ -578,6 +612,82 @@ fn announcement(
     }
     (!added.is_empty() || !removed.is_empty())
         .then_some(EventPayload::DeferredToolsAnnounced { added, removed })
+}
+
+/// The notice of the round's tools that left since the notices `fold` adds
+/// up to, on one machine or everywhere, and of those that came back while
+/// still declared (session tool groups spec, section 8.2); `None` when
+/// nothing changed or no round is under way. `current` maps each tool the
+/// request publishes to the machines a routed one is offered on now.
+pub(crate) fn availability_announcement(
+    current: &std::collections::HashMap<String, Vec<String>>,
+    fold: &DeferralFold,
+) -> Option<EventPayload> {
+    use cookie_agent_protocol::UnavailableToolGroup;
+    let round = fold.round.as_ref()?;
+    let mut gone = BTreeSet::<(String, Option<String>)>::new();
+    for tool in &round.tools {
+        if is_loader(&tool.name) {
+            continue;
+        }
+        match current.get(&tool.name) {
+            None => {
+                gone.insert((tool.name.clone(), None));
+            }
+            Some(machines) => {
+                for machine in tool
+                    .machines
+                    .iter()
+                    .filter(|machine| !machines.contains(machine))
+                {
+                    gone.insert((tool.name.clone(), Some(machine.clone())));
+                }
+            }
+        }
+    }
+    let groups = |keys: Vec<&(String, Option<String>)>, with_places: bool| {
+        let mut grouped = BTreeMap::<
+            (Option<String>, String),
+            (ToolGroupSource, Vec<String>, BTreeSet<String>),
+        >::new();
+        for (tool, machine) in keys {
+            let declared = round.tools.iter().find(|declared| &declared.name == tool);
+            let (name, source) = declared
+                .and_then(|declared| declared.group.as_ref())
+                .map_or((tool.clone(), ToolGroupSource::Builtin), |group| {
+                    (group.name.clone(), group.source)
+                });
+            let entry = grouped
+                .entry((machine.clone(), name))
+                .or_insert_with(|| (source, Vec::new(), BTreeSet::new()));
+            entry.1.push(tool.clone());
+            if with_places && machine.is_some() {
+                entry
+                    .2
+                    .extend(current.get(tool).into_iter().flatten().cloned());
+            }
+        }
+        grouped
+            .into_iter()
+            .map(
+                |((machine, name), (source, tools, places))| UnavailableToolGroup {
+                    name,
+                    source,
+                    machine,
+                    available_on: places.into_iter().collect(),
+                    tools,
+                },
+            )
+            .collect::<Vec<_>>()
+    };
+    let unavailable = groups(gone.difference(&fold.unavailable).collect(), true);
+    let available_again = groups(fold.unavailable.difference(&gone).collect(), false);
+    (!unavailable.is_empty() || !available_again.is_empty()).then_some(
+        EventPayload::ToolsAvailabilityAnnounced {
+            unavailable,
+            available_again,
+        },
+    )
 }
 
 /// A summary within its byte bound, cut at a character boundary.

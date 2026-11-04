@@ -1113,6 +1113,23 @@ fn assemble_history_with_replay(
                 )));
                 announced_added |= !added.is_empty();
             }
+            // Rendered in place, until the next checkpoint or refresh starts
+            // a round without the tools it names (session tool groups spec,
+            // section 8.2).
+            EventPayload::ToolsAvailabilityAnnounced { .. }
+                if tail.covers(envelope.seq)
+                    || refreshed.is_some_and(|refreshed| envelope.seq <= refreshed) => {}
+            EventPayload::ToolsAvailabilityAnnounced {
+                unavailable,
+                available_again,
+            } => {
+                logical.push(LogicalTurn::User(user_text(
+                    &cookie_agent_protocol::model_text::tools_availability_notice(
+                        unavailable,
+                        available_again,
+                    ),
+                )));
+            }
             // A skill loaded since the latest checkpoint or refresh, where
             // it was loaded (frozen context spec, section 6.4).
             EventPayload::SkillLoaded { rendered_body, .. }

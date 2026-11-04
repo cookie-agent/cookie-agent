@@ -783,6 +783,7 @@ pub(super) fn model_input_layout(
         ModelInputKind::InheritedContext => "↘",
         ModelInputKind::Refresh => "🔄",
         ModelInputKind::ReasoningCut => "✂",
+        ModelInputKind::ToolsAvailability => "🔧",
     };
     let chevron = if text.is_empty() {
         ' '

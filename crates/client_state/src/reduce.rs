@@ -1928,6 +1928,21 @@ pub(super) fn reduce_event_from(
                 }
             }
         }
+        EventPayload::ToolsAvailabilityAnnounced {
+            unavailable,
+            available_again,
+        } => {
+            let (header, text) =
+                crate::model_input::tools_availability(&unavailable, &available_again);
+            push_model_input(
+                state,
+                timestamp,
+                sequence,
+                crate::model_input::ModelInputKind::ToolsAvailability,
+                header,
+                text,
+            );
+        }
         EventPayload::PromptBlocksAnnounced { blocks } => {
             let (header, text) = crate::model_input::prompt_blocks(&blocks);
             push_model_input(

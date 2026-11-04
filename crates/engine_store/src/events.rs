@@ -255,6 +255,10 @@ pub struct DeferralFold {
     /// Tools the latest checkpoint folded: the next round declares them up
     /// front (section 8.3).
     pub folded: std::collections::BTreeSet<String>,
+    /// Round tools announced as no longer available, by tool and machine
+    /// (`None`: every machine), since the round started (session tool
+    /// groups spec, section 8.2).
+    pub unavailable: std::collections::BTreeSet<(String, Option<String>)>,
 }
 
 /// The eager tools of a tool round and the groups whose prompt sections the
@@ -283,6 +287,7 @@ impl DeferralFold {
                 | EventPayload::ContextRefreshed { .. }
                 | EventPayload::ToolRoundStarted { .. }
                 | EventPayload::DeferredToolsAnnounced { .. }
+                | EventPayload::ToolsAvailabilityAnnounced { .. }
         ) || matches!(
             payload,
             EventPayload::ToolCallTerminated { termination }
@@ -306,6 +311,24 @@ impl DeferralFold {
             // context spec, section 6.1).
             EventPayload::ContextRefreshed { .. } => {
                 self.round = None;
+                self.unavailable.clear();
+            }
+            EventPayload::ToolsAvailabilityAnnounced {
+                unavailable,
+                available_again,
+            } => {
+                for group in available_again {
+                    for tool in &group.tools {
+                        self.unavailable
+                            .remove(&(tool.clone(), group.machine.clone()));
+                    }
+                }
+                for group in unavailable {
+                    for tool in &group.tools {
+                        self.unavailable
+                            .insert((tool.clone(), group.machine.clone()));
+                    }
+                }
             }
             EventPayload::ToolRoundStarted {
                 tools,
@@ -953,6 +976,7 @@ pub fn syncs_on_append(payload: &EventPayload) -> bool {
         | EventPayload::MemoryChanged { .. }
         | EventPayload::Diagnostic { .. }
         | EventPayload::DeferredToolsAnnounced { .. }
+        | EventPayload::ToolsAvailabilityAnnounced { .. }
         | EventPayload::PromptBlocksRecorded { .. }
         | EventPayload::PromptBlocksAnnounced { .. }
         | EventPayload::ContextRefreshed { .. }
