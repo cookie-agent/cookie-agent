@@ -289,10 +289,16 @@ async fn the_daemon_restarts_through_the_rpc_and_clients_reconnect() {
 async fn a_client_connects_while_the_daemon_starts() {
     let home = ScratchHome::new();
     let port = free_port();
+    // Held until the test lets go, however slow the machine.
+    let hold = home.path().join("hold-start");
+    std::fs::write(&hold, "").expect("the hold file");
     let mut daemon = Daemon::start_with(
         home.path(),
         port,
-        &[("COOKIE_AGENT_TEST_STARTUP_HOLD_MS", "1500")],
+        &[(
+            "COOKIE_AGENT_TEST_STARTUP_HOLD_FILE",
+            hold.to_str().expect("a UTF-8 path"),
+        )],
     );
     let ready = tokio::task::block_in_place(|| daemon.ready());
     let client = Client::connect_websocket_with_token(&ready.url, &ready.token)
@@ -304,18 +310,27 @@ async fn a_client_connects_while_the_daemon_starts() {
         .expect("the handshake is answered at once");
     let status = hello.status.clone().expect("the daemon's status");
     assert_eq!(status.phase, cookie_agent_protocol::DaemonPhase::Starting);
-    assert!(
+    // The daemon takes connections before its first task begins, so the
+    // status may say what it does only a moment later.
+    let held = |status: &cookie_agent_protocol::DaemonStatus| {
         status
             .tasks
             .iter()
-            .any(|task| task.label == "Holding the start for a test" && task.blocking),
-        "{status:?}"
-    );
+            .any(|task| task.label == "Holding the start for a test" && task.blocking)
+    };
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    let mut latest = status;
+    while !held(&latest) {
+        assert!(tokio::time::Instant::now() < deadline, "{latest:?}");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        latest = client.daemon_status().await.expect("the status");
+    }
     let refused = client
         .runtime_snapshot()
         .await
         .expect_err("not before the daemon is ready");
     assert_eq!(refused.error_code(), Some("daemon_starting"), "{refused}");
+    std::fs::remove_file(&hold).expect("let the start go on");
 
     let mut seen = Vec::new();
     client

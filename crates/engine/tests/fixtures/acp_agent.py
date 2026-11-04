@@ -328,14 +328,17 @@ def state(session_id, name, **fields):
 def finish(session_id, reason, usage=None, error=None):
     """Ends the session's work: `idle` with the stop reason. A prompt after
     it starts work of its own rather than steering this."""
-    with state_lock:
-        running[session_id] = False
     fields = {"stopReason": reason}
     if usage is not None:
         fields["usage"] = usage
     if error is not None:
         fields["error"] = error
-    state(session_id, "idle", **fields)
+    # Under the lock a steer takes the work's state and goes in under: its
+    # echo comes before this `idle`, or it finds the work over. An echo after
+    # the last `idle` would leave the round waiting for one that never comes.
+    with state_lock:
+        running[session_id] = False
+        state(session_id, "idle", **fields)
 
 
 def tool_call(session_id, call):
@@ -1071,6 +1074,7 @@ def handle(message):
     elif method == "session/prompt":
         session_id = params["sessionId"]
         texts = [block.get("text", "") for block in params.get("prompt", []) if block.get("type") == "text"]
+        decline, late_steer = env("ACP_FIXTURE_DECLINE_STEERS"), env("ACP_FIXTURE_LATE_STEERS")
         with state_lock:
             busy = running.get(session_id, False)
             if not busy:
@@ -1078,23 +1082,23 @@ def handle(message):
                 cancelled[session_id] = False
                 steered[session_id] = []
                 declined[session_id] = False
+            elif not decline and not late_steer:
+                # A prompt during the work: a steer, inserted into it, under
+                # the lock `finish` ends the work under.
+                insert(request_id, session_id, params)
+                steered[session_id].extend(texts)
+                state_lock.notify_all()
+                return
         if busy:
-            # A prompt during the work: a steer, inserted into it.
-            if env("ACP_FIXTURE_DECLINE_STEERS"):
+            if decline:
                 fail(request_id, -32603, "Internal error: the steer was not taken")
                 # Answered first: the work it was meant for may end now.
                 with state_lock:
                     declined[session_id] = True
                     state_lock.notify_all()
                 return
-            if env("ACP_FIXTURE_LATE_STEERS"):
-                with state_lock:
-                    late.setdefault(session_id, []).append((request_id, params))
-                    steered[session_id].extend(texts)
-                    state_lock.notify_all()
-                return
-            insert(request_id, session_id, params)
             with state_lock:
+                late.setdefault(session_id, []).append((request_id, params))
                 steered[session_id].extend(texts)
                 state_lock.notify_all()
             return
