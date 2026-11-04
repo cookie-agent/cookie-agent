@@ -5685,6 +5685,8 @@ def mcp_sign_in(browser):
     for server in ("oauth-tab", "oauth-same", "oauth-paste"):
         browser.click('#page [data-server="%s"] [data-mcp-reconnect]' % server)
         browser.wait("%s to need a sign-in" % server, lambda: mcp_state(browser, server) == "needs_auth", timeout=40)
+        # Wanting a sign-in is the answer, not a failed change.
+        browser.wait("%s to say so" % server, lambda: "`%s` needs a sign-in" % server in browser.text("#status"))
     browser.wait("the sign-in buttons", lambda: count(browser, "#page [data-mcp-sign-in]") == 3)
     assert count(browser, "#page [data-https-warning]") == 0, "a loopback page warned about http"
     browser.shot("mcp-sign-in")

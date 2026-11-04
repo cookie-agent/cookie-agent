@@ -11,6 +11,8 @@ adds and a major breaks; before it, every minor could break the wire (see the
   `MachinesRuntimeTokenResult`): the token runtimes that dial in present on
   `/runtime`, which `/ws` refuses
   ([The runtime token](../specs/runtime-token.md)).
+- `mcp.server.reconnect` of a top-level server that wants a sign-in answers
+  with the server, `needs_auth`, rather than an error.
 
 ## 1.86.0
 

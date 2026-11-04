@@ -842,6 +842,11 @@ impl Workspace {
 
     fn finish_mcp(self, result: Result<Option<McpServerInfo>, String>) {
         self.status.set(match result {
+            Ok(Some(server))
+                if server.state == cookie_agent_protocol::McpServerState::NeedsAuth =>
+            {
+                format!("MCP server `{}` needs a sign-in", server.name)
+            }
             Ok(Some(server)) => format!(
                 "MCP server `{}` is {}",
                 server.name,

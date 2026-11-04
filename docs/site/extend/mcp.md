@@ -220,7 +220,8 @@ authored `lazy` key is an unknown field.
   connected once started), the server disconnects and shows as `stopped`
   (*no session uses it*) with its tools from its last connection. `r` in
   `/mcp`, **Connect** in the web client (or `mcp.server.reconnect`) starts
-  it, and it stops again after the same delay. A session that wants it
+  it, and it stops again after the same delay, as does a server you add,
+  edit, or sign in to while no session wants it. A session that wants it
   again starts it.
 - **Runtimes.** The daemon tells each runtime which of its servers some
   session wants (`mcp/wanted`, runtime protocol 1.17.0); a runtime older

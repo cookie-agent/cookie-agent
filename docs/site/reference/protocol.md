@@ -373,7 +373,7 @@ Idempotent redelivery resolves against the state preceding the original run.
 | `mcp.server.remove` | `name`, optional `runtime_id` | `null` once the server is gone |
 | `mcp.server.set_enabled` | `name`, `enabled`, optional `runtime_id` | The server afterwards |
 | `mcp.server.rename` | `name`, `new_name`, optional `runtime_id`; since 1.37.0 | The server under its new name |
-| `mcp.server.reconnect` | `name`, optional `runtime_id` and `workspace` of a server a runtime hosts | The server afterwards |
+| `mcp.server.reconnect` | `name`, optional `runtime_id` and `workspace` of a server a runtime hosts | The server afterwards; a top-level server that now wants a sign-in answers with `needs_auth` rather than an error |
 | `mcp.server.persist` | `name`, `target` (`user_file`) | The server afterwards, written to `config.toml` |
 | `mcp.auth.begin` | `server`, the client's `redirect_uri` (loopback, or `https` since 1.11.0) | `authorization_url` to open in a browser |
 | `mcp.auth.complete` | `server`, the `callback_url` the browser was redirected to | The `server` |

@@ -3,6 +3,7 @@
 use cookie_agent_protocol::RuntimeChangeReason;
 
 use crate::{EngineError, RestartRequiredPart};
+use cookie_agent_protocol::McpServerState;
 
 use super::support::*;
 
@@ -395,6 +396,94 @@ async fn a_change_set_is_written_validated_and_applied_together() {
         Err(EngineError::ConfigChangeRefused(_))
     ));
     assert_eq!(fixture.engine.configuration().revision, revision);
+}
+
+/// Later than any `[mcp] idle_stop_after`.
+const LONG_AFTER: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
+
+fn fixture_mcp_definition() -> cookie_agent_protocol::McpServerDefinition {
+    cookie_agent_protocol::McpServerDefinition {
+        command: Some(python_command().into()),
+        args: vec![format!(
+            "{}/../mcp/tests/fixtures/mcp_server.py",
+            env!("CARGO_MANIFEST_DIR")
+        )],
+        env: Default::default(),
+        cwd: None,
+        url: None,
+        headers: Default::default(),
+        oauth: None,
+        enabled: true,
+        timeout_ms: Some(60_000),
+        include_tools: None,
+        exclude_tools: Vec::new(),
+        scope: None,
+        always_load: false,
+        always_load_tools: Vec::new(),
+        instructions: true,
+    }
+}
+
+fn mcp_state(engine: &crate::Engine, name: &str) -> McpServerState {
+    engine
+        .list_mcp_servers()
+        .into_iter()
+        .find(|server| server.name == name)
+        .expect("listed")
+        .state
+}
+
+async fn mcp_state_becomes(engine: &crate::Engine, name: &str, state: McpServerState) {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+    while mcp_state(engine, name) != state {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "{:?}",
+            mcp_state(engine, name)
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+}
+
+/// A server added by hand connects and counts as wanted: no session wants
+/// it, and it stays for `[mcp] idle_stop_after` all the same, then stops.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_server_added_by_hand_stays_until_nobody_wanted_it_for_the_idle_delay() {
+    let fixture = reloadable();
+    let engine = &fixture.engine;
+    engine
+        .add_mcp_server("docs".into(), fixture_mcp_definition())
+        .await
+        .expect("add");
+    mcp_state_becomes(engine, "docs", McpServerState::Connected).await;
+    engine.refresh_mcp_wanted_at(std::time::Instant::now());
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert_eq!(mcp_state(engine, "docs"), McpServerState::Connected);
+
+    engine.refresh_mcp_wanted_at(std::time::Instant::now() + LONG_AFTER);
+    mcp_state_becomes(engine, "docs", McpServerState::Stopped).await;
+}
+
+/// Finishing a sign-in counts as wanting the server, however long ago anyone
+/// last did: otherwise the connection it makes stops at the next refresh.
+#[tokio::test(flavor = "multi_thread")]
+async fn finishing_a_sign_in_counts_as_wanting_the_server() {
+    let fixture = reloadable();
+    let engine = &fixture.engine;
+    engine
+        .add_mcp_server("docs".into(), fixture_mcp_definition())
+        .await
+        .expect("add");
+    mcp_state_becomes(engine, "docs", McpServerState::Connected).await;
+    engine.refresh_mcp_wanted_at(std::time::Instant::now() + LONG_AFTER);
+    mcp_state_becomes(engine, "docs", McpServerState::Stopped).await;
+    // This server wants no sign-in, so the exchange itself is refused.
+    engine
+        .complete_mcp_auth("docs".into(), "http://127.0.0.1/?code=x&state=y".into())
+        .await
+        .expect_err("no sign-in to finish");
+    engine.refresh_mcp_wanted_at(std::time::Instant::now());
+    mcp_state_becomes(engine, "docs", McpServerState::Connected).await;
 }
 
 #[tokio::test]

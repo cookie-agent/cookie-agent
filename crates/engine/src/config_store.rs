@@ -307,15 +307,17 @@ impl Engine {
         // Started by hand, it stops again once nobody wanted it for
         // `[mcp] idle_stop_after`.
         self.inner.mcp_wanted.touch_global(&name);
-        self.inner
+        let attempt = self
+            .inner
             .mcp
             .reconnect_server(&name)
             .await
-            .map_err(|error| EngineError::Mcp(error.to_string()))?;
-        Ok(self
-            .list_mcp_servers()
-            .into_iter()
-            .find(|server| server.name == name))
+            .map_err(|error| error.to_string());
+        let server = self.list_mcp_servers().into_iter().find(|server| {
+            server.name == name
+                && server.runtime_id.as_str() == cookie_agent_protocol::RuntimeId::GLOBAL
+        });
+        reconnect_answer(attempt, server)
     }
 
     pub async fn begin_mcp_auth(
@@ -338,6 +340,9 @@ impl Engine {
         name: String,
         callback_url: String,
     ) -> Result<(), EngineError> {
+        // Signed in by hand, it stops again once nobody wanted it for
+        // `[mcp] idle_stop_after`, whenever the sign-in began.
+        self.inner.mcp_wanted.touch_global(&name);
         self.inner
             .mcp
             .complete_auth(&name, &callback_url)
@@ -425,7 +430,11 @@ impl Engine {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .effective(name);
         let result = match effective {
-            Some(server) => self.inner.mcp.upsert_server(name.to_owned(), server).await,
+            Some(server) => {
+                // It connects now, started by hand, as a reconnect is.
+                self.inner.mcp_wanted.touch_global(name);
+                self.inner.mcp.upsert_server(name.to_owned(), server).await
+            }
             None => self.inner.mcp.remove_server(name).await,
         };
         if let Err(error) = result {
@@ -440,6 +449,22 @@ impl Engine {
             .list_mcp_servers()
             .into_iter()
             .find(|server| server.name == name))
+    }
+}
+
+/// What a daemon server's reconnect answers: the server afterwards. One that
+/// now waits for a sign-in has answered as it should: that is how a server
+/// that wants OAuth comes to ask, so only other failures are errors.
+fn reconnect_answer(
+    attempt: Result<(), String>,
+    server: Option<McpServerInfo>,
+) -> Result<Option<McpServerInfo>, EngineError> {
+    let waits_for_sign_in = server
+        .as_ref()
+        .is_some_and(|server| server.state == cookie_agent_protocol::McpServerState::NeedsAuth);
+    match attempt {
+        Err(error) if !waits_for_sign_in => Err(EngineError::Mcp(error)),
+        _ => Ok(server),
     }
 }
 
@@ -600,7 +625,54 @@ mod tests {
 
     use cookie_agent_config::{McpServerSource, load_from_user_root};
 
-    use super::ConfigStore;
+    use super::{ConfigStore, reconnect_answer};
+
+    /// A server that now waits for a sign-in answered; other failures, and
+    /// a failure with the server gone, are errors.
+    #[test]
+    fn a_reconnect_that_ends_waiting_for_a_sign_in_is_no_failure() {
+        let server = |state: &str| {
+            let definition = serde_json::to_value(cookie_agent_protocol::McpServerDefinition {
+                command: Some("docs".into()),
+                args: Vec::new(),
+                env: Default::default(),
+                cwd: None,
+                url: None,
+                headers: Default::default(),
+                oauth: None,
+                enabled: true,
+                timeout_ms: None,
+                include_tools: None,
+                exclude_tools: Vec::new(),
+                scope: None,
+                always_load: false,
+                always_load_tools: Vec::new(),
+                instructions: true,
+            })
+            .unwrap();
+            serde_json::from_value::<cookie_agent_protocol::McpServerInfo>(serde_json::json!({
+                "runtime_id": "global",
+                "name": "docs",
+                "source": "runtime",
+                "definition": definition,
+                "state": state,
+                "tool_count": 0,
+                "message": null,
+            }))
+            .unwrap()
+        };
+        let refused = || Err("MCP server `docs` requires OAuth authorization".to_owned());
+        let answered = reconnect_answer(refused(), Some(server("needs_auth")))
+            .expect("waiting for a sign-in")
+            .expect("the server");
+        assert_eq!(
+            answered.state,
+            cookie_agent_protocol::McpServerState::NeedsAuth
+        );
+        assert!(reconnect_answer(refused(), Some(server("failed"))).is_err());
+        assert!(reconnect_answer(refused(), None).is_err());
+        assert!(reconnect_answer(Ok(()), Some(server("connected"))).is_ok());
+    }
 
     #[test]
     fn runtime_layer_overrides_the_user_file_can_remove_and_survives_a_rebase() {
