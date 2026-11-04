@@ -352,7 +352,8 @@ impl Engine {
                 _ => typed.to_owned(),
             };
             if runtime == "local" {
-                std::fs::canonicalize(&expanded)
+                // Without Windows' verbatim prefix, as instances spell it.
+                cookie_agent_protocol::paths::canonicalize(std::path::Path::new(&expanded))
                     .map_or(expanded, |path| path.to_string_lossy().into_owned())
             } else {
                 expanded

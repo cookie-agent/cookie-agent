@@ -278,7 +278,7 @@ proc-macro-utils 0.10.0: MIT OR Apache-2.0, https://github.com/ModProg/proc-macr
 proc-macro2 1.0.107: MIT OR Apache-2.0, https://github.com/dtolnay/proc-macro2
 proc-macro2-diagnostics 0.11.0: MIT/Apache-2.0, https://github.com/SergioBenitez/proc-macro2-diagnostics
 process-wrap 9.1.0: Apache-2.0 OR MIT, https://github.com/watchexec/process-wrap
-pulldown-cmark 0.13.5: MIT, https://github.com/raphlinus/pulldown-cmark
+pulldown-cmark 0.13.6: MIT, https://github.com/raphlinus/pulldown-cmark
 pulldown-cmark-escape 0.11.0: MIT, https://github.com/raphlinus/pulldown-cmark
 quote 1.0.47: MIT OR Apache-2.0, https://github.com/dtolnay/quote
 quote-use 0.9.0: MIT, https://github.com/ModProg/quote-use
@@ -11881,7 +11881,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ===============================================================================
 LICENSE of:
-  pulldown-cmark 0.13.5
+  pulldown-cmark 0.13.6
   pulldown-cmark-escape 0.11.0
 ===============================================================================
 

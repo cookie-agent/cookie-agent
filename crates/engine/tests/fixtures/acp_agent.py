@@ -1118,6 +1118,11 @@ def handle(message):
 
 
 def main():
+    # JSON-RPC over stdio is UTF-8. Python reads stdin in the locale's code
+    # page otherwise (cp1252 on Windows), which garbles every non-ASCII
+    # character the agent receives and logs.
+    sys.stdin.reconfigure(encoding="utf-8")
+    sys.stdout.reconfigure(encoding="utf-8")
     child_pid_file = os.environ.get("ACP_FIXTURE_CHILD_PID_FILE")
     if child_pid_file:
         import subprocess
