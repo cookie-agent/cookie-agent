@@ -421,6 +421,15 @@ pub trait ServerProtocol: Send + Sync + 'static {
             cookie_agent_protocol::SESSION_TOOLS_GET_METHOD,
         ))
     }
+    /// What a runtime capability brings at a workspace.
+    async fn runtime_groups(
+        &self,
+        _params: cookie_agent_protocol::RuntimeGroupsParams,
+    ) -> Result<cookie_agent_protocol::RuntimeGroupsResult, ServerFault> {
+        Err(ServerFault::method_not_found(
+            cookie_agent_protocol::RUNTIMES_GROUPS_METHOD,
+        ))
+    }
     /// Replaces a session's tool group and skill choices.
     async fn set_session_tools(
         &self,
@@ -1667,6 +1676,9 @@ async fn dispatch<S: ServerProtocol>(
         }
         cookie_agent_protocol::SESSION_TOOLS_SET_METHOD => {
             value(server.set_session_tools(decode(params)?, context).await?)
+        }
+        cookie_agent_protocol::RUNTIMES_GROUPS_METHOD => {
+            value(server.runtime_groups(decode(params)?).await?)
         }
         "session.permission.set" => value(
             server

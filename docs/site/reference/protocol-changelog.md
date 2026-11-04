@@ -5,6 +5,13 @@ The client protocol's version is `MAJOR.MINOR.PATCH`
 adds and a major breaks; before it, every minor could break the wire (see the
 [compatibility spec](../specs/compatibility-v1.md) section 3).
 
+## 1.84.0
+
+- `runtimes.groups` (`RuntimeGroupsParams`, `RuntimeGroupsResult`,
+  `RuntimeToolGroup`, `RuntimeSkill`): what a runtime capability brings at a
+  workspace, live or as of the last time it ran
+  ([Session tool groups](../specs/session-tool-groups.md) section 4.4).
+
 ## 1.83.0
 
 - Tools sent up front that leave mid-round are announced

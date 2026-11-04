@@ -13,7 +13,7 @@ A client must call `handshake` before any other method:
 
 ```json
 { "jsonrpc": "2.0", "id": 1, "method": "handshake", "params": {
-    "protocol_version": "1.83.0",
+    "protocol_version": "1.84.0",
     "client": { "kind": "web", "instance_id": "<uuid>" },
     "token": "<the daemon's token>",
     "features": [] } }
@@ -22,7 +22,7 @@ A client must call `handshake` before any other method:
 The reply:
 
 ```json
-{ "protocol_version": "1.83.0", "engine_version": "0.3.0",
+{ "protocol_version": "1.84.0", "engine_version": "0.3.0",
   "origin": "client:web-<id>", "machine_id": "<opaque>", "features": [],
   "status": { "phase": "ready" } }
 ```
@@ -275,6 +275,7 @@ Idempotent redelivery resolves against the state preceding the original run.
 | `session.permission.preview` | Run selection, optional overlay `rules` | Effective permissions a session created with them would have; creates nothing |
 | `session.tools.get` | `session_id`; since 1.82.0 | The session's tool `groups`, one per group per runtime, and its `skills`, each with its state and the layer that decided it, and the session's own `exposure` (see [Tool groups and skills](#tool-groups-and-skills)) |
 | `session.tools.set` | `session_id`, `exposure` (the session's choices, whole; exact selectors and skill names only); since 1.82.0 | As `session.tools.get`, afterwards |
+| `runtimes.groups` | `runtime_id`, optional `capability` and `workspace`; since 1.84.0 | What the capability brings at the workspace: its tool `groups` and project `skills`, live or as of the last time it ran (see [Tool groups and skills](#tool-groups-and-skills)) |
 | `session.runtime.attach` | Session ID, `runtime_id`, optional `capability`, `workspace` when the capability takes one | The new `attachment` and the session's `runtimes` |
 | `session.runtime.detach` | Session ID, attachment `name` | The session's `runtimes` |
 | `runtimes.list` | Empty object | Every `runtimes` entry (built-in, configured, and dial-in, with lifetime, connection, capabilities, and machine) and the opened `instances` with status (see [Runtimes](#runtimes)) |
@@ -1861,6 +1862,18 @@ is refused, as is any other invalid rule, with the engine's error.
   choices whole and returns what `session.tools.get` would. It takes
   effect from the session's next request. The appended
   `session_tool_exposure_set` reaches every client with the session open.
+- **`runtimes.groups { runtime_id, capability?, workspace? }`** (since
+  1.84.0) says what a runtime capability brings, for a card of a runtime
+  no session uses yet: `groups` (each `selector`, `kind`, `name`,
+  `summary`, `tools`, `token_estimate`, and `default`, `on` or
+  `deferred`) and project `skills` (`name`, `description`, `source`).
+  `live` when an instance runs at the workspace (`~` is expanded against
+  the runtime's home); otherwise what the daemon kept the last time one
+  ran there, with `as_of`, or at its latest workspace, with `seen_at` and
+  no skills; `known: false` for a runtime that never ran. The daemon keeps
+  them in `runtime_groups.json` in its data root, refreshed at most once a
+  minute while sessions use an instance, the 16 latest workspaces per
+  capability.
 
 Background jobs report through the `tool { tool_call_id }` producer owner (the
 completion report of a job a tool call started, such as a `bash` call with

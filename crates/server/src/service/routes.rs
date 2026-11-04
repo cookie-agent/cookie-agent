@@ -273,6 +273,13 @@ impl ServerProtocol for Server {
             .map_err(protocol_fault)
     }
 
+    async fn runtime_groups(
+        &self,
+        params: cookie_agent_protocol::RuntimeGroupsParams,
+    ) -> Result<cookie_agent_protocol::RuntimeGroupsResult> {
+        self.engine.runtime_groups(params).map_err(protocol_fault)
+    }
+
     async fn set_session_tools(
         &self,
         params: cookie_agent_protocol::SessionToolsSetParams,

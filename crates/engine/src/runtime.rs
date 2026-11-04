@@ -1056,6 +1056,9 @@ pub(crate) struct Inner {
     pub(crate) runtimes: Arc<crate::runtimes::RuntimeRegistry>,
     /// The machines runtimes run on.
     pub(crate) machines: Arc<crate::machines::MachineRegistry>,
+    /// What each runtime capability offered the last time it ran
+    /// (`docs/site/specs/session-tool-groups.md` section 4.4).
+    pub(crate) runtime_groups: Arc<crate::runtime_groups::RuntimeGroupsCache>,
     /// The projects sessions belong to.
     pub(crate) projects: Arc<crate::projects::ProjectStore>,
     /// The asset stores of session trees, projects, and sessions in no
@@ -1268,6 +1271,9 @@ impl Engine {
             eprintln!("cookie-agent: memory stamps: {error}");
         }
         let machines = Arc::new(crate::machines::MachineRegistry::open(&options.data_dir)?);
+        let runtime_groups = Arc::new(crate::runtime_groups::RuntimeGroupsCache::open(
+            &options.data_dir,
+        ));
         let projects = Arc::new(crate::projects::ProjectStore::new(
             &options.data_dir,
             machines.memory().clone(),
@@ -1410,6 +1416,7 @@ impl Engine {
                 runtime_revision_index: Mutex::new(runtime_revision_index),
                 runtimes,
                 machines,
+                runtime_groups,
                 projects,
                 assets,
                 message_attachments: Default::default(),

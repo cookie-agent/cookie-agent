@@ -31,6 +31,7 @@ mod preview;
 mod projects;
 pub mod release;
 pub(crate) mod runtime;
+mod runtime_groups;
 mod runtime_snapshot;
 mod runtimes;
 mod runtimes_tool;

@@ -303,6 +303,7 @@ fn client_methods() -> Vec<MethodSpec> {
         request!("session.permission.preview", ToDaemon, SessionPermissionPreviewParams => SessionPermissionPreviewResult),
         request!(SESSION_TOOLS_GET_METHOD, ToDaemon, SessionToolsGetParams => SessionToolsGetResult),
         request!(SESSION_TOOLS_SET_METHOD, ToDaemon, SessionToolsSetParams => SessionToolsGetResult),
+        request!(RUNTIMES_GROUPS_METHOD, ToDaemon, RuntimeGroupsParams => RuntimeGroupsResult),
         request!("skills.list", ToDaemon, SkillsListParams => SkillsListResult),
         request!("skills.get", ToDaemon, SkillsGetParams => SkillsGetResult),
         request!(SKILLS_UPDATE_METHOD, ToDaemon, SkillsUpdateParams => SkillsUpdateResult),

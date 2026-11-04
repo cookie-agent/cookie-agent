@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "`runtimes.groups`: the tool groups and project skills one runtime\ncapability brings at a workspace, live when it runs, else as of the\nlast time it ran (session tool groups spec, section 4.4).",
+  "properties": {
+    "capability": {
+      "description": "The capability; the runtime's only one when omitted.",
+      "maxLength": 32,
+      "minLength": 1,
+      "pattern": "^[a-z][a-z0-9_]{0,31}$",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "runtime_id": {
+      "maxLength": 32,
+      "minLength": 1,
+      "pattern": "^[a-z][a-z0-9_]{0,31}$",
+      "type": "string"
+    },
+    "workspace": {
+      "description": "The workspace, as typed: `~/api` or an absolute path.",
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "runtime_id"
+  ],
+  "title": "RuntimeGroupsParams",
+  "type": "object"
+}

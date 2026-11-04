@@ -12,6 +12,7 @@ use crate::{RuntimeId, SessionId};
 
 pub const SESSION_TOOLS_GET_METHOD: &str = "session.tools.get";
 pub const SESSION_TOOLS_SET_METHOD: &str = "session.tools.set";
+pub const RUNTIMES_GROUPS_METHOD: &str = "runtimes.groups";
 
 /// The most rules one list of tool group or skill rules holds.
 pub const MAX_EXPOSURE_RULES: usize = 256;
@@ -599,6 +600,63 @@ pub struct SessionToolsSetParams {
     pub session_id: SessionId,
     /// The session's choices afterwards, whole: exact selectors only.
     pub exposure: ToolExposure,
+}
+
+/// `runtimes.groups`: the tool groups and project skills one runtime
+/// capability brings at a workspace, live when it runs, else as of the
+/// last time it ran (session tool groups spec, section 4.4).
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeGroupsParams {
+    pub runtime_id: RuntimeId,
+    /// The capability; the runtime's only one when omitted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capability: Option<crate::CapabilityName>,
+    /// The workspace, as typed: `~/api` or an absolute path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<String>,
+}
+
+/// One tool group a runtime capability brings.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct RuntimeToolGroup {
+    /// The group's exact selector, as a choice for it names it.
+    pub selector: ToolGroupSelector,
+    pub kind: ToolGroupKind,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    pub tools: Vec<String>,
+    /// An estimate of the tokens its definitions cost sent up front.
+    pub token_estimate: u64,
+    /// Its state before any choice: `on` or `deferred`.
+    pub default: ToolGroupState,
+}
+
+/// One project skill a runtime capability brings at a workspace.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct RuntimeSkill {
+    pub name: String,
+    pub description: String,
+    pub source: crate::SkillSource,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct RuntimeGroupsResult {
+    /// Whether anything is known: the capability runs now, or ran before.
+    pub known: bool,
+    /// The groups and skills come from a running instance.
+    pub live: bool,
+    /// When a running instance last reported them, when not `live`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub as_of: Option<jiff::Timestamp>,
+    /// The workspace they were seen at, when another than the one asked
+    /// for: the capability never ran there, so its workspace's own MCP
+    /// servers and project skills are not known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seen_at: Option<String>,
+    pub groups: Vec<RuntimeToolGroup>,
+    pub skills: Vec<RuntimeSkill>,
 }
 
 #[cfg(test)]

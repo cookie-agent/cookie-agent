@@ -884,6 +884,14 @@
     {
       "direction": "to_daemon",
       "kind": "request",
+      "method": "runtimes.groups",
+      "params": "RuntimeGroupsParams",
+      "params_role": "command",
+      "result": "RuntimeGroupsResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
       "method": "runtimes.list",
       "params": "RuntimesListParams",
       "params_role": "command",

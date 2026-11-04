@@ -1,0 +1,169 @@
+{
+  "$defs": {
+    "RuntimeSkill": {
+      "description": "One project skill a runtime capability brings at a workspace.",
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "source": {
+          "$ref": "#/$defs/SkillSource"
+        }
+      },
+      "required": [
+        "name",
+        "description",
+        "source"
+      ],
+      "type": "object"
+    },
+    "RuntimeToolGroup": {
+      "description": "One tool group a runtime capability brings.",
+      "properties": {
+        "default": {
+          "$ref": "#/$defs/ToolGroupState",
+          "description": "Its state before any choice: `on` or `deferred`."
+        },
+        "kind": {
+          "$ref": "#/$defs/ToolGroupKind"
+        },
+        "name": {
+          "type": "string"
+        },
+        "selector": {
+          "description": "The group's exact selector, as a choice for it names it.",
+          "maxLength": 168,
+          "minLength": 1,
+          "pattern": "^(?:mcp:|plugin:)?[^@\\s\\u0000-\\u001f\\u007f-\\u009f]+(?:@[a-z][a-z0-9_]{0,31})?$",
+          "type": "string"
+        },
+        "summary": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "token_estimate": {
+          "description": "An estimate of the tokens its definitions cost sent up front.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "tools": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "selector",
+        "kind",
+        "name",
+        "tools",
+        "token_estimate",
+        "default"
+      ],
+      "type": "object"
+    },
+    "SkillSource": {
+      "description": "Where a skill comes from: `project`, `official` (an official skill the\ndaemon keeps up to date, since client protocol 1.22.0), or `user`. A\nvalue this build does not know reads as `user`.",
+      "enum": [
+        "project",
+        "official",
+        "user"
+      ],
+      "type": "string",
+      "x-open": true
+    },
+    "ToolGroupKind": {
+      "description": "What kind of group a selector names.",
+      "oneOf": [
+        {
+          "const": "builtin",
+          "description": "A built-in provider's group (`coding`, `memory`), or one a runtime\ndeclares.",
+          "type": "string"
+        },
+        {
+          "const": "mcp",
+          "description": "An MCP server's tools.",
+          "type": "string"
+        },
+        {
+          "const": "plugin",
+          "description": "A plugin's tools.",
+          "type": "string"
+        }
+      ]
+    },
+    "ToolGroupState": {
+      "description": "A tool group's state.",
+      "oneOf": [
+        {
+          "const": "on",
+          "description": "Offered, sent up front.",
+          "type": "string"
+        },
+        {
+          "const": "deferred",
+          "description": "Offered deferred, loaded with `tool_search`; `on` on a model that\ndoes not defer and for an ACP agent.",
+          "type": "string"
+        },
+        {
+          "const": "off",
+          "description": "Not offered.",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "as_of": {
+      "description": "When a running instance last reported them, when not `live`.",
+      "format": "date-time",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "groups": {
+      "items": {
+        "$ref": "#/$defs/RuntimeToolGroup"
+      },
+      "type": "array"
+    },
+    "known": {
+      "description": "Whether anything is known: the capability runs now, or ran before.",
+      "type": "boolean"
+    },
+    "live": {
+      "description": "The groups and skills come from a running instance.",
+      "type": "boolean"
+    },
+    "seen_at": {
+      "description": "The workspace they were seen at, when another than the one asked\nfor: the capability never ran there, so its workspace's own MCP\nservers and project skills are not known.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "skills": {
+      "items": {
+        "$ref": "#/$defs/RuntimeSkill"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "known",
+    "live",
+    "groups",
+    "skills"
+  ],
+  "title": "RuntimeGroupsResult",
+  "type": "object"
+}

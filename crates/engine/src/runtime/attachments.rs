@@ -213,6 +213,9 @@ impl Engine {
             let Some(instance) = self.inner.runtimes.instance(attachment) else {
                 continue;
             };
+            // What it offers, for when it is not running (session tool
+            // groups spec, section 4.4).
+            self.remember_instance(&instance);
             let origin = instance.origin();
             let (generation, providers) = instance.sources();
             sources.extend(providers.into_iter().map(|provider| SourcedProvider {

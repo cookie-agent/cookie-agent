@@ -826,6 +826,15 @@ impl Client {
             .await
     }
 
+    /// `runtimes.groups`: what a runtime capability brings at a workspace.
+    pub async fn runtime_groups(
+        &self,
+        params: cookie_agent_protocol::RuntimeGroupsParams,
+    ) -> Result<cookie_agent_protocol::RuntimeGroupsResult, ClientError> {
+        self.call(cookie_agent_protocol::RUNTIMES_GROUPS_METHOD, &params)
+            .await
+    }
+
     /// `session.tools.set`: replaces a session's tool group and skill
     /// choices.
     pub async fn set_session_tools(

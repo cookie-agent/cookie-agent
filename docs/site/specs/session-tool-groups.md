@@ -748,3 +748,17 @@ lifecycle, `[mcp] idle_stop_after`), `concepts/permissions.md`, `concepts/machin
 - **ACP agents** get no notice: the bridge's list changes and says so
   (`tools/list_changed`), and a call to a tool no longer offered is refused.
 
+### 17.3 The groups a runtime offered (phase 4, 2026-11-03)
+
+- **Kept in `runtime_groups.json`,** a file of its own in the data root,
+  not in `machines.json`: the built-in `local` runtime has no record
+  there, yet a workspace it has not opened needs its groups too. Entries
+  of a runtime the daemon no longer knows are dropped when one is looked
+  up.
+- **`runtimes.groups { runtime_id, capability?, workspace? }`** answers
+  for one card, rather than `runtimes.list` carrying every capability's
+  groups: live from a running instance, else the exact workspace's entry,
+  else the latest workspace's (`seen_at`, without its project skills).
+- **Refreshed** whenever a session gathers its tool sources, at most once a
+  minute per instance.
+

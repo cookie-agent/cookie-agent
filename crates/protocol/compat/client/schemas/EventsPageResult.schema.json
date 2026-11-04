@@ -10213,7 +10213,7 @@
       "type": "object"
     },
     "UnavailableToolGroup": {
-      "description": "One group of a `tools_availability_announced` event: tools of one group\nthat left, or came back, on one machine or everywhere (client protocol\n1.82.0).",
+      "description": "One group of a `tools_availability_announced` event: tools of one group\nthat left, or came back, on one machine or everywhere (client protocol\n1.83.0).",
       "properties": {
         "available_on": {
           "description": "The machines that still offer the tools, for a group that left one\nmachine.",

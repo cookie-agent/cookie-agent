@@ -229,3 +229,46 @@ async fn an_off_skill_is_refused_to_the_model_but_not_to_the_user() {
         (SkillState::Off, ExposureLayer::Session)
     );
 }
+
+#[tokio::test]
+async fn a_runtime_shows_its_groups_live_or_as_of_the_last_time_it_ran() {
+    let (fixture, selection) = custom_fixture();
+    fixture.engine.register_tool_provider(
+        crate::ToolLayer::Local,
+        std::sync::Arc::new(TestWriteProvider {
+            executed: std::sync::Arc::new(TestFlag::default()),
+        }),
+    );
+    let session = fixture.engine.create_session(selection).unwrap().session_id;
+    let local = fixture
+        .engine
+        .session_runtimes(session)
+        .unwrap()
+        .into_iter()
+        .find(|attachment| attachment.runtime_id.as_str() == "local")
+        .expect("a local attachment");
+    let workspace = local.workspace.clone().expect("a workspace");
+    // Composing the session's tools remembers what `local` offers.
+    fixture.engine.get_session_tools(session).unwrap();
+    let groups = |workspace: Option<String>, runtime: &str| {
+        fixture
+            .engine
+            .runtime_groups(cookie_agent_protocol::RuntimeGroupsParams {
+                runtime_id: runtime.parse().unwrap(),
+                capability: Some(cookie_agent_protocol::CapabilityName::coding()),
+                workspace,
+            })
+            .unwrap()
+    };
+    let live = groups(Some(workspace.clone()), "local");
+    assert!(live.known && live.live, "{live:?}");
+    assert!(!live.groups.is_empty());
+    // A workspace it never opened: what it offered elsewhere, and where.
+    let elsewhere = groups(Some("/nowhere/at/all".to_owned()), "local");
+    assert!(elsewhere.known && !elsewhere.live, "{elsewhere:?}");
+    assert!(elsewhere.as_of.is_some());
+    assert!(elsewhere.seen_at.is_some());
+    assert!(elsewhere.skills.is_empty());
+    // A runtime that never ran is not known.
+    assert!(!groups(None, "gpubox").known);
+}
