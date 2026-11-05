@@ -516,7 +516,10 @@ FROM THIS REPLY
   screen* (the whole window, as a figure's did), *Download*, and *Close*
   (Escape too). Preview shows the asset as a figure does (the page
   in its sandbox, filling the panel; the whole document); Source shows the
-  file's text.
+  file's text. Beside the transcript, a divider on the panel's edge sets
+  its width: a drag or the arrow keys move it, keeping both sides at least
+  320 px wide, the browser remembers the choice as a share of the row, and
+  a double click goes back to the default.
 - **Links in the reply.** A handle the reply's text names (`asset_…`), of
   an asset on a shelf of the session, is a chip with the asset's icon and
   title, which opens it as its card does. The tool descriptions tell the

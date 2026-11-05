@@ -802,7 +802,9 @@ the project, and the status line names the new asset's handle.
 **The side panel** opens beside the chat on a desktop, and over it on a
 narrower window. Its head has the asset's title and handle, *Preview* and
 *Source*, *Copy handle*, *Full screen*, *Download*, and *Close* (or
-Escape). An HTML page runs there in a sandboxed frame of `viewer.html`,
+Escape). Drag the divider between the chat and the panel to resize it, or
+focus the divider and use the arrow keys; double-click it to go back to the
+default width. The browser remembers the width. An HTML page runs there in a sandboxed frame of `viewer.html`,
 served with its own policy: its scripts run and it reaches the network,
 but its origin is opaque, so it has no access to the page, its storage,
 the daemon's token, or the connection.

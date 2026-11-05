@@ -351,9 +351,77 @@ pub fn context_place(
     menu_place((y, y, right_edge), (width, viewport_height), height)
 }
 
+/// The `localStorage` key of the share of its row the side panel takes.
+pub const ASSET_PANEL_SHARE_KEY: &str = "cookie.asset_panel_share";
+
+/// The narrowest either side of the side panel's divider goes, in CSS
+/// pixels. The panel's class holds the same bound, so a window narrowed after
+/// the drag keeps both sides usable too.
+pub const ASSET_PANEL_MIN_SIDE: f64 = 320.0;
+
+/// The share of a row `row_width` wide that a side panel `panel_width` wide
+/// takes, with both sides at least [`ASSET_PANEL_MIN_SIDE`]. `None` when the
+/// row has no width to measure against, as when it is hidden.
+pub fn asset_panel_share(row_width: f64, panel_width: f64) -> Option<f64> {
+    if !row_width.is_finite() || !panel_width.is_finite() || row_width <= 0.0 {
+        return None;
+    }
+    // A row too narrow for both sides splits evenly; the class's own bound
+    // decides what shows.
+    let narrowest = (ASSET_PANEL_MIN_SIDE / row_width).min(0.5);
+    Some((panel_width / row_width).clamp(narrowest, 1.0 - narrowest))
+}
+
+/// A share as `localStorage` keeps it; anything else was not written by
+/// [`asset_panel_share`] and reads as no choice.
+pub fn parse_asset_panel_share(stored: &str) -> Option<f64> {
+    stored
+        .parse::<f64>()
+        .ok()
+        .filter(|share| *share > 0.0 && *share < 1.0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn asset_panel_share_is_the_panels_part_of_the_row() {
+        assert_eq!(asset_panel_share(1000.0, 500.0), Some(0.5));
+        assert_eq!(asset_panel_share(2000.0, 500.0), Some(0.25));
+    }
+
+    #[test]
+    fn asset_panel_share_keeps_both_sides_usable() {
+        let row = 2.0 * ASSET_PANEL_MIN_SIDE + 360.0;
+        let narrow_panel = asset_panel_share(row, 1.0).unwrap();
+        assert!((narrow_panel * row - ASSET_PANEL_MIN_SIDE).abs() < 1e-9);
+        // Past the row's edge, as a drag beyond the window goes.
+        let wide_panel = asset_panel_share(row, row + 500.0).unwrap();
+        assert!((row - wide_panel * row - ASSET_PANEL_MIN_SIDE).abs() < 1e-9);
+    }
+
+    #[test]
+    fn asset_panel_share_splits_a_row_too_narrow_for_both_sides() {
+        let row = ASSET_PANEL_MIN_SIDE;
+        assert_eq!(asset_panel_share(row, 10.0), Some(0.5));
+        assert_eq!(asset_panel_share(row, row), Some(0.5));
+    }
+
+    #[test]
+    fn asset_panel_share_needs_a_row_to_measure() {
+        assert_eq!(asset_panel_share(0.0, 500.0), None);
+        assert_eq!(asset_panel_share(f64::NAN, 500.0), None);
+        assert_eq!(asset_panel_share(1000.0, f64::NAN), None);
+    }
+
+    #[test]
+    fn a_stored_asset_panel_share_is_read_only_when_it_could_be_one() {
+        assert_eq!(parse_asset_panel_share("0.4"), Some(0.4));
+        for stored in ["", "wide", "0", "1", "-0.2", "1.5", "NaN", "inf"] {
+            assert_eq!(parse_asset_panel_share(stored), None, "{stored}");
+        }
+    }
 
     #[test]
     fn settings_is_the_last_view() {

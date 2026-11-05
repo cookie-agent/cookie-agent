@@ -1361,6 +1361,24 @@ def asset_figures(browser):
     assert "storage-blocked" in state, state
     assert "page-blocked" in state, state
     browser.shot("asset-panel")
+    # The divider resizes it, with the pointer over the page's frame, and the
+    # browser remembers the width.
+    panel_left = lambda: browser.script("return document.querySelector('#asset-panel').getBoundingClientRect().left")
+    default_left = panel_left()
+    mouse = {"type": "pointer", "id": "divider", "parameters": {"pointerType": "mouse"}}
+    divider = browser.find("#asset-panel-divider")
+    call("POST", browser.path("/actions"), {"actions": [dict(mouse, actions=[
+        {"type": "pointerMove", "duration": 0, "origin": {ELEMENT: divider}, "x": 0, "y": 0},
+        {"type": "pointerDown", "button": 0},
+        {"type": "pointerMove", "duration": 100, "origin": "pointer", "x": 80, "y": 0},
+        {"type": "pointerUp", "button": 0},
+    ])]})
+    call("DELETE", browser.path("/actions"))
+    assert abs(panel_left() - default_left - 80) < 2, (default_left, panel_left())
+    assert browser.script("return localStorage.getItem('cookie.asset_panel_share')")
+    browser.script("document.querySelector('#asset-panel-divider').dispatchEvent(new MouseEvent('dblclick', {bubbles: true}))")
+    browser.wait("the default width", lambda: abs(panel_left() - default_left) < 2)
+    assert browser.script("return localStorage.getItem('cookie.asset_panel_share')") is None
     # Its source, full screen, and closed with Escape.
     browser.click("#asset-panel-source")
     browser.wait("the page's source", lambda: "cookie-asset-height" in browser.text("#asset-panel [data-asset-source]"))
