@@ -566,8 +566,9 @@ rules, and transcript see the command as the model wrote it. Each command is
 a fresh shell: variables it exports, environments it activates, and
 directories it changes into do not carry over to the next.
 
-The command runs in its own session and process group (a job object on
-Windows). When the shell exits, whatever it left in that group is killed, so
+The command runs in its own process group with no controlling terminal: a
+daemon started from a terminal gives it a session of its own too (a job
+object on Windows). When the shell exits, whatever it left in that group is killed, so
 `cmd &` and `nohup cmd &` do not outlive the call; only a process that leaves
 the group, such as one started with `setsid`, does.
 

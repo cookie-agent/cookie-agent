@@ -656,6 +656,45 @@ fn bash_script<'a>(
     }
 }
 
+/// Whether this process has a terminal its children could read from.
+#[cfg(unix)]
+fn has_controlling_terminal() -> bool {
+    use std::os::unix::fs::OpenOptionsExt as _;
+
+    static HAS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *HAS.get_or_init(|| {
+        std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .custom_flags(libc::O_NOCTTY)
+            .open("/dev/tty")
+            .is_ok()
+    })
+}
+
+/// Gives `command` a process group of its own, to kill it by, and no
+/// controlling terminal. With no terminal to leave a new group does, which
+/// is what a daemon gets: a `pre_exec` makes the standard library `fork`
+/// rather than `posix_spawn`, and a `fork` copies the page tables of a daemon
+/// that may hold hundreds of megabytes, tens of milliseconds per call.
+#[cfg(unix)]
+fn detach_from_terminal(command: &mut Command, has_terminal: bool) {
+    if !has_terminal {
+        command.process_group(0);
+        return;
+    }
+    // SAFETY: `setsid` is async-signal-safe and touches no memory.
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setsid() == -1 {
+                Err(std::io::Error::last_os_error())
+            } else {
+                Ok(())
+            }
+        });
+    }
+}
+
 impl BashExecutor {
     fn spawn(&self, environment: Option<&ShellEnvironment>) -> Result<SpawnedShell, ToolError> {
         let mut command = Command::new(self.executable.proc_fd_path());
@@ -670,15 +709,7 @@ impl BashExecutor {
             .kill_on_drop(true);
         #[cfg(unix)]
         let (tree, stdout, stderr) = {
-            unsafe {
-                command.pre_exec(|| {
-                    if libc::setsid() == -1 {
-                        Err(std::io::Error::last_os_error())
-                    } else {
-                        Ok(())
-                    }
-                });
-            }
+            detach_from_terminal(&mut command, has_controlling_terminal());
             let mut child = command
                 .spawn()
                 .map_err(|error| ToolError::execution(error.to_string()))?;

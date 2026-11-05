@@ -717,6 +717,40 @@ async fn real_bash_timeout_drains_progress_before_terminal_completion() {
     .expect("bash timeout progress test exceeded 30 seconds");
 }
 
+/// The shell's own process ID, group, and session, as `ps` reads them.
+#[cfg(unix)]
+async fn shell_ids(has_terminal: bool) -> (String, String, String) {
+    let mut command = tokio::process::Command::new("sh");
+    command
+        .args(["-c", "echo $$; ps -o pgid= -p $$; ps -o sid= -p $$"])
+        .stdout(std::process::Stdio::piped());
+    super::detach_from_terminal(&mut command, has_terminal);
+    let output = command.output().await.expect("the shell runs");
+    let text = String::from_utf8(output.stdout).expect("ids are text");
+    let mut ids = text.split_whitespace().map(str::to_owned);
+    (
+        ids.next().expect("pid"),
+        ids.next().expect("pgid"),
+        ids.next().expect("sid"),
+    )
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn without_a_terminal_a_command_leads_its_own_group() {
+    let (pid, group, session) = shell_ids(false).await;
+    assert_eq!(group, pid);
+    assert_ne!(session, pid);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn with_a_terminal_a_command_leads_its_own_session() {
+    let (pid, group, session) = shell_ids(true).await;
+    assert_eq!(group, pid);
+    assert_eq!(session, pid);
+}
+
 #[tokio::test]
 async fn killing_prepared_process_group_removes_descendants() {
     let root = tempfile::tempdir().expect("root");
