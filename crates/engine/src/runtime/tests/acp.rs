@@ -1259,6 +1259,184 @@ async fn an_acp_agents_runtime_tools_take_machine_from_the_first_machine() {
     assert!(answer.contains("on-the-host"), "{answer}");
 }
 
+/// A session of the agent hosted on `local` with `labpc`, a second runtime
+/// that offers it, attached at the returned directory.
+async fn session_with_labpc(acp: &AcpFixture) -> (SessionId, PanicResistantTempDir) {
+    let engine = acp.engine();
+    let session = engine.create_session(selection()).unwrap().session_id;
+    let elsewhere = private_tempdir();
+    engine
+        .attach_runtime(
+            session,
+            "labpc",
+            None,
+            Some(elsewhere.path().to_owned()),
+            origin(),
+        )
+        .await
+        .expect("labpc attaches");
+    (session, elsewhere)
+}
+
+/// Pins `labpc` to a machine of its own, and returns that machine's name.
+async fn labpc_on_its_own_machine(engine: &Engine) -> String {
+    engine
+        .assign_machine(
+            cookie_agent_protocol::RuntimeId::new("labpc").unwrap(),
+            cookie_agent_protocol::MachineName::new("labpc").unwrap(),
+        )
+        .await
+        .expect("labpc gets its own machine");
+    "labpc".to_owned()
+}
+
+fn bash_call(verb: &str, command: &str, machine: Option<&str>) -> String {
+    let mut arguments = serde_json::json!({"command": command, "description": "run"});
+    if let Some(machine) = machine {
+        arguments["machine"] = serde_json::json!(machine);
+    }
+    format!("mcp {verb} bash {arguments}")
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_bridged_call_runs_on_the_machine_it_names() {
+    let document = "---\ndescription: Fixture with bash\nmode: all\nacp: {}\npermissions:\n  bash: allow\n---\n";
+    let acp = acp_fixture(&[], &[("fixture.md", document)]).await;
+    let engine = acp.engine();
+    let (stop, served) = dial_in(&acp, "labpc", "fixture").await;
+    let (session, elsewhere) = session_with_labpc(&acp).await;
+    let here = cookie_agent_protocol::paths::canonicalize(&acp.workspace()).unwrap();
+    let there = cookie_agent_protocol::paths::canonicalize(elsewhere.path()).unwrap();
+    let (here, there) = (here.to_string_lossy(), there.to_string_lossy());
+
+    // Two attachments on one machine: the first answers for it.
+    let answer = final_text(&turn(engine, session, "same", &bash_call("call", "pwd", None)).await);
+    assert!(answer.contains(&*here), "{answer}");
+    assert!(answer.ends_with("error: False"), "{answer}");
+
+    let labpc = labpc_on_its_own_machine(engine).await;
+    let local = engine.runtime_machine("local").unwrap().to_string();
+    let tools = final_text(&turn(engine, session, "list", "mcp list").await);
+    assert!(
+        tools.split(',').any(|tool| tool.ends_with("bash")),
+        "{tools}"
+    );
+    assert!(!tools.contains("labpc_"), "one routed tool: {tools}");
+
+    // A call naming a machine runs there, whichever way the agent makes it.
+    let answer = final_text(
+        &turn(
+            engine,
+            session,
+            "there",
+            &bash_call("call", "pwd", Some(&labpc)),
+        )
+        .await,
+    );
+    assert!(answer.contains(&*there), "{answer}");
+    assert!(answer.ends_with("error: False"), "{answer}");
+    let answer = final_text(
+        &turn(
+            engine,
+            session,
+            "asked",
+            &bash_call("ask", "pwd", Some(&labpc)),
+        )
+        .await,
+    );
+    assert!(answer.starts_with("permission: yes"), "{answer}");
+    assert!(answer.contains(&*there), "{answer}");
+    // The host's machine is reached by its name or by naming none.
+    let answer = final_text(
+        &turn(
+            engine,
+            session,
+            "here",
+            &bash_call("call", "pwd", Some(&local)),
+        )
+        .await,
+    );
+    assert!(answer.contains(&*here), "{answer}");
+    let answer = final_text(&turn(engine, session, "plain", &bash_call("call", "pwd", None)).await);
+    assert!(answer.contains(&*here), "{answer}");
+
+    // The row names where the call ran.
+    let runtimes = events(engine, session)
+        .iter()
+        .filter_map(|event| match &event.payload {
+            EventPayload::ToolCallStarted { start }
+                if start.presentation.tool.name.as_str() == "bash" =>
+            {
+                match &start.presentation.tool.source {
+                    Some(Open::Known(ToolSource::Runtime { runtime_id, .. })) => {
+                        Some(runtime_id.to_string())
+                    }
+                    other => panic!("not a runtime's tool: {other:?}"),
+                }
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(runtimes, ["local", "labpc", "labpc", "local", "local"]);
+
+    // A machine that does not offer it fails with where it is offered, and
+    // nothing runs.
+    let answer = final_text(
+        &turn(
+            engine,
+            session,
+            "nowhere",
+            &bash_call("call", "pwd", Some("nowhere")),
+        )
+        .await,
+    );
+    assert!(answer.ends_with("error: True"), "{answer}");
+    assert!(answer.contains("`bash` is not on `nowhere`"), "{answer}");
+    assert!(
+        answer.contains(&labpc) && answer.contains(&local),
+        "{answer}"
+    );
+
+    stop.cancel();
+    served.await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_rule_for_a_machine_governs_a_bridged_call_routed_there() {
+    let document = "---\ndescription: Fixture with bash\nmode: all\nacp: {}\npermissions:\n  bash: allow\n  bash@labpc: deny\n---\n";
+    let acp = acp_fixture(&[], &[("fixture.md", document)]).await;
+    let engine = acp.engine();
+    let (stop, served) = dial_in(&acp, "labpc", "fixture").await;
+    let (session, elsewhere) = session_with_labpc(&acp).await;
+    let labpc = labpc_on_its_own_machine(engine).await;
+    let there = cookie_agent_protocol::paths::canonicalize(elsewhere.path()).unwrap();
+
+    let refused = final_text(
+        &turn(
+            engine,
+            session,
+            "there",
+            &bash_call("call", "pwd", Some(&labpc)),
+        )
+        .await,
+    );
+    assert!(refused.ends_with("error: True"), "{refused}");
+    assert!(!refused.contains(&*there.to_string_lossy()), "{refused}");
+    let here = final_text(
+        &turn(
+            engine,
+            session,
+            "here",
+            &bash_call("call", "echo on-the-host", None),
+        )
+        .await,
+    );
+    assert!(here.contains("on-the-host"), "{here}");
+
+    stop.cancel();
+    served.await.unwrap();
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_bridged_call_runs_unless_a_deny_rule_matches() {
     // The call has passed the harness's own check: cookie's rules only

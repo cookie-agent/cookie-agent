@@ -2578,7 +2578,7 @@ impl Turn<'_> {
         };
         let prepared = self
             .engine
-            .prepare_tool_call(
+            .prepare_bridged_tool_call(
                 self.session(),
                 self.run,
                 call,
@@ -2809,7 +2809,7 @@ impl Turn<'_> {
         let turn_context = self.bridge_turn_context();
         let prepared = self
             .engine
-            .prepare_tool_call(
+            .prepare_bridged_tool_call(
                 self.session(),
                 self.run,
                 cookie_agent_runtime_api::ToolCall {

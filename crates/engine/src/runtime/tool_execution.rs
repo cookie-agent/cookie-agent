@@ -295,6 +295,61 @@ impl Engine {
         .await
     }
 
+    /// Prepares a call of cookie's tools through an ACP agent's bridge. The
+    /// agent calls a routed tool by its published name, with `machine`, as a
+    /// model does, so it goes to that machine's tool the same way; any other
+    /// tool is found by its name.
+    pub(super) async fn prepare_bridged_tool_call(
+        &self,
+        session_id: SessionId,
+        run: RunId,
+        mut call: ToolCall,
+        policy: &FrozenRunPolicy,
+        turn_context: Arc<crate::TurnAgentContext>,
+    ) -> PreparedToolCall {
+        let published = self.published_tool_definitions(session_id, policy).ok();
+        let Some(tool) = published
+            .as_ref()
+            .and_then(|published| published.tools.get(&call.name))
+            .filter(|tool| tool.routes.is_some())
+        else {
+            return self
+                .prepare_tool_call(session_id, run, call, policy, turn_context)
+                .await;
+        };
+        match tool.route(&call.name, &mut call.arguments) {
+            Ok(route) => {
+                self.prepare_tool_call_with_publication(
+                    session_id,
+                    run,
+                    call,
+                    policy,
+                    turn_context,
+                    Some(Some(route)),
+                    None,
+                    None,
+                )
+                .await
+            }
+            Err(message) => PreparedToolCall {
+                intercepted_arguments: Arc::new(std::sync::Mutex::new(call.arguments.clone())),
+                prepared: Err(ToolFailure {
+                    partial_output: None,
+                    code: ToolCallFailureCode::ExecutionFailed,
+                    message,
+                }),
+                permission_name: None,
+                presentation: ToolPresentation::new(
+                    cookie_agent_runtime_api::tool_title_only(&call.name),
+                    tool_identity(&call.name, None),
+                ),
+                call,
+                interception: None,
+                background: None,
+            },
+        }
+    }
+
     pub(super) async fn prepare_published_tool_calls(
         &self,
         session_id: SessionId,
