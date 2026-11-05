@@ -1060,7 +1060,9 @@ protocol 1.24.0, plugin protocol 1.12.0; history format unchanged):
   synthetic `acp/<agent>` it would inherit as `${parent_model}`; with
   `small_model` unset none remain and nothing runs. A later
   `session_info_update` title still replaces it, and each new agent title
-  applies, until the user names the session.
+  applies, until the user names the session. A title sent between runs
+  applies at once: Codex's adapter sends its generated title seconds after
+  answering the first prompt, when there may be no next round to take it.
 - **Checked by hand against Claude Code** (adapter 0.95, outside the
   daemon, over the adapter's stdio): its initialize advertises `fork`,
   `delete`, `close`, `resume`, `list`; the probe on a fresh session answers

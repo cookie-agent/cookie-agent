@@ -8,6 +8,8 @@
 //! request to answer), the session accepts a producer message from the
 //! agent itself, owner `acp_agent`, and the run it starts listens: it sends
 //! no prompt, takes what the listener kept, and ends at the work's `idle`.
+//! A title applies at once: Codex's adapter names a session seconds after
+//! its first turn ended, and there may be no next round to take it.
 
 use std::sync::{Arc, atomic::Ordering};
 use std::time::Duration;
@@ -229,6 +231,22 @@ impl Engine {
                         == Some("subagent_update")
                 {
                     self.acp_subagent_update(&live, None, update).await;
+                    continue;
+                }
+                // The agent named the session after its run ended. A session
+                // with no run yet keeps the title for its first.
+                if let SessionEvent::Update(update) = &event
+                    && update.get("sessionUpdate").and_then(Value::as_str)
+                        == Some("session_info_update")
+                    && let Some(title) = update.get("title").and_then(Value::as_str)
+                    && let Some((_, run, _)) = self
+                        .inner
+                        .store
+                        .get(live.session)
+                        .ok()
+                        .and_then(|projection| projection.log.last_run_started())
+                {
+                    let _ = self.set_acp_title(live.session, run, title).await;
                     continue;
                 }
                 wakes |= starts_work(&event);

@@ -130,6 +130,9 @@ Each prompt's last text block is a command:
                          starts work of its own (running, <text>, idle), as
                          Claude Code does when a background command ends; work
                          of a prompt running then goes first
+  title-later <s> <text> answers "titled-later", then <s> seconds after that
+                         sets the session's title to <text>, as Codex's adapter
+                         does after a first turn
   wake-steer <s>         the same, but its own work says "waiting" and waits (up to
                          10 s) for a message steered into it, then answers
                          "steered: <texts>"; session/cancel ends it as cancelled
@@ -929,6 +932,14 @@ def run_command(request_id, session_id, session, word, rest, texts, kinds):
     elif word == "title":
         update(session_id, {"sessionUpdate": "session_info_update", "title": rest})
         say(session_id, "titled")
+    elif word == "title-later":
+        delay, _, title = rest.partition(" ")
+        def later():
+            import time
+            time.sleep(float(delay))
+            update(session_id, {"sessionUpdate": "session_info_update", "title": title})
+        threading.Thread(target=later, daemon=True).start()
+        say(session_id, "titled-later")
     elif word == "title-first":
         update(session_id, {"sessionUpdate": "session_info_update", "title": session["first_text"]})
         say(session_id, "titled")

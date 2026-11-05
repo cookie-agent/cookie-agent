@@ -4756,7 +4756,9 @@ impl Engine {
     }
 
     /// Sets the session's title from the agent's, unless the user set one.
-    async fn set_acp_title(
+    /// `run` owns the title: the one it came in, or the session's last when
+    /// it came between runs.
+    pub(super) async fn set_acp_title(
         &self,
         session: SessionId,
         run: RunId,

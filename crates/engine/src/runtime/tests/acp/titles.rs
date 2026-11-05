@@ -107,3 +107,53 @@ async fn an_untitled_acp_session_gets_a_generated_title_and_the_agents_later_one
         requests[0]
     );
 }
+
+/// Codex's adapter names a session seconds after answering its first
+/// prompt: the title applies then, with no next round to take it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_title_the_agent_sends_between_runs_applies_at_once() {
+    let acp = acp_fixture(&[], &[]).await;
+    let engine = acp.engine();
+    let session = engine.create_session(selection()).unwrap().session_id;
+    let outcome = turn(engine, session, "one", "title-later 0.3 Parser refactor").await;
+    assert_eq!(final_text(&outcome), "titled-later");
+    await_event(engine, session, "the title", |event| {
+        matches!(event.payload, EventPayload::SessionTitleCommitted { .. })
+    })
+    .await;
+    assert_eq!(title(engine, session).as_deref(), Some("Parser refactor"));
+    // A title starts no run of its own.
+    assert_eq!(
+        events(engine, session)
+            .iter()
+            .filter(|event| matches!(event.payload, EventPayload::RunStarted { .. }))
+            .count(),
+        1
+    );
+}
+
+/// A title between runs leaves the user's name alone, as one in a run does.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_title_between_runs_does_not_replace_the_users() {
+    let acp = acp_fixture(&[], &[]).await;
+    let engine = acp.engine();
+    let session = engine.create_session(selection()).unwrap().session_id;
+    turn(engine, session, "one", "title-later 0.3 Agent title").await;
+    engine
+        .rename_session(
+            cookie_agent_protocol::SessionRenameParams {
+                session_id: session,
+                client_rename_id: cookie_agent_protocol::ClientRenameId::new("rename-1").unwrap(),
+                change: cookie_agent_protocol::SessionRenameChange::Set {
+                    title: cookie_agent_protocol::SessionTitle::new("Mine").unwrap(),
+                },
+            },
+            origin(),
+        )
+        .await
+        .unwrap();
+    // The next round starts once the listener has had the agent's title.
+    tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+    turn(engine, session, "two", "say two").await;
+    assert_eq!(title(engine, session).as_deref(), Some("Mine"));
+}
