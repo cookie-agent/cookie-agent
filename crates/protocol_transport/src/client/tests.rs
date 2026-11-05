@@ -1329,6 +1329,44 @@ async fn recovery_checks_its_cursor_event_and_restarts_when_it_is_stale() {
 }
 
 #[tokio::test]
+async fn a_reader_back_on_a_new_connection_resumes_and_learns_of_a_revert() {
+    let session_id = SessionId::new_v7();
+    let (incoming, incoming_rx) = mpsc::unbounded_channel();
+    let (sent, mut sent_rx) = mpsc::unbounded_channel();
+    let client = Client::connect_stream(ScriptedStream {
+        incoming: incoming_rx,
+        sent,
+    });
+    let _deliveries = client.subscribe_deliveries().expect("delivery receiver");
+    let held = event(session_id, 7).timestamp;
+    let _subscribe = tokio::spawn({
+        let client = client.clone();
+        async move {
+            client
+                .subscribe_events_at(session_id, Some(7), Some(held))
+                .await
+        }
+    });
+    let resume = next_request(&mut sent_rx).await;
+    assert_eq!(resume["params"]["cursor"], 7);
+    assert_eq!(
+        resume["params"]["cursor_timestamp"],
+        serde_json::json!(held)
+    );
+    incoming
+        .send(MessageFrame::Value(serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": resume["id"],
+            "result": { "events": [], "stale_cursor": true },
+        })))
+        .expect("stale answer");
+
+    let full = next_request(&mut sent_rx).await;
+    assert_eq!(full["params"]["cursor"], 0);
+    assert!(full["params"].get("cursor_timestamp").is_none());
+}
+
+#[tokio::test]
 async fn a_replay_outlives_a_caller_that_stops_waiting() {
     let session_id = SessionId::new_v7();
     let (incoming, incoming_rx) = mpsc::unbounded_channel();

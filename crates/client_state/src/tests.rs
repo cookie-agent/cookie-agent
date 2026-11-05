@@ -4206,6 +4206,19 @@ fn rewound_keeps_the_projection_until_the_full_replay_rebuilds_it() {
 }
 
 #[test]
+fn a_session_knows_when_its_newest_event_was_written() {
+    let session_id = SessionId::new_v7();
+    let mut store = StateStore::default();
+    let first = submitted(session_id, 1, "first");
+    let second = submitted(session_id, 2, "second");
+    let written = second.timestamp;
+    assert!(store.apply_event(first));
+    assert!(store.apply_event(second));
+    let state = &store.sessions[&session_id];
+    assert_eq!((state.last_seq, state.last_event_at), (2, Some(written)));
+}
+
+#[test]
 fn a_replay_from_the_cursor_changes_the_projection_only_when_it_is_complete() {
     let session_id = SessionId::new_v7();
     let mut store = StateStore::default();

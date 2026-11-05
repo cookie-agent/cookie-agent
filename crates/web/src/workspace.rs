@@ -927,10 +927,22 @@ impl Workspace {
                 self.open_session(guest.session_id);
             }
             if reconnected && let Some(session_id) = selected {
+                // What the page holds of a settled session is still good, so
+                // it reads on from there. One with a run going reads again:
+                // only a read from the start gets the reply streaming now.
+                let settled = self.store.with_value(|store| {
+                    store.sessions.get(&session_id).is_some_and(|state| {
+                        state.active_run.is_none() && state.last_event_at.is_some()
+                    })
+                });
                 let subscribe = self
                     .subscriptions
                     .try_update_value(|subscriptions| {
-                        subscriptions.subscribe_from_scratch(session_id, false)
+                        if settled {
+                            subscriptions.subscribe_from_cursor(session_id, false)
+                        } else {
+                            subscriptions.subscribe_from_scratch(session_id, false)
+                        }
                     })
                     .expect("the subscriptions live");
                 self.send_subscribe(subscribe);
@@ -1912,11 +1924,17 @@ impl Workspace {
             attempt,
             from_scratch,
         } = subscribe;
-        let cursor = if from_scratch {
-            None
+        let (cursor, cursor_timestamp) = if from_scratch {
+            (None, None)
         } else {
-            self.store
-                .with_value(|store| store.sessions.get(&session_id).map(|state| state.last_seq))
+            self.store.with_value(|store| {
+                store
+                    .sessions
+                    .get(&session_id)
+                    .map_or((None, None), |state| {
+                        (Some(state.last_seq), state.last_event_at)
+                    })
+            })
         };
         if self
             .store
@@ -1931,7 +1949,10 @@ impl Workspace {
         // page by page while the transcript shows a skeleton.
         client.use_history(cookie_agent_protocol_transport::HistoryReading::Whole);
         spawn_local(async move {
-            let outcome = match client.subscribe_events(session_id, cursor).await {
+            let outcome = match client
+                .subscribe_events_at(session_id, cursor, cursor_timestamp)
+                .await
+            {
                 Ok(()) => {
                     // Background calls are not in the event log: read them
                     // once subscribed; `background.changed` follows, and one

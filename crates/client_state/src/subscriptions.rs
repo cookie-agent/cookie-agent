@@ -234,6 +234,13 @@ impl Subscriptions {
         Some(self.start(session_id, owned, false))
     }
 
+    /// Subscribes `session_id` from the view's cursor on a new connection,
+    /// whatever it had on the last one, which is much less to read than
+    /// [`Self::subscribe_from_scratch`] when the view holds a settled session.
+    pub fn subscribe_from_cursor(&mut self, session_id: SessionId, owned: bool) -> Subscribe {
+        self.start(session_id, owned, false)
+    }
+
     /// Subscribes `session_id` with a full replay rather than from the
     /// view's cursor, whatever it has: the rebuilt projection replaces the
     /// current one when the replay ends.
@@ -470,6 +477,20 @@ mod tests {
             attempt,
             from_scratch,
         })
+    }
+
+    #[test]
+    fn a_new_connection_can_read_on_from_the_cursor_or_from_the_start() {
+        let mut subscriptions = Subscriptions::default();
+        let session = SessionId::new_v7();
+        assert_eq!(
+            Some(subscriptions.subscribe_from_cursor(session, false)),
+            subscribe(session, 1, false)
+        );
+        assert_eq!(
+            Some(subscriptions.subscribe_from_scratch(session, false)),
+            subscribe(session, 2, true)
+        );
     }
 
     #[test]

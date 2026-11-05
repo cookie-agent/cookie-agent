@@ -118,6 +118,7 @@ pub(super) fn reduce_event_from(
     payload: EventPayload,
 ) {
     state.item_id_seq = sequence;
+    state.last_event_at = Some(timestamp);
     // The queued lane is the protocol's own reduction, shared with the
     // engine; what it voids goes back to its authors.
     let voided = state

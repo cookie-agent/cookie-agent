@@ -1277,6 +1277,9 @@ pub struct SessionState {
     pub version: u64,
     pub generation: u64,
     pub last_seq: u64,
+    /// When the newest reduced event was written. With [`Self::last_seq`], it
+    /// lets a reader that comes back learn a revert replaced that event.
+    pub last_event_at: Option<jiff::Timestamp>,
     /// Creation-event time, used as the deterministic sibling-order fallback.
     pub created_at: Option<jiff::Timestamp>,
     /// Latest user submission or delegate/steer tool start in this session.

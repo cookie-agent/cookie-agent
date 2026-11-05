@@ -2169,6 +2169,19 @@ impl Client {
         session_id: SessionId,
         cursor: Option<u64>,
     ) -> Result<(), ClientError> {
+        self.subscribe_events_at(session_id, cursor, None).await
+    }
+
+    /// [`Self::subscribe_events`] for a reader that knows when the event at
+    /// `cursor` was written, as one that reconnected does: this connection
+    /// has no record of it. A revert that has since replaced that event
+    /// starts the view over from scratch.
+    pub async fn subscribe_events_at(
+        &self,
+        session_id: SessionId,
+        cursor: Option<u64>,
+        cursor_timestamp: Option<Timestamp>,
+    ) -> Result<(), ClientError> {
         let cursor = cursor.unwrap_or(0);
         let reading = self.history_reading();
         let request = prepare_subscription(
@@ -2187,7 +2200,7 @@ impl Client {
         let subscriptions = self.subscriptions.clone();
         let recovery = self.recovery.clone();
         rt::spawn(async move {
-            let result = request_replay(&commands, request, cursor, None).await;
+            let result = request_replay(&commands, request, cursor, cursor_timestamp).await;
             if result.is_err() {
                 abort_replay(&subscriptions, session_id).await;
                 Self::schedule_recovery_queue(&recovery, cursor == 0, Some(session_id));
