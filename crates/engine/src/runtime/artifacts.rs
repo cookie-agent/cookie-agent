@@ -18,7 +18,6 @@ const MAX_TRANSITIVE_ARTIFACT_BYTES: u64 = 2 * 1024 * 1024;
 const VERIFIED_FILE_CACHE_CAPACITY: usize = 32;
 /// How much of a blob one read takes as it goes through it.
 const READ_BUFFER_BYTES: usize = 256 * 1024;
-const VERIFIED_BYTES_CACHE_CAPACITY: usize = 8;
 /// What the cached attachments of one tree hold at most together, the newest
 /// kept whatever its size: an attachment can be 25 MB, and every model
 /// request of the tree sends its history's attachments again.
@@ -186,10 +185,7 @@ impl VerifiedBytesCache {
             .iter()
             .map(|(_, bytes)| bytes.len())
             .sum::<usize>();
-        while self.entries.len() > 1
-            && (self.entries.len() > VERIFIED_BYTES_CACHE_CAPACITY
-                || total > VERIFIED_BYTES_CACHE_MAX_BYTES)
-        {
+        while self.entries.len() > 1 && total > VERIFIED_BYTES_CACHE_MAX_BYTES {
             if let Some((_, oldest)) = self.entries.pop_front() {
                 total -= oldest.len();
             }
@@ -218,6 +214,18 @@ mod verified_bytes_cache_tests {
         let cached = cache.get(&"a".repeat(64)).expect("cached bytes");
         assert_eq!(cached, bytes);
         assert_eq!(cached.as_ptr(), bytes.as_ptr());
+    }
+
+    #[test]
+    fn many_small_attachments_all_stay() {
+        let mut cache = VerifiedBytesCache::default();
+        let digest = |index: usize| format!("{index:064}");
+        for index in 0..100 {
+            cache.insert(digest(index), Bytes::from(vec![0_u8; 1024]));
+        }
+        for index in 0..100 {
+            assert!(cache.get(&digest(index)).is_some(), "attachment {index}");
+        }
     }
 
     #[test]
