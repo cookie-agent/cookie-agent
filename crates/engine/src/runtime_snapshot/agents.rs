@@ -313,9 +313,7 @@ fn apply_variant_override(
     for model in expanded.iter_mut().filter(|model| model.variant.is_none()) {
         let has_variant = match variant {
             ConfiguredVariantRef::Base => true,
-            ConfiguredVariantRef::Named(id) => models
-                .model(&model.model)
-                .is_some_and(|compiled| compiled.model.variants.contains_key(id)),
+            ConfiguredVariantRef::Named(id) => models.model_has_variant(&model.model, id),
         };
         if has_variant {
             model.variant = Some(variant.clone());
@@ -1047,18 +1045,17 @@ fn selection_problem(
     models: &CompiledModelRuntime,
     selection: &ModelSelection,
 ) -> Option<(AgentModelProblem, Option<String>)> {
-    let Some(model) = models.model(&selection.model) else {
-        return Some((AgentModelProblem::ModelNotOffered, None));
-    };
-    match model.model.status {
-        CompiledModelStatus::CredentialsUnavailable => {
+    match models.model_status(&selection.model) {
+        None => return Some((AgentModelProblem::ModelNotOffered, None)),
+        Some(CompiledModelStatus::CredentialsUnavailable) => {
             return Some((AgentModelProblem::ProviderNotConnected, None));
         }
-        CompiledModelStatus::SetupUnavailable => {
+        Some(CompiledModelStatus::SetupUnavailable) => {
             return Some((AgentModelProblem::ProviderNeedsSetup, None));
         }
-        CompiledModelStatus::Available => {}
+        Some(CompiledModelStatus::Available) => {}
     }
+    let model = models.model(&selection.model)?;
     selection
         .variant
         .as_ref()

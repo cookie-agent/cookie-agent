@@ -40,7 +40,7 @@ pub use manager::{
     CompiledModelRuntime, CompiledProviderState, CompiledRuntimeModel, EffectiveCredentialSource,
     ModelManager, ModelManagerError, ModelMutationResult, ProviderConnectRequest,
     ProviderDisconnectRequest, ProviderPresence, ResolvedExecutableModel, RuntimeProviderSource,
-    safe_definition_fingerprint,
+    UnavailableModel, safe_definition_fingerprint,
 };
 pub use model_types::*;
 

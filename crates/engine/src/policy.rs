@@ -211,7 +211,7 @@ fn missing_model_error(
     runtime: &crate::runtime_snapshot::PublishedRuntime,
     selection: &protocol::ModelSelection,
 ) -> Option<EngineError> {
-    if runtime.models.model(&selection.model).is_some() {
+    if runtime.models.model_status(&selection.model).is_some() {
         return None;
     }
     let error = if runtime

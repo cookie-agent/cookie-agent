@@ -632,8 +632,12 @@ fn catalog_cost_reaches_the_compiled_runtime_model() {
         context_over_200k: None,
         tiers: Vec::new(),
     });
+    let snapshot = Arc::new(snapshot);
     let manager =
-        ModelManager::new(BTreeMap::new(), Arc::new(snapshot), store(&temporary)).unwrap();
+        ModelManager::new(BTreeMap::new(), Arc::clone(&snapshot), store(&temporary)).unwrap();
+    manager
+        .connect(connect_request("connect", "one", &snapshot), |_, _| Ok(()))
+        .unwrap();
     let runtime = manager.current();
     let cost = runtime
         .model(&"openai/gpt-5-mini".parse().unwrap())
@@ -1001,14 +1005,13 @@ async fn nested_provider_store_rejected_when_catalog_endpoint_drifts() {
     let manager = ModelManager::new(BTreeMap::new(), Arc::new(drifted), store(&temporary)).unwrap();
     let runtime = manager.current();
     let kimi_models = runtime
-        .models()
+        .unavailable_models()
         .values()
         .filter(|model| model.key.provider_id() == provider_id)
         .collect::<Vec<_>>();
     assert_eq!(kimi_models.len(), 4, "runtime={runtime:?}");
     assert!(kimi_models.iter().all(|model| {
-        model.model.status
-            == cookie_agent_models::compiler::CompiledModelStatus::CredentialsUnavailable
+        model.status == cookie_agent_models::compiler::CompiledModelStatus::CredentialsUnavailable
     }));
 }
 
@@ -1111,7 +1114,7 @@ async fn nested_anthropic_beta_catalog_metadata_compiles_manager_runtime() {
         assert_eq!(state.support_reason, None, "{provider}");
         assert!(
             runtime
-                .models()
+                .unavailable_models()
                 .keys()
                 .any(|model| model.provider_id() == provider_id),
             "{provider}"
@@ -1382,21 +1385,18 @@ fn recompiles_reuse_only_providers_whose_inputs_are_unchanged() {
         .connect(connect_request("connect", "one", &catalog), |_, _| Ok(()))
         .unwrap();
     let connected = manager.current();
-    assert!(!Arc::ptr_eq(
-        &before.models()[&openai],
-        &connected.models()[&openai]
-    ));
+    assert!(before.model(&openai).is_none());
     assert!(Arc::ptr_eq(
-        &before.models()[&second],
-        &connected.models()[&second]
+        &before.unavailable_models()[&second],
+        &connected.unavailable_models()[&second]
     ));
     assert_eq!(
         connected.model(&openai).unwrap().model.status,
         cookie_agent_models::compiler::CompiledModelStatus::Available
     );
     assert_eq!(
-        connected.model(&second).unwrap().model.status,
-        cookie_agent_models::compiler::CompiledModelStatus::CredentialsUnavailable
+        connected.model_status(&second),
+        Some(cookie_agent_models::compiler::CompiledModelStatus::CredentialsUnavailable)
     );
 
     // A fresh but equal authored map and catalog snapshot reuse everything.
@@ -1408,8 +1408,8 @@ fn recompiles_reuse_only_providers_whose_inputs_are_unchanged() {
         &unchanged.models()[&openai]
     ));
     assert!(Arc::ptr_eq(
-        &connected.models()[&second],
-        &unchanged.models()[&second]
+        &connected.unavailable_models()[&second],
+        &unchanged.unavailable_models()[&second]
     ));
     assert_eq!(unchanged.model_revision(), connected.model_revision());
 
@@ -1439,10 +1439,13 @@ fn recompiles_reuse_only_providers_whose_inputs_are_unchanged() {
         &renamed.models()[&openai]
     ));
     assert!(!Arc::ptr_eq(
-        &unchanged.models()[&second],
-        &renamed.models()[&second]
+        &unchanged.unavailable_models()[&second],
+        &renamed.unavailable_models()[&second]
     ));
-    assert_eq!(renamed.models()[&second].model.display_name, "Renamed");
+    assert_eq!(
+        renamed.unavailable_models()[&second].display_name,
+        "Renamed"
+    );
 }
 
 #[test]
@@ -1558,12 +1561,19 @@ fn source_record_digest_tracks_exact_catalog_record_independently_of_recipe_iden
         .unwrap()
         .documentation_url = "https://example.test/changed-provenance".to_owned();
     let second_temporary = TempDir::new().unwrap();
+    let changed_catalog = Arc::new(changed_catalog);
     let second = ModelManager::new(
         BTreeMap::new(),
-        Arc::new(changed_catalog),
+        Arc::clone(&changed_catalog),
         store(&second_temporary),
     )
     .unwrap();
+    second
+        .connect(
+            connect_request("source-digest", "secret", &changed_catalog),
+            |_, _| Ok(()),
+        )
+        .unwrap();
     let (second_source, second_recipe) =
         match &second.current().models().values().next().unwrap().source {
             cookie_agent_models::manager::RuntimeProviderSource::Managed {
@@ -2126,10 +2136,8 @@ fn global_cloud_connections_are_executable_cross_workspace_and_disconnect_cleanl
             EffectiveCredentialSource::Unavailable
         );
         assert!(removed.runtime.store().provider(&provider_id).is_none());
-        assert_ne!(
-            removed.runtime.model(&model.model).unwrap().model.status,
-            cookie_agent_models::compiler::CompiledModelStatus::Available
-        );
+        assert!(removed.runtime.model(&model.model).is_none());
+        assert!(removed.runtime.model_status(&model.model).is_some());
         assert!(removed.runtime.resolve(&model).is_err());
 
         let reopened = ModelManager::new(BTreeMap::new(), catalog, store(&temporary)).unwrap();
@@ -3153,10 +3161,8 @@ fn the_built_in_chatgpt_provider_lists_its_plan_and_compiles_once_signed_in() {
         .unwrap();
     assert_eq!(state.display_name, "Codex / ChatGPT");
     assert_eq!(state.effective_auth, EffectiveCredentialSource::Unavailable);
-    assert_ne!(
-        runtime.model(&luna).unwrap().model.status,
-        cookie_agent_models::compiler::CompiledModelStatus::Available
-    );
+    assert!(runtime.model(&luna).is_none());
+    assert!(runtime.model_status(&luna).is_some());
 
     manager
         .connect(

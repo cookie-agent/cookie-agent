@@ -20,7 +20,7 @@ use crate::{
         },
         fingerprint::fingerprint,
         projection::{capabilities_from_catalog, validate_capability_shape, validate_defaults},
-        variants::{CompiledVariant, CompiledVariantOrigin, custom_variants, managed_variants},
+        variants::{CompiledVariantOrigin, custom_variants, managed_variants},
     },
     recipes::{
         COMPILER_VERSION, FamilyKind, FamilyRecipe, FamilyRecipeRegistry, ValidatedSetup,
@@ -54,6 +54,10 @@ pub enum CompiledModelStatus {
     CredentialsUnavailable,
     SetupUnavailable,
 }
+
+/// A composed set of static headers. Most models and variants compose the
+/// same one, the global headers, and thousands of them share it.
+pub type SharedHeaders = std::sync::Arc<BTreeMap<HeaderName, SafeStaticHeaderValue>>;
 
 #[derive(Clone, Debug, Serialize)]
 pub struct CompiledDynamicModel {
@@ -98,10 +102,10 @@ pub struct CompiledDynamicModel {
     pub reasoning_binding_setting: Option<crate::ReasoningBinding>,
     pub defaults: RequestDefaults,
     pub options: ProviderOptions,
-    pub headers: BTreeMap<HeaderName, SafeStaticHeaderValue>,
+    pub headers: SharedHeaders,
     #[serde(skip)]
     pub cost: Option<crate::catalog::CatalogModelCost>,
-    pub variants: BTreeMap<VariantId, CompiledVariant>,
+    pub variants: super::variants::CompiledVariantMap,
     pub variant_order: Vec<VariantId>,
     pub default_variant: Option<VariantId>,
     pub status: CompiledModelStatus,
@@ -405,6 +409,7 @@ impl DynamicCompiler {
         authored: Option<&ModelsDevProvider>,
         global_headers: &BTreeMap<HeaderName, SafeStaticHeaderValue>,
     ) -> Result<CompiledDynamicProvider, DynamicCompileError> {
+        let global_headers = &global_header_base(global_headers)?;
         let family = self
             .registry
             .classify(record)
@@ -550,7 +555,7 @@ impl DynamicCompiler {
         resolved: &crate::recipes::ResolvedFamilyModel,
         authored: Option<&ModelsDevProvider>,
         override_: Option<&ManagedModelOverride>,
-        global_headers: &BTreeMap<HeaderName, SafeStaticHeaderValue>,
+        global_headers: &SharedHeaders,
     ) -> Result<CompiledDynamicModel, ModelLocalError> {
         let options =
             override_.map_or_else(ProviderOptions::default, |value| value.options.resolve());
@@ -764,32 +769,31 @@ impl DynamicCompiler {
         {
             return Err(ModelLocalError::Provider(DynamicCompileError::Variant));
         }
-        let headers = merge_headers([
-            (global_headers, "global".to_owned()),
-            (
-                authored.map_or(&EMPTY_HEADERS, |value| &value.headers),
-                format!("provider `{provider_id}`"),
-            ),
-            (
-                override_.map_or(&EMPTY_HEADERS, |value| &value.headers),
-                format!("provider `{provider_id}` model `{}`", model.id),
-            ),
-        ])
-        .map_err(ModelLocalError::Provider)?;
-        for variant in variants.values_mut() {
-            variant.headers = merge_headers([
+        let headers = merge_headers_onto(
+            global_headers,
+            [
                 (
-                    &headers,
-                    format!("provider `{provider_id}` model `{}`", model.id),
+                    authored.map_or(&EMPTY_HEADERS, |value| &value.headers),
+                    format!("provider `{provider_id}`"),
                 ),
                 (
-                    &variant.headers,
+                    override_.map_or(&EMPTY_HEADERS, |value| &value.headers),
+                    format!("provider `{provider_id}` model `{}`", model.id),
+                ),
+            ],
+        )
+        .map_err(ModelLocalError::Provider)?;
+        for variant in variants.values_mut() {
+            variant.headers = merge_headers_onto(
+                &headers,
+                [(
+                    &*variant.headers,
                     format!(
                         "provider `{provider_id}` model `{}` variant `{}`",
                         model.id, variant.id
                     ),
-                ),
-            ])
+                )],
+            )
             .map_err(ModelLocalError::Provider)?;
         }
         let display_name = override_
@@ -898,6 +902,7 @@ impl DynamicCompiler {
         provider: &CustomProvider,
         global_headers: &BTreeMap<HeaderName, SafeStaticHeaderValue>,
     ) -> Result<CompiledDynamicProvider, DynamicCompileError> {
+        let global_headers = global_header_base(global_headers)?;
         let adapter = OvenAdapterFamily::parse(provider.adaptor.as_str())
             .ok_or(DynamicCompileError::UnsupportedAdapter)?;
         crate::authoring::validate_provider_cache(provider.cache.as_ref(), adapter.id())
@@ -969,25 +974,27 @@ impl DynamicCompiler {
                 &options,
             )
             .map_err(|_| DynamicCompileError::Variant)?;
-            let headers = merge_headers([
-                (global_headers, "global".to_owned()),
-                (&provider.headers, format!("provider `{provider_id}`")),
-                (
-                    &model.headers,
-                    format!("provider `{provider_id}` model `{id}`"),
-                ),
-            ])?;
-            for variant in variants.values_mut() {
-                variant.headers = merge_headers([
-                    (&headers, format!("provider `{provider_id}` model `{id}`")),
+            let headers = merge_headers_onto(
+                &global_headers,
+                [
+                    (&provider.headers, format!("provider `{provider_id}`")),
                     (
-                        &variant.headers,
+                        &model.headers,
+                        format!("provider `{provider_id}` model `{id}`"),
+                    ),
+                ],
+            )?;
+            for variant in variants.values_mut() {
+                variant.headers = merge_headers_onto(
+                    &headers,
+                    [(
+                        &*variant.headers,
                         format!(
                             "provider `{provider_id}` model `{id}` variant `{}`",
                             variant.id
                         ),
-                    ),
-                ])?;
+                    )],
+                )?;
             }
             if !model.enabled {
                 continue;
@@ -1191,12 +1198,26 @@ fn split_origin(url: &str) -> (&str, Vec<&str>) {
     )
 }
 
-fn merge_headers<'a>(
+/// The global headers as the base every model composes onto.
+fn global_header_base(
+    global: &BTreeMap<HeaderName, SafeStaticHeaderValue>,
+) -> Result<SharedHeaders, DynamicCompileError> {
+    merge_headers_onto(&SharedHeaders::default(), [(global, "global".to_owned())])
+}
+
+/// Composes `base`, already composed, with `layers` in order. With nothing to
+/// add, the result is `base` itself.
+fn merge_headers_onto<'a>(
+    base: &SharedHeaders,
     layers: impl IntoIterator<Item = (&'a BTreeMap<HeaderName, SafeStaticHeaderValue>, String)>,
-) -> Result<BTreeMap<HeaderName, SafeStaticHeaderValue>, DynamicCompileError> {
-    let mut merged = BTreeMap::new();
+) -> Result<SharedHeaders, DynamicCompileError> {
+    let mut merged: Option<BTreeMap<HeaderName, SafeStaticHeaderValue>> = None;
     for (layer, scope) in layers {
         validate_header_ownership(layer, scope).map_err(DynamicCompileError::StaticHeaders)?;
+        if layer.is_empty() {
+            continue;
+        }
+        let merged = merged.get_or_insert_with(|| (**base).clone());
         for (name, value) in layer {
             if value.as_str().is_empty() {
                 merged.remove(name);
@@ -1205,8 +1226,11 @@ fn merge_headers<'a>(
             }
         }
     }
+    let Some(merged) = merged else {
+        return Ok(base.clone());
+    };
     validate_header_limits(&merged).map_err(DynamicCompileError::StaticHeaders)?;
-    Ok(merged)
+    Ok(std::sync::Arc::new(merged))
 }
 
 pub(crate) fn validate_managed_cache(

@@ -4,7 +4,7 @@ use cookie_agent_identity::{ConfiguredModelDefault, VariantId};
 use serde::Serialize;
 
 use crate::{
-    HeaderName, ProviderOptions, SafeStaticHeaderValue,
+    ProviderOptions,
     authoring::{ManagedModelOverride, ReasoningBehavior, RequestDefaults, VariantDefinition},
     catalog::CatalogReasoningOption,
 };
@@ -26,15 +26,15 @@ pub struct CompiledVariant {
     pub defaults: RequestDefaults,
     pub options: ProviderOptions,
     pub reasoning: Option<ReasoningBehavior>,
-    pub headers: BTreeMap<HeaderName, SafeStaticHeaderValue>,
+    pub headers: super::dynamic::SharedHeaders,
     pub origin: CompiledVariantOrigin,
 }
 
-type CompiledVariants = (
-    BTreeMap<VariantId, CompiledVariant>,
-    Vec<VariantId>,
-    Option<VariantId>,
-);
+/// Boxed: a map allocates room for eleven values for even one, and nearly
+/// every one of a catalog's thousands of models has variants.
+pub type CompiledVariantMap = BTreeMap<VariantId, Box<CompiledVariant>>;
+
+type CompiledVariants = (CompiledVariantMap, Vec<VariantId>, Option<VariantId>);
 
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub(crate) enum VariantCompileError {
@@ -111,7 +111,7 @@ fn generated(
     source: &[CatalogReasoningOption],
     budget_room: i64,
     supported: impl Fn(&ReasoningBehavior) -> bool,
-) -> Result<(BTreeMap<VariantId, CompiledVariant>, Vec<VariantId>), VariantCompileError> {
+) -> Result<(CompiledVariantMap, Vec<VariantId>), VariantCompileError> {
     let mut variants = BTreeMap::new();
     let mut order = Vec::new();
     for option in source {
@@ -198,7 +198,7 @@ fn budget_levels(min: Option<i64>, max: Option<i64>, room: i64) -> Vec<(&'static
 /// already turns reasoning on. Levels the adapter cannot send do not count, so
 /// a wire that only accepts the toggle keeps its `on`.
 fn suppress_redundant_generated_toggle_on(
-    variants: &mut BTreeMap<VariantId, CompiledVariant>,
+    variants: &mut CompiledVariantMap,
     order: &mut Vec<VariantId>,
     supported: impl Fn(&ReasoningBehavior) -> bool,
 ) {
@@ -234,7 +234,7 @@ fn suppress_redundant_generated_toggle_on(
 }
 
 fn insert_generated(
-    variants: &mut BTreeMap<VariantId, CompiledVariant>,
+    variants: &mut CompiledVariantMap,
     order: &mut Vec<VariantId>,
     id: &str,
     reasoning: ReasoningBehavior,
@@ -248,7 +248,7 @@ fn insert_generated(
         defaults: RequestDefaults::default(),
         options: ProviderOptions::default(),
         reasoning: Some(reasoning),
-        headers: BTreeMap::new(),
+        headers: Default::default(),
         origin,
     };
     if let Some(existing) = variants.get(&id) {
@@ -260,12 +260,12 @@ fn insert_generated(
         return Ok(());
     }
     order.push(id.clone());
-    variants.insert(id, candidate);
+    variants.insert(id, Box::new(candidate));
     Ok(())
 }
 
 fn apply_directives(
-    variants: &mut BTreeMap<VariantId, CompiledVariant>,
+    variants: &mut CompiledVariantMap,
     order: &mut Vec<VariantId>,
     directives: &BTreeMap<VariantId, VariantDefinition>,
     defaults: &RequestDefaults,
@@ -282,16 +282,16 @@ fn apply_directives(
         }
         let variant = variants.entry(id.clone()).or_insert_with(|| {
             order.push(id.clone());
-            CompiledVariant {
+            Box::new(CompiledVariant {
                 model_id: None,
                 id: id.clone(),
                 display_name: display_name(id),
                 defaults: defaults.clone(),
                 options: options.clone(),
                 reasoning: None,
-                headers: BTreeMap::new(),
+                headers: Default::default(),
                 origin: CompiledVariantOrigin::Authored,
-            }
+            })
         });
         if let Some(name) = &directive.display_name {
             if name.trim().is_empty() || name.len() > 512 || name.chars().any(char::is_control) {
@@ -312,14 +312,14 @@ fn apply_directives(
             variant.reasoning = Some(reasoning.clone());
         }
         // Keep deletion markers until global/provider/model headers are composed.
-        variant.headers.extend(directive.headers().clone());
+        std::sync::Arc::make_mut(&mut variant.headers).extend(directive.headers().clone());
     }
     Ok(())
 }
 
 fn resolve_default(
     default: Option<&ConfiguredModelDefault>,
-    variants: &BTreeMap<VariantId, CompiledVariant>,
+    variants: &CompiledVariantMap,
 ) -> Result<Option<VariantId>, VariantCompileError> {
     match default {
         None | Some(ConfiguredModelDefault::Base) => Ok(None),
@@ -387,7 +387,7 @@ mod tests {
             compaction: crate::NativeCompactionConfig::Default,
             deferred_tools: None,
             reasoning_binding: None,
-            headers: BTreeMap::new(),
+            headers: Default::default(),
         }
     }
 
@@ -473,10 +473,7 @@ mod tests {
         assert_eq!(default, Some(id("budget-max")));
     }
 
-    fn budgets(
-        order: &[VariantId],
-        variants: &BTreeMap<VariantId, CompiledVariant>,
-    ) -> Vec<(String, i64)> {
+    fn budgets(order: &[VariantId], variants: &CompiledVariantMap) -> Vec<(String, i64)> {
         order
             .iter()
             .map(|id| match variants[id].reasoning {

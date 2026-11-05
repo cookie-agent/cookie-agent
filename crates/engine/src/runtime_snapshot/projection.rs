@@ -20,10 +20,16 @@ pub(crate) fn build_runtime_snapshot(
     agent_presets: &BTreeMap<String, std::sync::Arc<AgentRegistry>>,
     config_revision: &protocol::ConfigRevision,
 ) -> Result<(protocol::ModelCatalogView, super::SnapshotRevisions), EngineError> {
-    let mut compiled_by_provider =
-        BTreeMap::<protocol::ProviderId, Vec<&cookie_agent_models::CompiledRuntimeModel>>::new();
+    let mut available_by_provider = BTreeMap::<protocol::ProviderId, u32>::new();
     for model in models.models().values() {
-        compiled_by_provider
+        *available_by_provider
+            .entry(model.key.provider_id())
+            .or_default() += 1;
+    }
+    let mut unavailable_by_provider =
+        BTreeMap::<protocol::ProviderId, Vec<&cookie_agent_models::UnavailableModel>>::new();
+    for model in models.unavailable_models().values() {
+        unavailable_by_provider
             .entry(model.key.provider_id())
             .or_default()
             .push(model);
@@ -35,7 +41,11 @@ pub(crate) fn build_runtime_snapshot(
             provider_descriptor(
                 models,
                 provider,
-                compiled_by_provider
+                available_by_provider
+                    .get(&provider.id)
+                    .copied()
+                    .unwrap_or(0),
+                unavailable_by_provider
                     .get(&provider.id)
                     .map_or(&[][..], Vec::as_slice),
             )
@@ -207,13 +217,17 @@ pub(crate) fn runtime_revision(
 fn model_availability(
     provider: &cookie_agent_models::CompiledProviderState,
     record: Option<&cookie_agent_models::catalog::CatalogProviderRecord>,
-    compiled: &[&cookie_agent_models::CompiledRuntimeModel],
+    available: u32,
+    compiled: &[&cookie_agent_models::UnavailableModel],
 ) -> (
     protocol::ProviderModelCounts,
     Vec<protocol::UnavailableModelDescriptor>,
 ) {
     let listed = provider.authored || provider.stored;
-    let mut counts = protocol::ProviderModelCounts::default();
+    let mut counts = protocol::ProviderModelCounts {
+        available,
+        ..Default::default()
+    };
     let mut unavailable = Vec::new();
     let mut push = |id: &protocol::ProviderModelId,
                     display_name: &str,
@@ -238,17 +252,14 @@ fn model_availability(
         }
     };
     for model in compiled {
-        let kind = match model.model.status {
-            CompiledModelStatus::Available => {
-                counts.available = counts.available.saturating_add(1);
-                continue;
-            }
+        let kind = match model.status {
+            CompiledModelStatus::Available => continue,
             CompiledModelStatus::SetupUnavailable => protocol::ModelUnavailableKind::NeedsSetup,
             CompiledModelStatus::CredentialsUnavailable => {
                 protocol::ModelUnavailableKind::NeedsCredentials
             }
         };
-        push(&model.key.model_id(), &model.model.display_name, kind, None);
+        push(&model.key.model_id(), &model.display_name, kind, None);
     }
     for model in &provider.unsupported_models {
         let display_name = record
@@ -285,7 +296,8 @@ fn safe_message(value: &str) -> Option<protocol::SafeErrorMessage> {
 fn provider_descriptor(
     runtime: &CompiledModelRuntime,
     provider: &cookie_agent_models::CompiledProviderState,
-    compiled: &[&cookie_agent_models::CompiledRuntimeModel],
+    available: u32,
+    compiled: &[&cookie_agent_models::UnavailableModel],
 ) -> Result<protocol::ProviderDescriptor, EngineError> {
     let catalog_entry = runtime.catalog().provider(&provider.id);
     let quarantined = catalog_entry.is_some_and(|entry| entry.quarantine.is_some());
@@ -417,7 +429,8 @@ fn provider_descriptor(
                 .and_then(|email| protocol::SafeDisplayText::new(email).ok()),
             sign_in_required: account.needs_sign_in,
         });
-    let (model_counts, unavailable_models) = model_availability(provider, record, compiled);
+    let (model_counts, unavailable_models) =
+        model_availability(provider, record, available, compiled);
     let documentation_url = record
         .map(|record| record.documentation_url.trim())
         .filter(|url| !url.is_empty())

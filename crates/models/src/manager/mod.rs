@@ -116,6 +116,36 @@ pub struct CompiledProviderState {
     pub unsupported_models: Vec<crate::compiler::UnsupportedModel>,
 }
 
+/// What stays of a compiled model nothing can run yet, for want of setup or
+/// credentials: nearly all of a catalog's thousands, whose full compile would
+/// sit unused. Connecting its provider compiles it again.
+#[derive(Clone, Debug)]
+pub struct UnavailableModel {
+    pub key: ModelKey,
+    pub display_name: String,
+    pub status: CompiledModelStatus,
+    pub variants: Vec<cookie_agent_identity::VariantId>,
+    behavior_fingerprint: Sha256Digest,
+    credential_source: EffectiveCredentialSource,
+    setup_fingerprint: Sha256Digest,
+    config_override_fingerprint: Sha256Digest,
+}
+
+impl UnavailableModel {
+    fn of(model: &CompiledRuntimeModel) -> Self {
+        Self {
+            key: model.key.clone(),
+            display_name: model.model.display_name.clone(),
+            status: model.model.status,
+            variants: model.model.variants.keys().cloned().collect(),
+            behavior_fingerprint: model.model.behavior_fingerprint.clone(),
+            credential_source: model.credential_source,
+            setup_fingerprint: model.setup_fingerprint.clone(),
+            config_override_fingerprint: model.config_override_fingerprint.clone(),
+        }
+    }
+}
+
 /// One complete compiled model plus its exact safe source and credential bindings.
 #[derive(Clone)]
 pub struct CompiledRuntimeModel {
@@ -127,7 +157,7 @@ pub struct CompiledRuntimeModel {
     pub setup_fingerprint: Sha256Digest,
     pub setup_recipe: ProviderSetupRecipeId,
     pub credential_source: EffectiveCredentialSource,
-    pub static_headers: BTreeMap<crate::HeaderName, crate::SafeStaticHeaderValue>,
+    pub static_headers: crate::compiler::SharedHeaders,
     executable: Option<ExecutableBehavior>,
     variant_executables: BTreeMap<cookie_agent_identity::VariantId, ExecutableBehavior>,
 }
@@ -736,7 +766,9 @@ pub struct CompiledModelRuntime {
     model_revision: ModelRevision,
     runtime_revision: RuntimeRevision,
     providers: Arc<Vec<CompiledProviderState>>,
+    /// The models that can run.
     models: Arc<BTreeMap<ModelKey, Arc<CompiledRuntimeModel>>>,
+    unavailable: Arc<BTreeMap<ModelKey, Arc<UnavailableModel>>>,
     /// Each catalog-backed provider's compiled output, kept so the next
     /// compile can reuse a provider whose inputs did not change.
     managed: Arc<BTreeMap<ProviderId, Arc<CompiledManagedProvider>>>,
@@ -750,6 +782,7 @@ pub struct CompiledModelRuntime {
 struct CompiledManagedProvider {
     state: CompiledProviderState,
     models: Vec<Arc<CompiledRuntimeModel>>,
+    unavailable: Vec<Arc<UnavailableModel>>,
 }
 
 impl CompiledModelRuntime {
@@ -802,6 +835,39 @@ impl CompiledModelRuntime {
     #[must_use]
     pub fn model(&self, key: &ModelKey) -> Option<&CompiledRuntimeModel> {
         self.models.get(key).map(AsRef::as_ref)
+    }
+
+    /// The models that want setup or credentials before they can run.
+    #[must_use]
+    pub fn unavailable_models(&self) -> &BTreeMap<ModelKey, Arc<UnavailableModel>> {
+        &self.unavailable
+    }
+
+    /// Whether `key` is a compiled model, able to run or not, and which.
+    #[must_use]
+    pub fn model_status(&self, key: &ModelKey) -> Option<CompiledModelStatus> {
+        self.models
+            .get(key)
+            .map(|model| model.model.status)
+            .or_else(|| self.unavailable.get(key).map(|model| model.status))
+    }
+
+    /// Whether `key` is a compiled model, able to run or not, with `variant`.
+    #[must_use]
+    pub fn model_has_variant(
+        &self,
+        key: &ModelKey,
+        variant: &cookie_agent_identity::VariantId,
+    ) -> bool {
+        self.models
+            .get(key)
+            .map(|model| model.model.variants.contains_key(variant))
+            .or_else(|| {
+                self.unavailable
+                    .get(key)
+                    .map(|model| model.variants.contains(variant))
+            })
+            .unwrap_or(false)
     }
 
     pub fn resolve(
@@ -1530,6 +1596,7 @@ fn compile_runtime(
     });
     let mut providers = Vec::new();
     let mut models = BTreeMap::new();
+    let mut unavailable = BTreeMap::new();
     let mut managed = BTreeMap::new();
     for provider_id in provider_ids {
         // Authored custom providers take precedence over catalog and
@@ -1564,6 +1631,15 @@ fn compile_runtime(
             if models
                 .insert(model.key.clone(), Arc::clone(model))
                 .is_some()
+            {
+                return Err(ModelManagerError::DuplicateModel(model.key.clone()));
+            }
+        }
+        for model in &compiled.unavailable {
+            if models.contains_key(&model.key)
+                || unavailable
+                    .insert(model.key.clone(), Arc::clone(model))
+                    .is_some()
             {
                 return Err(ModelManagerError::DuplicateModel(model.key.clone()));
             }
@@ -1622,30 +1698,43 @@ fn compile_runtime(
                 executable,
                 variant_executables,
             };
-            if models
-                .insert(key.clone(), Arc::new(runtime_model))
-                .is_some()
-            {
+            if models.contains_key(&key) || unavailable.contains_key(&key) {
                 return Err(ModelManagerError::DuplicateModel(key));
+            }
+            if runtime_model.model.status == CompiledModelStatus::Available {
+                models.insert(key, Arc::new(runtime_model));
+            } else {
+                unavailable.insert(key, Arc::new(UnavailableModel::of(&runtime_model)));
             }
         }
     }
 
     providers.sort_by(|left, right| left.id.cmp(&right.id));
+    let mut revision_inputs = models
+        .iter()
+        .map(|(key, model)| {
+            (
+                key,
+                &model.model.behavior_fingerprint,
+                model.credential_source,
+                &model.setup_fingerprint,
+                &model.config_override_fingerprint,
+            )
+        })
+        .chain(unavailable.iter().map(|(key, model)| {
+            (
+                key,
+                &model.behavior_fingerprint,
+                model.credential_source,
+                &model.setup_fingerprint,
+                &model.config_override_fingerprint,
+            )
+        }))
+        .collect::<Vec<_>>();
+    revision_inputs.sort_by_key(|inputs| inputs.0);
     let model_revision = revision::<ModelRevision, _>(
         "cookie-agent/model-runtime/v1",
-        &models
-            .iter()
-            .map(|(key, model)| {
-                (
-                    key,
-                    &model.model.behavior_fingerprint,
-                    model.credential_source,
-                    &model.setup_fingerprint,
-                    &model.config_override_fingerprint,
-                )
-            })
-            .collect::<Vec<_>>(),
+        &revision_inputs,
         ModelRevision::new,
     )?;
     let runtime_revision = revision::<RuntimeRevision, _>(
@@ -1668,6 +1757,7 @@ fn compile_runtime(
         runtime_revision,
         providers: Arc::new(providers),
         models: Arc::new(models),
+        unavailable: Arc::new(unavailable),
         managed: Arc::new(managed),
         chatgpt_account,
     })
@@ -1710,6 +1800,7 @@ fn compile_managed_provider(
     let registry = family_registry();
     let compiler = DynamicCompiler::family_registry();
     let mut models = Vec::new();
+    let mut unavailable = Vec::new();
     let authored_managed = match authored.get(provider_id) {
         Some(definition) => definition.managed(),
         _ => None,
@@ -1765,11 +1856,19 @@ fn compile_managed_provider(
                 state.effective_auth = EffectiveCredentialSource::ProviderStore;
             }
         }
-        return Ok(CompiledManagedProvider { state, models });
+        return Ok(CompiledManagedProvider {
+            state,
+            models,
+            unavailable,
+        });
     };
     let Some(family) = registry.classify(record) else {
         state.support_reason = Some("no_known_protocol_family".to_owned());
-        return Ok(CompiledManagedProvider { state, models });
+        return Ok(CompiledManagedProvider {
+            state,
+            models,
+            unavailable,
+        });
     };
     let effective = effective_managed(provider_id, record, family, authored_managed, stored)?;
     state.effective_auth = effective.credential_source;
@@ -1783,11 +1882,19 @@ fn compile_managed_provider(
         Ok(compiled) => compiled,
         Err(DynamicCompileError::UnsupportedProvider) => {
             state.support_reason = Some("no_known_protocol_family".to_owned());
-            return Ok(CompiledManagedProvider { state, models });
+            return Ok(CompiledManagedProvider {
+                state,
+                models,
+                unavailable,
+            });
         }
         Err(error) if authored_managed.is_none() && stored.is_none() => {
             state.support_reason = Some(error.to_string());
-            return Ok(CompiledManagedProvider { state, models });
+            return Ok(CompiledManagedProvider {
+                state,
+                models,
+                unavailable,
+            });
         }
         Err(error) => return Err(ModelManagerError::DynamicCompile(error)),
     };
@@ -1834,9 +1941,17 @@ fn compile_managed_provider(
             executable,
             variant_executables,
         };
-        models.push(Arc::new(runtime_model));
+        if runtime_model.model.status == CompiledModelStatus::Available {
+            models.push(Arc::new(runtime_model));
+        } else {
+            unavailable.push(Arc::new(UnavailableModel::of(&runtime_model)));
+        }
     }
-    Ok(CompiledManagedProvider { state, models })
+    Ok(CompiledManagedProvider {
+        state,
+        models,
+        unavailable,
+    })
 }
 
 struct EffectiveManaged {
