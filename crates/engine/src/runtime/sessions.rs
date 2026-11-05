@@ -415,6 +415,13 @@ impl Engine {
         Ok(self.client_session_meta(session.metadata(), |project| self.project_exists(project)))
     }
 
+    /// What [`Self::get_session`] answers, for a reader that only wants to
+    /// show it: a settled session stays out of memory, its log unread.
+    pub fn session_meta(&self, id: SessionId) -> Result<SessionMeta, EngineError> {
+        let meta = self.inner.store.meta(id)?;
+        Ok(self.client_session_meta(meta, |project| self.project_exists(project)))
+    }
+
     pub fn session_usage(&self, id: SessionId) -> Result<SessionUsageResult, EngineError> {
         Ok(self.inner.store.session_usage(id)?)
     }

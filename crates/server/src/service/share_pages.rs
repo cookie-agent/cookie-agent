@@ -210,7 +210,7 @@ fn guest_page(engine: &Engine, link: &GuestLink) -> Response {
         return gone();
     };
     let title = engine
-        .get_session(link.session)
+        .session_meta(link.session)
         .ok()
         .and_then(|meta| meta.title)
         .map_or_else(

@@ -100,7 +100,7 @@ impl TreeDeletion<'_> {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .0
-            .retain(|(cached, _, _)| !members.contains(cached));
+            .retain(|entry| !members.contains(&entry.id));
         let tombstone = if root_dir.exists() {
             let tombstone = store
                 .sessions_dir

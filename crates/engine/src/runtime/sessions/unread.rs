@@ -43,7 +43,7 @@ impl Engine {
         let mut roots = Vec::new();
         let mut skipped = Vec::new();
         for session_id in session_ids {
-            match self.get_session(session_id).map(|meta| meta.origin) {
+            match self.session_meta(session_id).map(|meta| meta.origin) {
                 Ok(SessionOrigin::Delegated {
                     root_session_id, ..
                 }) => skipped.push(SessionUnreadSkip {

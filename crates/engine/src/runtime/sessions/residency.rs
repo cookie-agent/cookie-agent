@@ -74,6 +74,7 @@ impl Engine {
                 {
                     eprintln!("upload lease sweep failed: {error}");
                 }
+                engine.inner.store.prune_read_only_logs();
                 // Last, so what this pass paged out goes back at once. A pass
                 // that finds a run going leaves it for a later one.
                 if !engine.runs_going()

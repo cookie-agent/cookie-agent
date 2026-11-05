@@ -142,12 +142,16 @@ impl ServerProtocol for Server {
     async fn get_session(&self, params: SessionGetParams) -> Result<SessionGetResult> {
         let session = self
             .engine
-            .get_session(params.session_id)
+            .session_meta(params.session_id)
             .map_err(protocol_fault)?;
-        let runtimes = self
-            .engine
-            .session_runtimes(params.session_id)
-            .map_err(protocol_fault)?;
+        // Metadata from before it listed attachments holds none.
+        let runtimes = if session.attachments.is_empty() {
+            self.engine
+                .session_runtimes(params.session_id)
+                .map_err(protocol_fault)?
+        } else {
+            session.attachments.clone()
+        };
         Ok(SessionGetResult { session, runtimes })
     }
 

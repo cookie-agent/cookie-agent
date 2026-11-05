@@ -52,7 +52,7 @@ use std::{
         Arc, Condvar, Mutex, RwLock,
         atomic::{AtomicBool, Ordering},
     },
-    time::SystemTime,
+    time::{Duration, Instant, SystemTime},
 };
 
 #[cfg(unix)]
@@ -513,6 +513,14 @@ pub struct SessionStore {
 /// replays several sessions at once.
 const READ_ONLY_LOG_CACHE_ENTRIES: usize = 4;
 
+/// How many bytes of `events.jsonl` the kept logs may come from, beyond the
+/// one in use. A parsed log takes about three times its file in memory.
+const READ_ONLY_LOG_CACHE_BYTES: u64 = 16 * 1024 * 1024;
+
+/// How long a kept log nothing has read stays, for a client paging through
+/// it, before the janitor drops it.
+const READ_ONLY_LOG_IDLE: Duration = Duration::from_secs(5 * 60);
+
 /// Identity of an `events.jsonl` as last parsed. Logs only grow by appends
 /// and shrink by torn-tail repair, so an unchanged length and modification
 /// time mean the parsed copy is current.
@@ -535,27 +543,41 @@ impl ReadOnlyLogFingerprint {
     }
 }
 
+/// One kept parse.
+struct ReadOnlyLog {
+    id: SessionId,
+    fingerprint: ReadOnlyLogFingerprint,
+    log: Arc<EventLog>,
+    used: Instant,
+}
+
 /// Most recently used first.
 #[derive(Default)]
-struct ReadOnlyLogs(VecDeque<(SessionId, ReadOnlyLogFingerprint, Arc<EventLog>)>);
+struct ReadOnlyLogs(VecDeque<ReadOnlyLog>);
 
 impl std::fmt::Debug for ReadOnlyLogs {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_list()
-            .entries(self.0.iter().map(|(id, _, _)| id))
+            .entries(self.0.iter().map(|entry| entry.id))
             .finish()
     }
 }
 
 impl ReadOnlyLogs {
-    fn get(&mut self, id: SessionId, fingerprint: ReadOnlyLogFingerprint) -> Option<Arc<EventLog>> {
-        let index = self.0.iter().position(|(cached, _, _)| *cached == id)?;
-        let entry = self.0.remove(index)?;
-        if entry.1 != fingerprint {
+    fn get(
+        &mut self,
+        id: SessionId,
+        fingerprint: ReadOnlyLogFingerprint,
+        now: Instant,
+    ) -> Option<Arc<EventLog>> {
+        let index = self.0.iter().position(|entry| entry.id == id)?;
+        let mut entry = self.0.remove(index)?;
+        if entry.fingerprint != fingerprint {
             return None;
         }
-        let log = entry.2.clone();
+        entry.used = now;
+        let log = entry.log.clone();
         self.0.push_front(entry);
         Some(log)
     }
@@ -566,15 +588,49 @@ impl ReadOnlyLogs {
         id: SessionId,
         fingerprint: ReadOnlyLogFingerprint,
     ) -> Option<Arc<EventLog>> {
-        let index = self.0.iter().position(|(cached, _, _)| *cached == id)?;
-        let (_, cached, log) = self.0.remove(index)?;
-        (cached == fingerprint).then_some(log)
+        let index = self.0.iter().position(|entry| entry.id == id)?;
+        let entry = self.0.remove(index)?;
+        (entry.fingerprint == fingerprint).then_some(entry.log)
     }
 
-    fn insert(&mut self, id: SessionId, fingerprint: ReadOnlyLogFingerprint, log: Arc<EventLog>) {
-        self.0.retain(|(cached, _, _)| *cached != id);
-        self.0.push_front((id, fingerprint, log));
+    fn insert(
+        &mut self,
+        id: SessionId,
+        fingerprint: ReadOnlyLogFingerprint,
+        log: Arc<EventLog>,
+        now: Instant,
+    ) {
+        self.0.retain(|entry| entry.id != id);
+        self.0.push_front(ReadOnlyLog {
+            id,
+            fingerprint,
+            log,
+            used: now,
+        });
         self.0.truncate(READ_ONLY_LOG_CACHE_ENTRIES);
+        self.fit(READ_ONLY_LOG_CACHE_BYTES);
+    }
+
+    /// Drops the least recently used logs until those left come from at most
+    /// `budget` bytes of file. The newest stays whatever its size: a client
+    /// is paging through it.
+    fn fit(&mut self, budget: u64) {
+        let mut bytes = self.0.front().map_or(0, |entry| entry.fingerprint.len);
+        let mut kept = self.0.len().min(1);
+        for entry in self.0.iter().skip(1) {
+            bytes += entry.fingerprint.len;
+            if bytes > budget {
+                break;
+            }
+            kept += 1;
+        }
+        self.0.truncate(kept);
+    }
+
+    /// Drops the logs nothing has read for `idle`.
+    fn prune(&mut self, now: Instant, idle: Duration) {
+        self.0
+            .retain(|entry| now.saturating_duration_since(entry.used) < idle);
     }
 }
 
@@ -1228,6 +1284,31 @@ impl SessionStore {
         self.open_snapshot(id, true)
     }
 
+    /// `id`'s metadata, read without its log when that can be told apart from
+    /// what the log would say: a session in memory, or the `metadata` file of
+    /// one nobody has written since. Anything else takes [`Self::get`]'s full
+    /// load, and so does a file from before metadata listed `attachments`,
+    /// when the session's are only in its log.
+    pub fn meta(&self, id: SessionId) -> Result<SessionMeta, SessionError> {
+        if let Some(session) = self.get_resident(id) {
+            return Ok(session.meta.clone());
+        }
+        if self.summary_cache_is_current(id)
+            && let Some(summary) = self.cached_summary(id)
+            && !summary.meta.attachments.is_empty()
+        {
+            return Ok(summary.meta);
+        }
+        if let Some(meta) = self
+            .resolve_dir(id)
+            .ok()
+            .and_then(|directory| settled_meta(&directory))
+        {
+            return Ok(meta);
+        }
+        self.get(id).map(|session| session.metadata())
+    }
+
     /// Read a session without completing its tree first.
     ///
     /// Startup passes need a session's own log for bookkeeping; going through
@@ -1307,7 +1388,7 @@ impl SessionStore {
             .read_only_logs
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .get(id, fingerprint);
+            .get(id, fingerprint, Instant::now());
         if let Some(log) = cached {
             return Ok(log);
         }
@@ -1319,8 +1400,16 @@ impl SessionStore {
         self.read_only_logs
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .insert(id, fingerprint, log.clone());
+            .insert(id, fingerprint, log.clone(), Instant::now());
         Ok(log)
+    }
+
+    /// Drops the parsed read-only logs nothing has read for a while.
+    pub fn prune_read_only_logs(&self) {
+        self.read_only_logs
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .prune(Instant::now(), READ_ONLY_LOG_IDLE);
     }
 
     /// Opens `id`'s log at `path` for writing. A read-only parse of the same
@@ -2426,7 +2515,7 @@ impl SessionStore {
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .0
-                .retain(|(cached, _, _)| *cached != id);
+                .retain(|entry| entry.id != id);
             self.locations
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())

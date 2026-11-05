@@ -114,7 +114,7 @@ impl Engine {
         else {
             return None;
         };
-        let meta = self.get_session(*session).ok()?;
+        let meta = self.session_meta(*session).ok()?;
         Some(SessionShare {
             id: record.id.clone(),
             path: format!("{}{}", cookie_agent_protocol::SHARE_PATH_PREFIX, record.id),
@@ -331,7 +331,7 @@ impl Engine {
             if !is_share_label(&label) {
                 return Err(ShareError::InvalidLabel.into());
             }
-            let meta = engine.get_session(params.session_id)?;
+            let meta = engine.session_meta(params.session_id)?;
             if !matches!(meta.origin, SessionOrigin::Root) {
                 return Err(ShareError::NotRoot(params.session_id).into());
             }
@@ -455,7 +455,7 @@ impl Engine {
             };
             if let Some(link) = guest_link(&record) {
                 return Ok(engine
-                    .get_session(link.session)
+                    .session_meta(link.session)
                     .is_ok()
                     .then_some(OpenedLink::Session(link)));
             }
@@ -506,7 +506,7 @@ impl Engine {
         if root == session {
             return true;
         }
-        self.get_session(session).is_ok_and(|meta| {
+        self.session_meta(session).is_ok_and(|meta| {
             matches!(
                 meta.origin,
                 SessionOrigin::Delegated { root_session_id, .. } if root_session_id == root

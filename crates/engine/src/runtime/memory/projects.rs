@@ -326,9 +326,9 @@ impl Engine {
             meta.project = self
                 .inner
                 .store
-                .get(root_session_id)
+                .meta(root_session_id)
                 .ok()
-                .and_then(|root| root.meta.project.clone());
+                .and_then(|root| root.project.clone());
         }
         if meta.project.as_ref().is_some_and(|project| !known(project)) {
             meta.project = None;

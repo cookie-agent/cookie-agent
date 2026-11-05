@@ -4987,6 +4987,7 @@ fn a_history_page_reads_only_the_session_log() {
 }
 
 mod layout;
+mod meta;
 mod view;
 
 /// A cold reopen parses and folds its log before it takes any store lock,

@@ -199,6 +199,21 @@ pub(super) fn windows_replace_is_contended(error: &std::io::Error) -> bool {
         || matches!(error.raw_os_error(), Some(5 | 32))
 }
 
+/// The `metadata` file of the session in `directory`, when it is no older
+/// than the session's log, so it holds all the log does, lists the session's
+/// attachments, and says no run is going, which only a live daemon can know.
+pub(super) fn settled_meta(directory: &Path) -> Option<SessionMeta> {
+    let cache = directory.join(SESSION_META_FILE);
+    let events = directory.join(EVENTS_FILE);
+    let modified = |path: &Path| fs::metadata(path).and_then(|metadata| metadata.modified());
+    if modified(&cache).ok()? < modified(&events).ok()? {
+        return None;
+    }
+    read_cache(&cache, &events)
+        .ok()
+        .filter(|meta| !meta.attachments.is_empty() && meta.status != SessionStatus::Running)
+}
+
 pub(super) fn read_cache(path: &Path, events_path: &Path) -> Result<SessionMeta, SessionError> {
     // Listing reads the cache while its session's writer replaces it.
     let bytes = cookie_agent_models::secure_store::read_replaced(path).map_err(|source| {
