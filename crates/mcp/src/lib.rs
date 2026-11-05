@@ -694,11 +694,13 @@ impl McpRegistry {
                     server.fail(error.message());
                 }
             });
-            registry
-                .connection_tasks
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .push(task);
+            keep_connection_task(
+                &mut registry
+                    .connection_tasks
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner()),
+                task,
+            );
         }
     }
 
@@ -1001,7 +1003,7 @@ impl McpRegistry {
                 server.fail(error.message());
             }
         });
-        tasks.push(task);
+        keep_connection_task(&mut tasks, task);
         Ok(())
     }
 
@@ -2544,3 +2546,36 @@ fn safe_title(value: &str) -> SafeDisplayText {
 mod eventually;
 #[cfg(test)]
 mod tests;
+
+/// Keeps `task`, to wait for at shutdown, and lets go of those that ended: a
+/// finished task holds its memory until its handle drops, and a server that
+/// connects on demand starts one every time.
+fn keep_connection_task(
+    tasks: &mut Vec<tokio::task::JoinHandle<()>>,
+    task: tokio::task::JoinHandle<()>,
+) {
+    tasks.retain(|task| !task.is_finished());
+    tasks.push(task);
+}
+
+#[cfg(test)]
+mod connection_task_tests {
+    #[tokio::test]
+    async fn ended_connection_tasks_are_let_go() {
+        let mut tasks = Vec::new();
+        let ended = tokio::spawn(async {});
+        while !ended.is_finished() {
+            tokio::task::yield_now().await;
+        }
+        super::keep_connection_task(&mut tasks, ended);
+        let waiting = tokio::spawn(std::future::pending::<()>());
+        super::keep_connection_task(&mut tasks, waiting);
+        assert_eq!(tasks.len(), 1, "only the one still running");
+        let next = tokio::spawn(std::future::pending::<()>());
+        super::keep_connection_task(&mut tasks, next);
+        assert_eq!(tasks.len(), 2);
+        for task in tasks {
+            task.abort();
+        }
+    }
+}
