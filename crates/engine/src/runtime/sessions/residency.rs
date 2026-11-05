@@ -315,6 +315,11 @@ impl Engine {
     /// about to happen. A producer that only holds a registration does not
     /// pin it (`Engine::producers_pin_session`).
     fn session_has_pending_work(&self, session: &crate::session::SessionProjection) -> bool {
+        self.session_has_work_going(session) || self.producers_pin_session(session.meta.session_id)
+    }
+
+    /// [`Self::session_has_pending_work`], leaving out producer messages.
+    fn session_has_work_going(&self, session: &crate::session::SessionProjection) -> bool {
         let session_id = session.meta.session_id;
         session.status == SessionStatus::Running
             || session
@@ -352,7 +357,6 @@ impl Engine {
                 .keys()
                 .any(|(pending, _)| *pending == session_id)
             || has_runless_pending_inputs(&session.log.event_snapshot())
-            || self.producers_pin_session(session_id)
             || self.acp_background_running(session_id)
     }
 
@@ -542,7 +546,8 @@ impl Engine {
                 && Duration::try_from(now.duration_since(member.meta.last_activity))
                     .is_ok_and(|idle| idle > idle_after)
                 && !self.inner.store.has_live_tail(member.meta.session_id)
-                && !self.session_has_pending_work(member)
+                && !self.session_has_work_going(member)
+                && !self.producers_keep_resident(member)
         };
         unused(session)
             && resident

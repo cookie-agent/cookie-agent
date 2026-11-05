@@ -191,3 +191,8 @@ Where the implementation differs from the text above, this section wins.
   and a sibling's mail, the push), the cron skip in `tests/crons.rs`, the
   updated delegation and producer tests, `client_state::held`, the web's
   composer buttons, and the TUI's pointer sweep.
+
+A held session can be paged out with messages waiting. Nothing starts a run for
+them until the user comes back, its log holds them, and loading the session
+finds them for the next run (2026-11-05). Before this, one stopped session with
+a report waiting stayed in memory until the next message or a daemon restart.

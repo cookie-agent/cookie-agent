@@ -2115,6 +2115,28 @@ impl Engine {
     /// (see [`Self::retain_registrations_on_eviction`]), and a later send
     /// reloads it.
     pub(in crate::runtime) fn producers_pin_session(&self, session: SessionId) -> bool {
+        self.producer_wake_scheduled(session)
+            || self
+                .goal_producer_projection(session)
+                .is_ok_and(|projection| projection.messages.iter().any(pending))
+    }
+
+    /// Whether producers need `session` kept in memory. What waits in a held
+    /// session does not: nothing starts a run for it until the user comes
+    /// back, its log has it, and loading the session again finds it.
+    pub(in crate::runtime) fn producers_keep_resident(
+        &self,
+        session: &crate::session::SessionProjection,
+    ) -> bool {
+        let id = session.meta.session_id;
+        if session.meta.held.is_some() {
+            self.producer_wake_scheduled(id)
+        } else {
+            self.producers_pin_session(id)
+        }
+    }
+
+    fn producer_wake_scheduled(&self, session: SessionId) -> bool {
         self.inner
             .sessions
             .producers
@@ -2122,9 +2144,6 @@ impl Engine {
             .unwrap_or_else(|e| e.into_inner())
             .get(&session)
             .is_some_and(|state| state.wake_scheduled)
-            || self
-                .goal_producer_projection(session)
-                .is_ok_and(|projection| projection.messages.iter().any(pending))
     }
 
     /// Forgets `session`'s producer state as it pages out, all but its

@@ -246,6 +246,114 @@ async fn a_stop_holds_the_session() {
     fixture.engine.shutdown().await;
 }
 
+/// What waits in a held session keeps it in memory no longer: nothing starts
+/// a run for it, and the user's next message, after a reload, still brings it.
+#[tokio::test]
+async fn a_held_session_pages_out_and_its_waiting_report_reaches_the_next_run() {
+    let (endpoint, first_seen, release_first, captured) =
+        super::producers::cancelled_request_boundary_server().await;
+    let (fixture, selection) = custom_fixture_with_endpoint(&endpoint);
+    let session = fixture
+        .engine
+        .create_session(selection.clone())
+        .unwrap()
+        .session_id;
+    send(
+        &fixture.engine,
+        session,
+        delegation(),
+        "report",
+        "the report",
+    )
+    .await
+    .unwrap();
+    first_seen.await.unwrap();
+    let run = fixture
+        .engine
+        .inner
+        .store
+        .get(session)
+        .unwrap()
+        .runs
+        .keys()
+        .next()
+        .copied()
+        .expect("the producer's run");
+    fixture.engine.cancel_run(run, client()).await.unwrap();
+    release_first.notify_one();
+    wait_for_session_not_running(&fixture.engine, session).await;
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    send(
+        &fixture.engine,
+        session,
+        delegation(),
+        "later",
+        "a later report",
+    )
+    .await
+    .unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    assert_eq!(run_outcomes(&fixture.engine, session), ["cancelled"]);
+
+    let evicted = fixture
+        .engine
+        .evict_idle_roots_with(std::time::Duration::ZERO)
+        .await
+        .expect("janitor pass");
+    assert_eq!(evicted, [session]);
+    assert!(!fixture.engine.inner.store.is_resident(session));
+
+    // It loads again as it was: held, the report still waiting, no run started.
+    assert_eq!(
+        fixture.engine.inner.store.get(session).unwrap().meta.held,
+        Some(Open::Known(HeldReason::Stopped {}))
+    );
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    assert_eq!(run_outcomes(&fixture.engine, session), ["cancelled"]);
+
+    fixture
+        .engine
+        .start_run(
+            cookie_agent_protocol::RunStartParams {
+                reset_fallback: false,
+                session_id: session,
+                client_run_id: cookie_agent_protocol::ClientRunId::new("back").unwrap(),
+                selection,
+                content: "back again".into(),
+            },
+            client(),
+        )
+        .await
+        .unwrap();
+    let requests = captured.await.unwrap();
+    assert!(requests[1].contains("back again"), "{}", requests[1]);
+    assert!(requests[1].contains("a later report"), "{}", requests[1]);
+    wait_for_session_not_running(&fixture.engine, session).await;
+    fixture.engine.shutdown().await;
+}
+
+/// A session with a wake scheduled stays in memory, for the run it is about
+/// to start.
+#[tokio::test]
+async fn a_scheduled_wake_keeps_a_session_in_memory() {
+    let (fixture, selection) = custom_fixture_with_endpoint("http://127.0.0.1:1/v1");
+    let session = fixture.engine.create_session(selection).unwrap().session_id;
+    let projection = fixture.engine.inner.store.get(session).unwrap();
+    assert!(!fixture.engine.producers_keep_resident(&projection));
+    fixture
+        .engine
+        .inner
+        .sessions
+        .producers
+        .lock()
+        .unwrap()
+        .entry(session)
+        .or_default()
+        .wake_scheduled = true;
+    assert!(fixture.engine.producers_keep_resident(&projection));
+    fixture.engine.shutdown().await;
+}
+
 /// A stop with nothing that could start a run on its own holds nothing: the
 /// user's next message is just a message.
 #[tokio::test]
