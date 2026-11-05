@@ -42,6 +42,11 @@ use cookie_agent_protocol::{
 };
 
 const OUTBOUND_QUEUE_CAPACITY: usize = 512;
+/// What one connection's queue may hold in bytes. Frames carry whole tool
+/// results, so a client that stopped reading could pin a lot in 512 of them.
+/// Past this a sender waits, as it does at the frame limit; a session's live
+/// tail then falls behind and reports a gap.
+const OUTBOUND_QUEUE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_RAW_RENAME_PARAMS_BYTES: usize = 4 * 1024;
 
 /// Requests one connection may have in flight at once. At the limit the
@@ -61,6 +66,8 @@ pub struct ServerContext {
     client_version: Arc<std::sync::OnceLock<cookie_agent_protocol::SemVer>>,
     /// Serialized frames, written to the transport in queue order.
     notifications: mpsc::Sender<String>,
+    /// The room left in the queue in bytes.
+    queued: OutboundBytes,
     shutdown: CancellationToken,
     subscribed_sessions: Arc<Mutex<HashSet<SessionId>>>,
     /// The task forwarding each session's live tail on this connection.
@@ -72,9 +79,56 @@ pub struct ServerContext {
     guard: Option<Arc<dyn ConnectionGuard>>,
 }
 
+/// A budget of bytes for a connection's queue: what a frame takes as it is
+/// queued comes back once it is written.
+#[derive(Clone)]
+struct OutboundBytes {
+    room: Arc<Semaphore>,
+    budget: usize,
+}
+
+impl OutboundBytes {
+    fn new(budget: usize) -> Self {
+        Self {
+            room: Arc::new(Semaphore::new(budget)),
+            budget,
+        }
+    }
+
+    /// What `frame` takes of the budget: a frame larger than all of it takes
+    /// all of it, and goes when the queue is empty.
+    fn cost(&self, frame: &str) -> u32 {
+        u32::try_from(frame.len().min(self.budget)).unwrap_or(u32::MAX)
+    }
+
+    async fn take(&self, frame: &str) {
+        if let Ok(permit) = self.room.acquire_many(self.cost(frame)).await {
+            permit.forget();
+        }
+    }
+
+    fn give_back(&self, frame: &str) {
+        self.room.add_permits(self.cost(frame) as usize);
+    }
+}
+
 impl ServerContext {
     fn new(
         notifications: mpsc::Sender<String>,
+        shutdown: CancellationToken,
+        guard: Option<Arc<dyn ConnectionGuard>>,
+    ) -> Self {
+        Self::with_queue_bytes(
+            notifications,
+            OutboundBytes::new(OUTBOUND_QUEUE_BYTES),
+            shutdown,
+            guard,
+        )
+    }
+
+    fn with_queue_bytes(
+        notifications: mpsc::Sender<String>,
+        queued: OutboundBytes,
         shutdown: CancellationToken,
         guard: Option<Arc<dyn ConnectionGuard>>,
     ) -> Self {
@@ -83,6 +137,7 @@ impl ServerContext {
             client_origin: Arc::new(std::sync::OnceLock::new()),
             client_version: Arc::new(std::sync::OnceLock::new()),
             notifications,
+            queued,
             shutdown,
             subscribed_sessions: Arc::new(Mutex::new(HashSet::new())),
             session_tails: Arc::new(Mutex::new(HashMap::new())),
@@ -233,9 +288,15 @@ impl ServerContext {
             }
         }
         tokio::select! {
-            () = self.shutdown.cancelled() => Err(TransportError::Closed),
-            result = self.notifications.send(notification) => result.map_err(|_| TransportError::Closed),
-        }
+                    () = self.shutdown.cancelled() => Err(TransportError::Closed),
+        result = self.queue(notification) => result.map_err(|_| TransportError::Closed),
+                }
+    }
+
+    /// Queues `frame` once the queue has room for it.
+    async fn queue(&self, frame: String) -> Result<(), mpsc::error::SendError<String>> {
+        self.queued.take(&frame).await;
+        self.notifications.send(frame).await
     }
 
     fn for_request(&self) -> (Self, CancellationToken) {
@@ -307,8 +368,14 @@ impl ServerContext {
 #[must_use]
 pub fn test_server_context() -> (ServerContext, mpsc::Receiver<String>) {
     let (notifications, receiver) = mpsc::channel(OUTBOUND_QUEUE_CAPACITY);
+    // Its reader gives nothing back, so nothing limits what a test queues.
     (
-        ServerContext::new(notifications, CancellationToken::new(), None),
+        ServerContext::with_queue_bytes(
+            notifications,
+            OutboundBytes::new(Semaphore::MAX_PERMITS.min(u32::MAX as usize)),
+            CancellationToken::new(),
+            None,
+        ),
         receiver,
     )
 }
@@ -1637,18 +1704,23 @@ where
                     };
                     tokio::select! {
                         () = request_context.shutdown.cancelled() => {}
-                        _ = request_context.notifications.send(response) => {}
+                        _ = request_context.queue(response) => {}
                     }
                 });
             }
             Some(frame) = outbound_rx.recv() => {
                 if !frame_passes(guard.as_deref(), &frame) {
+                    context.queued.give_back(&frame);
                     continue;
                 }
+                let queued = context.queued.clone();
+                let cost = queued.cost(&frame);
                 // A notification queued as the client went away: the closed
                 // transport ends the connection as reading its end does, not
                 // as a failure.
-                match transport.send(MessageFrame::Text(frame)).await {
+                let sent = transport.send(MessageFrame::Text(frame)).await;
+                queued.room.add_permits(cost as usize);
+                match sent {
                     Err(TransportError::Closed) => return Ok(()),
                     result => result?,
                 }

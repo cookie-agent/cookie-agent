@@ -1342,3 +1342,47 @@ fn output_spans_go_to_display_view_clients_from_1_64_0_only() {
 }
 
 mod startup;
+
+#[tokio::test]
+async fn a_full_queue_in_bytes_makes_a_sender_wait_until_a_frame_is_written() {
+    let (notifications, mut receiver) = mpsc::channel(OUTBOUND_QUEUE_CAPACITY);
+    let queued = OutboundBytes::new(10);
+    let context = ServerContext::with_queue_bytes(
+        notifications,
+        queued.clone(),
+        CancellationToken::new(),
+        None,
+    );
+    context.queue("12345678".to_owned()).await.unwrap();
+
+    let waiting = tokio::spawn({
+        let context = context.clone();
+        async move { context.queue("abcdef".to_owned()).await }
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    assert!(!waiting.is_finished(), "no room for it yet");
+    assert_eq!(receiver.try_recv().as_deref(), Ok("12345678"));
+    assert!(receiver.try_recv().is_err(), "it has not been queued");
+
+    queued.give_back("12345678");
+    waiting.await.unwrap().unwrap();
+    assert_eq!(receiver.recv().await.as_deref(), Some("abcdef"));
+}
+
+#[tokio::test]
+async fn a_frame_larger_than_the_queue_goes_when_it_is_empty() {
+    let (notifications, mut receiver) = mpsc::channel(OUTBOUND_QUEUE_CAPACITY);
+    let queued = OutboundBytes::new(10);
+    let context = ServerContext::with_queue_bytes(
+        notifications,
+        queued.clone(),
+        CancellationToken::new(),
+        None,
+    );
+    let huge = "x".repeat(1000);
+    context.queue(huge.clone()).await.unwrap();
+    assert_eq!(receiver.recv().await.as_ref(), Some(&huge));
+    queued.give_back(&huge);
+    context.queue("next".to_owned()).await.unwrap();
+    assert_eq!(receiver.recv().await.as_deref(), Some("next"));
+}
