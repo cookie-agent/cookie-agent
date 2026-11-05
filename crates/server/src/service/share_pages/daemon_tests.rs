@@ -139,6 +139,19 @@ async fn a_link_serves_its_landing_page_and_its_bytes_without_a_token() {
     assert!(!policy.contains("allow-same-origin"), "{policy}");
     assert_eq!(raw.header("content-type"), Some("text/html; charset=utf-8"));
 
+    // A range answers with those bytes, and one past the end with none.
+    let raw_path = format!("/s/{}/raw/loss.html", share.id);
+    let part = get(port, &raw_path, &[("range", "bytes=2-5")]).await;
+    assert_eq!(part.status, 206);
+    assert_eq!(part.body, PAGE.as_bytes()[2..=5]);
+    assert_eq!(
+        part.header("content-range").unwrap(),
+        format!("bytes 2-5/{}", PAGE.len())
+    );
+    let past = get(port, &raw_path, &[("range", "bytes=999999-")]).await;
+    assert_eq!(past.status, 416);
+    assert!(past.body.is_empty());
+
     let download = get(port, &format!("/s/{}/download/x", share.id), &[]).await;
     assert_eq!(download.status, 200);
     assert!(

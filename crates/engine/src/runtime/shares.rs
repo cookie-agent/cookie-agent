@@ -529,17 +529,25 @@ impl Engine {
     /// The whole content of a shared asset; `None` when it changed or went
     /// since it was opened.
     pub async fn read_shared_asset(&self, asset: &Asset) -> Result<Option<Vec<u8>>, EngineError> {
-        let (store, id, total, sha256) = (
-            asset.store.clone(),
-            asset.id,
-            asset.byte_length,
-            asset.sha256.clone(),
-        );
-        self.assets_blocking(move |_, stores| match stores.read(&store, id, 0, total) {
-            Ok((bytes, now)) if now.sha256 == sha256 => Ok(Some(bytes)),
-            Ok(_) | Err(AssetError::NotFound(_)) => Ok(None),
-            Err(error) => Err(error.into()),
-        })
+        self.read_shared_asset_part(asset, 0, asset.byte_length)
+            .await
+    }
+
+    /// [`Self::read_shared_asset`], up to `length` bytes from `offset`.
+    pub async fn read_shared_asset_part(
+        &self,
+        asset: &Asset,
+        offset: u64,
+        length: u64,
+    ) -> Result<Option<Vec<u8>>, EngineError> {
+        let (store, id, sha256) = (asset.store.clone(), asset.id, asset.sha256.clone());
+        self.assets_blocking(
+            move |_, stores| match stores.read(&store, id, offset, length) {
+                Ok((bytes, now)) if now.sha256 == sha256 => Ok(Some(bytes)),
+                Ok(_) | Err(AssetError::NotFound(_)) => Ok(None),
+                Err(error) => Err(error.into()),
+            },
+        )
         .await
     }
 

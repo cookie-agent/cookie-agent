@@ -159,16 +159,23 @@ pub(crate) async fn share_pages(State(state): State<WebSocketState>, request: Re
             (StatusCode::OK, headers, page).into_response()
         }
         Wanted::Raw(_) | Wanted::Download(_) => {
-            let Ok(Some(bytes)) = engine.read_shared_asset(&open.asset).await else {
+            let total = open.asset.byte_length;
+            let part = wanted_part(request.headers(), total);
+            let (offset, length) = part.extent(total);
+            let Ok(Some(bytes)) = engine
+                .read_shared_asset_part(&open.asset, offset, length)
+                .await
+            else {
                 return gone();
             };
             let download = matches!(wanted, Wanted::Download(_))
                 || !share_landing::Kind::of(&open.asset.media_type).inline();
             bytes_response(
-                request.headers(),
                 &open.asset.media_type,
                 &share_landing::file_name(&open.asset),
                 download,
+                part,
+                total,
                 bytes,
             )
         }
@@ -382,10 +389,11 @@ fn disposition(kind: &str, name: &str) -> String {
 }
 
 fn bytes_response(
-    request: &HeaderMap,
     media_type: &str,
     name: &str,
     download: bool,
+    part: Part,
+    total: u64,
     bytes: Vec<u8>,
 ) -> Response {
     let mut headers = common_headers();
@@ -410,27 +418,58 @@ fn bytes_response(
         );
     }
     headers.insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
-    let total = bytes.len() as u64;
-    match request
-        .get(header::RANGE)
-        .and_then(|value| value.to_str().ok())
-        .map(|value| byte_range(value, total))
-    {
-        None => (StatusCode::OK, headers, Body::from(bytes)).into_response(),
-        Some(Some((start, end))) => {
+    match part {
+        Part::Whole => (StatusCode::OK, headers, Body::from(bytes)).into_response(),
+        Part::Range(start, end) => {
             if let Ok(value) = HeaderValue::from_str(&format!("bytes {start}-{end}/{total}")) {
                 headers.insert(header::CONTENT_RANGE, value);
             }
-            let part = bytes[start as usize..=end as usize].to_vec();
-            (StatusCode::PARTIAL_CONTENT, headers, Body::from(part)).into_response()
+            (StatusCode::PARTIAL_CONTENT, headers, Body::from(bytes)).into_response()
         }
-        Some(None) => {
+        Part::Unsatisfiable => {
             if let Ok(value) = HeaderValue::from_str(&format!("bytes */{total}")) {
                 headers.insert(header::CONTENT_RANGE, value);
             }
             (StatusCode::RANGE_NOT_SATISFIABLE, headers).into_response()
         }
     }
+}
+
+/// The most bytes one range answer reads. A player asks for `bytes=0-` and
+/// seeks away; it asks again from where the answer ended, as `Content-Range`
+/// tells it.
+const MAX_RANGE_BYTES: u64 = 8 * 1024 * 1024;
+
+/// What of an asset a request wants.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Part {
+    Whole,
+    /// Inclusive of both ends.
+    Range(u64, u64),
+    Unsatisfiable,
+}
+
+impl Part {
+    /// Where to read this part of `total` bytes, and how much.
+    fn extent(self, total: u64) -> (u64, u64) {
+        match self {
+            Self::Whole => (0, total),
+            Self::Range(start, end) => (start, end - start + 1),
+            Self::Unsatisfiable => (0, 0),
+        }
+    }
+}
+
+fn wanted_part(request: &HeaderMap, total: u64) -> Part {
+    request
+        .get(header::RANGE)
+        .and_then(|value| value.to_str().ok())
+        .map_or(Part::Whole, |value| match byte_range(value, total) {
+            Some((start, end)) => {
+                Part::Range(start, end.min(start.saturating_add(MAX_RANGE_BYTES - 1)))
+            }
+            None => Part::Unsatisfiable,
+        })
 }
 
 /// The one range `bytes=a-b`, `bytes=a-`, or `bytes=-n` asks for of
@@ -462,9 +501,42 @@ mod guest_tests;
 
 #[cfg(test)]
 mod tests {
-    use super::{Wanted, byte_range, disposition, wanted};
+    use super::{MAX_RANGE_BYTES, Part, Wanted, byte_range, disposition, wanted, wanted_part};
 
     const ID: &str = "q3Vt0x9LmA2bCdEfGh1iJk";
+
+    fn asked(range: &str, total: u64) -> Part {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(axum::http::header::RANGE, range.parse().unwrap());
+        wanted_part(&headers, total)
+    }
+
+    #[test]
+    fn a_range_reads_only_what_it_asks_for() {
+        assert_eq!(asked("bytes=10-19", 1000), Part::Range(10, 19));
+        assert_eq!(Part::Range(10, 19).extent(1000), (10, 10));
+        assert_eq!(Part::Whole.extent(1000), (0, 1000));
+        assert_eq!(
+            wanted_part(&axum::http::HeaderMap::new(), 1000),
+            Part::Whole
+        );
+        assert_eq!(asked("bytes=5000-", 1000), Part::Unsatisfiable);
+        assert_eq!(Part::Unsatisfiable.extent(1000), (0, 0));
+    }
+
+    #[test]
+    fn a_range_reads_at_most_its_bound() {
+        let total = 10 * MAX_RANGE_BYTES;
+        assert_eq!(
+            asked("bytes=0-", total),
+            Part::Range(0, MAX_RANGE_BYTES - 1)
+        );
+        assert_eq!(asked("bytes=5-", total).extent(total), (5, MAX_RANGE_BYTES));
+        assert_eq!(
+            asked(&format!("bytes={}-", total - 1), total),
+            Part::Range(total - 1, total - 1)
+        );
+    }
 
     #[test]
     fn paths_name_a_link_and_what_of_it() {
