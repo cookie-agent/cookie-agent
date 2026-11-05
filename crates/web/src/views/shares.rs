@@ -333,64 +333,298 @@ pub(crate) fn LinkBadge(workspace: Workspace) -> impl IntoView {
     }
 }
 
-/// How many guests a link has now, and how many it has had.
-fn guests_text(share: &SessionShare) -> String {
-    let views = format!(
-        "{} view{}",
+/// How many views a link has had, for its card.
+fn link_meta(share: &SessionShare) -> String {
+    format!(
+        "{} · {} view{}",
+        expiry_text_at(share.expires_at),
         share.views,
         if share.views == 1 { "" } else { "s" }
-    );
-    match share.connected {
-        0 => views,
-        1 => format!("{} is connected · {views}", share.label),
-        count => format!("{count} connected as {} · {views}", share.label),
+    )
+}
+
+/// Who is connected through a link now, for the pill on its card.
+fn connected_text(connected: u32) -> Option<String> {
+    match connected {
+        0 => None,
+        1 => Some("Connected".to_owned()),
+        count => Some(format!("{count} connected")),
     }
 }
 
-/// The conversation share dialog, open while
-/// `workspace.session_share_dialog` holds a session.
+/// A switch, on or off, for whether a link's guests can send.
+fn send_switch(on: bool, label: &'static str, toggled: impl Fn(bool) + 'static) -> impl IntoView {
+    let knob = if on {
+        "absolute left-4 size-3.5 rounded-full bg-white transition-[left]"
+    } else {
+        "absolute left-0.5 size-3.5 rounded-full bg-white transition-[left]"
+    };
+    view! {
+        <button
+            type="button"
+            role="switch"
+            aria-checked=on.to_string()
+            data-link-can-send
+            class="hit-area inline-flex shrink-0 items-center gap-2 text-sm"
+            on:click=move |_| toggled(!on)
+        >
+            <span
+                class="relative inline-flex h-[1.125rem] w-[1.875rem] shrink-0 items-center rounded-full transition-colors"
+                class:bg-accent=on
+                class:bg-line-2=!on
+            >
+                <span class=knob></span>
+            </span>
+            {label}
+        </button>
+    }
+}
+
+/// One link of the conversation share panel.
+fn link_card(
+    workspace: Workspace,
+    share: SessionShare,
+    revoking: RwSignal<Option<cookie_agent_protocol::ShareId>>,
+) -> impl IntoView {
+    let address = workspace.session_share_address(&share);
+    let copied = share.clone();
+    let toggled = share.id.clone();
+    let changed = share.id.clone();
+    let asked = share.id.clone();
+    let confirmed = share.id.clone();
+    let this = share.id.clone();
+    let confirming = move || revoking.with(|revoking| revoking.as_ref() == Some(&this));
+    view! {
+        <div class="flex flex-col gap-2 rounded-lg p-3 ring-1 ring-line" data-session-link=share.id.to_string()>
+            <div class="flex min-w-0 items-center gap-2">
+                <span class="min-w-0 truncate font-bold" data-link-label>{share.label.clone()}</span>
+                {connected_text(share.connected).map(|text| view! {
+                    <span class="inline-flex shrink-0 items-center gap-1 rounded-full bg-ok-soft px-2 text-xs text-ok" data-link-connected>
+                        <span class="size-1.5 rounded-full bg-ok"></span>
+                        {text}
+                    </span>
+                })}
+                <span class="flex-1"></span>
+                {send_switch(share.can_send, "Can send", move |can_send| {
+                    workspace.update_session_share(SessionShareUpdateParams {
+                        id: toggled.clone(),
+                        label: None,
+                        can_send: Some(can_send),
+                        expiry: None,
+                    });
+                })}
+            </div>
+            <div class="flex min-w-0 items-center gap-2">
+                <input
+                    type="text"
+                    readonly
+                    data-link-url
+                    class="min-h-11 min-w-0 flex-1 rounded-lg bg-surface px-3 font-mono text-xs shadow-[inset_0_0_0_1px_var(--color-line-2)] lg:min-h-9"
+                    aria-label=format!("The link for {}", share.label)
+                    prop:value=address
+                    on:focus=move |event| {
+                        use wasm_bindgen::JsCast as _;
+                        if let Some(input) = event
+                            .target()
+                            .and_then(|target| target.dyn_into::<web_sys::HtmlInputElement>().ok())
+                        {
+                            input.select();
+                        }
+                    }
+                />
+                <button
+                    type="button"
+                    class=PRIMARY
+                    data-link-copy
+                    on:click=move |_| workspace.copy_session_share(&copied)
+                >
+                    <Glyph icon=icondata::LuCopy />
+                    "Copy"
+                </button>
+            </div>
+            <div class="flex flex-wrap items-center gap-2">
+                <span class=format!("min-w-0 flex-1 {NOTE}") data-link-meta>{link_meta(&share)}</span>
+                <Show
+                    when=confirming
+                    fallback=move || {
+                        let changed = changed.clone();
+                        let asked = asked.clone();
+                        view! {
+                            {lifetime_select(None, None, move |lifetime| {
+                                workspace.update_session_share(SessionShareUpdateParams {
+                                    id: changed.clone(),
+                                    label: None,
+                                    can_send: None,
+                                    expiry: Some(lifetime.expiry(jiff::Timestamp::now())),
+                                });
+                            })}
+                            <button
+                                type="button"
+                                class=format!("{ROW_BUTTON} text-bad")
+                                data-link-revoke
+                                on:click=move |_| revoking.set(Some(asked.clone()))
+                            >
+                                "Revoke"
+                            </button>
+                        }
+                    }
+                >
+                    <span class="flex flex-wrap items-center gap-2 text-[0.8125rem]" data-link-revoke-confirm>
+                        "Revoke this link? Its guests are disconnected."
+                        <button
+                            type="button"
+                            class=format!("{BUTTON} text-bad")
+                            data-link-revoke-yes
+                            on:click={
+                                let confirmed = confirmed.clone();
+                                move |_| {
+                                    revoking.set(None);
+                                    workspace.revoke_share(confirmed.clone());
+                                }
+                            }
+                        >
+                            "Revoke"
+                        </button>
+                        <button type="button" class=BUTTON on:click=move |_| revoking.set(None)>"Keep"</button>
+                    </span>
+                </Show>
+            </div>
+        </div>
+    }
+}
+
+/// The form of a new link. Its fields keep their own state, so nothing
+/// redraws them while they are typed in.
+fn new_link_form(workspace: Workspace, adding: RwSignal<bool>) -> impl IntoView {
+    let label = RwSignal::new(String::new());
+    let can_send = RwSignal::new(true);
+    let lifetime = RwSignal::new(ShareLifetime::default());
+    let busy = move || {
+        workspace
+            .session_share_dialog
+            .with(|dialog| dialog.as_ref().is_some_and(|dialog| dialog.busy))
+    };
+    view! {
+        <div class="flex flex-col gap-2 rounded-lg p-3 ring-1 ring-line ring-inset" id="session-share-form">
+            <label class="flex flex-col gap-1 text-[0.8125rem] font-bold">
+                "For"
+                <input
+                    type="text"
+                    id="session-share-label"
+                    class="min-h-9 rounded-lg bg-surface px-3 font-normal shadow-[inset_0_0_0_1px_var(--color-line-2)]"
+                    placeholder="Guest"
+                    maxlength="30"
+                    prop:value=move || label.get()
+                    on:input=move |event| label.set(event_target_value(&event))
+                />
+            </label>
+            <div class="flex flex-wrap items-center gap-2">
+                {move || send_switch(can_send.get(), "Can send messages", move |on| can_send.set(on))}
+                <span class="flex-1"></span>
+                {lifetime_select(
+                    Some("session-share-lifetime"),
+                    Some(lifetime.get_untracked()),
+                    move |chosen| lifetime.set(chosen),
+                )}
+                <button
+                    type="button"
+                    id="session-share-create"
+                    class=PRIMARY
+                    disabled=busy
+                    on:click=move |_| {
+                        workspace.create_session_share(
+                            label.get_untracked(),
+                            can_send.get_untracked(),
+                            lifetime.get_untracked(),
+                            move || {
+                                label.set(String::new());
+                                adding.set(false);
+                            },
+                        );
+                    }
+                >
+                    <Glyph icon=icondata::LuLink />
+                    "Create link"
+                </button>
+            </div>
+        </div>
+    }
+}
+
+/// The conversation share panel, open while `workspace.session_share_dialog`
+/// holds a session: every link of the session, and a form for another.
 #[component]
 pub(crate) fn SessionShareDialogView(workspace: Workspace) -> impl IntoView {
+    let open = Memo::new(move |_| {
+        workspace
+            .session_share_dialog
+            .with(|dialog| dialog.as_ref().map(|dialog| dialog.session_id))
+    });
+    move || {
+        open.get().map(|session| {
+            view! { <SessionSharePanel workspace=workspace session=session /> }
+        })
+    }
+}
+
+#[component]
+fn SessionSharePanel(
+    workspace: Workspace,
+    session: cookie_agent_protocol::SessionId,
+) -> impl IntoView {
     let close = move || workspace.session_share_dialog.set(None);
-    let dialog = move || workspace.session_share_dialog.get();
+    let links = Memo::new(move |_| workspace.session_links(session));
+    let adding = RwSignal::new(false);
+    let revoking = RwSignal::new(None);
+    let revoking_all = RwSignal::new(false);
+    // The form shows by itself while there is no link yet: that is what the
+    // panel was opened for. The list's first read says which.
+    let listed = Memo::new(move |_| workspace.share_list.with(Option::is_some));
+    let form_open = Memo::new(move |_| adding.get() || (listed.get() && links.with(Vec::is_empty)));
+    let title = move || {
+        workspace
+            .session_share_dialog
+            .with(|dialog| dialog.as_ref().map(|dialog| dialog.title.clone()))
+            .unwrap_or_default()
+    };
+    let count = move || links.with(Vec::len);
+    let several = move || count() >= 2;
     view! {
-        <Show when=move || dialog().is_some()>
-            <div class="fixed inset-0 z-40 bg-scrim dark:bg-black/50" on:click=move |_| close()></div>
-            <div
-                id="session-share-dialog"
-                role="dialog"
-                aria-modal="true"
-                aria-labelledby="session-share-title"
-                class="fixed inset-x-0 bottom-0 z-50 flex max-h-[85vh] flex-col gap-3 overflow-y-auto rounded-t-xl p-4 pb-[max(1rem,env(safe-area-inset-bottom))] text-sm sm:inset-x-auto sm:top-1/2 sm:bottom-auto sm:left-1/2 sm:w-[32rem] sm:max-w-[calc(100vw-2rem)] sm:-translate-x-1/2 sm:-translate-y-1/2 sm:rounded-xl bg-raised ring-1 ring-line shadow-menu"
-                on:keydown=move |event| {
-                    if event.key() == "Escape" {
-                        close();
-                    }
+        <div class="fixed inset-0 z-40 bg-scrim dark:bg-black/50" on:click=move |_| close()></div>
+        <div
+            id="session-share-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="session-share-title"
+            class="fixed inset-x-0 bottom-0 z-50 flex max-h-[85vh] flex-col overflow-hidden rounded-t-xl text-sm sm:inset-x-auto sm:top-1/2 sm:bottom-auto sm:left-1/2 sm:w-[34rem] sm:max-w-[calc(100vw-2rem)] sm:-translate-x-1/2 sm:-translate-y-1/2 sm:rounded-xl bg-raised ring-1 ring-line shadow-menu"
+            on:keydown=move |event| {
+                if event.key() == "Escape" {
+                    close();
                 }
-            >
-                <div class="flex items-start gap-2">
-                    <Glyph icon=icondata::LuShare2 class="mt-0.5 text-accent" />
-                    <div class="flex min-w-0 flex-1 flex-col">
-                        <p id="session-share-title" class="font-bold">"Share conversation"</p>
-                        <p class="truncate text-muted">
-                            {move || dialog().map(|dialog| dialog.title).unwrap_or_default()}
-                        </p>
-                    </div>
-                    <button
-                        type="button"
-                        class=super::ICON_BUTTON
-                        aria-label="Close"
-                        id="session-share-close"
-                        on:click=move |_| close()
-                    >
-                        <Glyph icon=icondata::LuX />
-                    </button>
+            }
+        >
+            <div class="flex items-start gap-2 p-4 pb-2">
+                <Glyph icon=icondata::LuShare2 class="mt-0.5 text-accent" />
+                <div class="flex min-w-0 flex-1 flex-col">
+                    <p id="session-share-title" class="font-bold">"Share conversation"</p>
+                    <p class="truncate text-muted">{title}</p>
                 </div>
+                <button
+                    type="button"
+                    class=super::ICON_BUTTON
+                    aria-label="Close"
+                    id="session-share-close"
+                    on:click=move |_| close()
+                >
+                    <Glyph icon=icondata::LuX />
+                </button>
+            </div>
+            <div class="flex min-h-0 flex-col gap-3 overflow-y-auto px-4 pb-4">
                 <Show when=move || workspace.shares_look_private()>
                     <p class="flex items-start gap-2 rounded-lg bg-warn-soft px-3 py-2 text-[0.8125rem] text-warn">
                         <Glyph icon=icondata::LuTriangleAlert class="mt-0.5 shrink-0" />
                         <span>
-                            "This link works only where cookie's page can be reached. "
+                            "These links work only where cookie's page can be reached. "
                             <a
                                 class="underline"
                                 href="https://cookie-agent.github.io/cookie-agent/daemon/remote-access/#public-share-links"
@@ -402,185 +636,93 @@ pub(crate) fn SessionShareDialogView(workspace: Workspace) -> impl IntoView {
                         </span>
                     </p>
                 </Show>
+                <p class="flex items-start gap-2 rounded-lg bg-warn-soft px-3 py-2 text-[0.8125rem]" id="session-share-warning">
+                    <Glyph icon=icondata::LuTriangleAlert class="mt-0.5 shrink-0 text-warn" />
+                    <span>"Anyone with a link that can send uses the session as you do: its tools, machines, and approvals, on your provider account."</span>
+                </p>
+                <Show when=move || count() != 0>
+                    <p class=format!("font-bold {NOTE}") id="session-share-count">
+                        {move || format!("{} live link{}", count(), if count() == 1 { "" } else { "s" })}
+                    </p>
+                </Show>
                 {move || {
-                    let dialog = dialog()?;
-                    let warning = view! {
-                        <p class="flex items-start gap-2 rounded-lg bg-warn-soft px-3 py-2 text-[0.8125rem]" id="session-share-warning">
-                            <Glyph icon=icondata::LuTriangleAlert class="mt-0.5 shrink-0 text-warn" />
-                            <span>"Anyone with this link uses the session as you do: its tools, machines, and approvals, on your provider account."</span>
-                        </p>
-                    };
-                    Some(match dialog.share.clone() {
-                        None => view! {
-                            <label class="flex flex-col gap-1 font-bold">
-                                "For"
-                                <input
-                                    type="text"
-                                    id="session-share-label"
-                                    class="min-h-9 rounded-lg bg-surface px-3 font-normal shadow-[inset_0_0_0_1px_var(--color-line-2)]"
-                                    placeholder="Guest"
-                                    maxlength="30"
-                                    prop:value=dialog.label.clone()
-                                    on:input=move |event| {
-                                        let label = event_target_value(&event);
-                                        workspace.session_share_dialog.update(|dialog| {
-                                            if let Some(dialog) = dialog {
-                                                dialog.label = label;
-                                            }
-                                        });
-                                    }
-                                />
-                            </label>
-                            <label class="flex items-start gap-2">
-                                <input
-                                    type="checkbox"
-                                    id="session-share-can-send"
-                                    class="mt-1"
-                                    prop:checked=dialog.can_send
-                                    on:change=move |event| {
-                                        let checked = event_target_checked(&event);
-                                        workspace.session_share_dialog.update(|dialog| {
-                                            if let Some(dialog) = dialog {
-                                                dialog.can_send = checked;
-                                            }
-                                        });
-                                    }
-                                />
-                                <span class="flex flex-col">
-                                    "Can send messages"
-                                    <span class=NOTE>"Off makes the link watch-only."</span>
-                                </span>
-                            </label>
-                            {warning}
-                            <div class="flex flex-wrap items-center gap-2">
-                                <label class=NOTE for="session-share-lifetime">"Expires after"</label>
-                                {lifetime_select(
-                                    Some("session-share-lifetime"),
-                                    Some(dialog.lifetime),
-                                    move |lifetime| {
-                                        workspace.session_share_dialog.update(|dialog| {
-                                            if let Some(dialog) = dialog {
-                                                dialog.lifetime = lifetime;
-                                            }
-                                        });
-                                    },
-                                )}
-                                <span class="flex-1"></span>
-                                <button
-                                    type="button"
-                                    id="session-share-create"
-                                    class=PRIMARY
-                                    disabled=dialog.busy
-                                    on:click=move |_| workspace.create_session_share()
-                                >
-                                    <Glyph icon=icondata::LuLink />
-                                    "Create link"
-                                </button>
-                            </div>
-                        }
-                        .into_any(),
-                        Some(share) => {
-                            let address = workspace.session_share_address(&share);
-                            let copied = share.clone();
-                            let revoked = share.id.clone();
-                            let changed = share.id.clone();
-                            let toggled = share.id.clone();
-                            let can_send = share.can_send;
-                            let fresh_label = share.label.clone();
-                            view! {
-                                <div class="flex min-w-0 items-center gap-2">
-                                    <input
-                                        type="text"
-                                        readonly
-                                        id="session-share-url"
-                                        class="min-h-11 min-w-0 flex-1 rounded-lg bg-surface px-3 font-mono text-xs shadow-[inset_0_0_0_1px_var(--color-line-2)] lg:min-h-9"
-                                        aria-label="The link"
-                                        prop:value=address
-                                    />
-                                    <button
-                                        type="button"
-                                        id="session-share-copy"
-                                        class=PRIMARY
-                                        on:click=move |_| workspace.copy_session_share(&copied)
-                                    >
-                                        <Glyph icon=icondata::LuCopy />
-                                        "Copy"
-                                    </button>
-                                </div>
-                                <p class=NOTE id="session-share-meta">
-                                    {format!("For {} · {} · {}", share.label, expiry_text_at(share.expires_at), guests_text(&share))}
-                                </p>
-                                <label class="flex items-start gap-2">
-                                    <input
-                                        type="checkbox"
-                                        id="session-share-can-send"
-                                        class="mt-1"
-                                        prop:checked=can_send
-                                        on:change=move |event| {
-                                            workspace.update_session_share(SessionShareUpdateParams {
-                                                id: toggled.clone(),
-                                                label: None,
-                                                can_send: Some(event_target_checked(&event)),
-                                                expiry: None,
-                                            });
-                                        }
-                                    />
-                                    <span class="flex flex-col">
-                                        "Can send messages"
-                                        <span class=NOTE>"Off makes the link watch-only."</span>
-                                    </span>
-                                </label>
-                                {warning}
-                                <div class="flex flex-wrap items-center gap-2">
-                                    {lifetime_select(
-                                        Some("session-share-change-lifetime"),
-                                        None,
-                                        move |lifetime| workspace.update_session_share(SessionShareUpdateParams {
-                                            id: changed.clone(),
-                                            label: None,
-                                            can_send: None,
-                                            expiry: Some(lifetime.expiry(jiff::Timestamp::now())),
-                                        }),
-                                    )}
-                                    <span class="flex-1"></span>
-                                    <button
-                                        type="button"
-                                        id="session-share-new"
-                                        class=BUTTON
-                                        title="Another link to this session, to revoke apart"
-                                        on:click=move |_| {
-                                            workspace.session_share_dialog.update(|dialog| {
-                                                if let Some(dialog) = dialog {
-                                                    dialog.label.clone_from(&fresh_label);
-                                                    dialog.can_send = can_send;
-                                                }
-                                            });
-                                            workspace.create_session_share();
-                                        }
-                                    >
-                                        "New link"
-                                    </button>
-                                    <button
-                                        type="button"
-                                        id="session-share-revoke"
-                                        class=format!("{BUTTON} text-bad")
-                                        on:click=move |_| workspace.revoke_share(revoked.clone())
-                                    >
-                                        "Revoke"
-                                    </button>
-                                </div>
-                            }
-                            .into_any()
-                        }
-                    })
+                    links
+                        .get()
+                        .into_iter()
+                        .map(|share| link_card(workspace, share, revoking))
+                        .collect_view()
                 }}
+                <Show
+                    when=move || form_open.get()
+                    fallback=move || view! {
+                        <button
+                            type="button"
+                            id="session-share-add"
+                            class=format!("{BUTTON} self-start")
+                            on:click=move |_| adding.set(true)
+                        >
+                            <Glyph icon=icondata::LuPlus />
+                            "New link"
+                        </button>
+                    }
+                >
+                    {new_link_form(workspace, adding)}
+                </Show>
                 {move || {
-                    dialog()
-                        .and_then(|dialog| dialog.error)
-                        .map(|error| view! { <p class=ERROR id="session-share-error">{error}</p> })
+                    workspace.session_share_dialog.with(|dialog| {
+                        dialog.as_ref().and_then(|dialog| dialog.error.clone())
+                    })
+                    .map(|error| view! { <p class=ERROR id="session-share-error">{error}</p> })
                 }}
             </div>
-        </Show>
+            <Show when=move || count() != 0>
+                <div class="flex flex-wrap items-center gap-2 border-t border-line px-4 py-2">
+                    <button
+                        type="button"
+                        id="session-share-sharing-view"
+                        class="text-[0.8125rem] text-muted hover:text-fg hover:underline"
+                        on:click=move |_| {
+                            close();
+                            workspace.open_view(crate::layout::View::Sharing, None);
+                        }
+                    >
+                        "All share links in the Sharing view"
+                    </button>
+                    <span class="flex-1"></span>
+                    <Show when=several>
+                        <Show
+                            when=move || revoking_all.get()
+                            fallback=move || view! {
+                                <button
+                                    type="button"
+                                    id="session-share-revoke-all"
+                                    class=format!("{ROW_BUTTON} text-bad")
+                                    on:click=move |_| revoking_all.set(true)
+                                >
+                                    "Revoke all"
+                                </button>
+                            }
+                        >
+                            <span class="flex flex-wrap items-center gap-2 text-[0.8125rem]" id="session-share-revoke-all-confirm">
+                                {move || format!("Revoke all {} links? Their guests are disconnected.", count())}
+                                <button
+                                    type="button"
+                                    id="session-share-revoke-all-yes"
+                                    class=format!("{BUTTON} text-bad")
+                                    on:click=move |_| {
+                                        revoking_all.set(false);
+                                        workspace.revoke_session_links(session);
+                                    }
+                                >
+                                    "Revoke all"
+                                </button>
+                                <button type="button" class=BUTTON on:click=move |_| revoking_all.set(false)>"Keep"</button>
+                            </span>
+                        </Show>
+                    </Show>
+                </div>
+            </Show>
+        </div>
     }
 }
 
@@ -616,7 +758,10 @@ fn session_share_row(workspace: Workspace, share: SessionShare) -> impl IntoView
             </div>
             <p class="truncate font-mono text-xs text-muted select-all">{address}</p>
             <p class=NOTE>
-                {format!("{} · {}", expiry_text_at(share.expires_at), guests_text(&share))}
+                {connected_text(share.connected).map_or_else(
+                    || link_meta(&share),
+                    |connected| format!("{connected} · {}", link_meta(&share)),
+                )}
             </p>
             <div class="flex flex-wrap items-center gap-1">
                 <button

@@ -67,8 +67,8 @@ share-only port: see
 ## Sharing a conversation
 
 A conversation share lets someone else **use a session**, not just read it. In
-the web client choose **Share conversation** in the session's ⋮ menu or its
-sidebar row's menu; in the TUI use `/share <who it is for>`; or run
+the web client choose **Share conversation** in the session's ⋮ menu, or in the
+**⋯** menu or right-click menu of its row in the session list; in the TUI use `/share <who it is for>`; or run
 [`cookie share session`](../clients/cli.md#cookie-share-session).
 
 Whoever opens the link is a guest. The page is the web client's own session
@@ -97,6 +97,11 @@ A guest's messages show the link's label, such as *Alice · via link*, in every
 client; the model gets them as if you had sent them. Make one link per person
 to tell people apart and revoke one without the others. The session's title bar
 shows a badge while it has a link, with how many guests are connected.
+
+The **Share conversation** panel lists every link of the conversation, each with
+who is connected, its address and **Copy**, a **Can send** switch, its expiry,
+and **Revoke**. **New link** adds another. **Revoke all** ends this
+conversation's links and no others, and asks first, as **Revoke** does.
 
 Revoking a link, or changing it, closes its guests' connections at once. A
 link goes with its session.

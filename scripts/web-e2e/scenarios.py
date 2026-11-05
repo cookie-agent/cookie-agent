@@ -499,13 +499,15 @@ RUNNING_ROW = "aside [data-session-row]:has([aria-current=true]) [data-session-a
 
 def idle(browser, what="the run's end", text=None, timeout=90):
     """Waits until the open session's run is over, `text` (when given)
-    showing in its transcript: the status line is not working, and the
-    session's row in the list (the daemon's status) is not running. A reply
-    on the page comes before its run ends, so a command that needs the
-    session idle waits for this, not for the reply's text."""
+    showing in its transcript: the session exists (its first message may
+    still be creating it), the status line is not working, and the session's
+    row in the list (the daemon's status) is not running. A reply on the page
+    comes before its run ends, so a command that needs the session idle waits
+    for this, not for the reply's text."""
     browser.wait(
         what,
-        lambda: (text is None or text in browser.text("#transcript"))
+        lambda: count(browser, "#new-session") == 0
+        and (text is None or text in browser.text("#transcript"))
         and count(browser, "#working") == 0
         and count(browser, RUNNING_ROW) == 0,
         timeout=timeout,
@@ -2340,10 +2342,24 @@ def touch_message_menu():
         phone.close()
 
 
+def sheet_at_rest(browser):
+    """Waits for the open sheet to stop moving."""
+    browser.wait(
+        "the sheet to stop moving",
+        lambda: browser.script(
+            "return !document.querySelector('#sheet').getAnimations().some((a) => a.playState === 'running')"
+        ),
+    )
+
+
 def menu(browser, command):
-    """Runs `command` (its `data-command`) from the session's ⋮ menu."""
+    """Runs `command` (its `data-command`) from the session's ⋮ menu. The
+    click waits for the sheet to stop moving: Chrome checks what is under the
+    row, then clicks there, and a phone's sheet rising in between puts another
+    row under the pointer."""
     browser.script("document.querySelector('main button[aria-label=Commands]').click()")
     browser.wait("the session menu", lambda: count(browser, "#sheet [data-command=%s]" % command) == 1)
+    sheet_at_rest(browser)
     browser.click("#sheet [data-command=%s]" % command)
 
 
@@ -5381,7 +5397,8 @@ def projects(browser):
     )
     # Pinning it, moving it, then marking it read or unread (whichever it
     # is not).
-    assert items[:2] == ["Pin", "Move to project…"] and items[2:] in (["Mark read"], ["Mark unread"]), items
+    assert items[:2] == ["Pin", "Move to project…"] and items[3:] == ["Share conversation…"], items
+    assert items[2] in ("Mark read", "Mark unread"), items
     trigger, box = browser.script(
         "const r = (s) => document.querySelector(s).getBoundingClientRect();"
         "const t = r(arguments[0]), m = r(arguments[1]);"
@@ -6836,24 +6853,69 @@ def open_tool_header(browser):
     print("an open header wraps over %d px from %d px, its status on the first line" % (opened["height"], folded["height"]))
 
 
+def share_link_of(browser, label):
+    """The selector of the card of the link labelled `label` in the share panel."""
+    link = browser.script(
+        """return [...document.querySelectorAll('[data-session-link]')]
+            .find((card) => card.querySelector('[data-link-label]').innerText === arguments[0])
+            .dataset.sessionLink""",
+        label,
+    )
+    return '[data-session-link="%s"]' % link
+
+
 def guest_link(browser):
-    """A conversation share: the owner makes a link, and whoever opens it
-    uses the session in a sandboxed page that cannot reach the owner's token,
-    until the owner revokes it."""
+    """A conversation share: the owner makes links in one panel, and whoever
+    opens one uses the session in a sandboxed page that cannot reach the
+    owner's token, until the owner revokes it."""
     new_session(browser)
+    # A session that is not created yet has nothing to share, and says so.
+    menu(browser, "share")
+    browser.wait("why not", lambda: "send a message before sharing" in browser.text("body"))
+    assert count(browser, "#session-share-dialog") == 0
     send(browser, "before the guest")
-    idle(browser, text="ok")
-    browser.click('[aria-label="Commands"]')
-    browser.wait("the session menu", lambda: count(browser, "#sheet [data-command=share]") == 1)
-    settle(browser)
-    browser.click("#sheet [data-command=share]")
-    browser.wait("the share dialog", lambda: count(browser, "#session-share-dialog") == 1)
-    browser.type("#session-share-label", "Alice")
+    browser.wait("the reply", lambda: answers(browser) == 1)
+    idle(browser)
+
+    # The session list's own menu opens the panel, on the form of a first link.
+    row = "aside [data-session-row]:has([aria-current=true])"
+    hover(browser, row)
+    browser.wait("the ⋮", lambda: shown(browser, row + " [data-row-menu]"))
+    browser.click(row + " [data-row-menu]")
+    browser.wait("the row's menu", lambda: count(browser, "aside [data-row-menu-list]") == 1)
+    browser.click("aside [data-row-menu-list] [data-menu-item=share]")
+    browser.wait("the share panel", lambda: count(browser, "#session-share-form") == 1)
+    assert count(browser, "[data-session-link]") == 0
+    # Its field keeps its focus and its text while it is typed in, a key at a
+    # time as a person types.
+    browser.script("document.querySelector('#session-share-label').focus()")
+    for letter in "Alice":
+        perform(browser, [{"type": "key", "id": "keys", "actions": [
+            {"type": "keyDown", "value": letter}, {"type": "keyUp", "value": letter},
+        ]}])
+    assert browser.script("return document.activeElement.id") == "session-share-label"
+    assert browser.script("return document.querySelector('#session-share-label').value") == "Alice"
     browser.click("#session-share-create")
-    browser.wait("the link", lambda: count(browser, "#session-share-url") == 1)
-    url = browser.script("return document.querySelector('#session-share-url').value")
+    browser.wait("the first link", lambda: count(browser, "[data-session-link]") == 1)
+    assert count(browser, "#session-share-form") == 0
+    assert count(browser, "#session-share-revoke-all") == 0, "one link has nothing to revoke all of"
+
+    # Another link lists beside it, and asks before it goes.
+    browser.click("#session-share-add")
+    browser.wait("the form", lambda: count(browser, "#session-share-label") == 1)
+    browser.type("#session-share-label", "Lab")
+    browser.click("#session-share-create")
+    browser.wait("the second link", lambda: count(browser, "[data-session-link]") == 2)
+    alice = share_link_of(browser, "Alice")
+    lab = share_link_of(browser, "Lab")
+    browser.shot("guest-link-panel")
+    browser.click(lab + " [data-link-revoke]")
+    browser.wait("the question", lambda: count(browser, lab + " [data-link-revoke-confirm]") == 1)
+    assert count(browser, "[data-session-link]") == 2, "a revoke asks first"
+    browser.click(lab + " [data-link-revoke-yes]")
+    browser.wait("one link left", lambda: count(browser, "[data-session-link]") == 1)
+    url = browser.script("return document.querySelector(arguments[0]).value", alice + " [data-link-url]")
     assert "/s/" in url, url
-    browser.shot("guest-link-dialog")
 
     guest = Browser()
     try:
@@ -6879,14 +6941,14 @@ def guest_link(browser):
         guest.shot("guest-link-page")
 
         # The commands act in the session or show it, and do not set it up.
-        guest.click('[aria-label="Commands"]')
+        guest.script("document.querySelector('main button[aria-label=Commands]').click()")
         guest.wait("the commands", lambda: count(guest, '[data-command="compact"]') == 1)
-        settle(guest)
+        sheet_at_rest(guest)
         for command in ["goal", "skills", "permissions"]:
             assert count(guest, '[data-command="%s"]' % command) == 1, command
         for command in ["rename", "share", "schedule", "preset"]:
             assert count(guest, '[data-command="%s"]' % command) == 0, command
-        guest.click('[data-command="permissions"]')
+        guest.click("#sheet [data-command=permissions]")
         guest.wait("the note", lambda: count(guest, "[data-owner-only]") == 1)
         assert count(guest, "#permission-form") == 0
         guest.shot("guest-link-permissions")
@@ -6906,11 +6968,12 @@ def guest_link(browser):
         guest.wait("the goal's field", lambda: count(guest, "#goal-input") == 1)
         guest.type("#goal-input", "the guest's goal")
         guest.click("#goal-set")
-        browser.wait("the goal for the owner", lambda: "goal" in browser.text("body").lower())
+        browser.wait("the goal for the owner", lambda: count(browser, "#goal-badge") == 1)
         guest.script("document.activeElement && document.activeElement.blur()")
         guest.type("body", ESCAPE)
 
-        # A guest's message reaches the agent, labelled for people.
+        # A guest's message reaches the agent while the goal's runs go, one
+        # right after another, labelled for people.
         guest.wait("the composer", lambda: count(guest, "#composer") == 1)
         guest.type("#composer", "from the guest")
         guest.type("#composer", ENTER)
@@ -6921,9 +6984,25 @@ def guest_link(browser):
         browser.shot("guest-link-owner")
         guest.check()
 
-        # Revoking ends the link for whoever has it open.
-        browser.wait("the dialog's count", lambda: count(browser, "#session-share-revoke") == 1)
-        browser.click("#session-share-revoke")
+        # The scripted model never finishes a goal, so it ends here.
+        guest.script("document.querySelector('#goal-badge').click()")
+        guest.wait("the cancel", lambda: count(guest, "#sheet [data-goal-action=cancel]") == 1)
+        guest.click("#sheet [data-goal-action=cancel]")
+        guest.wait("the goal's end", lambda: count(guest, "#goal-badge") == 0)
+        guest.type("body", ESCAPE)
+
+        # Revoking all of them ends the link for whoever has it open, once
+        # the owner says so.
+        browser.click("#session-share-add")
+        browser.wait("the form", lambda: count(browser, "#session-share-label") == 1)
+        browser.click("#session-share-create")
+        browser.wait("two links", lambda: count(browser, "[data-session-link]") == 2)
+        browser.click("#session-share-revoke-all")
+        browser.wait("the question", lambda: count(browser, "#session-share-revoke-all-confirm") == 1)
+        assert count(browser, "[data-session-link]") == 2, "revoking all asks first"
+        browser.click("#session-share-revoke-all-yes")
+        browser.wait("no links", lambda: count(browser, "[data-session-link]") == 0)
+        browser.wait("the form again", lambda: count(browser, "#session-share-form") == 1)
         guest.wait("the link's end", lambda: count(guest, "#guest-gone") == 1, timeout=40)
         guest.shot("guest-link-gone")
     finally:

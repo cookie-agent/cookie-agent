@@ -33,31 +33,31 @@ pub struct ShareDialog {
     pub error: Option<String>,
 }
 
-/// What the conversation share dialog is about.
+/// What the conversation share panel is about. Its links are the Sharing
+/// view's, so it follows them as they change.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SessionShareDialog {
     pub session_id: SessionId,
     pub title: String,
-    /// The link the dialog shows; `None` until the session has one.
-    pub share: Option<SessionShare>,
-    /// Who a new link is for.
-    pub label: String,
-    /// Whether a new link's guests may act.
-    pub can_send: bool,
-    /// The expiry a new link gets.
-    pub lifetime: ShareLifetime,
-    /// A request is on its way.
+    /// A new link is on its way.
     pub busy: bool,
     pub error: Option<String>,
 }
 
-/// The newest of `session`'s links.
-fn newest_of_session(links: &[SessionShare], session: SessionId) -> Option<SessionShare> {
-    links
-        .iter()
-        .filter(|link| link.session_id == session)
-        .max_by_key(|link| link.created.at)
-        .cloned()
+/// The links of `session` in what `shares.list` last answered, newest first.
+fn links_of(
+    list: Option<&Result<cookie_agent_protocol::SharesListResult, String>>,
+    session: SessionId,
+) -> Vec<SessionShare> {
+    match list {
+        Some(Ok(listed)) => listed
+            .sessions
+            .iter()
+            .filter(|link| link.session_id == session)
+            .cloned()
+            .collect(),
+        _ => Vec::new(),
+    }
 }
 
 impl Workspace {
@@ -84,13 +84,6 @@ impl Workspace {
                         dialog.share = newest_of(&listed.shares, dialog.asset);
                     }
                 });
-                self.session_share_dialog.update(|dialog| {
-                    if let Some(dialog) = dialog
-                        && !dialog.busy
-                    {
-                        dialog.share = newest_of_session(&listed.sessions, dialog.session_id);
-                    }
-                });
             }
             self.share_list.set(Some(result));
         });
@@ -113,26 +106,29 @@ impl Workspace {
 
     /// The live links of `session`, as the Sharing view last read them.
     pub fn session_links(self, session: SessionId) -> Vec<SessionShare> {
-        self.share_list.with(|list| match list {
-            Some(Ok(listed)) => listed
-                .sessions
-                .iter()
-                .filter(|link| link.session_id == session)
-                .cloned()
-                .collect(),
-            _ => Vec::new(),
-        })
+        self.share_list
+            .with(|list| links_of(list.as_ref(), session))
+    }
+
+    fn session_links_untracked(self, session: SessionId) -> Vec<SessionShare> {
+        self.share_list
+            .with_untracked(|list| links_of(list.as_ref(), session))
     }
 
     /// Opens the conversation share dialog of the viewed session's tree.
     pub fn open_session_share_dialog(self) {
-        if let Some(session) = self.selected.get_untracked() {
-            self.open_session_share_dialog_of(self.root_of(session));
+        match self.selected.get_untracked() {
+            Some(session) if !self.new_session.get_untracked() => {
+                self.open_session_share_dialog_of(self.root_of(session));
+            }
+            // A new session exists once its first message creates it.
+            _ => self
+                .status
+                .set("send a message before sharing this session".into()),
         }
     }
 
-    /// Opens the conversation share dialog of the root session `session_id`,
-    /// with the link it already has.
+    /// Opens the conversation share panel of the root session `session_id`.
     pub fn open_session_share_dialog_of(self, session_id: SessionId) {
         self.panel.set(None);
         let title = self.sessions.with_untracked(|sessions| {
@@ -144,10 +140,6 @@ impl Workspace {
         self.session_share_dialog.set(Some(SessionShareDialog {
             session_id,
             title: title.unwrap_or_else(|| "This conversation".to_owned()),
-            share: None,
-            label: String::new(),
-            can_send: true,
-            lifetime: ShareLifetime::default(),
             busy: false,
             error: None,
         }));
@@ -162,8 +154,15 @@ impl Workspace {
         });
     }
 
-    /// Makes a link for the dialog's session, beside any it has.
-    pub fn create_session_share(self) {
+    /// Makes another link to the panel's session, and calls `made` once it
+    /// has one. It shows at once, before `shares.changed` lists it again.
+    pub fn create_session_share(
+        self,
+        label: String,
+        can_send: bool,
+        lifetime: ShareLifetime,
+        made: impl FnOnce() + 'static,
+    ) {
         let (Some(client), Some(dialog)) =
             (self.client(), self.session_share_dialog.get_untracked())
         else {
@@ -173,23 +172,36 @@ impl Workspace {
             dialog.busy = true;
             dialog.error = None;
         });
-        let label = dialog.label.trim().to_owned();
+        let label = label.trim().to_owned();
         spawn_local(async move {
-            let made = client
+            let result = client
                 .create_session_share(SessionShareCreateParams {
                     session_id: dialog.session_id,
                     label: (!label.is_empty()).then_some(label),
-                    can_send: dialog.can_send,
-                    expiry: dialog.lifetime.expiry(jiff::Timestamp::now()),
+                    can_send,
+                    expiry: lifetime.expiry(jiff::Timestamp::now()),
                 })
                 .await;
-            self.update_session_share_dialog(|dialog| {
-                dialog.busy = false;
-                match made {
-                    Ok(made) => dialog.share = Some(made.share),
-                    Err(error) => dialog.error = Some(crate::errors::describe(&error)),
+            match result {
+                Ok(result) => {
+                    self.share_list.update(|list| {
+                        if let Some(Ok(listed)) = list
+                            && !listed
+                                .sessions
+                                .iter()
+                                .any(|link| link.id == result.share.id)
+                        {
+                            listed.sessions.insert(0, result.share);
+                        }
+                    });
+                    self.update_session_share_dialog(|dialog| dialog.busy = false);
+                    made();
                 }
-            });
+                Err(error) => self.update_session_share_dialog(|dialog| {
+                    dialog.busy = false;
+                    dialog.error = Some(crate::errors::describe(&error));
+                }),
+            }
             self.refresh_shares();
         });
     }
@@ -201,20 +213,37 @@ impl Workspace {
         };
         spawn_local(async move {
             match client.update_session_share(params).await {
-                Ok(updated) => {
-                    self.update_session_share_dialog(|dialog| {
-                        if dialog
-                            .share
-                            .as_ref()
-                            .is_some_and(|share| share.id == updated.share.id)
-                        {
-                            dialog.share = Some(updated.share);
-                        }
-                    });
+                Ok(_) => self.refresh_shares(),
+                Err(error) => {
+                    let error = crate::errors::describe(&error);
+                    self.status.set(error.clone());
+                    self.update_session_share_dialog(|dialog| dialog.error = Some(error));
                     self.refresh_shares();
                 }
-                Err(error) => self.status.set(crate::errors::describe(&error)),
             }
+        });
+    }
+
+    /// Revokes every link of `session`, and no other session's.
+    pub fn revoke_session_links(self, session: SessionId) {
+        let Some(client) = self.client() else {
+            return;
+        };
+        let links = self.session_links_untracked(session);
+        spawn_local(async move {
+            let mut failed = None;
+            for link in links {
+                if let Err(error) = client.revoke_share(link.id).await {
+                    failed = Some(crate::errors::describe(&error));
+                }
+            }
+            match failed {
+                Some(error) => {
+                    self.update_session_share_dialog(|dialog| dialog.error = Some(error))
+                }
+                None => self.status.set("links revoked".into()),
+            }
+            self.refresh_shares();
         });
     }
 
@@ -393,11 +422,6 @@ impl Workspace {
                         if let Some(dialog) = dialog
                             && dialog.share.as_ref().is_some_and(|share| share.id == id)
                         {
-                            dialog.share = None;
-                        }
-                    });
-                    self.update_session_share_dialog(|dialog| {
-                        if dialog.share.as_ref().is_some_and(|share| share.id == id) {
                             dialog.share = None;
                         }
                     });

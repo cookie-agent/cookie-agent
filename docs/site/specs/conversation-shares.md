@@ -188,12 +188,16 @@ check; if it cannot, guest pages are served only on the share-only port.
 
 **Web client.**
 
-- **Share** in the session header's menu and the sidebar row's
-  right-click menu opens the **share dialog**: the label, *Can send
-  messages* (on), the expiry, the private-base warning when it applies,
-  the warning of [section 10](#10-security-notes) in one line, and
-  *Create link*. Then the URL with *Copy*, *Change expiry…*, *New link*,
-  and *Revoke*, and who is connected.
+- **Share** in the session header's menu, and in the *⋯* and right-click
+  menus of its row in the session list, opens the **share panel**: the
+  private-base warning when it applies, the warning of
+  [section 10](#10-security-notes) in one line, and a card for every link of
+  the conversation, newest first (the label, who is connected, *Can send*, the
+  URL with *Copy*, the expiry and views, *Change expiry…*, and *Revoke*, which
+  asks first). *New link* opens a form in the panel (the label, *Can send
+  messages*, the expiry, and *Create link*), and a conversation with no link
+  opens on that form. With two or more links, *Revoke all* ends this
+  conversation's links, and no others, and asks first (decided 2026-11-04).
 - A session with a live link shows the link badge in its header and
   sidebar row.
 - **The Sharing view** lists conversation shares beside asset links: the
@@ -319,6 +323,11 @@ The user decided:
    later on 2026-11-04, after a version without the panel). The owner's
    views are reused as they are, split by `writable()` and
    `configurable()`.
+8. **Every link of a conversation shows in one panel** (2026-11-04, after a
+   first version that showed only the newest): *Revoke all* stays in it and
+   asks first, and cards stay fully open rather than collapsing.
+9. **The session list's *⋯* menu offers Share** too, beside the right-click
+   menu.
 
 ## 14. Alternatives considered
 

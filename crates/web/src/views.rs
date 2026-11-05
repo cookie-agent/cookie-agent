@@ -1259,6 +1259,20 @@ fn session_row(
                     danger: false,
                 });
             }
+            if workspace.has_shares.get() {
+                items.push(row_menu::MenuItem {
+                    id: "share",
+                    label: "Share conversation…",
+                    icon: icondata::LuShare2,
+                    act: Callback::new(move |()| {
+                        if revealed_row {
+                            revealed.set(None);
+                        }
+                        workspace.open_session_share_dialog_of(session_id);
+                    }),
+                    danger: false,
+                });
+            }
             items
         }
     };
@@ -1273,15 +1287,6 @@ fn session_row(
             danger: false,
         }];
         items.extend(menu_items(false)());
-        if workspace.has_shares.get() {
-            items.push(row_menu::MenuItem {
-                id: "share",
-                label: "Share conversation…",
-                icon: icondata::LuShare2,
-                act: Callback::new(move |()| workspace.open_session_share_dialog_of(session_id)),
-                danger: false,
-            });
-        }
         if workspace.can_delete.get() {
             items.push(row_menu::MenuItem {
                 id: "delete",
