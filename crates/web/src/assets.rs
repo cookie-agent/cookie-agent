@@ -26,7 +26,11 @@ use cookie_agent_protocol::{Asset, AssetId, AssetStore};
 use leptos::{prelude::Set as _, task::spawn_local};
 use wasm_bindgen::{JsCast as _, JsValue, closure::Closure};
 
-use crate::{render::escape, workspace::Workspace};
+use crate::{
+    blob_cache::{BUDGET_BYTES, BlobCache, url_on_page},
+    render::escape,
+    workspace::Workspace,
+};
 
 /// The most bytes of a Markdown document shown inline.
 const MAX_DOCUMENT_BYTES: usize = 1024 * 1024;
@@ -46,8 +50,8 @@ const BUTTON: &str =
 
 thread_local! {
     /// What was read of each content, by its digest: a `Blob` URL, and the
-    /// text of a document or page, kept for the page's life.
-    static CONTENTS: RefCell<HashMap<String, Content>> = RefCell::new(HashMap::new());
+    /// text of a document or page, kept while it fits the cache.
+    static CONTENTS: RefCell<BlobCache<Content>> = RefCell::new(BlobCache::new(BUDGET_BYTES));
     /// The HTML frames shown, by their token.
     static FRAMES: RefCell<HashMap<String, web_sys::Element>> = RefCell::new(HashMap::new());
     static LISTENING: RefCell<bool> = const { RefCell::new(false) };
@@ -493,7 +497,7 @@ fn open_deck(deck: &web_sys::Element, index: usize, workspace: Workspace) {
         let content = card
             .get_attribute("data-asset-current")
             .filter(|_| card.get_attribute("data-shown").as_deref() == Some("yes"))
-            .and_then(|sha| CONTENTS.with(|contents| contents.borrow().get(&sha).cloned()));
+            .and_then(|sha| CONTENTS.with(|contents| contents.borrow_mut().get(&sha)));
         let Some(content) = content else {
             continue;
         };
@@ -901,7 +905,7 @@ fn set_head(element: &web_sys::Element, asset: &Asset, shown: &Placeholder) {
         String::new()
     };
     let download = CONTENTS.with(|contents| {
-        contents.borrow().get(&asset.sha256).map(|content| {
+        contents.borrow_mut().get(&asset.sha256).map(|content| {
             format!(
                 "<a download=\"{}\" href=\"{}\" class=\"{BUTTON}\" title=\"Download\">{}<span class=\"sr-only sm:not-sr-only\">Download</span></a>",
                 escape(&download_name(asset)),
@@ -1175,7 +1179,7 @@ fn full_screen(figure: &web_sys::Element) {
     let Some(sha256) = figure.get_attribute("data-asset-current") else {
         return;
     };
-    let Some(content) = CONTENTS.with(|contents| contents.borrow().get(&sha256).cloned()) else {
+    let Some(content) = CONTENTS.with(|contents| contents.borrow_mut().get(&sha256)) else {
         return;
     };
     let Some(text) = content.text.clone() else {
@@ -1259,7 +1263,7 @@ fn close_full_screen(document: &web_sys::Document) {
 /// Reads `asset`'s content whole, once per digest, as a `Blob` URL, with
 /// its text when it is a document or a page.
 async fn content(asset: &Asset, source: &Source, workspace: Workspace) -> Result<Content, String> {
-    if let Some(content) = CONTENTS.with(|contents| contents.borrow().get(&asset.sha256).cloned()) {
+    if let Some(content) = CONTENTS.with(|contents| contents.borrow_mut().get(&asset.sha256)) {
         return Ok(content);
     }
     let (bytes, sha256, media_type) = match source {
@@ -1283,7 +1287,17 @@ async fn content(asset: &Asset, source: &Source, workspace: Workspace) -> Result
         text,
         media_type,
     };
-    CONTENTS.with(|contents| contents.borrow_mut().insert(sha256, content.clone()));
+    let left = CONTENTS.with(|contents| {
+        contents.borrow_mut().insert(
+            sha256,
+            content.clone(),
+            (bytes.len() + content.text.as_ref().map_or(0, |text| text.len())) as u64,
+            |content| url_on_page(&content.url),
+        )
+    });
+    for left in left {
+        let _ = web_sys::Url::revoke_object_url(&left.url);
+    }
     Ok(content)
 }
 
@@ -1314,7 +1328,7 @@ pub fn download(workspace: Workspace, asset: Asset) {
 /// Saves `asset`, read from `source`, as a file.
 fn download_from(workspace: Workspace, asset: Asset, source: Source) {
     spawn_local(async move {
-        let url = match CONTENTS.with(|contents| contents.borrow().get(&asset.sha256).cloned()) {
+        let url = match CONTENTS.with(|contents| contents.borrow_mut().get(&asset.sha256)) {
             Some(content) => content.url,
             None => match content(&asset, &source, workspace).await {
                 Ok(content) => content.url,

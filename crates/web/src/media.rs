@@ -1,16 +1,19 @@
 //! Media display blocks shown inline: their artifact is read from the daemon
-//! (`artifact.read`) and shown through a `Blob` URL, kept for the page's
-//! life so a re-rendered block shows it again at once.
+//! (`artifact.read`) and shown through a `Blob` URL, kept while it fits the
+//! cache so a re-rendered block shows it again at once.
 
-use std::{cell::RefCell, collections::HashMap};
+use std::cell::RefCell;
 
 use leptos::task::spawn_local;
 use wasm_bindgen::JsValue;
 
-use crate::workspace::Workspace;
+use crate::{
+    blob_cache::{BUDGET_BYTES, BlobCache, url_on_page},
+    workspace::Workspace,
+};
 
 thread_local! {
-    static URLS: RefCell<HashMap<String, (String, String)>> = RefCell::new(HashMap::new());
+    static URLS: RefCell<BlobCache<(String, String)>> = RefCell::new(BlobCache::new(BUDGET_BYTES));
 }
 
 /// Fills every media block under `root` that is not shown yet.
@@ -30,7 +33,7 @@ pub fn show_within(root: &web_sys::Element, workspace: Workspace) {
         };
         let _ = element.set_attribute("data-shown", "loading");
         let alt = element.get_attribute("data-alt").unwrap_or_default();
-        if let Some((url, media_type)) = URLS.with(|urls| urls.borrow().get(&sha256).cloned()) {
+        if let Some((url, media_type)) = URLS.with(|urls| urls.borrow_mut().get(&sha256)) {
             show(&element, &url, &media_type, &alt);
             continue;
         }
@@ -38,10 +41,17 @@ pub fn show_within(root: &web_sys::Element, workspace: Workspace) {
             match workspace.read_media(sha256.clone()).await {
                 Ok((bytes, media_type)) => match blob_url(&bytes, &media_type) {
                     Ok(url) => {
-                        URLS.with(|urls| {
-                            urls.borrow_mut()
-                                .insert(sha256, (url.clone(), media_type.clone()));
+                        let left = URLS.with(|urls| {
+                            urls.borrow_mut().insert(
+                                sha256,
+                                (url.clone(), media_type.clone()),
+                                bytes.len() as u64,
+                                |(url, _)| url_on_page(url),
+                            )
                         });
+                        for (left, _) in left {
+                            let _ = web_sys::Url::revoke_object_url(&left);
+                        }
                         show(&element, &url, &media_type, &alt);
                     }
                     Err(_) => element.set_text_content(Some("the media could not be shown")),

@@ -2419,6 +2419,24 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
             watch.disconnect();
         }
     });
+    // Code and media fill in as their rows near the view.
+    let watching = StoredValue::new_local(None::<web_sys::Element>);
+    Effect::new(move |_| {
+        let Some(scroller) = container.get() else {
+            return;
+        };
+        let scroller: web_sys::Element = scroller.into();
+        if watching.with_value(|watching| watching.as_ref() == Some(&scroller)) {
+            return;
+        }
+        crate::near_view::start(&scroller, move |row| fill_row(row, workspace));
+        watching.set_value(Some(scroller));
+    });
+    on_cleanup(move || {
+        if let Some(scroller) = watching.try_update_value(Option::take).flatten() {
+            crate::near_view::stop(&scroller);
+        }
+    });
     // The rows the page last drew, to tell which changed.
     let drawn = StoredValue::new(Rows::default());
     Effect::new(move |_| {
@@ -2447,10 +2465,10 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
                 return;
             };
             for id in fill_in {
-                if let Some(changed) = document.get_element_by_id(&id) {
-                    crate::highlight::highlight_within(&changed);
-                    crate::media::show_within(&changed, workspace);
-                    crate::assets::show_within(&changed, workspace);
+                if let Some(changed) = document.get_element_by_id(&id)
+                    && !crate::near_view::watch(&changed)
+                {
+                    fill_row(&changed, workspace);
                 }
             }
         });
@@ -3175,13 +3193,14 @@ fn draw_blocks(element: &web_sys::Element, drawn: &mut Vec<(Arc<str>, u32)>, blo
         let before = element.child_nodes().length();
         let _ = element.insert_adjacent_html("beforeend", block);
         let after = element.child_nodes().length();
-        // A code block is highlighted as it is added, alone.
+        // A code block is highlighted alone, once it is added and near the view.
         if fills_in(block) {
             let nodes = element.child_nodes();
             for index in before..after {
                 if let Some(node) = nodes
                     .item(index)
                     .and_then(|node| node.dyn_into::<web_sys::Element>().ok())
+                    && !crate::near_view::watch(&node)
                 {
                     crate::highlight::highlight_within(&node);
                 }
@@ -5406,4 +5425,11 @@ fn agent_modes_sheet(
             "The agent decides in this mode what it asks you. Cookie still refuses what your deny rules deny and allows what your allow rules allow."
         </p>
     }
+}
+
+/// Fills in the code and media of `row`, a transcript row or part of one.
+fn fill_row(row: &web_sys::Element, workspace: Workspace) {
+    crate::highlight::highlight_within(row);
+    crate::media::show_within(row, workspace);
+    crate::assets::show_within(row, workspace);
 }

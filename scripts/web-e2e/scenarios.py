@@ -1093,6 +1093,50 @@ new MutationObserver(() => {
 """
 
 
+def near_view(browser):
+    """Reopening a session draws all its rows, but its code is highlighted and
+    its media read only as they near the view: a long session's first paint
+    pays for what is on screen, and a row scrolled to fills in."""
+    new_session(browser)
+    send(browser, "show the picture")
+    idle(browser, "the read", text="Read dot.png")
+    send(browser, "show me markdown")
+    browser.wait("the markdown", lambda: "A heading" in browser.text("#transcript"))
+    idle(browser, "the markdown's end")
+    send(browser, "stream only lines 600, label nu")
+    browser.wait("the long answer", lambda: "nu 599 " in browser.script(
+        "return document.querySelector('#transcript').textContent"), timeout=120)
+    idle(browser, "the long answer's end")
+    session = open_session_id(browser)
+    browser.script("location.reload()")
+    time.sleep(0.5)
+    browser.wait("the connection", lambda: browser.text("#connected") != "")
+    browser.wait("the session row", lambda: count(browser, 'aside [data-session="%s"]' % session) == 1)
+    click_row(browser, 'aside [data-session="%s"]' % session)
+    browser.wait("the session", lambda: "nu 599 " in browser.script(
+        "return document.querySelector('#transcript').textContent"), timeout=120)
+    # Give anything that would fill by itself the time to.
+    time.sleep(2)
+    code = "#transcript code.language-rust"
+    assert count(browser, code) >= 1, "the code block is in the page"
+    first_highlighted = lambda: browser.script(
+        "return document.querySelector(arguments[0]).hasAttribute('data-highlighted')", code
+    )
+    total = count(browser, code)
+    highlighted = count(browser, code + "[data-highlighted]")
+    assert not first_highlighted(), "code far from the view waits"
+    assert highlighted < total, "only what is near is highlighted: %d of %d" % (highlighted, total)
+    waiting_media = count(browser, "#transcript [data-media]:not([data-shown])")
+    print("far from the view: %d of %d code blocks highlighted, %d media not read" % (highlighted, total, waiting_media))
+    browser.script("document.querySelector('#transcript').scrollTop = 0")
+    browser.wait("the code near the view", first_highlighted)
+    if waiting_media:
+        browser.wait("the media near the view",
+                     lambda: count(browser, "#transcript [data-media]:not([data-shown])") < waiting_media)
+    browser.check()
+    print("scrolled to, the code is highlighted and the media read")
+
+
 def whole_session(browser):
     """The long session, opened afresh on a slow CPU, loads whole: a
     skeleton shows until it has, counting its events against the total the
@@ -7039,6 +7083,7 @@ SCENARIOS = [
     ("open_row_streams", open_row_streams, "chat", []),
     ("long_session", long_session, "long", []),
     ("whole_session", whole_session, "long", ["long_session"]),
+    ("near_view", near_view, "long", []),
     # Its daemon has sessions last active months ago (test-web-page.sh).
     ("session_list_older", session_list_older, "long", []),
     # Its daemon has only sessions last active weeks ago (test-web-page.sh).
