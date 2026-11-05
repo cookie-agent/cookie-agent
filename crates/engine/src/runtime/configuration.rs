@@ -89,25 +89,7 @@ pub struct ConfigurationStatus {
     pub deferred_tools: Vec<cookie_agent_protocol::DeferredToolsMark>,
 }
 
-/// The tokens the daemon created at start and wrote to `config.toml`.
-#[derive(Debug, Default)]
-pub(crate) struct ServedTokens {
-    token: Option<String>,
-    runtime_token: Option<String>,
-}
-
 impl Engine {
-    /// Records the tokens the daemon serves with that it created at start
-    /// and wrote to `config.toml`, `[server] token` and `runtime_token`, so
-    /// the file holding them does not read as a `server` change waiting for
-    /// a restart.
-    pub fn note_served_server_tokens(&self, token: Option<&str>, runtime_token: Option<&str>) {
-        let _ = self.inner.served_server_tokens.set(ServedTokens {
-            token: token.map(str::to_owned),
-            runtime_token: runtime_token.map(str::to_owned),
-        });
-    }
-
     /// The applied configuration generation.
     #[must_use]
     pub fn configuration(&self) -> Arc<LoadedConfiguration> {
@@ -120,19 +102,10 @@ impl Engine {
         let started = &self.inner.started_config;
         let mut restart_required = Vec::new();
         let (now, then) = (&applied.runtime.server, &started.runtime.server);
-        // A token the daemon created at start and wrote to the file is the
-        // one it serves with.
-        let served = self.inner.served_server_tokens.get();
-        let served_token = served
-            .and_then(|served| served.token.as_deref())
-            .or(then.token.as_deref());
-        let served_runtime_token = served
-            .and_then(|served| served.runtime_token.as_deref())
-            .or(then.runtime_token.as_deref());
         if now.host != then.host
             || now.port != then.port
-            || now.token.as_deref() != served_token
-            || now.runtime_token.as_deref() != served_runtime_token
+            || now.token != then.token
+            || now.runtime_token != then.runtime_token
         {
             restart_required.push(RestartRequiredPart::Server);
         }

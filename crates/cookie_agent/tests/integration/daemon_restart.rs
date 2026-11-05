@@ -285,6 +285,37 @@ async fn the_daemon_restarts_through_the_rpc_and_clients_reconnect() {
 /// A client that connects while the daemon starts is told so, refused
 /// anything but the status, and served on the same connection once the
 /// daemon is ready.
+/// Tokens a daemon writes at start are the ones it serves with: nothing waits
+/// for a restart, and the configuration it runs on is the file's, whether it
+/// wrote both tokens or only the one a file from an earlier build lacked.
+#[tokio::test(flavor = "multi_thread")]
+async fn tokens_a_daemon_writes_at_start_leave_nothing_to_apply() {
+    let client_token = "A".repeat(43);
+    for authored in [
+        None,
+        Some(format!("[server]\ntoken = \"{client_token}\"\n")),
+    ] {
+        let home = ScratchHome::new();
+        if let Some(authored) = &authored {
+            let root = home.path().join(".cookie-agent");
+            std::fs::create_dir_all(&root).expect("the configuration directory");
+            std::fs::write(root.join("config.toml"), authored).expect("config.toml");
+        }
+        let mut daemon = Daemon::start(home.path(), free_port());
+        let client = connect(&daemon.ready()).await;
+        let config = client.get_config().await.expect("the configuration");
+        assert!(
+            config.status.restart_required.is_empty(),
+            "{authored:?}: {:?}",
+            config.status.restart_required
+        );
+        assert_eq!(
+            config.status.applied_revision, config.revision,
+            "{authored:?}"
+        );
+    }
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_client_connects_while_the_daemon_starts() {
     let home = ScratchHome::new();

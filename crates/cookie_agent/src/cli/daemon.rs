@@ -88,12 +88,18 @@ pub(super) async fn serve(
         }
         None => None,
     };
-    let configuration =
-        cookie_agent_config::load().context("load user configuration, agents, and skills")?;
+    let load =
+        || cookie_agent_config::load().context("load user configuration, agents, and skills");
+    let mut configuration = load()?;
     let tokens = daemon_tokens(
         &configuration.runtime.server,
         configuration.config_paths.user.as_deref(),
     )?;
+    // The daemon runs on the file as it now stands, so tokens it just wrote
+    // are no change waiting to be applied.
+    if tokens.token_created || tokens.runtime_token_created {
+        configuration = load()?;
+    }
     let address = listen.unwrap_or_else(|| {
         std::net::SocketAddr::from((
             [127, 0, 0, 1],
@@ -147,8 +153,7 @@ pub(super) async fn run_daemon(
             DaemonTokens {
                 token,
                 runtime_token,
-                token_created,
-                runtime_token_created,
+                ..
             },
     } = options;
     let scheme = if tls.is_some() { "wss" } else { "ws" };
@@ -239,10 +244,6 @@ pub(super) async fn run_daemon(
             return Err(error);
         }
     };
-    runtime.engine.note_served_server_tokens(
-        token_created.then_some(token.as_str()),
-        runtime_token_created.then_some(runtime_token.as_str()),
-    );
     drop(token);
     drop(runtime_token);
     // Only a daemon that knows how it was started can start itself again.

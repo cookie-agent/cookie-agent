@@ -172,60 +172,24 @@ async fn parts_that_need_a_restart_are_reported_until_they_match_again() {
     assert!(status.restart_required.is_empty());
 }
 
-/// A token the daemon created at start and wrote to the file is the one it
-/// serves with, so the file holding it is no `server` change; another
-/// token is.
+/// A changed token is one the daemon does not serve yet, the client's and the
+/// runtime's alike; the started one again leaves nothing to apply.
 #[tokio::test]
-async fn the_token_the_daemon_wrote_at_start_needs_no_restart() {
+async fn a_changed_token_needs_a_restart() {
     let fixture = reloadable();
-    let written = "B".repeat(43);
-    fixture.write("config.toml", &format!("[server]\ntoken = \"{written}\"\n"));
-    let status = fixture.engine.reload_configuration().await.expect("reload");
-    assert_eq!(status.restart_required, [RestartRequiredPart::Server]);
-    fixture
-        .engine
-        .note_served_server_tokens(Some(&written), None);
-    assert!(
-        fixture
-            .engine
-            .configuration_status()
-            .restart_required
-            .is_empty()
-    );
-    let other = "C".repeat(43);
-    fixture.write("config.toml", &format!("[server]\ntoken = \"{other}\"\n"));
-    let status = fixture.engine.reload_configuration().await.expect("reload");
-    assert_eq!(status.restart_required, [RestartRequiredPart::Server]);
-}
-
-/// The runtime token follows the same rule as the client token.
-#[tokio::test]
-async fn the_runtime_token_the_daemon_wrote_at_start_needs_no_restart() {
-    let fixture = reloadable();
-    let written = "B".repeat(43);
-    fixture.write(
-        "config.toml",
-        &format!("[server]\nruntime_token = \"{written}\"\n"),
-    );
-    let status = fixture.engine.reload_configuration().await.expect("reload");
-    assert_eq!(status.restart_required, [RestartRequiredPart::Server]);
-    fixture
-        .engine
-        .note_served_server_tokens(None, Some(&written));
-    assert!(
-        fixture
-            .engine
-            .configuration_status()
-            .restart_required
-            .is_empty()
-    );
-    let other = "C".repeat(43);
-    fixture.write(
-        "config.toml",
-        &format!("[server]\nruntime_token = \"{other}\"\n"),
-    );
-    let status = fixture.engine.reload_configuration().await.expect("reload");
-    assert_eq!(status.restart_required, [RestartRequiredPart::Server]);
+    for key in ["token", "runtime_token"] {
+        let token = "B".repeat(43);
+        fixture.write("config.toml", &format!("[server]\n{key} = \"{token}\"\n"));
+        let status = fixture.engine.reload_configuration().await.expect("reload");
+        assert_eq!(
+            status.restart_required,
+            [RestartRequiredPart::Server],
+            "{key}"
+        );
+        fixture.write("config.toml", "");
+        let status = fixture.engine.reload_configuration().await.expect("reload");
+        assert!(status.restart_required.is_empty(), "{key}");
+    }
 }
 
 #[tokio::test]

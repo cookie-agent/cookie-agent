@@ -1084,9 +1084,6 @@ pub(crate) struct Inner {
     pub(crate) restart: restart::RestartState,
     /// The daemon's status, which the engine reports its slow work on.
     pub(crate) status: crate::status::StatusBoard,
-    /// The tokens the daemon created at start, which the started
-    /// configuration lacks.
-    pub(crate) served_server_tokens: std::sync::OnceLock<configuration::ServedTokens>,
     provider_ids: Mutex<HashSet<&'static str>>,
     pub(crate) mcp: Arc<crate::McpRegistry>,
     /// MCP changes and failures of every runtime.
@@ -1438,7 +1435,6 @@ impl Engine {
                 cache_expiry: cache_expiry::CacheExpiryState::default(),
                 restart: restart::RestartState::default(),
                 status,
-                served_server_tokens: std::sync::OnceLock::new(),
                 provider_ids: Mutex::new(provider_ids),
                 mcp,
                 mcp_hub,

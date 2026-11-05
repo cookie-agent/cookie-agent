@@ -445,8 +445,8 @@ above:
   opened over.
 - **Token fix.** A daemon started without `[server] token` writes one at
   start; that write used to read as a `server` change needing a restart. The
-  daemon now tells the engine the token it serves with
-  (`Engine::note_served_server_token`).
+  daemon now loads the file again after writing a token, so it runs on what
+  the file holds.
 - **Tests.** Engine tests for the idle wait, refused starts, kept queue,
   `now` overriding `idle` and the shutdown interrupting the run, the cron
   skip, and the missing hook; a server test over a real WebSocket for
