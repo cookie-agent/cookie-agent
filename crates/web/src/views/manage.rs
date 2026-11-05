@@ -28,7 +28,7 @@ use super::{BUTTON, ERROR, ICON_BUTTON, NOTE, PRIMARY, ROW, empty_state, loading
 use crate::{
     browser,
     icons::Glyph,
-    workspace::{PANEL_POLL, RUNTIMES_POLL, Workspace},
+    workspace::{RUNTIMES_POLL, Workspace},
 };
 
 pub(super) const FIELD: &str = "min-h-11 w-full rounded-lg bg-surface px-3 font-mono text-[0.8125rem] shadow-[inset_0_0_0_1px_var(--color-line-2)] transition-shadow placeholder:text-faint hover:shadow-[inset_0_0_0_1px_var(--color-faint)] focus:shadow-[inset_0_0_0_1px_var(--color-accent),0_0_0_3px_var(--color-accent-soft)] focus:outline-none lg:min-h-9";
@@ -485,7 +485,7 @@ pub(crate) fn edit_dialog(
 // ---- /mcp ------------------------------------------------------------------
 
 pub fn mcp_sheet(workspace: Workspace) -> impl IntoView {
-    poll_while_open(PANEL_POLL, move || workspace.poll_mcp());
+    poll_while_open(RUNTIMES_POLL, move || workspace.poll_mcp());
     // The form: its fields, the server it edits, and where it is kept.
     let form = RwSignal::new(None::<McpEdit>);
     let persist = RwSignal::new(PersistChoice::Runtime);

@@ -409,7 +409,7 @@ impl Connection {
         };
         let generation = self.generation.get_value();
         spawn_local(async move {
-            let answer = std::pin::pin!(client.runtime_snapshot());
+            let answer = std::pin::pin!(client.daemon_status());
             let timeout = gloo_timers::future::sleep(VISIBLE_CHECK_TIMEOUT);
             let answered = matches!(
                 futures_util::future::select(answer, timeout).await,

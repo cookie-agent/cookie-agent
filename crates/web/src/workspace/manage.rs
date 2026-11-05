@@ -47,12 +47,9 @@ use crate::{
     memory::{folder_key, project_delete_status, project_memories, project_strays},
 };
 
-/// How often an open `/mcp` panel reads its list again, as the TUI polls.
-pub const PANEL_POLL: Duration = Duration::from_secs(1);
-
-/// How often a page showing the runtimes reads them again. `runtimes.changed`
-/// and `machines.changed` read them as they change; this only catches what
-/// a dropped notice missed.
+/// How often a page showing the runtimes or MCP servers reads them again.
+/// `runtimes.changed`, `machines.changed`, and `mcp.changed` read them as they
+/// change; this only catches what a dropped notice missed.
 pub const RUNTIMES_POLL: Duration = Duration::from_secs(10);
 
 /// Sets `signal` to `value` only when that changes it: a poll that reads
