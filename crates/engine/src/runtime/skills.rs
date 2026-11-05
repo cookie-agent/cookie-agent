@@ -636,12 +636,6 @@ impl Engine {
             .ok_or_else(|| {
                 EngineError::ToolFailed("fork skill requires an available delegation target".into())
             })?;
-        self.inner
-            .skills_runtime
-            .pending_forks
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .insert(call_id, plan.clone());
         let active = self
             .inner
             .sessions
@@ -652,6 +646,12 @@ impl Engine {
             .cloned()
             .filter(|active| active.session == session)
             .ok_or(EngineError::MissingRun(run))?;
+        self.inner
+            .skills_runtime
+            .pending_forks
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(call_id, plan.clone());
         let result = self
             .execute_prepared_call(
                 active,

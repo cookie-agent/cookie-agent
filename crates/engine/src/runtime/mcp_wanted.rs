@@ -175,10 +175,7 @@ impl Engine {
                     runtime: runtime.cloned(),
                 })
             };
-            let attachments = self
-                .session_runtimes(projection.meta.session_id)
-                .unwrap_or_default();
-            for attachment in attachments {
+            for attachment in self.attachments_of(&projection) {
                 if attachment.runtime_id.as_str() == RuntimeId::GLOBAL {
                     let set = wanted.entry(Host::Global).or_default();
                     set.extend(

@@ -88,6 +88,8 @@ impl RuntimeGroupsCache {
         {
             return false;
         }
+        // A generation that ended is never asked about again.
+        taken.retain(|_, at| now.duration_since(*at) < RETAKE);
         taken.insert(key, now);
         true
     }

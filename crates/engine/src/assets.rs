@@ -127,6 +127,9 @@ pub(crate) struct AssetWrite {
 }
 
 /// Every store of a data root.
+/// How many stores' indexes stay in memory.
+const MAX_INDEXES_HELD: usize = 64;
+
 pub(crate) struct AssetStores {
     data_root: PathBuf,
     locks: Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>,
@@ -250,7 +253,13 @@ impl AssetStores {
         let index = Arc::new(read_index(dir)?);
         match stamp {
             Some(stamp) => {
-                lock(&self.indexes).insert(dir.to_owned(), (stamp, Arc::clone(&index)));
+                let mut indexes = lock(&self.indexes);
+                // Each session tree has a store, and an index is read again
+                // cheaply: only the ones in use stay for long.
+                if indexes.len() >= MAX_INDEXES_HELD {
+                    indexes.clear();
+                }
+                indexes.insert(dir.to_owned(), (stamp, Arc::clone(&index)));
             }
             None => {
                 lock(&self.indexes).remove(dir);
