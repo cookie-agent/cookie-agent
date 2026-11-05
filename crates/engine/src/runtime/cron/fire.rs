@@ -128,6 +128,13 @@ pub(crate) struct Delivery {
 }
 
 /// A fire claimed in a job's history, to deliver.
+/// A fire written but not settled.
+pub(crate) struct PendingFire {
+    job: StoredJob,
+    key: String,
+    fired_at: Timestamp,
+}
+
 struct Claim {
     job: StoredJob,
     key: String,
@@ -267,6 +274,8 @@ impl Engine {
         let Some(runtime) = self.inner.runtime.clone() else {
             return;
         };
+        // Before anything can fire: what is pending now the last daemon left.
+        let left_pending = self.pending_cron_fires();
         let weak = std::sync::Arc::downgrade(&self.inner);
         let task = runtime.spawn(async move {
             {
@@ -274,7 +283,7 @@ impl Engine {
                     return;
                 };
                 let engine = Engine { inner };
-                engine.reconcile_crons_at_start().await;
+                engine.reconcile_crons_at_start(left_pending).await;
             }
             // While the store fails, a due fire stays due: the scheduler
             // waits a growing delay before it tries again.
@@ -339,6 +348,23 @@ impl Engine {
             .and_then(|mut task| task.take())
     }
 
+    /// The fires written but not settled, with the job each belongs to.
+    pub(crate) fn pending_cron_fires(&self) -> Vec<PendingFire> {
+        let mut pending = Vec::new();
+        for job in self.inner.crons.jobs() {
+            for fire in &job.history {
+                if let (StoredOutcome::Pending, Some(key)) = (&fire.outcome, &fire.key) {
+                    pending.push(PendingFire {
+                        job: job.clone(),
+                        key: key.clone(),
+                        fired_at: fire.fired_at,
+                    });
+                }
+            }
+        }
+        pending
+    }
+
     /// What the daemon finds at start (section 4.1): a fire written but
     /// neither delivered nor started is `skipped (interrupted)`, or
     /// delivered when its session shows it was; a job whose next fire passed
@@ -347,20 +373,16 @@ impl Engine {
     /// `skipped (daemon was down)` entry for the rest, moving to its next
     /// future fire when nothing is caught up. Then every session a job waits
     /// on says so.
-    pub(crate) async fn reconcile_crons_at_start(&self) {
+    ///
+    /// `left_pending` is the fires from [`Self::pending_cron_fires`], taken
+    /// before this daemon could fire any: one it fires itself while this runs
+    /// is on its way, whatever its session shows yet, and is not to be touched.
+    pub(crate) async fn reconcile_crons_at_start(&self, left_pending: Vec<PendingFire>) {
         let started_at = self.inner.cron_scheduler.started_at;
         let mut found = Vec::new();
-        for job in self.inner.crons.jobs() {
-            for fire in &job.history {
-                if !matches!(fire.outcome, StoredOutcome::Pending) {
-                    continue;
-                }
-                let Some(key) = fire.key.clone() else {
-                    continue;
-                };
-                let delivery = self.find_delivery(&job, &key, fire.fired_at).await;
-                found.push((job.id.clone(), key, delivery));
-            }
+        for PendingFire { job, key, fired_at } in left_pending {
+            let delivery = self.find_delivery(&job, &key, fired_at).await;
+            found.push((job.id.clone(), key, delivery));
         }
         let limit = self
             .inner

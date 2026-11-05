@@ -517,6 +517,50 @@ async fn a_fire_recorded_before_a_restart_is_delivered_exactly_once() {
     reopened.shutdown().await;
 }
 
+/// A fire this daemon makes while it reconciles at start is on its way, even
+/// if its session shows nothing yet: only what the last daemon left is
+/// interrupted. It once lost its run's outcome this way.
+#[tokio::test]
+async fn reconciling_at_start_leaves_a_fire_of_this_daemon_alone() {
+    let (endpoint, _responses, _captured) = scripted_channel_server(0).await;
+    let (fixture, selection) = custom_fixture_with_endpoint(&endpoint);
+    let engine = &fixture.engine;
+    let session = engine.create_session(selection).unwrap().session_id;
+    let job = engine
+        .create_cron(params("Going out.", daily(), CronTarget::Session(session)))
+        .await
+        .unwrap();
+    let left_pending = engine.pending_cron_fires();
+    assert!(left_pending.is_empty());
+
+    let fired_at = Timestamp::now();
+    engine
+        .crons_now(move |_, jobs| {
+            let mut fire =
+                StoredFire::with_outcome(Some(fired_at), fired_at, StoredOutcome::Pending);
+            fire.key = Some(format!("{}:{fired_at}", jobs[0].id));
+            jobs[0].history.push(fire);
+            Ok(())
+        })
+        .unwrap();
+    engine.reconcile_crons_at_start(left_pending).await;
+    let after = engine.cron_store().job(&job.id).unwrap();
+    assert_eq!(last_outcome(&after), StoredOutcome::Pending);
+
+    // Taken before this daemon fires, the same fire is the last daemon's.
+    let left_pending = engine.pending_cron_fires();
+    assert_eq!(left_pending.len(), 1);
+    engine.reconcile_crons_at_start(left_pending).await;
+    let after = engine.cron_store().job(&job.id).unwrap();
+    assert_eq!(
+        last_outcome(&after),
+        StoredOutcome::Skipped {
+            reason: StoredSkip::Interrupted
+        }
+    );
+    fixture.engine.shutdown().await;
+}
+
 #[tokio::test]
 async fn without_a_grace_fires_missed_while_the_daemon_was_down_are_recorded_and_not_run() {
     let (endpoint, _responses, _captured) = scripted_channel_server(0).await;
