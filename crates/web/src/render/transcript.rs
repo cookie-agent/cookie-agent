@@ -59,7 +59,11 @@ pub struct TranscriptView<'a> {
 
 /// A fingerprint of `homes`, which every cached row depends on.
 pub fn homes_key(homes: &cookie_agent_client_state::paths::RuntimeHomes) -> u64 {
-    foldhash::fast::FixedState::default().hash_one(format!("{homes:?}"))
+    use std::hash::{BuildHasher as _, Hasher as _};
+
+    let mut hasher = foldhash::fast::FixedState::default().build_hasher();
+    cookie_agent_client_state::hash_debug(homes, &mut hasher);
+    hasher.finish()
 }
 
 /// What the user opened in one session's transcript: tool calls, the full
@@ -275,7 +279,7 @@ impl<'a, 'v> Pass<'a, 'v> {
         if let Some(attachments) = self.view.state.attachments_of(child_id) {
             for (ordinal, attachment) in attachments {
                 ordinal.hash(hasher);
-                format!("{attachment:?}").hash(hasher);
+                cookie_agent_client_state::hash_debug(attachment, hasher);
             }
             self.view.state.text_part(child_id).hash(hasher);
         }

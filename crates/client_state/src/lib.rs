@@ -1252,6 +1252,21 @@ pub struct MessageAttachment {
     pub outcome: cookie_agent_protocol::AttachmentOutcome,
 }
 
+/// Hashes `value`'s `Debug` text into `hasher` without building the string,
+/// for a cache key of a type with no `Hash` that is read every frame.
+pub fn hash_debug(value: &impl std::fmt::Debug, hasher: &mut impl std::hash::Hasher) {
+    use std::fmt::Write as _;
+
+    struct Writer<'a, H>(&'a mut H);
+    impl<H: std::hash::Hasher> std::fmt::Write for Writer<'_, H> {
+        fn write_str(&mut self, text: &str) -> std::fmt::Result {
+            self.0.write(text.as_bytes());
+            Ok(())
+        }
+    }
+    let _ = write!(Writer(hasher), "{value:?}");
+}
+
 impl SessionState {
     /// The text child `child_id`'s turn and part, once it is committed.
     #[must_use]

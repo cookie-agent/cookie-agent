@@ -668,7 +668,8 @@ fn attachments_key(state: &SessionState, item: &TranscriptItem) -> u64 {
             && let Some(attachments) = state.attachments_of(*id)
         {
             any = true;
-            (id, format!("{attachments:?}")).hash(&mut hasher);
+            id.hash(&mut hasher);
+            cookie_agent_client_state::hash_debug(attachments, &mut hasher);
         }
     }
     if any { hasher.finish() } else { 0 }
