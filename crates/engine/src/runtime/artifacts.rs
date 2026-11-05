@@ -16,25 +16,85 @@ pub(crate) struct ArtifactPage {
 
 const MAX_TRANSITIVE_ARTIFACT_BYTES: u64 = 2 * 1024 * 1024;
 const VERIFIED_FILE_CACHE_CAPACITY: usize = 32;
+/// How much of a blob one read takes as it goes through it.
+const READ_BUFFER_BYTES: usize = 256 * 1024;
 const VERIFIED_BYTES_CACHE_CAPACITY: usize = 8;
 /// What the cached attachments of one tree hold at most together, the newest
 /// kept whatever its size: an attachment can be 25 MB, and every model
 /// request of the tree sends its history's attachments again.
 const VERIFIED_BYTES_CACHE_MAX_BYTES: usize = 64 * 1024 * 1024;
 
+/// How long a file must have been left alone for its [`FileStamp`] to be
+/// trusted. File times can be as coarse as a clock tick: a write right after
+/// the stamp could leave it the same.
+const STAMP_SETTLED: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// What tells a file changed after it was verified, short of reading it: a
+/// handle pins a blob against being replaced, but not against a write into it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct FileStamp {
+    length: u64,
+    modified: std::time::SystemTime,
+    #[cfg(unix)]
+    changed: (i64, i64),
+}
+
+impl FileStamp {
+    /// The stamp of `file`; `None` when it has none to trust yet, because it
+    /// changed too recently, or its times cannot be read.
+    fn of(file: &File) -> Option<Self> {
+        #[cfg(unix)]
+        use std::os::unix::fs::MetadataExt as _;
+
+        let metadata = file.metadata().ok()?;
+        let modified = metadata.modified().ok()?;
+        let now = std::time::SystemTime::now();
+        let settled = |at: std::time::SystemTime| {
+            now.duration_since(at).is_ok_and(|age| age >= STAMP_SETTLED)
+        };
+        if !settled(modified) {
+            return None;
+        }
+        #[cfg(unix)]
+        let changed = (metadata.ctime(), metadata.ctime_nsec());
+        #[cfg(unix)]
+        if !settled(
+            std::time::UNIX_EPOCH
+                + std::time::Duration::new(
+                    u64::try_from(changed.0).ok()?,
+                    u32::try_from(changed.1).ok()?,
+                ),
+        ) {
+            return None;
+        }
+        Some(Self {
+            length: metadata.len(),
+            modified,
+            #[cfg(unix)]
+            changed,
+        })
+    }
+}
+
 #[derive(Debug, Default)]
 struct VerifiedFileCache {
-    entries: VecDeque<(String, File)>,
+    entries: VecDeque<(String, File, Option<FileStamp>)>,
     generation: u64,
 }
 
 impl VerifiedFileCache {
-    fn take(&mut self, digest: &str) -> Option<File> {
+    fn take_stamped(&mut self, digest: &str) -> Option<(File, Option<FileStamp>)> {
         let index = self
             .entries
             .iter()
-            .position(|(cached, _)| cached == digest)?;
-        self.entries.remove(index).map(|(_, file)| file)
+            .position(|(cached, _, _)| cached == digest)?;
+        self.entries
+            .remove(index)
+            .map(|(_, file, stamp)| (file, stamp))
+    }
+
+    fn take(&mut self, digest: &str) -> Option<File> {
+        self.take_stamped(digest).map(|(file, _)| file)
     }
 
     fn insert(&mut self, digest: String, file: File) {
@@ -42,7 +102,8 @@ impl VerifiedFileCache {
         if self.entries.len() == VERIFIED_FILE_CACHE_CAPACITY {
             self.entries.pop_front();
         }
-        self.entries.push_back((digest, file));
+        let stamp = FileStamp::of(&file);
+        self.entries.push_back((digest, file, stamp));
     }
 
     fn evict(&mut self, digest: &str) {
@@ -262,12 +323,13 @@ fn expand_transitive_artifact_references(
 fn read_verified_file(
     file: &mut File,
     digest: &str,
+    verified: Option<&FileStamp>,
     after_first_read: impl FnOnce() -> std::io::Result<()>,
     mut sink: impl FnMut(&[u8]),
 ) -> std::io::Result<()> {
     file.seek(SeekFrom::Start(0))?;
-    let mut reader = BufReader::new(file);
-    let mut hasher = Sha256::new();
+    let mut reader = BufReader::with_capacity(READ_BUFFER_BYTES, file);
+    let mut hasher = verified.is_none().then(Sha256::new);
     let mut after_first_read = Some(after_first_read);
     loop {
         let buffer = reader.fill_buf()?;
@@ -275,14 +337,18 @@ fn read_verified_file(
             break;
         }
         let length = buffer.len();
-        hasher.update(buffer);
+        if let Some(hasher) = &mut hasher {
+            hasher.update(buffer);
+        }
         sink(buffer);
         reader.consume(length);
         if let Some(after_first_read) = after_first_read.take() {
             after_first_read()?;
         }
     }
-    if format!("{:x}", hasher.finalize()) != digest {
+    let changed =
+        verified.is_some_and(|stamp| FileStamp::of(reader.get_ref()).as_ref() != Some(stamp));
+    if changed || hasher.is_some_and(|hasher| format!("{:x}", hasher.finalize()) != digest) {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             "artifact content does not match its digest",
@@ -296,6 +362,7 @@ fn read_verified_file(
 fn read_verified_file_paged(
     file: &mut File,
     digest: &str,
+    verified: Option<&FileStamp>,
     offset_lines: u64,
     limit_lines: u64,
     after_first_read: impl FnOnce() -> std::io::Result<()>,
@@ -312,7 +379,7 @@ fn read_verified_file_paged(
     let mut has_more = false;
     let mut line_start = true;
     let mut too_large = false;
-    read_verified_file(file, digest, after_first_read, |mut chunk| {
+    read_verified_file(file, digest, verified, after_first_read, |mut chunk| {
         while !chunk.is_empty() {
             let length = chunk
                 .iter()
@@ -361,12 +428,13 @@ fn read_verified_file_paged(
 fn read_verified_file_numbered(
     file: &mut File,
     digest: &str,
+    verified: Option<&FileStamp>,
     window: LineWindow,
     budget: usize,
     after_first_read: impl FnOnce() -> std::io::Result<()>,
 ) -> std::io::Result<NumberedPage> {
     let mut pager = LinePager::new(window, budget).lossy();
-    read_verified_file(file, digest, after_first_read, |chunk| {
+    read_verified_file(file, digest, verified, after_first_read, |chunk| {
         pager.push(chunk).expect("a lossy pager takes any bytes");
     })?;
     Ok(pager.finish().expect("a lossy pager takes any bytes"))
@@ -499,8 +567,8 @@ impl ArtifactStore {
         offset_lines: u64,
         limit_lines: u64,
     ) -> std::io::Result<ArtifactPage> {
-        self.read_verified_inner(digest, true, |file| {
-            read_verified_file_paged(file, digest, offset_lines, limit_lines, || Ok(()))
+        self.read_verified_inner(digest, true, |file, verified| {
+            read_verified_file_paged(file, digest, verified, offset_lines, limit_lines, || Ok(()))
         })
     }
 
@@ -512,8 +580,8 @@ impl ArtifactStore {
         limit_lines: u64,
         hook: impl FnOnce() -> std::io::Result<()>,
     ) -> std::io::Result<ArtifactPage> {
-        self.read_verified_inner(digest, false, |file| {
-            read_verified_file_paged(file, digest, offset_lines, limit_lines, hook)
+        self.read_verified_inner(digest, false, |file, verified| {
+            read_verified_file_paged(file, digest, verified, offset_lines, limit_lines, hook)
         })
     }
 
@@ -525,18 +593,21 @@ impl ArtifactStore {
         window: LineWindow,
         budget: usize,
     ) -> std::io::Result<NumberedPage> {
-        self.read_verified_inner(digest, true, |file| {
-            read_verified_file_numbered(file, digest, window, budget, || Ok(()))
+        self.read_verified_inner(digest, true, |file, verified| {
+            read_verified_file_numbered(file, digest, verified, window, budget, || Ok(()))
         })
     }
 
-    /// Runs `read` on a handle of blob `digest`, which it verifies as it
-    /// reads, and keeps the handle for the next reader.
+    /// Runs `read` on a handle of blob `digest`, and keeps the handle for the
+    /// next reader. `read` verifies the blob as it reads unless it is handed
+    /// a stamp: the handle was verified when kept, and the file has not changed
+    /// since, which it checks again after reading. Paging through a large blob
+    /// would otherwise hash all of it for every page.
     fn read_verified_inner<T>(
         &self,
         digest: &str,
         #[cfg_attr(not(test), allow(unused_variables))] run_read_hook: bool,
-        read: impl FnOnce(&mut File) -> std::io::Result<T>,
+        read: impl FnOnce(&mut File, Option<&FileStamp>) -> std::io::Result<T>,
     ) -> std::io::Result<T> {
         if !is_digest_name_common(digest) {
             return Err(std::io::Error::new(
@@ -549,19 +620,25 @@ impl ArtifactStore {
                 .verified_reads
                 .lock()
                 .unwrap_or_else(|p| p.into_inner());
-            (verified.take(digest), verified.generation)
+            (verified.take_stamped(digest), verified.generation)
         };
-        let mut file = match cached {
-            Some(file) => file,
-            None => self.directory.open_reader(digest)?.ok_or_else(|| {
-                std::io::Error::new(std::io::ErrorKind::NotFound, "artifact missing")
-            })?,
+        let (mut file, verified) = match cached {
+            Some((file, stamp)) => {
+                let unchanged = stamp.filter(|stamp| FileStamp::of(&file).as_ref() == Some(stamp));
+                (file, unchanged)
+            }
+            None => (
+                self.directory.open_reader(digest)?.ok_or_else(|| {
+                    std::io::Error::new(std::io::ErrorKind::NotFound, "artifact missing")
+                })?,
+                None,
+            ),
         };
         #[cfg(test)]
         if run_read_hook {
             self.io_test_hook.run("read", digest)?;
         }
-        let page = read(&mut file)?;
+        let page = read(&mut file, verified.as_ref())?;
         self.verified_reads
             .lock()
             .unwrap_or_else(|p| p.into_inner())
@@ -863,6 +940,37 @@ mod store_tests {
         let reopened = ArtifactStore::open(artifacts).expect("corruption is lazy");
         assert_eq!(
             reopened.read_paged(&digest, 0, 1).unwrap_err().kind(),
+            std::io::ErrorKind::InvalidData
+        );
+    }
+
+    #[test]
+    fn a_verified_handle_is_not_hashed_again_until_its_file_changes() {
+        let directory = tempfile::tempdir().expect("temporary artifact root");
+        let artifacts = directory.path().join("artifacts");
+        let store = ArtifactStore::open(artifacts.clone()).expect("open artifact store");
+        let (_, digest) = store.retain(b"one\ntwo\n").expect("retain artifact");
+        let verifies = |store: &ArtifactStore| {
+            store
+                .read_verified_inner(&digest, true, |_, verified| Ok(verified.is_none()))
+                .expect("read")
+        };
+        store.read_paged(&digest, 0, 1).expect("the first read");
+        assert!(
+            verifies(&store),
+            "written just now, so its stamp is not trusted"
+        );
+
+        std::thread::sleep(super::STAMP_SETTLED * 2);
+        store
+            .read_paged(&digest, 0, 1)
+            .expect("a read once settled");
+        assert!(!verifies(&store), "kept, settled, and unchanged");
+
+        // Written into, it is verified again; the content then does not match.
+        std::fs::write(artifacts.join(&digest), b"one\ntwX\n").expect("write into it");
+        assert_eq!(
+            store.read_paged(&digest, 0, 1).unwrap_err().kind(),
             std::io::ErrorKind::InvalidData
         );
     }
@@ -1490,9 +1598,35 @@ mod verified_read_cache_tests {
         let root = tempfile::tempdir().expect("temporary root");
         let artifacts = root.path().join("artifacts");
         let store = ArtifactStore::open(artifacts.clone()).expect("artifact store");
-        let original = format!("first\n{}\n", "a".repeat(128 * 1024));
+        // Larger than a read takes at once, so the write lands between reads.
+        let original = format!("first\n{}\n", "a".repeat(2 * super::READ_BUFFER_BYTES));
         let (_, digest) = store.retain(original.as_bytes()).expect("retain artifact");
         let path = artifacts.join(&digest);
+        store.read_paged(&digest, 0, 1).expect("verify artifact");
+
+        let replacement = vec![b'x'; original.len()];
+        let error = store
+            .read_paged_with_hook(&digest, 0, 2, || {
+                let mut writer = std::fs::OpenOptions::new()
+                    .write(true)
+                    .truncate(true)
+                    .open(&path)?;
+                writer.write_all(&replacement)
+            })
+            .unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn mutation_during_a_read_of_a_settled_handle_is_never_served() {
+        let root = tempfile::tempdir().expect("temporary root");
+        let artifacts = root.path().join("artifacts");
+        let store = ArtifactStore::open(artifacts.clone()).expect("artifact store");
+        // Larger than a read takes at once, so the write lands between reads.
+        let original = format!("first\n{}\n", "a".repeat(2 * super::READ_BUFFER_BYTES));
+        let (_, digest) = store.retain(original.as_bytes()).expect("retain artifact");
+        let path = artifacts.join(&digest);
+        std::thread::sleep(super::STAMP_SETTLED * 2);
         store.read_paged(&digest, 0, 1).expect("verify artifact");
 
         let replacement = vec![b'x'; original.len()];
