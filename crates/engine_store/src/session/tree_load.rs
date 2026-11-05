@@ -732,11 +732,15 @@ impl SessionStore {
         driver: &mut TreeLoadDriver,
     ) -> Result<(), SessionError> {
         self.ensure_open()?;
-        let products = self.fold_tree(root)?;
-        // The cache rewrite stays inside the driver's claim: `Loaded` promises a
-        // durable `index.json` that matches what was installed (§3.4).
-        self.persist_subagent_index(root)?;
-        self.publish_load_products(products, driver)
+        // Parsing and folding a whole tree takes long enough to stall the other
+        // tasks of an async worker.
+        crate::blocking::off_worker(|| {
+            let products = self.fold_tree(root)?;
+            // The cache rewrite stays inside the driver's claim: `Loaded` promises a
+            // durable `index.json` that matches what was installed (§3.4).
+            self.persist_subagent_index(root)?;
+            self.publish_load_products(products, driver)
+        })
     }
 
     /// Runs the read/install loop. An unlocked fold is verified against the
