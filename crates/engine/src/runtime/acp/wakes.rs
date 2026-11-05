@@ -51,6 +51,29 @@ fn starts_work(event: &SessionEvent) -> bool {
     }
 }
 
+/// The most events a live session keeps between runs. An agent that goes on
+/// reporting without starting any work must not grow this without end.
+const MAX_CARRIED: usize = 4096;
+
+/// Drops the oldest plain updates past `limit`. Those are only what the agent
+/// reported meanwhile; a request waits for an answer, and a task the wake's
+/// body, which is what `keep` says.
+fn bound_carried(
+    carried: &mut Vec<SessionEvent>,
+    limit: usize,
+    keep: impl Fn(&SessionEvent) -> bool,
+) {
+    while carried.len() > limit {
+        let Some(oldest) = carried
+            .iter()
+            .position(|event| matches!(event, SessionEvent::Update(_)) && !keep(event))
+        else {
+            return;
+        };
+        carried.remove(oldest);
+    }
+}
+
 /// The task a message to `live`'s session gave it among what the listener
 /// kept, such as a subagent's prompt from its parent: the wake's body. It
 /// is taken out of what the listener kept, so the run does not show it a
@@ -209,10 +232,14 @@ impl Engine {
                     continue;
                 }
                 wakes |= starts_work(&event);
-                live.carried
+                let mut carried = live
+                    .carried
                     .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .push(event);
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                carried.push(event);
+                bound_carried(&mut carried, MAX_CARRIED, |event| {
+                    task_text(&live, event).is_some()
+                });
             }
             if !wakes {
                 continue;
@@ -337,5 +364,51 @@ impl Engine {
             Ok(())
         })
         .await
+    }
+}
+
+#[cfg(test)]
+mod carried_tests {
+    use serde_json::json;
+
+    use super::{SessionEvent, bound_carried};
+
+    fn update(number: u64) -> SessionEvent {
+        SessionEvent::Update(json!({ "number": number }))
+    }
+
+    fn numbers(carried: &[SessionEvent]) -> Vec<u64> {
+        carried
+            .iter()
+            .filter_map(|event| match event {
+                SessionEvent::Update(update) => update["number"].as_u64(),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_oldest_updates_go_past_the_limit() {
+        let mut carried = (0..5).map(update).collect();
+        bound_carried(&mut carried, 3, |_| false);
+        assert_eq!(numbers(&carried), [2, 3, 4]);
+    }
+
+    #[test]
+    fn nothing_goes_within_the_limit() {
+        let mut carried = (0..3).map(update).collect();
+        bound_carried(&mut carried, 3, |_| false);
+        assert_eq!(numbers(&carried), [0, 1, 2]);
+    }
+
+    #[test]
+    fn what_must_stay_stays_over_the_limit() {
+        let mut carried = (0..4).map(update).collect();
+        let task = |event: &SessionEvent| matches!(event, SessionEvent::Update(update) if update["number"] == 0);
+        bound_carried(&mut carried, 2, task);
+        assert_eq!(numbers(&carried), [0, 3]);
+        let mut carried = (0..4).map(update).collect();
+        bound_carried(&mut carried, 2, |_| true);
+        assert_eq!(numbers(&carried), [0, 1, 2, 3]);
     }
 }

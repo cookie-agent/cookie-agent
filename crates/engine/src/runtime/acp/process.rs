@@ -281,8 +281,9 @@ impl Drop for ProcessUse {
 #[derive(Default)]
 pub(crate) struct Processes {
     running: Mutex<HashMap<ProcessKey, Arc<AgentProcess>>>,
-    /// Serializes starts, so one agent starts once.
-    starting: tokio::sync::Mutex<()>,
+    /// Serializes the starts of each process, so one agent starts once on its
+    /// runtime, and another's slow start keeps no one else waiting.
+    starting: Mutex<HashMap<ProcessKey, Arc<tokio::sync::Mutex<()>>>>,
     /// The ACP session each cookie session talks in, while its process
     /// lives.
     pub(crate) sessions: Mutex<HashMap<SessionId, super::runner::LiveSession>>,
@@ -347,7 +348,8 @@ impl Processes {
         let process = match self.running(&key) {
             Some(process) => process,
             None => {
-                let _starting = self.starting.lock().await;
+                let starting = Arc::clone(lock(&self.starting).entry(key.clone()).or_default());
+                let _starting = starting.lock().await;
                 match self.running(&key) {
                     Some(process) => process,
                     None => self.start(inner, key).await?,
