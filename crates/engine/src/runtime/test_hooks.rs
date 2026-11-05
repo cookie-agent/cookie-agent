@@ -153,6 +153,7 @@ pub(crate) struct AbandonedSweepHook {
 pub(crate) struct TestHooks {
     pub(crate) prompt_snapshot_hook: Mutex<Option<Arc<PromptSnapshotHook>>>,
     pub(crate) prompt_before_claim_hook: Mutex<Option<Arc<PromptSnapshotHook>>>,
+    pub(crate) submit_before_steer_hook: Mutex<Option<Arc<PromptSnapshotHook>>>,
     /// Holds a delegation between its child's run going live and the
     /// delegation recording the run's id.
     pub(crate) delegate_run_unrecorded_hook: Mutex<Option<Arc<PromptSnapshotHook>>>,

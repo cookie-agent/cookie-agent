@@ -38,17 +38,27 @@ impl Engine {
             if let Some(run_id) = self.running_run(session)? {
                 match params.delivery {
                     InputDelivery::Steer => {
-                        let steered = self
+                        #[cfg(test)]
+                        self.pause_before_submit_steer().await;
+                        match self
                             .steer(run_id, params.content.clone(), origin.clone())
-                            .await?;
-                        if let Some(reason) = steered.handled_reason {
-                            return Ok(SessionSubmitInputResult::Handled { reason });
-                        }
-                        if let Some(user_input_seq) = steered.user_input_seq {
-                            return Ok(SessionSubmitInputResult::Steered {
-                                run_id,
-                                user_input_seq,
-                            });
+                            .await
+                        {
+                            Ok(steered) => {
+                                if let Some(reason) = steered.handled_reason {
+                                    return Ok(SessionSubmitInputResult::Handled { reason });
+                                }
+                                if let Some(user_input_seq) = steered.user_input_seq {
+                                    return Ok(SessionSubmitInputResult::Steered {
+                                        run_id,
+                                        user_input_seq,
+                                    });
+                                }
+                            }
+                            // The run ended between reading the session and
+                            // reaching it, which is no failure of this input.
+                            Err(EngineError::MissingRun(missing)) if missing == run_id => {}
+                            Err(error) => return Err(error),
                         }
                     }
                     InputDelivery::Queue => {

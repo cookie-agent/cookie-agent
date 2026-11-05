@@ -35,6 +35,86 @@ fn submit(
 }
 
 #[tokio::test]
+async fn a_steer_whose_run_ends_on_its_way_starts_a_run() {
+    let (endpoint, _captured, reached, release) = scripted_server_with_delayed_response(
+        vec![text_response("first done"), text_response("late done")],
+        0,
+    )
+    .await;
+    let (fixture, selection) = custom_fixture_with_endpoint(&endpoint);
+    let session = fixture.engine.create_session(selection).unwrap();
+    let started = fixture
+        .engine
+        .submit_input(
+            submit(session.session_id, "first", InputDelivery::Steer, "first"),
+            origin("client:tui-a"),
+        )
+        .await
+        .expect("start");
+    let SessionSubmitInputResult::Started { run_id: first } = started else {
+        panic!("an idle session starts a run: {started:?}");
+    };
+    tokio::time::timeout(Duration::from_secs(5), reached)
+        .await
+        .expect("first model request")
+        .expect("reached");
+
+    // The steer reads the session while its run still goes...
+    let (before_steer, go_on) = fixture.engine.install_submit_before_steer_hook_for_test();
+    let engine = fixture.engine.clone();
+    let session_id = session.session_id;
+    let late = tokio::spawn(async move {
+        engine
+            .submit_input(
+                submit(session_id, "late", InputDelivery::Steer, "late"),
+                origin("client:guest-a"),
+            )
+            .await
+    });
+    tokio::time::timeout(Duration::from_secs(5), before_steer)
+        .await
+        .expect("the steer read the session")
+        .expect("reached");
+    // ...and reaches it only after the run is gone.
+    release.notify_one();
+    await_projection(
+        &fixture.engine,
+        session.session_id,
+        "first run completed",
+        |projection| projection.status == SessionStatus::Completed,
+    )
+    .await;
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while fixture.engine.session_of_active_run(first).is_some() {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("the run left the active runs");
+    go_on.notify_one();
+
+    let answer = late.await.unwrap().expect("the input is no failure");
+    let SessionSubmitInputResult::Started { run_id: second } = answer else {
+        panic!("the ended run's steer starts a run: {answer:?}");
+    };
+    assert_ne!(first, second);
+    let projection = await_projection(
+        &fixture.engine,
+        session.session_id,
+        "the late run completed",
+        |projection| projection.status == SessionStatus::Completed && projection.runs.len() == 2,
+    )
+    .await;
+    assert!(projection.log.events().iter().any(|event| {
+        event.run_id == Some(second)
+            && event.origin == Some(origin("client:guest-a"))
+            && matches!(&event.payload, EventPayload::UserInputSubmitted { content }
+                if content.as_plain_text() == "late")
+    }));
+    fixture.engine.shutdown().await;
+}
+
+#[tokio::test]
 async fn a_queued_input_starts_the_next_run_as_its_author_once_the_run_completes() {
     let (endpoint, _captured, reached, release) = scripted_server_with_delayed_response(
         vec![text_response("first done"), text_response("queued done")],
