@@ -403,7 +403,8 @@ pub fn load_skill_roots_with_official(
             SkillSource::Project,
         )?);
         candidates.extend(load_root(
-            &directory.join(".cookie-agent/skills"),
+            // Part by part: on Windows a `/` in here stays in the path shown.
+            &directory.join(".cookie-agent").join("skills"),
             SkillSource::Project,
         )?);
     }

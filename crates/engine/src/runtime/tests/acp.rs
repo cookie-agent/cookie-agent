@@ -1290,6 +1290,17 @@ async fn labpc_on_its_own_machine(engine: &Engine) -> String {
     "labpc".to_owned()
 }
 
+/// The last `components` of `path`, as a shell's `pwd` ends: bash on Windows
+/// names a directory its own way (`/tmp/...`), but ends with the same names.
+/// A temporary directory's random name makes this unique enough to tell.
+fn shell_path_end(path: &std::path::Path, components: usize) -> String {
+    let names = path
+        .components()
+        .map(|component| component.as_os_str().to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    names[names.len() - components..].join("/")
+}
+
 fn bash_call(verb: &str, command: &str, machine: Option<&str>) -> String {
     let mut arguments = serde_json::json!({"command": command, "description": "run"});
     if let Some(machine) = machine {
@@ -1305,13 +1316,12 @@ async fn a_bridged_call_runs_on_the_machine_it_names() {
     let engine = acp.engine();
     let (stop, served) = dial_in(&acp, "labpc", "fixture").await;
     let (session, elsewhere) = session_with_labpc(&acp).await;
-    let here = cookie_agent_protocol::paths::canonicalize(&acp.workspace()).unwrap();
-    let there = cookie_agent_protocol::paths::canonicalize(elsewhere.path()).unwrap();
-    let (here, there) = (here.to_string_lossy(), there.to_string_lossy());
+    let here = shell_path_end(&acp.workspace(), 2);
+    let there = shell_path_end(elsewhere.path(), 1);
 
     // Two attachments on one machine: the first answers for it.
     let answer = final_text(&turn(engine, session, "same", &bash_call("call", "pwd", None)).await);
-    assert!(answer.contains(&*here), "{answer}");
+    assert!(answer.contains(&here), "{answer}");
     assert!(answer.ends_with("error: False"), "{answer}");
 
     let labpc = labpc_on_its_own_machine(engine).await;
@@ -1333,7 +1343,7 @@ async fn a_bridged_call_runs_on_the_machine_it_names() {
         )
         .await,
     );
-    assert!(answer.contains(&*there), "{answer}");
+    assert!(answer.contains(&there), "{answer}");
     assert!(answer.ends_with("error: False"), "{answer}");
     let answer = final_text(
         &turn(
@@ -1345,7 +1355,7 @@ async fn a_bridged_call_runs_on_the_machine_it_names() {
         .await,
     );
     assert!(answer.starts_with("permission: yes"), "{answer}");
-    assert!(answer.contains(&*there), "{answer}");
+    assert!(answer.contains(&there), "{answer}");
     // The host's machine is reached by its name or by naming none.
     let answer = final_text(
         &turn(
@@ -1356,9 +1366,9 @@ async fn a_bridged_call_runs_on_the_machine_it_names() {
         )
         .await,
     );
-    assert!(answer.contains(&*here), "{answer}");
+    assert!(answer.contains(&here), "{answer}");
     let answer = final_text(&turn(engine, session, "plain", &bash_call("call", "pwd", None)).await);
-    assert!(answer.contains(&*here), "{answer}");
+    assert!(answer.contains(&here), "{answer}");
 
     // The row names where the call ran.
     let runtimes = events(engine, session)

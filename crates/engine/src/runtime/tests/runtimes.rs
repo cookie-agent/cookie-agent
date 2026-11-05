@@ -1162,7 +1162,7 @@ async fn a_loaded_skill_with_files_says_where_they_are() {
     write_skill(&root, "bare", "Only a SKILL.md.");
     let api = workspace_dir(&root, "api");
     write_skill(&api, "packed", "Run go.sh.");
-    let packed = api.join(".cookie-agent/skills/packed");
+    let packed = api.join(".cookie-agent").join("skills").join("packed");
     write_private_test_file(&packed.join("go.sh"), "true\n");
     let user = root.join("user-skills");
     create_private_test_dir(&user);
