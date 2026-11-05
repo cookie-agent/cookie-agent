@@ -21,6 +21,7 @@ impl Engine {
         let inner = std::sync::Arc::downgrade(&self.inner);
         let task = runtime.spawn(async move {
             let mut passes = 0_u32;
+            let mut freed = crate::heap::FreedMemory::default();
             loop {
                 tokio::time::sleep(JANITOR_INTERVAL).await;
                 passes += 1;
@@ -72,6 +73,17 @@ impl Engine {
                 .await
                 {
                     eprintln!("upload lease sweep failed: {error}");
+                }
+                // Last, so what this pass paged out goes back at once. A pass
+                // that finds a run going leaves it for a later one.
+                if !engine.runs_going()
+                    && let Ok(released) = tokio::task::spawn_blocking(move || {
+                        freed.release();
+                        freed
+                    })
+                    .await
+                {
+                    freed = released;
                 }
             }
         });
@@ -216,6 +228,26 @@ impl Engine {
         drop(delegation_admission);
         self.finish_evicted_acp_sessions(closing).await;
         Ok(evicted)
+    }
+
+    /// Whether a run or a compaction is going anywhere in the daemon. Narrower
+    /// than [`Self::busy_roots`], which a message no run has picked up, or a
+    /// background call, keeps busy for as long as it lasts.
+    fn runs_going(&self) -> bool {
+        !self
+            .inner
+            .sessions
+            .active
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .is_empty()
+            || !self
+                .inner
+                .compaction
+                .in_progress
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .is_empty()
     }
 
     /// The roots of the resident trees the idle janitor keeps whatever their

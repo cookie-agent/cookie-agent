@@ -191,7 +191,9 @@ with fewer cores: it waits on models, tools, and clients far more than it
 computes. On Linux with glibc it also keeps at most 2 malloc arenas, so a
 many-core machine does not hold memory in an arena per thread. The
 `TOKIO_WORKER_THREADS` and `MALLOC_ARENA_MAX` environment variables override
-either limit.
+either limit. Once a minute, if no run or compaction is going and it has freed
+at least 32 MiB since the last time, as when a long session is paged out, it
+returns that memory to the system.
 
 ## Running as a service
 

@@ -15,6 +15,7 @@ mod delegation_api;
 mod eventually;
 mod exposure;
 pub mod grant_journal;
+mod heap;
 mod machines;
 mod machines_tool;
 mod media;
