@@ -1512,12 +1512,22 @@ impl SessionStore {
         Ok(reopened)
     }
 
+    /// Whether [`Self::prepare_write`] has nothing to do: the session is in
+    /// memory and its tree loaded, the case of nearly every command. It takes
+    /// no IO, so a caller can leave the async worker only when it is false.
+    pub fn write_is_prepared(&self, id: SessionId) -> bool {
+        !self.tree_load_pending_for(id) && self.get_resident(id).is_some()
+    }
+
     /// The heavy part of opening `id` for writing, done before any store
     /// lock: completing its tree, reopening it when this process owns it but
     /// evicted it, and otherwise parsing its log read-only, which the
     /// adoption under the lock takes over while the file is unchanged. That
     /// parse is only a head start: its failure is left to the adoption.
     pub fn prepare_write(&self, id: SessionId) -> Result<(), SessionError> {
+        if self.write_is_prepared(id) {
+            return Ok(());
+        }
         self.ensure_tree_for(id)?;
         if self.get_resident(id).is_some() {
             return Ok(());

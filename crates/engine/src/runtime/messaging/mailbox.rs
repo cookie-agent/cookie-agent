@@ -1019,7 +1019,9 @@ impl Engine {
         // paged out reopened, off the async workers before the residency
         // lock. What fails here fails again below, under the lock, where it
         // is reported.
-        let _ = off_worker(|| self.inner.store.prepare_write(session));
+        if !self.inner.store.write_is_prepared(session) {
+            let _ = off_worker(|| self.inner.store.prepare_write(session));
+        }
         let _residency = self.lock_residency("a command to", session).await;
         self.ensure_session_owned(session)?;
         self.spawn_actor(session)?;
