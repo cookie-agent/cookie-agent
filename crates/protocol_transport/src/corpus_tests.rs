@@ -470,7 +470,6 @@ fn delivery_kind(delivery: &ClientDelivery) -> Option<&'static str> {
     Some(match delivery {
         ClientDelivery::ReplayStart { .. }
         | ClientDelivery::ReplayEvent { .. }
-        | ClientDelivery::ReplayProgress { .. }
         | ClientDelivery::ReplayEnd { .. } => return None,
         ClientDelivery::Live { .. } => "live",
         ClientDelivery::UnknownEvent { .. } => "unknown_event",

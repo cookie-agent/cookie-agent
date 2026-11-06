@@ -7,7 +7,7 @@ use cookie_agent_protocol::{
 use cookie_agent_protocol_transport::{ClientDelivery, EventsPage, ReplayHistory, ReplayWindow};
 
 use super::*;
-use crate::{DeliveryOutcome, ReplayCount, reduce::reduce_session_events};
+use crate::{DeliveryOutcome, reduce::reduce_session_events};
 
 /// The `coding` golden history: three runs with tool calls, approvals, a
 /// compaction, and a 66 KB tool result at seq 36.
@@ -209,64 +209,6 @@ fn loading_every_page_shows_what_the_whole_display_view_shows() {
         assert_eq!(rows(state), rows(&expected));
         assert_eq!(settings(state), settings(&expected));
     }
-}
-
-#[test]
-fn a_whole_replay_counts_its_pages_and_shows_what_the_display_view_shows() {
-    let events = log(CODING);
-    let session_id = events[0].session_id;
-    let (whole, cut) = display_view::display_events(&events, false);
-    let expected = reduce_session_events(session_id, 0, &whole);
-    let final_seq = whole.last().unwrap().seq;
-    let mut store = StateStore::default();
-    let progress = ClientDelivery::ReplayProgress {
-        session_id,
-        generation: 0,
-        events: 10,
-        total: Some(whole.len() as u64),
-    };
-    assert_eq!(store.apply_delivery(progress), DeliveryOutcome::Applied);
-    assert_eq!(
-        store.replay_counts.get(&session_id),
-        Some(&ReplayCount {
-            events: 10,
-            total: Some(whole.len() as u64)
-        })
-    );
-    let mut deliveries = vec![ClientDelivery::ReplayStart {
-        session_id,
-        generation: 0,
-        final_seq,
-        rebuild: true,
-        history: Some(Box::new(ReplayHistory {
-            window: None,
-            cut: cut.clone(),
-        })),
-    }];
-    deliveries.extend(whole.iter().map(|event| ClientDelivery::ReplayEvent {
-        session_id,
-        generation: 0,
-        final_seq,
-        event: Box::new((**event).clone()),
-    }));
-    deliveries.push(ClientDelivery::ReplayEnd {
-        session_id,
-        generation: 0,
-        final_seq,
-    });
-    for delivery in deliveries {
-        assert_eq!(store.apply_delivery(delivery), DeliveryOutcome::Applied);
-    }
-    assert!(
-        store.replay_counts.is_empty(),
-        "the count ends with the replay"
-    );
-    let state = &store.sessions[&session_id];
-    assert_eq!(state.history, HistoryState::default());
-    assert_eq!(rows(state), rows(&expected));
-    // Its cut results can be read whole, as a page's can.
-    assert!(!cut.is_empty());
-    assert!(state.tools.values().any(|tool| tool.cut.is_some()));
 }
 
 #[test]
