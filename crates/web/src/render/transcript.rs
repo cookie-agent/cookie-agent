@@ -485,9 +485,7 @@ fn item_key_in(pass: &Pass<'_, '_>, item: &TranscriptItem) -> u64 {
     hasher.finish()
 }
 
-/// The item as HTML; `None` for a diagnostic row the level filter hides,
-/// and for a row of history not loaded, which the page, loading sessions
-/// whole, never holds.
+/// The item as HTML; `None` for a diagnostic row the level filter hides.
 pub fn item_html(view: &TranscriptView<'_>, item: &TranscriptItem) -> Option<String> {
     item_html_in(view, item, None)
 }
@@ -499,7 +497,13 @@ fn item_html_in(
     latest_user: Option<u64>,
 ) -> Option<String> {
     Some(match item {
-        TranscriptItem::History { .. } => return None,
+        TranscriptItem::History {
+            before,
+            skipped,
+            loading,
+            failed,
+            ..
+        } => history_html(*before, *skipped, *loading, failed.as_deref()),
         TranscriptItem::User { markdown, seq, .. } => {
             let files = view
                 .state
@@ -2117,6 +2121,50 @@ fn cut_result_html(
             "… could not load the whole result ({error}) · try again"
         )),
     }
+}
+
+/// A row of history the display view has not loaded: a button that reads
+/// it, which also reads it when a scroll brings it near the view.
+fn history_html(before: u64, skipped: Option<u64>, loading: bool, failed: Option<&str>) -> String {
+    let what = match skipped {
+        Some(1) => "1 earlier event of this run".to_owned(),
+        Some(count) => format!("{count} earlier events of this run"),
+        None => "Earlier messages".to_owned(),
+    };
+    let label = match (loading, failed) {
+        (true, _) => format!("Loading {}…", what.to_lowercase()),
+        (false, Some(error)) => format!(
+            "Could not load {} ({error}) · try again",
+            what.to_lowercase()
+        ),
+        (false, None) => format!("{what} not loaded · load"),
+    };
+    // While it reads, a block of skeleton lines. The row is as tall either way:
+    // rows above a reversed scroller grow out of a view resting at the top,
+    // and this must show to whoever waits there.
+    let reading = if loading {
+        "<span class=\"flex w-full max-w-md flex-col gap-2.5\" aria-hidden=\"true\">\
+         <span class=\"skeleton block h-2.5 w-11/12\"></span>\
+         <span class=\"skeleton block h-2.5 w-3/4\"></span>\
+         <span class=\"skeleton block h-2.5 w-1/2\"></span></span>\
+         <span class=\"size-3.5 shrink-0 animate-spin rounded-full border-2 border-line-2 border-t-accent\" aria-hidden=\"true\"></span>"
+    } else {
+        ""
+    };
+    format!(
+        "<button type=\"button\" data-action=\"history\" data-history=\"{before}\"{}{} class=\"flex h-36 w-full flex-col items-center justify-center gap-3 rounded-md px-2 text-center text-xs text-muted hover:bg-hover active:bg-press\">{reading}<span>{}</span></button>",
+        if failed.is_some() {
+            " data-history-failed"
+        } else {
+            ""
+        },
+        if loading {
+            " data-history-loading aria-busy=\"true\""
+        } else {
+            ""
+        },
+        escape(&label),
+    )
 }
 
 /// A delegate call's subagent: its agent and handle, what it does while it
@@ -3783,6 +3831,21 @@ mod tests {
         }
         let per_delta = started.elapsed() / rounds;
         println!("one delta in a 4000-part reply: {per_delta:?}");
+    }
+
+    #[test]
+    fn history_not_loaded_is_a_button_that_reads_it() {
+        let row = super::history_html(40, Some(12), false, None);
+        assert!(row.contains("data-action=\"history\""), "{row}");
+        assert!(row.contains("data-history=\"40\""), "{row}");
+        assert!(row.contains("12"), "{row}");
+        assert!(!row.contains("data-history-failed"), "{row}");
+        // A failed read waits for a click: scrolling to it reads nothing.
+        let failed = super::history_html(40, None, false, Some("timed out"));
+        assert!(failed.contains("data-history-failed"), "{failed}");
+        assert!(!row.contains("data-history-loading"), "{row}");
+        let reading = super::history_html(40, None, true, None);
+        assert!(reading.contains("data-history-loading"), "{reading}");
     }
 
     #[test]

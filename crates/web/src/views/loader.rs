@@ -1,12 +1,10 @@
-//! The open session's transcript while it loads whole: a skeleton of rows
-//! under a line of how much has loaded, and a pill that counts its events
-//! (`ClientDelivery::ReplayProgress`). A quick load shows nothing; once
+//! The open session's transcript until its newest messages arrive: a skeleton
+//! of rows under a moving line, and a pill. A quick load shows nothing; once
 //! shown, the skeleton stays long enough to read, then fades as the
 //! transcript takes its place.
 
 use std::time::Duration;
 
-use cookie_agent_client_state::{ReplayCount, format::format_count};
 use leptos::prelude::*;
 
 use crate::workspace::Workspace;
@@ -26,35 +24,6 @@ enum Stage {
     Fading,
 }
 
-/// The pill's words for `count`: the events loaded of how many, as far as
-/// the daemon said.
-fn count_label(count: Option<ReplayCount>) -> String {
-    match count {
-        Some(ReplayCount {
-            events,
-            total: Some(total),
-        }) => format!(
-            "{} / {} events",
-            format_count(events.min(total)),
-            format_count(total)
-        ),
-        Some(ReplayCount {
-            events,
-            total: None,
-        }) => format!("{} events", format_count(events)),
-        None => String::new(),
-    }
-}
-
-/// How much of the session has loaded, from 0 to 1, when the daemon said
-/// how much there is.
-fn loaded(count: Option<ReplayCount>) -> Option<f64> {
-    let ReplayCount { events, total } = count?;
-    let total = total.filter(|total| *total > 0)?;
-    #[allow(clippy::cast_precision_loss)]
-    Some((events as f64 / total as f64).clamp(0.0, 1.0))
-}
-
 fn now() -> f64 {
     js_sys::Date::now()
 }
@@ -68,18 +37,6 @@ pub fn TranscriptLoader(workspace: Workspace) -> impl IntoView {
                     .opening
                     .with(|opening| opening.contains(&session_id))
             })
-    });
-    let count = Memo::new(move |_| {
-        let session_id = workspace.selected.get()?;
-        workspace.with_store(|store| store.replay_counts.get(&session_id).copied())
-    });
-    // What the pill and the line last showed: the count goes with the
-    // replay's end, while the skeleton still fades.
-    let last = RwSignal::new(None::<ReplayCount>);
-    Effect::new(move |_| {
-        if let Some(count) = count.get() {
-            last.set(Some(count));
-        }
     });
     let stage = RwSignal::new(Stage::Hidden);
     let shown_at = StoredValue::new(0.0_f64);
@@ -97,7 +54,6 @@ pub fn TranscriptLoader(workspace: Workspace) -> impl IntoView {
                 stage.set(Stage::Shown);
                 return;
             }
-            last.set(None);
             set_timeout(
                 move || {
                     if current() && stage.get_untracked() == Stage::Hidden {
@@ -132,19 +88,6 @@ pub fn TranscriptLoader(workspace: Workspace) -> impl IntoView {
             );
         }
     });
-    // Once loaded, the line and the pill read whole while the skeleton
-    // fades.
-    let shown_count = move || {
-        let last = last.get();
-        if loading.get() {
-            last
-        } else {
-            last.map(|count| ReplayCount {
-                events: count.total.unwrap_or(count.events),
-                ..count
-            })
-        }
-    };
     view! {
         <Show when=move || stage.get() != Stage::Hidden>
             <div
@@ -154,19 +97,7 @@ pub fn TranscriptLoader(workspace: Workspace) -> impl IntoView {
                 aria-label="Loading the session"
                 data-transcript-loader
             >
-                {move || match loaded(shown_count()) {
-                    Some(part) => view! {
-                        <div
-                            class="loader-line absolute top-0 left-0 h-0.5 rounded-r-full bg-accent"
-                            style=format!("width: {:.1}%", part * 100.0)
-                        ></div>
-                    }
-                    .into_any(),
-                    None => view! {
-                        <div class="loader-line loader-line-unknown absolute top-0 left-0 h-0.5 rounded-full bg-accent"></div>
-                    }
-                    .into_any(),
-                }}
+                <div class="loader-line loader-line-unknown absolute top-0 left-0 h-0.5 rounded-full bg-accent"></div>
                 <div class="mx-auto flex max-w-[45rem] flex-col gap-3 px-3 py-2 sm:px-6" aria-hidden="true">
                     <Skeleton />
                 </div>
@@ -174,9 +105,6 @@ pub fn TranscriptLoader(workspace: Workspace) -> impl IntoView {
                     <div class="inline-flex items-center gap-2 rounded-full bg-raised py-1.5 pr-3 pl-2.5 text-xs text-muted shadow-menu">
                         <span class="size-3.5 animate-spin rounded-full border-2 border-line-2 border-t-accent"></span>
                         "Loading"
-                        <span class="font-semibold text-fg tabular-nums" data-loader-count>
-                            {move || count_label(shown_count())}
-                        </span>
                     </div>
                 </div>
             </div>
@@ -217,23 +145,5 @@ fn Skeleton() -> impl IntoView {
         <div class="rise-in">{call("11rem", "160px")}</div>
         <div class="rise-in">{call("7.25rem", "240px")}</div>
         <div class="rise-in flex flex-col gap-2.5">{line("88%")} {line("66%")} {line("52%")}</div>
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_count_never_passes_its_total() {
-        let count = |events, total| Some(ReplayCount { events, total });
-        // Each page also sends its last event, which the view may leave
-        // out of its total.
-        assert_eq!(loaded(count(1_400, Some(1_336))), Some(1.0));
-        assert_eq!(loaded(count(668, Some(1_336))), Some(0.5));
-        // Without a total there is nothing to measure against.
-        assert_eq!(loaded(count(10, None)), None);
-        assert_eq!(loaded(count(10, Some(0))), None);
-        assert_eq!(loaded(None), None);
     }
 }

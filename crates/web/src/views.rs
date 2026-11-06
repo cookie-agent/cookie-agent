@@ -24,6 +24,7 @@ use crate::{
     commands::{Command, MENU},
     follow::{Follow, Metrics},
     goal::{GoalCommand, action_label, goal_actions, status_name},
+    history_scroll::HistoryScroll,
     icons::{self, Glyph},
     keys::{ComposerAction, ComposerButtons, KeyPress, composer_action, composer_buttons},
     render::{
@@ -2300,15 +2301,24 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
     let container = NodeRef::<html::Div>::new();
     let content = NodeRef::<html::Div>::new();
     let follow = StoredValue::new(Follow::default());
+    let history = StoredValue::new(HistoryScroll::default());
     // Whether the view follows the end, for the jump-to-latest button.
     let following = RwSignal::new(true);
     let metrics = move || {
         container.try_get_untracked().flatten().map(|element| {
             let element: web_sys::Element = element.into();
+            let (height, view) = (element.scroll_height(), element.client_height());
+            // The new session's cards read from their top; a transcript's
+            // position counts from its end.
+            let from_end = if workspace.new_session.get_untracked() {
+                height - view - element.scroll_top()
+            } else {
+                -element.scroll_top()
+            };
             let at = Metrics {
-                top: element.scroll_top(),
-                height: element.scroll_height(),
-                view: element.client_height(),
+                from_end,
+                height,
+                view,
             };
             (element, at)
         })
@@ -2422,8 +2432,13 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
         let Some((element, at)) = metrics() else {
             return;
         };
-        if let Some(end) = follow.try_update_value(|follow| follow.pin(at)).flatten() {
-            element.set_scroll_top(end);
+        history.update_value(|history| history.resized(at));
+        if follow.try_update_value(|follow| follow.pin(at)) == Some(true) {
+            element.set_scroll_top(if workspace.new_session.get_untracked() {
+                at.height
+            } else {
+                0
+            });
         }
         draw_pin();
         mirror();
@@ -2433,6 +2448,7 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
         workspace.selected.track();
         workspace.new_session.track();
         follow.set_value(Follow::default());
+        history.set_value(HistoryScroll::default());
         shown();
     });
     // A message the user sends shows at the end, followed again however far
@@ -2502,6 +2518,14 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
                 return;
             }
             pin();
+            if let Some((element, at)) = metrics()
+                && history
+                    .try_update_value(|history| history.read_on(at, reading_history(workspace)))
+                    == Some(true)
+                && load_history_near(&element, workspace, history)
+            {
+                history.update_value(HistoryScroll::counted);
+            }
             if let Some(key) = reveal.try_update_value(Option::take).flatten() {
                 reveal_work_row(container, content, pinned_work, &key);
                 shown();
@@ -2537,6 +2561,20 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
                 }
             }
             "approvals" => workspace.panel.set(Some(Panel::Approvals)),
+            "history" => {
+                if let Some(before) = target
+                    .get_attribute("data-history")
+                    .and_then(|before| before.parse().ok())
+                {
+                    history.update_value(HistoryScroll::prompted);
+                    match metrics() {
+                        Some((scroller, _)) => {
+                            load_history(&scroller, before, workspace, history);
+                        }
+                        None => workspace.load_history(before),
+                    }
+                }
+            }
             "cut-result" => {
                 if let Some(call) = call
                     && let Ok(call) = call.parse::<cookie_agent_protocol::ToolCallId>()
@@ -2668,6 +2706,11 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
             follow.update_value(Follow::back);
         }
         shown();
+        // At the very top no scroll follows to ask for older rows.
+        if let Some((element, _)) = metrics() {
+            history.update_value(HistoryScroll::prompted);
+            load_history_near(&element, workspace, history);
+        }
     };
     let forward = move || {
         if let Some((_, at)) = metrics() {
@@ -2699,7 +2742,15 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
         <div
             node_ref=container
             id="transcript"
-            class="min-h-0 flex-1 overflow-y-auto px-3 py-2 sm:px-6"
+            // Reversed, so that the position counts from the end and rows
+            // arriving above the view move nothing, even at its very top,
+            // where a browser anchors no row. Its one child keeps the DOM's
+            // order for selection, tabbing, and find in page, and sits at
+            // the top when it is short. The new session's cards read from
+            // their top instead.
+            class="flex min-h-0 flex-1 overflow-y-auto px-3 py-2 sm:px-6"
+            class:flex-col-reverse=move || !workspace.new_session.get()
+            class:flex-col=move || workspace.new_session.get()
             // A session another client owns offers no revert or fork.
             data-read-only=move || (!workspace.writable()).then_some("")
             data-guest=move || workspace.is_guest().then_some("")
@@ -2711,9 +2762,12 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
                         "#new-session-skills",
                     ));
                 }
-                if let Some((_, at)) = metrics() {
+                if let Some((element, at)) = metrics() {
                     follow.update_value(|follow| follow.scrolled(at));
                     shown();
+                    if history.try_update_value(|history| history.scrolled(at)) == Some(true) {
+                        load_history_near(&element, workspace, history);
+                    }
                 }
             }
             on:wheel=move |event: ev::WheelEvent| {
@@ -2783,82 +2837,158 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
                 }
             }
         >
-            <Show when=move || workspace.new_session.get()>
-                <cards::NewSessionCards workspace=workspace />
-            </Show>
-            // Over the top of the transcript, an open work row the view
-            // scrolled past while its work is still in view; the row it
-            // sits in takes no room.
-            <div class="pointer-events-none sticky top-0 z-10 mx-auto h-0 max-w-[45rem]" data-work-pin>
-                <div
-                    node_ref=pinned_work
-                    class="pointer-events-auto overflow-hidden rounded-md shadow-md"
-                    data-work-pinned
-                    hidden
-                ></div>
-            </div>
-            <div node_ref=content class="mx-auto flex max-w-[45rem] flex-col gap-3">
-                <For
-                    each=move || rows.with(|rows| rows.order.to_vec())
-                    key=|id| *id
-                    children=move |id| {
-                        let row = row_slots.slot(id, || {
-                            rows.with_untracked(|rows| rows.html.get(&id).cloned())
-                        });
-                        on_cleanup(move || row_slots.remove(id));
-                        view! { <TranscriptRow row=row id=id /> }
-                    }
-                />
-                // The run going on, after the last row: the content grows
-                // with it, so a view following the end keeps it in sight.
-                <Show when=move || {
-                    running(workspace)
-                        && !workspace.new_session.get()
-                        && !(work_spins.get() && workspace.questions().is_empty())
-                }>
+            <div class="mb-auto w-full shrink-0">
+                <Show when=move || workspace.new_session.get()>
+                    <cards::NewSessionCards workspace=workspace />
+                </Show>
+                // Over the top of the transcript, an open work row the view
+                // scrolled past while its work is still in view; the row it
+                // sits in takes no room.
+                <div class="pointer-events-none sticky top-0 z-10 mx-auto h-0 max-w-[45rem]" data-work-pin>
                     <div
-                        id="working"
-                        class="flex min-h-9 items-center gap-1.5 px-1 text-sm font-bold text-accent"
-                        role="status"
-                    >
-                        <Glyph icon=icondata::LuLoaderCircle class="animate-spin" />
-                        {move || working_label(workspace)}
-                    </div>
-                </Show>
-                // A held session says why and what waits, until a resume.
-                <Show when=move || !running(workspace) && workspace.held_line().is_some()>
-                    <div
-                        id="held"
-                        class="flex min-h-9 items-center gap-1.5 px-1 text-sm font-bold text-accent"
-                        role="status"
-                        data-held
-                    >
-                        <Glyph icon=icondata::LuPause />
-                        {move || workspace.held_line().unwrap_or_default()}
-                    </div>
-                </Show>
-            </div>
-            // Over the end of the transcript while it does not follow it;
-            // the row it sits in takes no room.
-            <div class="pointer-events-none sticky bottom-0 mx-auto h-0 max-w-[45rem]">
-                <Show when=move || {
-                    !following.get() && overflows.get() && workspace.selected.get().is_some()
-                        && !workspace.new_session.get()
-                }>
-                    <button
-                        type="button"
-                        class="pointer-events-auto absolute right-0 bottom-1 inline-flex min-h-11 items-center gap-2 rounded-full px-3 text-sm shadow-md hover:bg-sunken active:bg-press bg-raised shadow-[0_0_0_1px_var(--color-line-2)]"
-                        title="Jump to the latest and follow it"
-                        data-jump-latest
-                        on:click=jump
-                    >
-                        <Glyph icon=icondata::LuArrowDown />
-                        "Latest"
-                    </button>
-                </Show>
+                        node_ref=pinned_work
+                        class="pointer-events-auto overflow-hidden rounded-md shadow-md"
+                        data-work-pinned
+                        hidden
+                    ></div>
+                </div>
+                <div node_ref=content class="mx-auto flex max-w-[45rem] flex-col gap-3">
+                    <For
+                        each=move || rows.with(|rows| rows.order.to_vec())
+                        key=|id| *id
+                        children=move |id| {
+                            let row = row_slots.slot(id, || {
+                                rows.with_untracked(|rows| rows.html.get(&id).cloned())
+                            });
+                            on_cleanup(move || row_slots.remove(id));
+                            view! { <TranscriptRow row=row id=id /> }
+                        }
+                    />
+                    // The run going on, after the last row: the content grows
+                    // with it, so a view following the end keeps it in sight.
+                    <Show when=move || {
+                        running(workspace)
+                            && !workspace.new_session.get()
+                            && !(work_spins.get() && workspace.questions().is_empty())
+                    }>
+                        <div
+                            id="working"
+                            class="flex min-h-9 items-center gap-1.5 px-1 text-sm font-bold text-accent"
+                            role="status"
+                        >
+                            <Glyph icon=icondata::LuLoaderCircle class="animate-spin" />
+                            {move || working_label(workspace)}
+                        </div>
+                    </Show>
+                    // A held session says why and what waits, until a resume.
+                    <Show when=move || !running(workspace) && workspace.held_line().is_some()>
+                        <div
+                            id="held"
+                            class="flex min-h-9 items-center gap-1.5 px-1 text-sm font-bold text-accent"
+                            role="status"
+                            data-held
+                        >
+                            <Glyph icon=icondata::LuPause />
+                            {move || workspace.held_line().unwrap_or_default()}
+                        </div>
+                    </Show>
+                </div>
+                // Over the end of the transcript while it does not follow it;
+                // the row it sits in takes no room.
+                <div class="pointer-events-none sticky bottom-0 mx-auto h-0 max-w-[45rem]">
+                    <Show when=move || {
+                        !following.get() && overflows.get() && workspace.selected.get().is_some()
+                            && !workspace.new_session.get()
+                    }>
+                        <button
+                            type="button"
+                            class="pointer-events-auto absolute right-0 bottom-1 inline-flex min-h-11 items-center gap-2 rounded-full px-3 text-sm shadow-md hover:bg-sunken active:bg-press bg-raised shadow-[0_0_0_1px_var(--color-line-2)]"
+                            title="Jump to the latest and follow it"
+                            data-jump-latest
+                            on:click=jump
+                        >
+                            <Glyph icon=icondata::LuArrowDown />
+                            "Latest"
+                        </button>
+                    </Show>
+                </div>
             </div>
         </div>
     }
+}
+
+/// How many screens above the view a row of history not loaded starts being
+/// read, so that a page mostly arrives before the user scrolls up to it.
+const HISTORY_SCREENS: f64 = 1.5;
+
+/// Reads the history the row of history not loaded nearest above the view of
+/// `scroller`, the transcript, stands for, when that row is within
+/// [`HISTORY_SCREENS`]: whether a read started. A row whose read failed waits
+/// for a click.
+fn load_history_near(
+    scroller: &web_sys::Element,
+    workspace: Workspace,
+    history: StoredValue<HistoryScroll>,
+) -> bool {
+    let Ok(rows) = scroller.query_selector_all("[data-history]:not([data-history-failed])") else {
+        return false;
+    };
+    let view = scroller.get_bounding_client_rect();
+    // From the bottom: a gap inside the newest run comes before older history.
+    for index in (0..rows.length()).rev() {
+        let Some(row) = rows
+            .item(index)
+            .and_then(|row| row.dyn_into::<web_sys::Element>().ok())
+        else {
+            continue;
+        };
+        let at = row.get_bounding_client_rect();
+        if at.bottom() > view.top() - HISTORY_SCREENS * view.height()
+            && at.top() < view.bottom()
+            && let Some(before) = row
+                .get_attribute("data-history")
+                .and_then(|before| before.parse().ok())
+        {
+            return load_history(scroller, before, workspace, history);
+        }
+    }
+    false
+}
+
+/// Reads the history before `before`: whether a read started, which it does
+/// not while another is under way.
+fn load_history(
+    scroller: &web_sys::Element,
+    before: u64,
+    workspace: Workspace,
+    history: StoredValue<HistoryScroll>,
+) -> bool {
+    if reading_history(workspace) {
+        return false;
+    }
+    workspace.load_history(before);
+    let started = reading_history(workspace);
+    if started {
+        history.update_value(|history| history.started(scroller.scroll_height()));
+    }
+    started
+}
+
+/// Whether the open session's transcript is reading a page of history.
+fn reading_history(workspace: Workspace) -> bool {
+    workspace
+        .selected
+        .get_untracked()
+        .is_some_and(|session_id| {
+            untrack(|| {
+                workspace.with_store(|store| {
+                    store
+                        .sessions
+                        .get(&session_id)
+                        .is_some_and(|state| state.history.loading.is_some())
+                })
+            })
+        })
 }
 
 /// The open work row to pin over the top of the transcript: its button's

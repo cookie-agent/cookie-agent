@@ -425,6 +425,41 @@ pub fn scrolled_to(scroller: &str, section: &str) -> bool {
     at_end || section.get_bounding_client_rect().top() - view.top() < view.height() / 2.0
 }
 
+/// Frames a page of older history takes to draw: its rows, then their mark
+/// as drawn two frames on.
+const PAGE_ARRIVAL_FRAMES: u32 = 4;
+
+/// Turns the transcript's scroll anchoring off while the page of older history
+/// before `before` draws. Rows arriving above a reversed scroller move nothing
+/// by themselves, but Chrome's anchoring then moves the view with them, up to
+/// the very top if it rested there, which reads the next page. Anchoring comes
+/// back for what it is for: a reply growing below the view.
+pub fn page_arriving(before: u64) {
+    let Some(transcript) = window()
+        .and_then(|window| window.document())
+        .and_then(|document| document.get_element_by_id("transcript"))
+    else {
+        return;
+    };
+    let mark = before.to_string();
+    let _ = transcript.set_attribute("data-page-arriving", &mark);
+    after_frames(PAGE_ARRIVAL_FRAMES, move || {
+        // A later page's own mark waits for its own frames.
+        if transcript.get_attribute("data-page-arriving").as_deref() == Some(mark.as_str()) {
+            let _ = transcript.remove_attribute("data-page-arriving");
+        }
+    });
+}
+
+/// Runs `then` after `frames` animation frames.
+fn after_frames(frames: u32, then: impl FnOnce() + 'static) {
+    if frames == 0 {
+        then();
+    } else {
+        leptos::prelude::request_animation_frame(move || after_frames(frames - 1, then));
+    }
+}
+
 /// Scrolls to the top of the element `selector` finds, on the
 /// next frame.
 pub fn jump(selector: &str) {

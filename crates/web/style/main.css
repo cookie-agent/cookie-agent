@@ -161,6 +161,11 @@ html.dark {
 #transcript .transcript-item {
   contain-intrinsic-block-size: auto 4rem;
 }
+/* Rows arriving above the reversed scroller move nothing, unless the browser
+   anchors them (`page_arriving` in browser.rs). */
+#transcript[data-page-arriving] {
+  overflow-anchor: none;
+}
 #transcript [data-part] {
   contain-intrinsic-block-size: auto 2.75rem;
 }
@@ -944,9 +949,9 @@ body {
   }
 }
 
-/* While a session loads whole, its transcript is a skeleton of rows a
-   light passes over, under a line of how much has loaded; it fades as the
-   transcript takes its place (views/loader.rs). */
+/* Until a session's newest messages arrive, its transcript is a skeleton of
+   rows a light passes over, under a moving line; it fades as the transcript
+   takes its place (views/loader.rs). */
 .skeleton {
   position: relative;
   overflow: hidden;
@@ -968,7 +973,6 @@ body {
 }
 .loader-line {
   box-shadow: 0 0 10px var(--color-accent);
-  transition: width 180ms ease-out;
 }
 .loader-line-unknown {
   width: 30%;

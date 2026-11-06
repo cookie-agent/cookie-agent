@@ -219,6 +219,7 @@ class Browser:
                 time.sleep(0.2)
 
     def click(self, selector):
+        self.script(TRANSCRIPT_CLICK, selector)
         self.on_element(selector, "click", {})
 
     def type(self, selector, text):
@@ -713,12 +714,26 @@ def tool_rows(browser):
     idle(browser, "its answer")
 
 
-# The transcript's scroll position: how far its end is below the box,
-# its scroll top and content height, and whether the jump-to-latest
-# button shows.
+# Brings a transcript element into view before a WebDriver click, which
+# otherwise reports it not interactable: ChromeDriver's own scrolling assumes
+# positive scroll positions, and the transcript's count up from its end.
+TRANSCRIPT_CLICK = """
+const element = document.querySelector(arguments[0]);
+const transcript = document.querySelector('#transcript');
+if (element && transcript && transcript.contains(element)) {
+    const at = element.getBoundingClientRect();
+    const box = transcript.getBoundingClientRect();
+    if (at.top < box.top || at.bottom > box.bottom) element.scrollIntoView({block: 'center'});
+}
+"""
+
+# The transcript's scroll position: how far its end is below the box (its
+# scrollTop counts from the end, up being negative), how far its start is
+# above the box, its content height, and whether the jump-to-latest button
+# shows.
 SCROLL_STATE = """
 const t = document.querySelector('#transcript');
-return {gap: t.scrollHeight - t.scrollTop - t.clientHeight, top: t.scrollTop,
+return {gap: -t.scrollTop, top: t.scrollHeight - t.clientHeight + t.scrollTop,
     height: t.scrollHeight, jump: !!document.querySelector('[data-jump-latest]')};
 """
 
@@ -1078,19 +1093,49 @@ def long_session(browser):
     print("find in page finds and shows a row far above the end")
 
 
-# Records what the transcript's loader shows from now on: whether it came,
-# and each count its pill read.
-WATCH_LOADER = """
-window.loaderSeen = {came: false, counts: []};
-new MutationObserver(() => {
-    const loader = document.querySelector('[data-transcript-loader]');
-    if (!loader) return;
-    window.loaderSeen.came = true;
-    const count = loader.querySelector('[data-loader-count]').textContent;
-    const counts = window.loaderSeen.counts;
-    if (count && counts[counts.length - 1] !== count) counts.push(count);
-}).observe(document.body, {childList: true, subtree: true, characterData: true});
+# Holds back the page's events.page requests by arguments[0] ms.
+DELAY_PAGES = """
+const ms = arguments[0];
+window.__send = window.__send || WebSocket.prototype.send;
+const send = window.__send;
+WebSocket.prototype.send = function (data) {
+    if (typeof data === 'string' && data.includes('events.page')) {
+        setTimeout(() => send.call(this, data), ms);
+    } else {
+        send.call(this, data);
+    }
+};
 """
+
+
+def history_gap(browser):
+    """The long session's one run is larger than the first answer, which
+    leaves a gap inside it: opened afresh, the session shows the run's end,
+    and scrolling up fills the gap until the run's start shows."""
+    holds = lambda text: browser.script(
+        "return document.querySelector('#transcript').textContent.includes(arguments[0])", text
+    )
+    session = open_session_id(browser)
+    browser.script("location.reload()")
+    time.sleep(0.5)
+    browser.wait("the connection", lambda: browser.text("#connected") != "")
+    browser.wait("the session row", lambda: count(browser, 'aside [data-session="%s"]' % session) == 1)
+    click_row(browser, 'aside [data-session="%s"]' % session)
+    browser.wait("the run's end", lambda: holds("omega 1499 "), timeout=30)
+    browser.wait("the gap", lambda: count(browser, "#transcript [data-history]") >= 1, timeout=30)
+    assert not holds("Step 7 looks at"), "the gap's rows came with the first answer"
+    # A real wheel: at the very top, where the view cannot scroll, it still
+    # asks for more, and this run's pages fold under one row and draw nothing,
+    # which reads on by itself only so far.
+    for _ in range(240):
+        wheel(browser, -1000000)
+        time.sleep(0.25)
+        if count(browser, "#transcript [data-history]") == 0:
+            break
+    assert count(browser, "#transcript [data-history]") == 0, "scrolling up left a gap"
+    assert holds("Step 7 looks at"), "scrolling up did not reach the run's start"
+    browser.check()
+    print("scrolling up filled the gap inside the long session's run")
 
 
 def near_view(browser):
@@ -1128,7 +1173,7 @@ def near_view(browser):
     assert highlighted < total, "only what is near is highlighted: %d of %d" % (highlighted, total)
     waiting_media = count(browser, "#transcript [data-media]:not([data-shown])")
     print("far from the view: %d of %d code blocks highlighted, %d media not read" % (highlighted, total, waiting_media))
-    browser.script("document.querySelector('#transcript').scrollTop = 0")
+    browser.script("document.querySelector('#transcript').scrollTop = -1e9")
     browser.wait("the code near the view", first_highlighted)
     if waiting_media:
         browser.wait("the media near the view",
@@ -1137,12 +1182,80 @@ def near_view(browser):
     print("scrolled to, the code is highlighted and the media read")
 
 
-def whole_session(browser):
-    """The long session, opened afresh on a slow CPU, loads whole: a
-    skeleton shows until it has, counting its events against the total the
-    daemon gave, and then the transcript holds every row from the first to
-    the last answer, with no row of history left to load."""
-    # Rows far off screen are not drawn, so their text is read whole.
+# Watches the transcript from now on: the first row under the view's top that
+# is neither pinned nor history, how far it moved on screen in the frames
+# where the content grew, the pages that drew, and whether the page wrote the
+# scroll position. window.watched reads it.
+WATCH_ROW = """
+const t = document.querySelector('#transcript');
+const history = () => {
+    const rows = t.querySelectorAll('[data-history]');
+    return rows.length ? rows[rows.length - 1].dataset.history : null;
+};
+const property = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollTop');
+const state = {strayed: 0, pages: 0, drew: 0, writes: 0, history: history(), height: t.scrollHeight, top: t.scrollTop, stop: false, row: null};
+window.watched = state;
+Object.defineProperty(t, 'scrollTop', {
+    configurable: true,
+    get() { return property.get.call(this); },
+    set(value) { state.writes += 1; property.set.call(this, value); },
+});
+let row = null;
+let last = 0;
+const tick = () => {
+    if (state.stop) { if (window.watched === state) delete t.scrollTop; return; }
+    const box = t.getBoundingClientRect();
+    if (t.scrollHeight > state.height) {
+        state.drew += 1;
+        if (row && row.isConnected) {
+            state.strayed = Math.max(state.strayed, Math.abs(row.getBoundingClientRect().top - last));
+        }
+    }
+    row = [...t.querySelectorAll('.transcript-item')].find((row) =>
+        !row.querySelector('[data-history], [data-pinned-rows]')
+        && row.getBoundingClientRect().bottom > box.top);
+    last = row ? row.getBoundingClientRect().top : 0;
+    state.row = row ? row.id : null;
+    const now = history();
+    if (now !== state.history) { state.pages += 1; state.history = now; }
+    state.height = t.scrollHeight;
+    state.top = t.scrollTop;
+    state.above = t.scrollHeight - t.clientHeight + t.scrollTop;
+    requestAnimationFrame(tick);
+};
+tick();
+"""
+
+
+def watched_scroll(browser, what, move, drew=1, wait=2.0, writes=0, strays=1):
+    """Runs `move` under WATCH_ROW and returns what it saw, once `wait`
+    seconds passed: the rows grew `drew` times at most and at least once (a
+    page that draws nothing reads on), the rows in view moved no more than
+    `strays` px as they did, the view is no longer at the very top, and only
+    `move`'s own `writes` wrote the position."""
+    browser.script(WATCH_ROW)
+    move()
+    time.sleep(wait)
+    seen = browser.script("const w = window.watched; w.stop = true; return w")
+    assert 1 <= seen["drew"] <= drew, "%s drew %d pages: %s" % (what, seen["drew"], seen)
+    assert seen["strayed"] <= strays, "%s moved the rows in view: %s" % (what, seen)
+    assert seen["above"] > 1000, "%s left the view at the very top: %s" % (what, seen)
+    assert seen["writes"] == writes, "%s wrote the scroll position: %s" % (what, seen)
+    return seen
+
+
+def newest_first(browser):
+    """A session of twelve long answers, opened afresh, shows its newest
+    runs under a row of those not loaded, and reads nothing until asked.
+    One scroll to the top draws one page (a scripted one, a wheel, a key, a
+    finger's flick), with the view resting at its top included; the rows in
+    view hold still through it, with no write to the scroll position. Scrolling
+    on reaches the first answer."""
+    new_session(browser)
+    labels = ["w" * 400 + str(run) for run in range(12)]
+    for run, label in enumerate(labels):
+        send(browser, "stream only lines 300 label " + label)
+        idle(browser, "long answer %d" % run, text="%s 299 " % label, timeout=120)
     holds = lambda text: browser.script(
         "return document.querySelector('#transcript').textContent.includes(arguments[0])", text
     )
@@ -1151,21 +1264,122 @@ def whole_session(browser):
     time.sleep(0.5)
     browser.wait("the connection", lambda: browser.text("#connected") != "")
     browser.wait("the session row", lambda: count(browser, 'aside [data-session="%s"]' % session) == 1)
-    browser.script(WATCH_LOADER)
-    browser.cdp("Emulation.setCPUThrottlingRate", {"rate": 4})
+    click_row(browser, 'aside [data-session="%s"]' % session)
+    browser.wait("the newest run", lambda: holds("%s 299 " % labels[-1]), timeout=30)
+    browser.wait("the row of history not loaded", lambda: count(browser, "#transcript [data-history]") == 1, timeout=30)
+    assert not holds("%s 299 " % labels[0]), "the first answer loaded with the newest"
+    state = browser.script(SCROLL_STATE)
+    assert state["gap"] <= 2 and not state["jump"], "the session did not open at its end: %s" % state
+    # Nothing is read while nobody scrolls.
+    browser.script(WATCH_ROW)
+    time.sleep(1.5)
+    seen = browser.script("const w = window.watched; w.stop = true; return w")
+    assert seen["pages"] == 0, "the page read history by itself: %s" % seen
+    print("the session opened at its newest runs and read nothing by itself")
+
+    # A slow page: whoever waits at the very top sees the loading block, in
+    # view from the start, as the row does not change height for it.
+    row_box = (
+        "const t = document.querySelector('#transcript');"
+        "const r = t.querySelector('[data-history]').getBoundingClientRect();"
+        "const b = t.getBoundingClientRect();"
+        "return {height: r.height, inView: r.top >= b.top && r.bottom <= b.bottom};"
+    )
+    browser.script("document.querySelector('#transcript').scrollTop = -1e9")
+    browser.wait("the first page", lambda: browser.script(SCROLL_STATE)["height"] > state["height"], timeout=30)
+    browser.script(DELAY_PAGES, 1500)
+    browser.script("document.querySelector('#transcript').scrollTop = -1e9")
+    browser.wait("the loading block", lambda: count(browser, "#transcript [data-history-loading]") == 1, timeout=10)
+    block = browser.script(row_box)
+    assert block["inView"], "the loading block is out of view: %s" % block
+    browser.shot("history-loading")
+    browser.script("document.documentElement.classList.add('dark')")
+    browser.shot("history-loading-dark")
+    browser.script("document.documentElement.classList.remove('dark')")
+    browser.wait("the slow page", lambda: count(browser, "#transcript [data-history-loading]") == 0, timeout=10)
+    browser.script("WebSocket.prototype.send = window.__send")
+    browser.script("document.querySelector('#transcript').scrollTop = -1e9")
+    browser.wait("the next read's end", lambda: count(browser, "#transcript [data-history-loading]") == 0)
+    rest = browser.script(row_box)
+    assert abs(rest["height"] - block["height"]) <= 1, "the row changed height for the block: %s %s" % (block, rest)
+    print("a slow page shows a loading block in view at the top, of the row's own height")
+
+    # Resting at the very top when the page arrives: where the browser does
+    # not anchor, and the old page read on to the session's start.
+    seen = watched_scroll(browser, "a scroll to the very top",
+                          lambda: browser.script("document.querySelector('#transcript').scrollTop = -1e9"),
+                          writes=1)
+    assert not holds("%s 299 " % labels[0]), "one scroll reached the session's start"
+    print("one scroll to the very top drew one page; the rows in view held: %s" % seen)
+
+    def wheel_to_top():
+        wheel(browser, -1000000)
+    seen = watched_scroll(browser, "a wheel to the top", wheel_to_top, wait=2.5)
+    print("a wheel to the top drew one page; the rows in view held: %s" % seen)
+
+    # Home, as the keyboard and the scrollbar's end go there at once.
+    def home():
+        browser.script("document.querySelector('#transcript').tabIndex = -1; document.querySelector('#transcript').focus()")
+        perform(browser, [{"type": "key", "id": "keyboard", "actions": [
+            {"type": "keyDown", "value": "\ue011"}, {"type": "keyUp", "value": "\ue011"},
+        ]}])
+    seen = watched_scroll(browser, "the Home key", home, drew=2, wait=2.5)
+    print("the Home key drew one page; the rows in view held: %s" % seen)
+
+    # Scrolling reaches the first answer, and find in page then does too.
+    for _ in range(120):
+        wheel(browser, -1000000)
+        time.sleep(0.25)
+        if count(browser, "#transcript [data-history]") == 0:
+            break
+    assert count(browser, "#transcript [data-history]") == 0, "scrolling up left history not loaded"
+    assert holds("%s 299 " % labels[0]), "scrolling up did not reach the first answer"
+    found = browser.script_async(FIND_IN_PAGE, "%s 7 " % labels[0])
+    assert found and found["inside"] and found["shown"], "find in page missed the first answer: %s" % found
+    print("scrolling up read the rest, and find in page reaches the first answer")
+
+    # Back down, the view follows the end again.
+    browser.click("[data-jump-latest]")
+    browser.wait("the end", lambda: browser.script(SCROLL_STATE)["gap"] <= 2)
+    assert not browser.script(SCROLL_STATE)["jump"], "the jump left the jump button"
+
+    # A phone's finger, flicking toward the row of history: a page arrives
+    # during the flick and nothing writes the position.
+    phone = Browser(touch=True)
     try:
-        click_row(browser, 'aside [data-session="%s"]' % session)
-        browser.wait("the loaded session", lambda: holds("omega 1499 "), timeout=120)
+        phone.go(LINK)
+        phone.wait("the connection", lambda: phone.text("#connected") != "")
+        phone.phone(390, 844)
+        phone.click("main [data-sidebar-toggle]")
+        phone.wait("the sessions", lambda: count(phone, '#sidebar [data-session="%s"]' % session) > 0)
+        phone.script("document.querySelector(arguments[0]).click()", '#sidebar [data-session="%s"]' % session)
+        phone.wait("the row of history", lambda: count(phone, "#transcript [data-history]") == 1, timeout=30)
+        time.sleep(0.5)
+        phone.script("const t = document.querySelector('#transcript'); t.scrollTop = -(t.scrollHeight - t.clientHeight - 3000)")
+        time.sleep(0.5)
+        phone.script(WATCH_ROW)
+        origin = {ELEMENT: phone.find("#transcript")}
+        for _ in range(10):
+            perform(phone, [{
+                "type": "pointer", "id": "finger", "parameters": {"pointerType": "touch"}, "actions": [
+                    {"type": "pointerMove", "duration": 0, "origin": origin, "x": 0, "y": -200},
+                    {"type": "pointerDown", "button": 0},
+                    {"type": "pointerMove", "duration": 60, "origin": "pointer", "x": 0, "y": 500},
+                    {"type": "pointerUp", "button": 0},
+                ],
+            }])
+            if phone.script("return window.watched.drew") >= 1:
+                break
+        time.sleep(2.5)
+        seen = phone.script("const w = window.watched; w.stop = true; return w")
+        assert 1 <= seen["drew"] <= 2, "the flicks drew %d pages: %s" % (seen["drew"], seen)
+        assert seen["strayed"] <= 2000, "a page moved the rows in view: %s" % seen
+        assert seen["above"] > 1000, "the flicks left the view at the very top: %s" % seen
+        assert seen["writes"] == 0, "the flicks wrote the scroll position: %s" % seen
+        print("phone: flicks drew a page and it held the view: %s" % seen)
     finally:
-        browser.cdp("Emulation.setCPUThrottlingRate", {"rate": 1})
-    browser.wait("the loader's fade", lambda: count(browser, "[data-transcript-loader]") == 0)
-    seen = browser.script("return window.loaderSeen")
-    assert seen["came"], "the session loaded with no skeleton: %s" % seen
-    counted = [count for count in seen["counts"] if " / " in count]
-    assert counted, "the loader never counted against a total: %s" % seen
-    assert holds("Step 7 looks at"), "an early row did not load"
-    assert count(browser, "#transcript [data-history]") == 0, "a row of history is left to load"
-    print("the long session loaded whole behind its skeleton, counting %s" % ", ".join(counted))
+        phone.close()
+    browser.check()
 
 
 def session_list_older(browser):
@@ -7087,7 +7301,8 @@ SCENARIOS = [
     ("streaming_scroll", streaming_scroll, "chat", []),
     ("open_row_streams", open_row_streams, "chat", []),
     ("long_session", long_session, "long", []),
-    ("whole_session", whole_session, "long", ["long_session"]),
+    ("history_gap", history_gap, "long", ["long_session"]),
+    ("newest_first", newest_first, "long", []),
     ("near_view", near_view, "long", []),
     # Its daemon has sessions last active months ago (test-web-page.sh).
     ("session_list_older", session_list_older, "long", []),

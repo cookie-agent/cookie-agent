@@ -485,12 +485,16 @@ refreshes no longer change). Reset and Replace ask once more.
     you left it until you scroll back to the end, press **Latest**,
     which shows at the bottom meanwhile, or send a message (steered or
     queued too). A session opens at its end.
-  - **Opening a session.** A session loads whole, in the display view (long
-    tool results cut until you load them), so scrolling and find in page
-    reach every row. While it loads, the transcript shows a skeleton of
-    rows under a line of how much has loaded, and a pill counts its events
-    against how many there are; a session that loads quickly simply
-    appears. The title bar and the composer work meanwhile.
+  - **Opening a session.** A session opens at its newest messages, in the
+    display view (long tool results cut until you load them). Until they
+    arrive, the transcript shows a skeleton of rows; a session that loads
+    quickly simply appears. The title bar and the composer work meanwhile.
+  - **Older messages.** Scrolling up reads older messages a page at a time,
+    a little before you reach them, and what you are reading stays where it
+    is as they arrive. A row at the top of what has loaded shows a loading
+    block while a page reads, and also reads a page on a click. Find in page
+    only reaches what has loaded, so scroll further up to search older
+    messages.
   - **Pinned at the top**, folded side by side on one line, as in the
     TUI: the system prompt of the session's last run (`system prompt ·
     primary (last run) (42 lines)`; before its first run, the one it was

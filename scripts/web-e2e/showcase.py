@@ -615,7 +615,7 @@ if ALL:
         # opened.
         browser.script(
             "for (const b of document.querySelectorAll('#transcript [data-pinned] > button')) b.click();"
-            "document.querySelector('#transcript').scrollTop = 0"
+            "document.querySelector('#transcript').scrollTop = -1e9"
         )
         time.sleep(0.6)
         both_themes("%s-pinned-rows" % size)
