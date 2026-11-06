@@ -25,9 +25,15 @@ iframe { display: block; width: 100%; height: 100%; border: 0; background: #fff;
   "use strict";
   var frame = null;
   var token = null;
-  // Reports the inner page's height whenever it changes. It is the only
-  // thing added to the agent's page.
+  // What this adds to the agent's page. It reports the page's height whenever
+  // it changes. And it keeps a `#name` link on the page: in a srcdoc frame such
+  // a link resolves against this file's address, so the browser would leave the
+  // page for this file. A link the page handled itself is left alone.
   var height =
+    "<script>addEventListener('click',function(event){if(event.defaultPrevented||event.button)return;" +
+    "var link=event.target.closest&&event.target.closest('a[href],area[href]');if(!link)return;" +
+    "var href=link.getAttribute('href');if(href.charAt(0)!=='#')return;" +
+    "event.preventDefault();location.hash=href;});<\/script>" +
     // The root element's own box, not its scroll height, which is never less
     // than the frame's: a page shorter than the frame could not shrink it.
     "<script>(function(){var last=-1;function report(){var root=document.documentElement;" +

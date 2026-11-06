@@ -564,7 +564,9 @@ web page (daemon origin, holds the token)
 - **The page reads the asset** with `asset.read` over its own connection
   and sends the bytes to the viewer with `postMessage`. The viewer puts
   them in an inner frame's `srcdoc`, which takes the viewer's policy and
-  sandbox. *Reload* makes a new inner frame.
+  sandbox. *Reload* makes a new inner frame. The viewer adds two small scripts to
+  the page: one reports its height, and one keeps a `#name` link on the page, which
+  a `srcdoc` frame would otherwise resolve against `viewer.html`'s address and leave.
 - **Messages carry a token.** Each figure gets a random token, which the
   page sends with the bytes. The page takes a message from a frame only
   when it comes from that frame's window and carries that frame's token.

@@ -233,7 +233,7 @@ PY
     # sandbox, and a Markdown report.
     cat >"$allowing/workspace/figure.html" <<'HTML'
 <!doctype html><html><head><style>body { margin: 0; }</style></head><body>
-<p id="state">waiting</p><div style="height: 260px; background: #eee"></div>
+<p id="state">waiting</p><a id="jump" href="#mark">jump</a><div style="height: 260px; background: #eee"></div><p id="mark">mark</p>
 <script>
 var notes = [];
 try { localStorage.setItem("probe", "1"); notes.push("storage-open"); } catch (e) { notes.push("storage-blocked"); }

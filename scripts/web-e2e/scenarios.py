@@ -1400,6 +1400,11 @@ def asset_figures(browser):
     try:
         browser.wait("the page's script", lambda: browser.text("#state").startswith("ran"))
         state = browser.text("#state")
+        # A `#name` link stays on the page, which a srcdoc frame would leave.
+        browser.click("#jump")
+        browser.wait("the link's target", lambda: browser.script("return location.hash") == "#mark")
+        assert browser.script("return location.href") == "about:srcdoc#mark"
+        assert browser.text("#state") == state
     finally:
         call("POST", browser.path("/frame"), {"id": None})
     assert "storage-blocked" in state, state
