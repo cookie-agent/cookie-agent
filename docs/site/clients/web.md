@@ -449,8 +449,9 @@ refreshes no longer change). Reset and Replace ask once more.
     gives, with **reset to the project's**. Then **Skills**: those the
     selected cards bring (each card's project skills, then the user's and
     the official ones), each with a switch. **Runtimes · Skills** beside
-    the project picker jump between the two, and Skills counts the skills
-    that are off. The session is created with these choices.
+    the project picker jump between the two and mark which one the page is
+    at, and Skills counts the skills that are off. The session is created
+    with these choices.
 - **Subagents.** Only the open session's row has its subagents nested
   under it, each with its status (a turning circle while it runs, a check,
   failed, or cancelled), its agent, its short handle, and its task. Click

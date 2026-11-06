@@ -708,7 +708,7 @@ pub(super) fn NewSessionProject(workspace: Workspace) -> impl IntoView {
                 <select
                     id="new-session-project"
                     node_ref=select
-                    class="min-h-11 rounded-lg bg-surface px-2 text-sm font-normal text-fg hover:shadow-[inset_0_0_0_1px_var(--color-faint)] shadow-[inset_0_0_0_1px_var(--color-line-2)]"
+                    class="min-h-11 w-full min-w-0 rounded-lg bg-surface text-sm font-normal text-fg hover:shadow-[inset_0_0_0_1px_var(--color-faint)] shadow-[inset_0_0_0_1px_var(--color-line-2)]"
                     prop:value=current
                     on:change=move |event| {
                         let value = event_target_value(&event);

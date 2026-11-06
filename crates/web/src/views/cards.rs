@@ -41,6 +41,16 @@ fn state_class(state: CardState) -> &'static str {
     }
 }
 
+/// A segment of the links between the cards and the skills: the one the
+/// view is at in the selection's tint.
+fn jump_class(current: bool) -> &'static str {
+    if current {
+        "hit-area inline-flex min-w-11 items-center justify-center rounded-md bg-sel px-3 font-medium text-fg transition-colors"
+    } else {
+        "hit-area inline-flex min-w-11 items-center justify-center rounded-md px-3 text-muted transition-colors hover:bg-hover hover:text-fg"
+    }
+}
+
 /// The new session's runtime cards, above the composer whose first message
 /// creates the session with them.
 #[component]
@@ -76,25 +86,38 @@ pub fn NewSessionCards(workspace: Workspace) -> impl IntoView {
                 <div class="min-w-0 flex-1">
                     <super::projects::NewSessionProject workspace=workspace />
                 </div>
-                <div class="ml-auto inline-flex gap-0.5 rounded-md border border-line-2 bg-sunken p-0.5 text-xs" data-jump="">
+                <div
+                    class="flex h-11 shrink-0 gap-0.5 rounded-lg bg-surface p-1 text-sm shadow-[inset_0_0_0_1px_var(--color-line-2)]"
+                    role="group"
+                    aria-label="Jump to"
+                    data-jump=""
+                >
                     <button
                         type="button"
-                        class="hit-area rounded px-2.5 py-1 text-muted hover:bg-hover"
+                        class=move || jump_class(!workspace.draft_at_skills.get())
+                        aria-current=move || (!workspace.draft_at_skills.get()).then_some("true")
                         data-jump-to="runtimes"
-                        on:click=move |_| crate::browser::jump("#new-session")
+                        on:click=move |_| {
+                            workspace.draft_at_skills.set(false);
+                            crate::browser::jump("#new-session");
+                        }
                     >
                         "Runtimes"
                     </button>
                     <button
                         type="button"
-                        class="hit-area rounded px-2.5 py-1 text-muted hover:bg-hover"
+                        class=move || jump_class(workspace.draft_at_skills.get())
+                        aria-current=move || workspace.draft_at_skills.get().then_some("true")
                         data-jump-to="skills"
-                        on:click=move |_| crate::browser::jump("#new-session-skills")
+                        on:click=move |_| {
+                            workspace.draft_at_skills.set(true);
+                            crate::browser::jump("#new-session-skills");
+                        }
                     >
                         "Skills"
                         {move || {
                             let off = super::tool_groups::cards_skills_off(workspace, workspace.new_cards());
-                            (off > 0).then(|| view! { <span class="ml-1 font-semibold text-warn">{format!("{off} off")}</span> })
+                            (off > 0).then(|| view! { <span class="ml-1.5 text-xs font-semibold text-warn">{format!("{off} off")}</span> })
                         }}
                     </button>
                 </div>

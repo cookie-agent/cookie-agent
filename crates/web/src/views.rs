@@ -2658,6 +2658,12 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
             data-guest=move || workspace.is_guest().then_some("")
             on:click=on_click
             on:scroll=move |_| {
+                if workspace.new_session.get_untracked() {
+                    workspace.draft_at_skills.set(crate::browser::scrolled_to(
+                        "#transcript",
+                        "#new-session-skills",
+                    ));
+                }
                 if let Some((_, at)) = metrics() {
                     follow.update_value(|follow| follow.scrolled(at));
                     shown();

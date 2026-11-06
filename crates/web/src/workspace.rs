@@ -271,6 +271,8 @@ pub struct Workspace {
     /// The new session's tool group and skill choices: its project's
     /// defaults (marked `from_project`) until the user changes one.
     pub draft_exposure: RwSignal<cookie_agent_protocol::ToolExposure>,
+    /// The new session's page is scrolled to its skills, not its cards.
+    pub draft_at_skills: RwSignal<bool>,
     /// The project editor's tool group and skill choices for new sessions.
     pub editor_exposure: RwSignal<cookie_agent_protocol::ToolExposure>,
     /// What each runtime capability offers (`runtimes.groups`), by
@@ -647,6 +649,7 @@ impl Workspace {
             skills: RwSignal::new(None),
             session_tools: RwSignal::new(None),
             draft_exposure: RwSignal::new(Default::default()),
+            draft_at_skills: RwSignal::new(false),
             editor_exposure: RwSignal::new(Default::default()),
             runtime_groups: RwSignal::new(HashMap::new()),
             skill_query: RwSignal::new(String::new()),
@@ -1722,6 +1725,7 @@ impl Workspace {
         self.follow_composer_slot();
         self.draft_rules.set(Vec::new());
         self.draft_exposure.set(Default::default());
+        self.draft_at_skills.set(false);
         // What runtimes offer is read again for each draft.
         self.runtime_groups.set(HashMap::new());
         self.draft_agent_options.set(Default::default());

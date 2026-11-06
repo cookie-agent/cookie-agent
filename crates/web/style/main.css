@@ -197,6 +197,7 @@ html.pressing * {
   --qi-fg: #09090b;
   --qi-fg-2: #3f3f46;
   --qi-muted: #71717a;
+  --qi-select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2371717a' stroke-width='1.75' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
   --qi-faint: #a1a1aa;
   --qi-line: rgb(9 9 11 / 0.08);
   --qi-line-2: rgb(9 9 11 / 0.14);
@@ -228,6 +229,7 @@ html.pressing * {
   --qi-fg: #ededef;
   --qi-fg-2: #b4b4bc;
   --qi-muted: #86868f;
+  --qi-select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2386868f' stroke-width='1.75' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
   --qi-faint: #5c5c66;
   --qi-line: rgb(255 255 255 / 0.07);
   --qi-line-2: rgb(255 255 255 / 0.12);
@@ -249,6 +251,28 @@ html.pressing * {
   --qi-sheen: rgb(255 255 255 / 0.06);
   --qi-shadow-menu: 0 16px 40px -8px rgb(0 0 0 / 0.7), 0 0 0 1px rgb(255 255 255 / 0.06);
   --qi-shadow-sheet: 0 30px 70px -10px rgb(0 0 0 / 0.75), 0 0 0 1px rgb(255 255 255 / 0.06);
+}
+
+/* Every dropdown's arrow, inset from its edge and centred: the browser's
+   sits against the edge. Outside the layers, so it holds over a dropdown's
+   own padding. The list that opens is still the browser's. */
+select:not([multiple], [size]) {
+  appearance: none;
+  background-image: var(--qi-select-chevron);
+  background-repeat: no-repeat;
+  background-position: right 0.75rem center;
+  background-size: 1rem;
+  padding-right: 2.25rem;
+  padding-left: 0.75rem;
+  text-overflow: ellipsis;
+}
+
+/* The media viewer's speed: always on a dark bar, among tight controls. */
+select#media-viewer-speed {
+  --qi-select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23ffffff' stroke-width='1.75' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-position: right 0.25rem center;
+  padding-right: 1.5rem;
+  padding-left: 0.25rem;
 }
 
 @theme inline {

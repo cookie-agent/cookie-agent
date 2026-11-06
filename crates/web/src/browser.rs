@@ -408,6 +408,23 @@ pub async fn copy_text(text: &str) -> bool {
     wasm_bindgen_futures::JsFuture::from(promise).await.is_ok()
 }
 
+/// Whether the element `section` finds has come up into the upper half of
+/// the scrolling element `scroller` finds, or `scroller` has reached its end.
+#[must_use]
+pub fn scrolled_to(scroller: &str, section: &str) -> bool {
+    let Some(document) = window().and_then(|window| window.document()) else {
+        return false;
+    };
+    let find = |selector: &str| document.query_selector(selector).ok().flatten();
+    let (Some(scroller), Some(section)) = (find(scroller), find(section)) else {
+        return false;
+    };
+    let view = scroller.get_bounding_client_rect();
+    let at_end = scroller.scroll_top() > 0
+        && scroller.scroll_top() + scroller.client_height() >= scroller.scroll_height() - 2;
+    at_end || section.get_bounding_client_rect().top() - view.top() < view.height() / 2.0
+}
+
 /// Scrolls to the top of the element `selector` finds, on the
 /// next frame.
 pub fn jump(selector: &str) {

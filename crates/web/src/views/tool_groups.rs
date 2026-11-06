@@ -793,7 +793,7 @@ pub fn cards_skills(
             })
             .collect_view();
         view! {
-            <section id=id class="flex flex-col gap-3" data-cards-skills="">
+            <section id=id class="flex scroll-mt-24 flex-col gap-3" data-cards-skills="">
                 <h3 class="text-sm font-semibold">
                     {heading}
                     <span class=format!("ml-1 font-normal {NOTE}")>{format!("· {on} of {count} on for the agent")}</span>
