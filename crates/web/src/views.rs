@@ -2125,13 +2125,31 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
     });
     let homes = Memo::new(move |_| workspace.homes());
     // A reduced transcript's live work row counts its time each second
-    // while the session runs.
+    // while the session runs. An ended background command's row settles for
+    // a while with no run to draw it, and draws once more when that ends.
     let now = RwSignal::new(jiff::Timestamp::now());
+    let settling = StoredValue::new(false);
     let ticker = set_interval_with_handle(
         move || {
             let reduced = workspace.transcript.get_untracked()
                 == cookie_agent_client_state::transcript_mode::TranscriptMode::Reduced;
-            if reduced && workspace.viewed.with_untracked(|viewed| viewed.running) {
+            let settles = workspace.selected.get_untracked().is_some_and(|session| {
+                untrack(|| {
+                    workspace.with_store(|store| {
+                        store.sessions.get(&session).is_some_and(|state| {
+                            state
+                                .background_settles_at(jiff::Timestamp::now())
+                                .is_some()
+                        })
+                    })
+                })
+            });
+            let settled = settling.get_value() && !settles;
+            settling.set_value(settles);
+            if (reduced && workspace.viewed.with_untracked(|viewed| viewed.running))
+                || settles
+                || settled
+            {
                 now.set(jiff::Timestamp::now());
             }
         },

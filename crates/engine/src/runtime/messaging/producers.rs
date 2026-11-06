@@ -1617,8 +1617,9 @@ impl Engine {
             }
         }
         // An ACP agent's own command still running in the background, as
-        // Claude Code's backgrounded commands, wakes it when it ends.
-        if self.acp_background_running(session) {
+        // Claude Code's backgrounded commands, wakes it when it ends, and
+        // the wake may take a while after that.
+        if self.acp_background_pending(session) {
             kinds.push(WaitingOn::BackgroundCall);
         }
         if self.inner.crons.waits_on(session) {

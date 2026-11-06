@@ -60,15 +60,21 @@ pub fn agent_session_message_summary(message: &cookie_agent_protocol::AcpSession
 
 /// The one-line summary of an ACP agent's command that ended after running
 /// in the background, as a background call's report reads: what it ran,
-/// else its tool.
-pub fn agent_background_ended_summary(ended: &cookie_agent_protocol::AcpBackgroundEnded) -> String {
+/// else its tool, and whether it is `settling`
+/// ([`crate::SessionState::background_settling`]), said first as a long
+/// command is cut off.
+pub fn agent_background_ended_summary(
+    ended: &cookie_agent_protocol::AcpBackgroundEnded,
+    settling: bool,
+) -> String {
     let what = ended
         .display
         .as_deref()
         .map(|display| display.split_whitespace().collect::<Vec<_>>().join(" "))
         .filter(|display| !display.is_empty())
         .unwrap_or_else(|| ended.tool.clone());
-    format!("Background: {what} ended")
+    let state = if settling { " (settling)" } else { "" };
+    format!("Background{state}: {what} ended")
 }
 
 /// What an opened row of an ACP agent's ended background command says

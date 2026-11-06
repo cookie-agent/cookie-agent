@@ -357,7 +357,7 @@ impl Engine {
                 .keys()
                 .any(|(pending, _)| *pending == session_id)
             || has_runless_pending_inputs(&session.log.event_snapshot())
-            || self.acp_background_running(session_id)
+            || self.acp_background_pending(session_id)
     }
 
     /// Pages out root session trees nobody has used for `idle_after`: no

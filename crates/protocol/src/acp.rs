@@ -312,6 +312,12 @@ pub struct AcpSessionMessage {
     pub text: String,
 }
 
+/// How long after a background command of the agent's ended it may still
+/// wake the agent (`docs/site/specs/acp-v2.md` section 9): the daemon holds
+/// what a follow-up needs for this long, and clients show the command's row
+/// as settling. Seen wakes came up to 58 seconds after the end.
+pub const ACP_BACKGROUND_SETTLE: std::time::Duration = std::time::Duration::from_secs(90);
+
 /// A command of the agent's that kept running in the background after its
 /// tool call ended, and has now ended (client protocol 1.50.0), such as
 /// Claude Code's background shell. Recorded where the end arrives, between

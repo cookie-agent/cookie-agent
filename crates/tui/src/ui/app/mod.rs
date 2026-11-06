@@ -2507,6 +2507,7 @@ async fn event_loop(
         // animation or to flush a frame coalesced below.
         let animating = app.animation_active();
         let frame_due = animating || render.pending();
+        let settles_in = app.background_settles_in();
         tokio::select! {
             () = signals.recv() => return (Ok(()), app.session_errors.clone()),
             () = continued.recv() => reenter = jobs.continued() == JobStep::Reenter,
@@ -2611,6 +2612,11 @@ async fn event_loop(
                 app.report_presence();
             },
             _ = listing_backstop.tick() => app.poll_listings_backstop(),
+            // An idle TUI takes no ticks: an ended command's row stops
+            // saying it settles at this wake.
+            () = tokio::time::sleep(settles_in.unwrap_or_default()), if settles_in.is_some() => {
+                render.mark_immediate();
+            }
             _ = frame_tick.tick(), if frame_due => {
                 // The frame cadence drives the clock bucket (the "thinking…"
                 // ellipsis and the working spinner), which steps every

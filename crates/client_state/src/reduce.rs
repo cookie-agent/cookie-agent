@@ -1621,6 +1621,12 @@ pub(super) fn reduce_event_from(
                 });
             }
             if let Some(ended) = update.background_ended {
+                if state
+                    .last_background_ended
+                    .is_none_or(|(last, _)| last < sequence)
+                {
+                    state.last_background_ended = Some((sequence, timestamp));
+                }
                 push_split_item(state, timestamp, |id| {
                     TranscriptItem::AgentBackgroundEnded {
                         id,

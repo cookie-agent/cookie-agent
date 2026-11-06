@@ -374,6 +374,8 @@ fn an_ended_background_command_folds_to_its_command_and_opens_to_how_it_ran() {
             signal: None,
         },
     });
+    // Something started after it, so it does not settle.
+    state.reply_boundaries.insert(10);
     let render = |expanded: &HashSet<BlockId>| {
         snapshot_lines(
             &transcript_layout_with(
@@ -400,6 +402,54 @@ fn an_ended_background_command_folds_to_its_command_and_opens_to_how_it_ran() {
     ] {
         assert!(opened.contains(line), "{line}\n{opened}");
     }
+}
+
+/// The cached layout says a command settles only while it does: the row
+/// draws again when that ends, with nothing else in the session changing.
+#[test]
+fn a_settling_background_command_draws_again_when_it_stops_settling() {
+    let at = |seconds| jiff::Timestamp::new(seconds, 0).unwrap();
+    let mut state = SessionState::default();
+    state.transcript.push(TranscriptItem::AgentBackgroundEnded {
+        id: 1,
+        seq: 9,
+        ended_at: at(1000),
+        ended: cookie_agent_protocol::AcpBackgroundEnded {
+            tool_call_id: cookie_agent_protocol::ToolCallId::new_v7(),
+            tool: "Bash".into(),
+            // Long enough to be cut off: the state still shows.
+            display: Some("cargo test ".repeat(40)),
+            started_at: at(10),
+            exit_code: None,
+            signal: None,
+        },
+    });
+    let session = SessionId::new_v7();
+    let mut cache = LayoutCache::default();
+    let mut lines_at = |now| {
+        ensure_cached_transcript_layout_in(
+            &mut cache,
+            session,
+            &state,
+            None,
+            None,
+            80,
+            &Theme::default(),
+            &PlainHighlighter,
+            TranscriptView {
+                now,
+                ..TranscriptView::full(crate::state::EventLevel::Info)
+            },
+            0,
+            &ModelDisplayNames::default(),
+            None,
+        );
+        snapshot_lines(&cache.layout.lines.to_vec())
+    };
+    let window = i64::try_from(cookie_agent_protocol::ACP_BACKGROUND_SETTLE.as_secs()).unwrap();
+    let settling = lines_at(at(1000));
+    assert_ne!(settling, lines_at(at(1000 + window)));
+    assert_eq!(settling, lines_at(at(1000)));
 }
 
 #[tokio::test]

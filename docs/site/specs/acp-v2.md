@@ -371,6 +371,24 @@ What v2 does report is the agent's terminals.
     that the agent woke on its own: v2 names no cause. Added
     2026-10-28 at the user's request.
   - It has no Stop: v2 gives clients no terminal kill.
+  - **It settles after it exits.** An agent can take a while to follow up:
+    in 344 ends recorded between runs, the wake came a median of 1.5 s
+    later and at most 57.8 s later, and every end was followed by one.
+    So the command leaves the list at once, as the end is recorded, but
+    for up to 90 seconds after the exit it still counts as below: for
+    restart, eviction, idle shutdown, and what the session waits on. It
+    stops counting at the agent's next round (a wake's run or a prompt),
+    when the agent's process ends, or when the time is up. The time runs
+    from the exit even during a run, and a turn's end push counts only a
+    command that still runs, as before. Added 2026-11-06 at the user's
+    request: a restart waiting on a command came due the moment it
+    exited, and ended the agent as it woke.
+  - **Clients show the row as settling** while it may yet wake the agent:
+    no run open, nothing started since the end, and under 90 seconds
+    since. They work this out from the session and their own clock, so
+    no event says it and a row of old history never shows it; after the
+    agent's process dies, the row goes on saying it until the time is up.
+    A restart in this time says it waits for a background call.
 
   Phase 1 checks that Claude's adapter keeps a backgrounded command's
   terminal open until it exits. If it does not, background shells stay

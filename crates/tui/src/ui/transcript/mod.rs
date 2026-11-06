@@ -656,6 +656,17 @@ pub(super) struct LayoutCache {
     pub(super) assistant_part_layout_passes: u64,
 }
 
+/// What `item`'s layout key reads of the time: whether it is an ended
+/// background command that settles at `now`.
+fn settling_key(state: &SessionState, item: &TranscriptItem, now: jiff::Timestamp) -> u64 {
+    match item {
+        TranscriptItem::AgentBackgroundEnded { seq, ended_at, .. } => {
+            u64::from(state.background_settling(*seq, *ended_at, now))
+        }
+        _ => 0,
+    }
+}
+
 /// A hash of what the attach tags of `item`'s texts resolved to, for its
 /// layout key; 0 for none.
 fn attachments_key(state: &SessionState, item: &TranscriptItem) -> u64 {
@@ -1088,6 +1099,9 @@ struct CachedToolLayout {
 }
 
 struct TranscriptRenderContext<'a> {
+    /// The time a row that changes with it, a settling background command's,
+    /// is laid out at.
+    now: jiff::Timestamp,
     expanded: Option<&'a HashSet<BlockId>>,
     width: u16,
     theme: &'a Theme,
@@ -1322,6 +1336,7 @@ pub(super) fn ensure_cached_transcript_layout_in(
         item_fold_key(&folds, &work_rows, item, expanded)
             ^ attachments_key(state, item)
             ^ machines.key()
+            ^ settling_key(state, item, now)
     };
     let key = LayoutCacheKey {
         session_id,
@@ -1467,6 +1482,7 @@ pub(super) fn ensure_cached_transcript_layout_in(
             let mut assistant_child_lines = Vec::new();
             let mut deferred = Vec::new();
             let mut context = TranscriptRenderContext {
+                now,
                 expanded,
                 width,
                 theme,
@@ -2995,6 +3011,7 @@ pub(super) fn transcript_layout_viewed(
             state,
             item,
             &mut TranscriptRenderContext {
+                now: view.now,
                 expanded,
                 width,
                 theme,

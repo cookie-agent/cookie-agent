@@ -1506,6 +1506,9 @@ pub struct SessionState {
     pub run_finishes: HashMap<RunId, u64>,
     pub run_last_blocks: HashMap<RunId, u64>,
     pub reply_boundaries: std::collections::BTreeSet<u64>,
+    /// The sequence and time of the latest end of an ACP agent's background
+    /// command, whose settling ends last.
+    pub last_background_ended: Option<(u64, jiff::Timestamp)>,
     /// What of the session's history the display view has not loaded.
     pub history: history::HistoryState,
 }
@@ -1523,6 +1526,14 @@ pub struct AgentMdSourceState {
 /// AGENTS.md entries keyed by the attachment that loaded them.
 pub(crate) type AgentMdByAttachment =
     std::collections::BTreeMap<String, Vec<cookie_agent_protocol::AgentMdEntry>>;
+
+/// When a background command that ended at `ended_at` stops settling.
+fn background_settles_at(ended_at: jiff::Timestamp) -> jiff::Timestamp {
+    jiff::SignedDuration::try_from(cookie_agent_protocol::ACP_BACKGROUND_SETTLE)
+        .ok()
+        .and_then(|window| ended_at.checked_add(window).ok())
+        .unwrap_or(ended_at)
+}
 
 impl SessionState {
     /// Changes a call's view state outside any event, such as content loaded
@@ -1581,6 +1592,32 @@ impl SessionState {
     /// Whether a context compaction is still producing its summary.
     pub fn is_compacting(&self) -> bool {
         self.busy.compacting > 0
+    }
+
+    /// Whether the ACP agent's background command that ended at `seq` and
+    /// `ended_at` still settles at `now`: the agent may yet follow up, as no
+    /// run is open, nothing started since, and the time since is short
+    /// (`docs/site/specs/acp-v2.md` section 9). Worked out here, not told by
+    /// the daemon, so a row of old history never shows it.
+    #[must_use]
+    pub fn background_settling(
+        &self,
+        seq: u64,
+        ended_at: jiff::Timestamp,
+        now: jiff::Timestamp,
+    ) -> bool {
+        self.active_run.is_none()
+            && self.reply_boundaries.range(seq..).next().is_none()
+            && now < background_settles_at(ended_at)
+    }
+
+    /// When the session's last settling background command stops settling;
+    /// `None` when none settles at `now`.
+    #[must_use]
+    pub fn background_settles_at(&self, now: jiff::Timestamp) -> Option<jiff::Timestamp> {
+        let (seq, ended_at) = self.last_background_ended?;
+        self.background_settling(seq, ended_at, now)
+            .then(|| background_settles_at(ended_at))
     }
 
     /// Whether any producer message is waiting for a model run to claim it.

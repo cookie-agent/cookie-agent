@@ -1658,6 +1658,15 @@ impl App {
             })
     }
 
+    /// How long the selected session's ended background command settles
+    /// yet, whose row then draws again; `None` when none does.
+    pub(super) fn background_settles_in(&self) -> Option<std::time::Duration> {
+        let state = self.selected.and_then(|id| self.store.sessions.get(&id))?;
+        let now = self.transcript_now();
+        let at = state.background_settles_at(now)?;
+        Some(std::time::Duration::try_from(at.duration_since(now)).unwrap_or_default())
+    }
+
     pub(super) fn working_state(&self) -> Option<WorkingState> {
         let state = self.selected.and_then(|id| self.store.sessions.get(&id))?;
         if state.is_compacting() {

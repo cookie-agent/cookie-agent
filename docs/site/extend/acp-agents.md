@@ -717,7 +717,10 @@ not in it.
   background calls, marked "run by the agent", until it exits. Cookie keeps
   the agent's process and the session alive meanwhile, and an idle daemon
   restart waits for it. Only the agent can stop it: ask it to. When the
-  command ends, the agent usually starts work on its own to report it.
+  command ends, the agent usually starts work on its own to report it, which
+  can take up to a minute. For up to 90 seconds after the end, its row in the
+  transcript says it is settling, and cookie keeps the process, the session,
+  and an idle restart waiting, until the agent follows up or a run starts.
 - **The agent's own subagents.** A subagent the agent starts itself (Claude
   Code's Task and Agent subagents) is a session of its own, nested under
   the session that started it, as cookie's own subagents are. Its title is

@@ -72,8 +72,12 @@ pub(crate) struct AcpState {
     /// ends: their own run may start a moment after their parent's turn
     /// ended.
     pub(crate) working_subagents: Mutex<HashSet<SessionId>>,
-    /// The agents' commands still running after their calls ended.
+    /// The agents' commands still running after their calls ended, and
+    /// those that exited and still settle.
     pub(crate) background: Mutex<Vec<background::AgentCommand>>,
+    /// A test's settling time in place of the real one.
+    #[cfg(test)]
+    pub(crate) settle_window: Mutex<Option<std::time::Duration>>,
 }
 
 impl AcpState {
@@ -119,6 +123,8 @@ impl AcpState {
             subagents: Mutex::new(HashMap::new()),
             working_subagents: Mutex::new(HashSet::new()),
             background: Mutex::new(Vec::new()),
+            #[cfg(test)]
+            settle_window: Mutex::new(None),
         }
     }
 

@@ -754,6 +754,8 @@ arrived, `◇ ▸ Background: <command> ended`; opening it shows the agent's too
 how long the command ran in the background, its exit code when the agent says
 it, and the whole command. When the end wakes the agent, the row comes before
 the agent's own run, which still says only that the agent woke on its own.
+Until then, or for up to 90 seconds, the row starts `Background (settling):`:
+the agent may yet follow up, and an idle restart waits for it.
 
 ## Approvals
 

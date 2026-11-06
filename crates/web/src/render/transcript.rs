@@ -474,6 +474,11 @@ fn item_key_in(pass: &Pass<'_, '_>, item: &TranscriptItem) -> u64 {
     if let TranscriptItem::ProducerMessage { .. } = item {
         (view.minimum_level == EventLevel::Debug).hash(&mut hasher);
     }
+    if let TranscriptItem::AgentBackgroundEnded { seq, ended_at, .. } = item {
+        view.state
+            .background_settling(*seq, *ended_at, view.now)
+            .hash(&mut hasher);
+    }
     if let TranscriptItem::Event { level, .. } = item {
         (*level >= view.minimum_level).hash(&mut hasher);
     }
@@ -675,14 +680,20 @@ fn item_html_in(
             )
         }
         TranscriptItem::AgentBackgroundEnded {
-            ended_at, ended, ..
+            seq,
+            ended_at,
+            ended,
+            ..
         } => {
             let key = block_key(item).unwrap_or_default();
             collapsible(
                 view.expanded.block(&key),
                 &key,
                 icondata::LuTerminal,
-                &agent_background_ended_summary(ended),
+                &agent_background_ended_summary(
+                    ended,
+                    view.state.background_settling(*seq, *ended_at, view.now),
+                ),
                 Some(&agent_background_ended_details(ended, *ended_at)),
                 ended.display.as_deref().unwrap_or_default(),
             )
@@ -2687,6 +2698,51 @@ mod tests {
         assert_ne!(
             item_key(&view(EventLevel::Info), &row),
             item_key(&other, &row)
+        );
+    }
+
+    /// An ended background command's row says it settles only while it
+    /// does, and its key changes with that, so the page draws it again.
+    #[test]
+    fn a_settling_background_command_draws_again_when_it_stops_settling() {
+        let at = |seconds| jiff::Timestamp::new(seconds, 0).unwrap();
+        let state = SessionState::default();
+        let names = ModelDisplayNames::default();
+        let expanded = Expanded::default();
+        let session_id = cookie_agent_protocol::SessionId::new_v7();
+        let view = |now| TranscriptView {
+            session_id,
+            state: &state,
+            names: &names,
+            minimum_level: EventLevel::Warning,
+            expanded: &expanded,
+            delegates: &NO_DELEGATES,
+            homes: &NO_HOMES,
+            machines: &NO_MACHINES,
+            transcript: TranscriptMode::Full,
+            now,
+        };
+        let item = TranscriptItem::AgentBackgroundEnded {
+            id: 5,
+            seq: 5,
+            ended_at: at(1000),
+            ended: serde_json::from_value(serde_json::json!({
+                "tool_call_id": cookie_agent_protocol::ToolCallId::new_v7(),
+                "tool": "Bash",
+                "display": "npm run dev",
+                "started_at": "2026-10-29T10:00:00Z"
+            }))
+            .expect("background ended"),
+        };
+        let window = i64::try_from(cookie_agent_protocol::ACP_BACKGROUND_SETTLE.as_secs()).unwrap();
+        let settling = view(at(1000));
+        let settled = view(at(1000 + window));
+        assert_ne!(item_key(&settling, &item), item_key(&settled, &item));
+        assert_ne!(item_html(&settling, &item), item_html(&settled, &item));
+        // Within the window, nothing changes for the time passing.
+        assert_eq!(
+            item_key(&settling, &item),
+            item_key(&view(at(1000 + window - 1)), &item)
         );
     }
 

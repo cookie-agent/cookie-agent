@@ -3219,6 +3219,8 @@ impl Engine {
         let (rounds, round_taken) = &*turn.live.rounds;
         rounds.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         round_taken.notify_waiters();
+        // This run holds what they held, and takes in any follow-up.
+        self.acp_commands_followed_up(turn.session());
         let listening = prompt.is_empty();
         // Input to steer wakes the round: a prompt during the work. Watched
         // from here, so input that arrives while the round takes in what

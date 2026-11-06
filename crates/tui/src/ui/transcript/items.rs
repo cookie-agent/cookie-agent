@@ -419,7 +419,13 @@ pub(super) fn transcript_item_layout(
             ended_at,
             ended,
             ..
-        } => agent_background_ended_layout(*seq, *ended_at, ended, context),
+        } => agent_background_ended_layout(
+            *seq,
+            *ended_at,
+            ended,
+            state.background_settling(*seq, *ended_at, context.now),
+            context,
+        ),
         TranscriptItem::PluginMessage {
             seq, role, input, ..
         } => plugin_message_layout(*seq, *role, input, context),

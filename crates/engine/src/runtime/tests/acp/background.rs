@@ -1,9 +1,26 @@
 //! The ACP agent's commands still running after their calls ended: listed
 //! beside cookie's background calls, kept alive, and gone when they exit.
 
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 use std::time::Duration;
 
 use super::*;
+
+/// Sets how long an exited command waits for the agent to follow up.
+fn set_settle_window(engine: &Engine, window: Duration) {
+    *engine.inner.acp.settle_window.lock().unwrap() = Some(window);
+}
+
+/// Installs a restart hook that records being called.
+fn record_restart(engine: &Engine) -> Arc<AtomicBool> {
+    let called = Arc::new(AtomicBool::new(false));
+    let hook = Arc::clone(&called);
+    engine.set_restart_hook(Box::new(move || hook.store(true, Ordering::SeqCst)));
+    called
+}
 
 /// Whether the fixture agent's process runs.
 fn agent_running(engine: &Engine) -> bool {
@@ -75,7 +92,13 @@ async fn a_command_the_agent_left_running_is_background_work_until_it_exits() {
     })
     .await;
     assert!(!engine.acp_background_running(session));
-    assert!(engine.get_session(session).unwrap().waiting_on.is_empty());
+    // The agent may yet follow up, so the end only settles for now.
+    assert!(engine.acp_background_pending(session));
+    assert_eq!(engine.acp_background_count(), 1);
+    assert_eq!(
+        engine.get_session(session).unwrap().waiting_on,
+        [cookie_agent_protocol::WaitingOn::BackgroundCall]
+    );
     let ended = ended();
     assert_eq!(ended.len(), 1, "{ended:?}");
     let (run, ended) = &ended[0];
@@ -89,9 +112,10 @@ async fn a_command_the_agent_left_running_is_background_work_until_it_exits() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_running_command_keeps_the_agents_process_from_idling_out() {
+async fn a_running_or_settling_command_keeps_the_agents_process_from_idling_out() {
     let acp = acp_fixture_with(&[], &[], "[acp]\nidle_shutdown_ms = 200\n").await;
     let engine = acp.engine();
+    set_settle_window(engine, Duration::from_secs(4));
     let session = engine.create_session(selection()).unwrap().session_id;
     let release = acp.marker("release");
     turn(
@@ -107,14 +131,150 @@ async fn a_running_command_keeps_the_agents_process_from_idling_out() {
         agent_running(engine),
         "the agent idled out under its command"
     );
-    // Once it exits, the agent idles out.
+    // Once it exits it still may wake the agent, which stays.
     std::fs::write(&release, "").unwrap();
+    with_watchdog("the command's exit", async {
+        while engine.acp_background_running(session) {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    tokio::time::sleep(Duration::from_millis(800)).await;
+    assert!(agent_running(engine), "the agent idled out while settling");
+    // Once it settled with no follow-up, the agent idles out, and nothing
+    // holds the session.
     with_watchdog("the agent idling out", async {
         while agent_running(engine) {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
     })
     .await;
+    assert!(!engine.acp_background_pending(session));
+    assert_eq!(engine.acp_background_count(), 0);
+    assert!(engine.get_session(session).unwrap().waiting_on.is_empty());
+}
+
+/// A restart waiting on a command that exited holds until the agent's
+/// follow-up has run; it would otherwise end the agent as it wakes.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_idle_restart_waits_for_the_agent_to_follow_up_on_a_command() {
+    let acp = acp_fixture(&[], &[]).await;
+    let engine = acp.engine();
+    let restarted = record_restart(engine);
+    let session = engine.create_session(selection()).unwrap().session_id;
+    let release = acp.marker("release");
+    turn(
+        engine,
+        session,
+        "first",
+        &format!("background-wake {} 2", release.display()),
+    )
+    .await;
+    engine
+        .schedule_restart(cookie_agent_protocol::RestartWhen::Idle)
+        .unwrap();
+    std::fs::write(&release, "").unwrap();
+    with_watchdog("the command's exit", async {
+        while engine.acp_background_running(session) {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    // The exit left nothing running, and the agent has not woken yet.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert!(
+        !restarted.load(Ordering::SeqCst),
+        "restarted before the wake"
+    );
+    // The restart comes after the wake's run, which got to say its part.
+    with_watchdog("the restart", async {
+        while !restarted.load(Ordering::SeqCst) {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    let woke = events(engine, session).into_iter().any(|event| {
+        matches!(
+            event.payload,
+            EventPayload::RunFinished {
+                outcome: cookie_agent_protocol::Open::Known(RunOutcome::Completed {
+                    final_text: Some(text),
+                }),
+                ..
+            } if text == "woke"
+        )
+    });
+    assert!(woke, "the wake's run finished first");
+    assert!(!engine.acp_background_pending(session));
+}
+
+/// With no follow-up, the restart goes once the command stopped settling.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_idle_restart_waits_out_a_command_nothing_followed_up() {
+    let acp = acp_fixture(&[], &[]).await;
+    let engine = acp.engine();
+    set_settle_window(engine, Duration::from_secs(2));
+    let restarted = record_restart(engine);
+    let session = engine.create_session(selection()).unwrap().session_id;
+    let release = acp.marker("release");
+    turn(
+        engine,
+        session,
+        "first",
+        &format!("background {}", release.display()),
+    )
+    .await;
+    engine
+        .schedule_restart(cookie_agent_protocol::RestartWhen::Idle)
+        .unwrap();
+    std::fs::write(&release, "").unwrap();
+    with_watchdog("the command's exit", async {
+        while engine.acp_background_running(session) {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    assert!(engine.background_calls(session).is_empty());
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert!(
+        !restarted.load(Ordering::SeqCst),
+        "restarted while settling"
+    );
+    with_watchdog("the restart", async {
+        while !restarted.load(Ordering::SeqCst) {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    assert!(!engine.acp_background_pending(session));
+}
+
+/// A message of the user's after a command ended: the run holds what the
+/// command held, and takes in any follow-up.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_run_ends_the_settling_of_a_command() {
+    let acp = acp_fixture(&[], &[]).await;
+    let engine = acp.engine();
+    let session = engine.create_session(selection()).unwrap().session_id;
+    let release = acp.marker("release");
+    turn(
+        engine,
+        session,
+        "first",
+        &format!("background {}", release.display()),
+    )
+    .await;
+    std::fs::write(&release, "").unwrap();
+    with_watchdog("the command's exit", async {
+        while engine.acp_background_running(session) {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    assert!(engine.acp_background_pending(session));
+    turn(engine, session, "second", "say hello").await;
+    assert!(!engine.acp_background_pending(session));
+    assert!(engine.get_session(session).unwrap().waiting_on.is_empty());
 }
 
 #[tokio::test(flavor = "multi_thread")]

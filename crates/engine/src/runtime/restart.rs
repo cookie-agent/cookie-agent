@@ -7,7 +7,8 @@
 //! refuses with [`EngineError::RestartUnsupported`].
 //!
 //! An `idle` restart waits for the active runs and the running background
-//! calls, which the shutdown would otherwise end without a report.
+//! calls, which the shutdown would otherwise end without a report, and for
+//! an ACP agent's commands that ended and may yet wake it.
 //! While it waits, runs keep starting as usual (client starts, queued input,
 //! producer wakes, cron fires), and the restart waits for them too. Only once
 //! it is due are new runs refused with [`EngineError::Restarting`]; a cron

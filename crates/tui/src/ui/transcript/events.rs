@@ -580,6 +580,7 @@ pub(super) fn agent_background_ended_layout(
     seq: u64,
     ended_at: jiff::Timestamp,
     ended: &cookie_agent_protocol::AcpBackgroundEnded,
+    settling: bool,
     context: &TranscriptRenderContext<'_>,
 ) -> ItemLayout {
     let mut body = vec![Line::styled(
@@ -597,7 +598,7 @@ pub(super) fn agent_background_ended_layout(
     agent_row_layout(
         BlockId::AgentBackgroundEnded(seq),
         "[B]",
-        &agent_background_ended_summary(ended),
+        &agent_background_ended_summary(ended, settling),
         body,
         context,
     )

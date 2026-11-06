@@ -5904,7 +5904,7 @@ fn an_acp_agents_ended_background_command_shows_as_a_row_with_how_it_ran() {
     };
     assert_eq!((*seq, *ended_at, shown), (7, at(300), &ended));
     assert_eq!(
-        crate::rows::agent_background_ended_summary(shown),
+        crate::rows::agent_background_ended_summary(shown, false),
         "Background: cargo test --workspace ended"
     );
     assert_eq!(
@@ -5932,12 +5932,99 @@ fn an_acp_agents_ended_background_command_shows_as_a_row_with_how_it_ran() {
     );
     // Without a command, the row names its tool.
     assert_eq!(
-        crate::rows::agent_background_ended_summary(&AcpBackgroundEnded {
-            display: Some("  ".into()),
-            ..ended
-        }),
+        crate::rows::agent_background_ended_summary(
+            &AcpBackgroundEnded {
+                display: Some("  ".into()),
+                ..ended
+            },
+            false,
+        ),
         "Background: Bash ended"
     );
+}
+
+/// A background command's end at second 1000, sequence 7, outside any run.
+fn settling_session() -> SessionState {
+    use cookie_agent_protocol::{AcpBackgroundEnded, AcpSessionUpdate};
+    let at = |seconds| jiff::Timestamp::new(seconds, 0).expect("timestamp");
+    let mut state = SessionState::default();
+    reduce_event(
+        &mut state,
+        SessionId::new_v7(),
+        None,
+        7,
+        at(1000),
+        EventPayload::AcpSessionUpdated {
+            update: AcpSessionUpdate {
+                background_ended: Some(AcpBackgroundEnded {
+                    tool_call_id: ToolCallId::new_v7(),
+                    tool: "Bash".into(),
+                    display: None,
+                    started_at: at(800),
+                    exit_code: None,
+                    signal: None,
+                }),
+                ..AcpSessionUpdate::default()
+            },
+        },
+    );
+    state
+}
+
+#[test]
+fn an_ended_background_command_settles_for_a_while_when_nothing_followed() {
+    let at = |seconds| jiff::Timestamp::new(seconds, 0).expect("timestamp");
+    let window = i64::try_from(cookie_agent_protocol::ACP_BACKGROUND_SETTLE.as_secs()).unwrap();
+    let end = 1000 + window;
+    let state = settling_session();
+    let settling = |now| state.background_settling(7, at(1000), at(now));
+    assert!(settling(1000));
+    assert!(settling(end - 1));
+    assert!(!settling(end));
+    assert_eq!(state.background_settles_at(at(1000)), Some(at(end)));
+    assert_eq!(state.background_settles_at(at(end)), None);
+    // An older end settles by its own time, not the latest's.
+    assert!(!state.background_settling(5, at(0), at(1000)));
+    // With no end at all, nothing settles.
+    assert_eq!(
+        SessionState::default().background_settles_at(at(1000)),
+        None
+    );
+}
+
+#[test]
+fn a_run_or_a_wake_ends_the_settling_of_an_ended_background_command() {
+    let at = |seconds| jiff::Timestamp::new(seconds, 0).expect("timestamp");
+    // A run open takes in any follow-up.
+    let mut open = settling_session();
+    open.active_run = Some(RunId::new_v7());
+    assert!(!open.background_settling(7, at(1000), at(1001)));
+    assert_eq!(open.background_settles_at(at(1001)), None);
+    // So does a wake's message, which comes outside any run.
+    let mut woken = settling_session();
+    reduce_event(
+        &mut woken,
+        SessionId::new_v7(),
+        None,
+        8,
+        at(1001),
+        accepted_message(
+            ProducerMessageId::new_v7(),
+            ProducerOwner::AcpAgent {
+                agent: AgentId::new("claude").expect("agent"),
+            },
+            "wake",
+            None,
+        ),
+    );
+    assert!(!woken.background_settling(7, at(1000), at(1002)));
+    // An end before what started stays over, and one after it settles.
+    let mut started_before = settling_session();
+    started_before.reply_boundaries.insert(6);
+    assert!(started_before.background_settling(7, at(1000), at(1002)));
+    let mut started_after = settling_session();
+    started_after.reply_boundaries.insert(8);
+    assert!(!started_after.background_settling(7, at(1000), at(1002)));
 }
 
 #[test]
