@@ -946,9 +946,8 @@ fn mcp_title(title: &str) -> Option<(&str, &str)> {
 
 /// What a tool call of `session` belongs to, shown beside it where the
 /// user answers for it (`docs/site/specs/acp-permissions.md`, section 4):
-/// in a session an ACP agent runs, `cookie` for one of cookie's own tools,
-/// and the server of an MCP tool the agent connected itself. `None`
-/// elsewhere.
+/// in a session an ACP agent runs, the server of an MCP tool the agent
+/// connected itself, whose name its title leaves out. `None` for anything else.
 #[must_use]
 pub fn tool_source_label(
     session: &crate::SessionState,
@@ -965,7 +964,7 @@ pub fn tool_source_label(
         Some(cookie_agent_protocol::ToolSource::Acp { .. }) | None => {
             mcp_title(tool.presentation.title.as_str()).map(|(server, _)| server.to_owned())
         }
-        Some(_) => Some("cookie".to_owned()),
+        Some(_) => None,
     }
 }
 

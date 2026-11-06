@@ -197,6 +197,10 @@ refreshes no longer change). Reset and Replace ask once more.
 
 ## Sessions and chat
 
+- **Machines.** Once a session has two or more machines, attached or in its past
+  calls, each call that ran on one names it on its row, as does its approval card,
+  and a folded row lists the machines its work touched. A subagent's row names where
+  it works, unless that is the only machine its parent is on.
 - **Paths** show under the home directory of the runtime they belong to,
   as `~/web`, and absolute when that runtime reported no home (a daemon
   older than client protocol 1.7 reports none).

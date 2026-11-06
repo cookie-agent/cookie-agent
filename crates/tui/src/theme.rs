@@ -603,6 +603,23 @@ impl Theme {
         self.semantic(self.palette().bad, Modifier::BOLD)
     }
 
+    /// The colour of a machine of hue `hue` (`badges::badge_hue`): the eight
+    /// hues in the web client's order, so a machine has one colour in both.
+    pub fn machine(&self, hue: u8) -> Style {
+        let palette = self.palette();
+        let hues = [
+            palette.link,
+            palette.teal,
+            palette.ok,
+            palette.accent,
+            palette.warn,
+            palette.magenta,
+            palette.orange,
+            palette.bad,
+        ];
+        self.semantic(hues[usize::from(hue) % hues.len()], Modifier::empty())
+    }
+
     /// The colour of the tool group in slot `slot` of a tool list, cycling
     /// through eight hues, so one group's tools read alike.
     pub fn tool_group(&self, slot: usize) -> Style {

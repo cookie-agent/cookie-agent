@@ -322,6 +322,7 @@ fn layout_check(app: &mut App, root: SessionId, width: u16) -> bool {
         minimum_event_level: app.tui_config.minimum_event_level,
         transcript: app.tui_config.transcript,
         now: app.transcript_now(),
+        machines: None,
     };
     crate::ui::transcript::ensure_cached_transcript_layout_in(
         &mut app.layout_cache,

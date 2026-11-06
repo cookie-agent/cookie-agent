@@ -338,6 +338,7 @@ fn client_methods() -> Vec<MethodSpec> {
         request!(SESSION_RUNTIME_ATTACH_METHOD, ToDaemon, SessionRuntimeAttachParams => SessionRuntimeAttachResult),
         request!(SESSION_RUNTIME_DETACH_METHOD, ToDaemon, SessionRuntimeDetachParams => SessionRuntimeDetachResult),
         request!(RUNTIMES_LIST_METHOD, ToDaemon, RuntimesListParams => RuntimesListResult),
+        request!(SESSION_RUNTIMES_LIST_METHOD, ToDaemon, SessionRuntimesListParams => RuntimesListResult),
         request!(RUNTIMES_RECONNECT_METHOD, ToDaemon, RuntimesReconnectParams => RuntimesReconnectResult),
         request!(RUNTIMES_CONNECT_METHOD, ToDaemon, RuntimesConnectParams => RuntimesConnectResult),
         request!(RUNTIMES_DISCONNECT_METHOD, ToDaemon, RuntimesConnectParams => RuntimesConnectResult),

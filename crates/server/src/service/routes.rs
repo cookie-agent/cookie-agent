@@ -144,14 +144,7 @@ impl ServerProtocol for Server {
             .engine
             .session_meta(params.session_id)
             .map_err(protocol_fault)?;
-        // Metadata from before it listed attachments holds none.
-        let runtimes = if session.attachments.is_empty() {
-            self.engine
-                .session_runtimes(params.session_id)
-                .map_err(protocol_fault)?
-        } else {
-            session.attachments.clone()
-        };
+        let runtimes = self.attachments_of(&session)?;
         Ok(SessionGetResult { session, runtimes })
     }
 
@@ -1509,6 +1502,22 @@ impl ServerProtocol for Server {
         Ok(crate::onboarding::outcome_to_wire(outcome))
     }
 
+    async fn list_session_runtimes(
+        &self,
+        params: cookie_agent_protocol::SessionRuntimesListParams,
+    ) -> Result<cookie_agent_protocol::RuntimesListResult> {
+        let session = self
+            .engine
+            .session_meta(params.session_id)
+            .map_err(protocol_fault)?;
+        let mut attachments = self.attachments_of(&session)?;
+        attachments.extend(session.delegated_attachments);
+        Ok(crate::runtimes::session_runtimes_list(
+            crate::runtimes::runtimes_list(&self.engine),
+            &attachments,
+        ))
+    }
+
     async fn reconnect_runtime(
         &self,
         params: cookie_agent_protocol::RuntimesReconnectParams,
@@ -1905,6 +1914,21 @@ impl ServerProtocol for Server {
 }
 
 impl Server {
+    /// `session`'s attachments, in attach order. Metadata from before it listed
+    /// them holds none.
+    fn attachments_of(
+        &self,
+        session: &cookie_agent_protocol::SessionMeta,
+    ) -> Result<Vec<cookie_agent_protocol::RuntimeAttachment>> {
+        if session.attachments.is_empty() {
+            self.engine
+                .session_runtimes(session.session_id)
+                .map_err(protocol_fault)
+        } else {
+            Ok(session.attachments.clone())
+        }
+    }
+
     /// The answer of `runtimes.connect` and `runtimes.disconnect`.
     fn connect_result(
         &self,

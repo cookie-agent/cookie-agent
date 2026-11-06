@@ -7,6 +7,36 @@ use cookie_agent_protocol::{
     RuntimesListResult,
 };
 
+/// What one session may learn of `listing`: the runtimes of `attachments`
+/// other than `global`, each saying what it is. What a runtime is doing and why
+/// it last failed describe the daemon beyond the session, and a connection's
+/// error can hold hosts and usernames, so they stay out.
+pub(crate) fn session_runtimes_list(
+    listing: RuntimesListResult,
+    attachments: &[cookie_agent_protocol::RuntimeAttachment],
+) -> RuntimesListResult {
+    RuntimesListResult {
+        runtimes: listing
+            .runtimes
+            .into_iter()
+            .filter(|runtime| {
+                runtime.runtime_id.as_str() != RuntimeId::GLOBAL
+                    && attachments
+                        .iter()
+                        .any(|attachment| attachment.runtime_id == runtime.runtime_id)
+            })
+            .map(|runtime| RuntimeListing {
+                capabilities: Vec::new(),
+                message: None,
+                active_runs: 0,
+                background_calls: 0,
+                ..runtime
+            })
+            .collect(),
+        instances: Vec::new(),
+    }
+}
+
 pub(crate) fn runtimes_list(engine: &Engine) -> RuntimesListResult {
     let mut activity = engine.runtime_activity();
     RuntimesListResult {
@@ -90,5 +120,66 @@ impl crate::Server {
         cookie_agent_protocol::MachinesListResult {
             machines: self.engine.machines(),
         }
+    }
+}
+
+#[cfg(test)]
+mod session_runtimes_tests {
+    use cookie_agent_protocol::{
+        AttachmentName, CapabilityName, MachineName, RuntimeAttachment, RuntimeCapabilityInfo,
+        RuntimeKind, RuntimeLifetime,
+    };
+
+    use super::*;
+
+    fn listed(id: &str) -> RuntimeListing {
+        RuntimeListing {
+            runtime_id: RuntimeId::new(id).unwrap(),
+            lifetime: RuntimeLifetime::Spawned,
+            connected: true,
+            capabilities: vec![RuntimeCapabilityInfo {
+                name: CapabilityName::coding(),
+                kind: RuntimeKind::new("coding").unwrap(),
+                takes_workspace: true,
+                description: String::new(),
+            }],
+            platform: Some("linux".into()),
+            machine: Some(MachineName::new(format!("{id}-box")).unwrap()),
+            home: Some("/home/someone".into()),
+            message: Some("ssh someone@host: refused".into()),
+            active_runs: 2,
+            background_calls: 1,
+        }
+    }
+
+    fn attached(id: &str) -> RuntimeAttachment {
+        RuntimeAttachment {
+            name: AttachmentName::new(format!("{id}_work")).unwrap(),
+            runtime_id: RuntimeId::new(id).unwrap(),
+            capability: CapabilityName::coding(),
+            kind: RuntimeKind::new("coding").unwrap(),
+            workspace: None,
+        }
+    }
+
+    #[test]
+    fn a_session_learns_its_own_runtimes_and_what_they_are_alone() {
+        let listing = RuntimesListResult {
+            runtimes: vec![listed(RuntimeId::GLOBAL), listed("mine"), listed("other")],
+            instances: Vec::new(),
+        };
+        let result =
+            session_runtimes_list(listing, &[attached(RuntimeId::GLOBAL), attached("mine")]);
+        assert_eq!(result.runtimes.len(), 1);
+        let mine = &result.runtimes[0];
+        assert_eq!(mine.runtime_id.as_str(), "mine");
+        assert_eq!(mine.machine.as_ref().unwrap().as_str(), "mine-box");
+        assert_eq!(mine.home.as_deref(), Some("/home/someone"));
+        assert_eq!(mine.platform.as_deref(), Some("linux"));
+        assert!(mine.connected);
+        assert!(mine.capabilities.is_empty());
+        assert_eq!(mine.message, None);
+        assert_eq!((mine.active_runs, mine.background_calls), (0, 0));
+        assert!(result.instances.is_empty());
     }
 }

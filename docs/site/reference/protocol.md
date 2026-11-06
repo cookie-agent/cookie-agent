@@ -13,7 +13,7 @@ A client must call `handshake` before any other method:
 
 ```json
 { "jsonrpc": "2.0", "id": 1, "method": "handshake", "params": {
-    "protocol_version": "1.88.0",
+    "protocol_version": "1.89.0",
     "client": { "kind": "web", "instance_id": "<uuid>" },
     "token": "<the daemon's token>",
     "features": [] } }
@@ -22,7 +22,7 @@ A client must call `handshake` before any other method:
 The reply:
 
 ```json
-{ "protocol_version": "1.88.0", "engine_version": "0.3.0",
+{ "protocol_version": "1.89.0", "engine_version": "0.3.0",
   "origin": "client:web-<id>", "machine_id": "<opaque>", "features": [],
   "status": { "phase": "ready" } }
 ```
@@ -282,6 +282,7 @@ Idempotent redelivery resolves against the state preceding the original run.
 | `session.runtime.attach` | Session ID, `runtime_id`, optional `capability`, `workspace` when the capability takes one | The new `attachment` and the session's `runtimes` |
 | `session.runtime.detach` | Session ID, attachment `name` | The session's `runtimes` |
 | `runtimes.list` | Empty object | Every `runtimes` entry (built-in, configured, and dial-in, with lifetime, connection, capabilities, and machine) and the opened `instances` with status (see [Runtimes](#runtimes)) |
+| `session.runtimes.list` | `session_id`; since 1.89.0 | The `runtimes` the session and its subagents attach, other than `global`, each with its lifetime, connection, platform, machine, and home; no capabilities, `message`, or activity, and `instances` empty. A guest reads this in place of `runtimes.list` |
 | `runtimes.reconnect` | `runtime_id`, optional `capability`, `workspace` when the capability takes one | The `instance` afterwards, as `runtimes.list` reports it |
 | `runtimes.connect` | `runtime_id` of a `spawned` runtime; since 1.55.0 | The `runtime` afterwards, as `runtimes.list` reports it (see [Connecting by hand](#connecting-by-hand)) |
 | `runtimes.disconnect` | `runtime_id` of a `spawned` runtime; since 1.55.0 | The `runtime` afterwards; refused while a run or background call uses it |

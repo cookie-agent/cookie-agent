@@ -190,12 +190,22 @@ impl Workspace {
 
     /// Reads `runtimes.list`, `machines.list`, and `mcp.server.list`.
     pub fn poll_runtimes(self) {
-        if self.is_guest() {
-            return;
-        }
         let Some(client) = self.client() else {
             return;
         };
+        // A guest reads what its session works on, and nothing daemon-wide.
+        if let Some(guest) = self.guest.get_untracked() {
+            let read = self.begin_read(|reads| &mut reads.runtimes);
+            spawn_local(async move {
+                let listing = client.list_session_runtimes(guest.session_id).await;
+                if self.read_is_current(|reads| &mut reads.runtimes, read)
+                    && let Ok(listing) = listing
+                {
+                    set_changed(self.runtimes, Some(listing));
+                }
+            });
+            return;
+        }
         let read = self.begin_read(|reads| &mut reads.runtimes);
         self.reads
             .update_value(|reads| reads.runtimes_in_flight += 1);

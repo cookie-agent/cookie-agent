@@ -361,6 +361,9 @@ pub struct Workspace {
     /// Every runtime's home, from `runtimes`: one map every row that shows
     /// a path reads, worked out again only when the runtimes change.
     pub runtime_homes: Memo<cookie_agent_client_state::paths::RuntimeHomes>,
+    /// Each runtime's machine, from `runtimes`, which labels tool calls; `None`
+    /// before a listing answers.
+    pub runtime_machines: Memo<Option<cookie_agent_client_state::call_machines::RuntimeMachines>>,
     /// The runtimes a `runtimes.connect` or `runtimes.disconnect` is on its
     /// way for.
     pub connecting: RwSignal<std::collections::BTreeSet<cookie_agent_protocol::RuntimeId>>,
@@ -560,6 +563,13 @@ impl Workspace {
                 })
                 .unwrap_or_default()
         });
+        let runtime_machines = Memo::new(move |_| {
+            runtimes.with(|listing| {
+                listing
+                    .as_ref()
+                    .map(cookie_agent_client_state::call_machines::RuntimeMachines::from_listing)
+            })
+        });
         let viewed = Memo::new(move |_| {
             let Some(session_id) = selected.get() else {
                 return Viewed::default();
@@ -691,6 +701,7 @@ impl Workspace {
             offer_bytes: StoredValue::new(Vec::new()),
             runtimes,
             runtime_homes,
+            runtime_machines,
             connecting: RwSignal::new(std::collections::BTreeSet::new()),
             machines: RwSignal::new(None),
             mcp_servers: RwSignal::new(None),
@@ -1204,7 +1215,15 @@ impl Workspace {
                         | EventPayload::DelegateChildTerminated { .. }
                 ) && self.in_viewed_tree(event.session_id)
             });
+        // A guest's listing holds only what its session attaches.
+        let guest_attached = self.is_guest()
+            && event.is_some_and(|event| {
+                matches!(&event.payload, EventPayload::RuntimeAttached { .. })
+            });
         let outcome = self.update_store(|store| store.apply_delivery(delivery));
+        if guest_attached {
+            self.poll_runtimes();
+        }
         if let Some(session_id) = replay_ended {
             self.opening.update(|opening| {
                 opening.remove(&session_id);

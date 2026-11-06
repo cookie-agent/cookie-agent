@@ -539,6 +539,7 @@ pub struct SessionCreateResult {
 pub const SESSION_RUNTIME_ATTACH_METHOD: &str = "session.runtime.attach";
 pub const SESSION_RUNTIME_DETACH_METHOD: &str = "session.runtime.detach";
 pub const RUNTIMES_LIST_METHOD: &str = "runtimes.list";
+pub const SESSION_RUNTIMES_LIST_METHOD: &str = "session.runtimes.list";
 pub const RUNTIMES_CHANGED_METHOD: &str = "runtimes.changed";
 pub const RUNTIMES_RECONNECT_METHOD: &str = "runtimes.reconnect";
 pub const RUNTIMES_CONNECT_METHOD: &str = "runtimes.connect";
@@ -692,6 +693,17 @@ pub struct SessionRuntimeDetachResult {
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct RuntimesListParams {}
+
+/// The runtimes one session works on, as a client that may not read
+/// `runtimes.list` learns their machines (client protocol 1.89.0;
+/// `docs/site/specs/tool-call-machines.md` section 4.1). Answered with a
+/// [`RuntimesListResult`] of those runtimes, holding what they are and no more:
+/// `capabilities` and `instances` empty, no `message` or activity.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionRuntimesListParams {
+    pub session_id: SessionId,
+}
 
 /// The runtimes sessions can attach and the capability instances this
 /// daemon has opened.

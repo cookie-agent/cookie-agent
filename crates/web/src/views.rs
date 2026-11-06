@@ -2069,7 +2069,16 @@ fn TitleBar(workspace: Workspace) -> impl IntoView {
 fn delegate(
     store: &cookie_agent_client_state::StateStore,
     child: &cookie_agent_protocol::SessionMeta,
+    parent: Option<&cookie_agent_protocol::SessionMeta>,
+    listing: Option<&cookie_agent_protocol::RuntimesListResult>,
 ) -> Delegate {
+    // Its machines, unless it stays on the only one its parent is on.
+    let names = cookie_agent_client_state::badges::session_machines;
+    let machines = names(child, listing);
+    let own = parent
+        .map(|parent| names(parent, listing))
+        .unwrap_or_default();
+    let elsewhere = own.len() > 1 || machines.iter().any(|machine| !own.contains(machine));
     let activity = store.sessions.get(&child.session_id).and_then(|child| {
         Activity::of(
             child.active_run.is_some(),
@@ -2089,6 +2098,7 @@ fn delegate(
         agent: child.creation_selection.agent.to_string(),
         handle: child.short_id.clone(),
         activity,
+        machines: if elsewhere { machines } else { Vec::new() },
     }
 }
 
@@ -2200,6 +2210,11 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
                                 .as_ref()
                                 .map(|tree| delegates_of(tree, session_id))
                                 .unwrap_or_default();
+                            let parent = tree
+                                .as_ref()
+                                .and_then(|tree| path(tree, session_id).pop().cloned());
+                            let listing = workspace.runtimes.get();
+                            let machines = workspace.runtime_machines.get();
                             untrack(|| {
                                 workspace.with_store(|store| {
                                     let state = store.sessions.get(&session_id)?;
@@ -2208,8 +2223,21 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
                                     // live sessions).
                                     let delegates = delegates
                                         .into_iter()
-                                        .map(|(call, child)| (call, delegate(store, child)))
+                                        .map(|(call, child)| {
+                                            let row = delegate(
+                                                store,
+                                                child,
+                                                parent.as_ref(),
+                                                listing.as_ref(),
+                                            );
+                                            (call, row)
+                                        })
                                         .collect::<HashMap<_, _>>();
+                                    let labels =
+                                        cookie_agent_client_state::call_machines::MachineLabels::of_session(
+                                            state,
+                                            machines.as_ref(),
+                                        );
                                     let view = TranscriptView {
                                         session_id,
                                         state,
@@ -2218,6 +2246,7 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
                                         expanded,
                                         delegates: &delegates,
                                         homes,
+                                        machines: &labels,
                                         transcript,
                                         now,
                                     };
@@ -4854,6 +4883,14 @@ fn approval_card(
             .collect_view()
             .into_any()
     };
+    let machine = approval_machine(workspace, &approval).map(|label| {
+            view! {
+                <span class="inline-flex shrink-0 items-center gap-1.5 rounded-full bg-sunken px-2 py-0.5 text-xs font-normal" title=label.name.clone() data-approval-machine>
+                    <span class=format!("inline-block size-2 shrink-0 rounded-full {}", crate::badges::dot_class(label.hue)) aria-hidden="true"></span>
+                    {label.name.clone()}
+                </span>
+            }
+        });
     let source = approval_source(workspace, &approval).map(|source| {
             view! {
                 <span class="inline-flex shrink-0 items-center rounded-full bg-sunken px-2 py-0.5 text-xs font-normal" data-approval-source>
@@ -4868,6 +4905,7 @@ fn approval_card(
                     <Glyph icon=icon />
                 </span>
                 <span class="min-w-0 font-mono text-[0.8125rem] break-words">{title}</span>
+                {machine}
                 {source}
             </p>
             <div class="min-w-0" inner_html=preview></div>
@@ -4927,6 +4965,24 @@ fn approval_source(
         let state = store.sessions.get(&approval.session_id)?;
         let tool = state.tools.get(&approval.tool_call_id)?;
         cookie_agent_client_state::acp::tool_source_label(state, tool)
+    })
+}
+
+/// The machine an approval's call will run on, while its session labels them.
+fn approval_machine(
+    workspace: Workspace,
+    approval: &cookie_agent_client_state::ApprovalState,
+) -> Option<cookie_agent_client_state::call_machines::MachineLabel> {
+    let machines = workspace.runtime_machines.get();
+    workspace.with_store(|store| {
+        let state = store.sessions.get(&approval.session_id)?;
+        let tool = state.tools.get(&approval.tool_call_id)?;
+        cookie_agent_client_state::call_machines::MachineLabels::of_session(
+            state,
+            machines.as_ref(),
+        )
+        .call(tool)
+        .cloned()
     })
 }
 

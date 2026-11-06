@@ -446,6 +446,10 @@ open the menus.
 
 ## Transcript details
 
+Once a session has two or more machines, attached or in its past calls, each
+call that ran on one names it in a column on its row, as does its approval, and a
+folded row lists the machines its work touched.
+
 By default the transcript is **reduced**: each reply's thinking, tool calls,
 and the text written between calls fold into one row above the reply,
 `▸ Working… 42s` while it works, with the latest line it wrote or thought

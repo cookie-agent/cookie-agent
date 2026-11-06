@@ -1457,6 +1457,19 @@ impl Client {
         .await
     }
 
+    /// The runtimes `session_id` works on, which a guest reads in place of
+    /// [`Self::list_runtimes`].
+    pub async fn list_session_runtimes(
+        &self,
+        session_id: cookie_agent_protocol::SessionId,
+    ) -> Result<cookie_agent_protocol::RuntimesListResult, ClientError> {
+        self.call(
+            cookie_agent_protocol::SESSION_RUNTIMES_LIST_METHOD,
+            &cookie_agent_protocol::SessionRuntimesListParams { session_id },
+        )
+        .await
+    }
+
     /// Retries a runtime instance now, such as one that failed.
     pub async fn reconnect_runtime(
         &self,

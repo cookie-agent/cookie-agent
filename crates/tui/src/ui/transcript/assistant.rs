@@ -85,6 +85,7 @@ pub(super) fn assistant_item_layout(
                 open,
                 context.width,
                 context.theme,
+                context.machines,
             ));
             if open {
                 band(key, start, layout.lines.len());
@@ -467,6 +468,19 @@ fn push_assistant_child(
 /// 1m 23s · 7 tool calls`, with a failed count in the warning colour, and
 /// while the block is live the line saying what it does now. The whole row
 /// opens and folds the work.
+/// The runtime of the call `text` names on `row`'s call line.
+fn shown_runtime<'a>(
+    row: &'a transcript_mode::WorkRow,
+    text: &str,
+) -> Option<&'a cookie_agent_protocol::RuntimeId> {
+    let lines = row.lines.as_ref()?;
+    (lines.tool.as_deref() == Some(text))
+        .then_some(lines.tool_runtime.as_ref())
+        .flatten()
+}
+
+// Each argument is an independent input of the row.
+#[allow(clippy::too_many_arguments)]
 fn work_row_layout(
     key: WorkKey,
     row: &transcript_mode::WorkRow,
@@ -474,7 +488,10 @@ fn work_row_layout(
     open: bool,
     width: u16,
     theme: &Theme,
+    machines: &cookie_agent_client_state::call_machines::MachineLabels,
 ) -> ItemLayout {
+    use tool_rows::{MACHINE_SHORT_BELOW, machine_spans};
+    let short = width < MACHINE_SHORT_BELOW;
     let summary = &row.summary;
     let chevron = if open { "▾" } else { "▸" };
     let mut spans = vec![Span::styled(
@@ -485,6 +502,18 @@ fn work_row_layout(
     // time alone.
     if let Some(failed) = summary.failed_label().filter(|_| !summary.live) {
         spans.push(Span::styled(format!(" {failed}"), theme.warning()));
+    }
+    // A finished row names the machines its work touched.
+    if !summary.live {
+        let (shown, more) = machines.work_row(&summary.runtimes);
+        for (index, machine) in shown.iter().enumerate() {
+            let separator = if index == 0 { " · " } else { "  " };
+            spans.push(Span::styled(separator, theme.muted_text()));
+            spans.extend(machine_spans(machine, short, theme));
+        }
+        if more > 0 {
+            spans.push(Span::styled(format!("  +{more}"), theme.muted_text()));
+        }
     }
     let label = Line::from(spans);
     let (mut lines, header_gutter) = if panel_margin(width) {
@@ -521,7 +550,7 @@ fn work_row_layout(
     });
     for (prefix, text, style, fresh, failed) in shown.flatten() {
         let room = room.saturating_sub(UnicodeWidthStr::width(prefix) - 2);
-        let text = crate::ui::app::truncate_with_ellipsis(text, room);
+        let text = text.to_owned();
         let dim = |style: Style| {
             if fresh {
                 style.add_modifier(ratatui::style::Modifier::DIM)
@@ -529,7 +558,19 @@ fn work_row_layout(
                 style
             }
         };
-        let mut spans = vec![Span::styled(format!("{prefix}{text}"), dim(style))];
+        // The running call's line leads with its machine.
+        let machine = shown_runtime(row, &text).and_then(|runtime| machines.runtime(runtime));
+        let mut spans = vec![Span::styled(prefix.to_owned(), dim(style))];
+        let mut room_left = room;
+        if let Some(machine) = machine {
+            let labelled = machine_spans(machine, short, theme);
+            room_left =
+                room_left.saturating_sub(labelled.iter().map(Span::width).sum::<usize>() + 3);
+            spans.extend(labelled);
+            spans.push(Span::styled(" · ", dim(style)));
+        }
+        let text = crate::ui::app::truncate_with_ellipsis(&text, room_left);
+        spans.push(Span::styled(text, dim(style)));
         if let Some(failed) = failed {
             spans.push(Span::styled(format!(" {failed}"), dim(theme.warning())));
         }
@@ -621,6 +662,7 @@ fn cached_tool_row(
         } else {
             0
         },
+        machines: context.machines.key(),
     };
     if let Some(cached) = context
         .tool_cache

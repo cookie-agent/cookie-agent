@@ -1140,6 +1140,14 @@
     {
       "direction": "to_daemon",
       "kind": "request",
+      "method": "session.runtimes.list",
+      "params": "SessionRuntimesListParams",
+      "params_role": "command",
+      "result": "RuntimesListResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
       "method": "session.select_model",
       "params": "SessionSelectModelParams",
       "params_role": "command",

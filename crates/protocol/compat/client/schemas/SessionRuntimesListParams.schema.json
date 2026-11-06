@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "The runtimes one session works on, as a client that may not read\n`runtimes.list` learns their machines (client protocol 1.89.0;\n`docs/site/specs/tool-call-machines.md` section 4.1). Answered with a\n[`RuntimesListResult`] of those runtimes, holding what they are and no more:\n`capabilities` and `instances` empty, no `message` or activity.",
+  "properties": {
+    "session_id": {
+      "format": "uuid",
+      "type": "string"
+    }
+  },
+  "required": [
+    "session_id"
+  ],
+  "title": "SessionRuntimesListParams",
+  "type": "object"
+}

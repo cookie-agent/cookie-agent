@@ -15,6 +15,7 @@ pub mod agent_documents;
 pub mod assets;
 pub mod badges;
 pub mod cache;
+pub mod call_machines;
 pub mod config;
 pub mod config_form;
 pub mod cron;
@@ -1349,6 +1350,9 @@ pub struct SessionState {
     /// The session's runtime attachments, folded from its attach and detach
     /// events.
     pub runtime_attachments: cookie_agent_protocol::RuntimeAttachmentFold,
+    /// The runtimes the session's calls ran on (`call_machines`), which keep
+    /// a machine labelled after it is detached.
+    pub call_runtimes: std::collections::BTreeSet<cookie_agent_protocol::RuntimeId>,
     pub goal: Option<GoalState>,
     /// What the session's ACP agent reported: its slash commands and its
     /// config options. Empty for a session of a daemon agent.

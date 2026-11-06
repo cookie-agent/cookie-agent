@@ -374,7 +374,10 @@ left open, or differs:
   so the agent and model show by name. That shows provider names and their
   non-secret setup values, such as a custom endpoint, and never a credential.
   `runtimes.list` is refused, so the Runtimes tab shows the session's
-  attachments without their status, and absolute workspace paths.
+  attachments without their status, and absolute workspace paths. *(Since client
+  protocol 1.89.0 a guest reads `session.runtimes.list`, so it has its session's
+  machines, status, and homes: see
+  [The machine on a tool call](tool-call-machines.md).)*
 - **Assets:** a guest reads the tree's own assets, and a project's or the
   shared store's by ID, which it cannot list or guess, rather than only those
   the transcript shows.

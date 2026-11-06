@@ -749,6 +749,11 @@ pub trait ServerProtocol: Send + Sync + 'static {
         &self,
         params: cookie_agent_protocol::RuntimesListParams,
     ) -> Result<cookie_agent_protocol::RuntimesListResult, ServerFault>;
+    /// Lists the runtimes one session works on.
+    async fn list_session_runtimes(
+        &self,
+        params: cookie_agent_protocol::SessionRuntimesListParams,
+    ) -> Result<cookie_agent_protocol::RuntimesListResult, ServerFault>;
     /// Retries a runtime instance now.
     async fn reconnect_runtime(
         &self,
@@ -2035,6 +2040,9 @@ async fn dispatch<S: ServerProtocol>(
         }
         cookie_agent_protocol::RUNTIMES_LIST_METHOD => {
             value(server.list_runtimes(decode_default(params)?).await?)
+        }
+        cookie_agent_protocol::SESSION_RUNTIMES_LIST_METHOD => {
+            value(server.list_session_runtimes(decode(params)?).await?)
         }
         cookie_agent_protocol::RUNTIMES_RECONNECT_METHOD => {
             value(server.reconnect_runtime(decode(params)?).await?)

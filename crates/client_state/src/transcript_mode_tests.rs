@@ -139,6 +139,7 @@ fn shown(text: Option<&str>, tool: Option<&str>) -> WorkLines {
     WorkLines {
         text: text.map(str::to_owned),
         tool: tool.map(str::to_owned),
+        tool_runtime: None,
     }
 }
 
@@ -698,6 +699,7 @@ fn a_live_rows_shown_hash_moves_with_its_label_not_its_clock() {
                 elapsed: Duration::from_millis(millis),
                 tool_calls: 2,
                 failed: 0,
+                runtimes: Vec::new(),
             },
             lines: None,
         };

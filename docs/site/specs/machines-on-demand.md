@@ -115,10 +115,9 @@ What the implementation does differently from the sections below, or adds:
   start of `cookie runtime serve` (or the daemon's own `local` runtime)
   removes the ones recorded more than a day ago.
 
-**Not done yet** (section 5.4, items 4 and 5): `list_runtimes` does not show
-each runtime's tool groups, and the clients show a routed call's machine
-only among its arguments, as the model sent `machine`, not as a badge in the
-tool header.
+**Not done yet** (section 5.4, item 4): `list_runtimes` does not show each
+runtime's tool groups. Item 5, each call's machine in its tool header, is
+[The machine on a tool call](tool-call-machines.md).
 
 ## 1. Goal and scope
 

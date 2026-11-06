@@ -964,6 +964,9 @@ pub(super) fn reduce_event_from(
                 arguments,
             );
             tool.backgroundable = start.background;
+            if let Some(runtime) = crate::call_machines::call_runtime(&tool) {
+                state.call_runtimes.insert(runtime.clone());
+            }
             let running = tool.status == ToolStatus::Running;
             let before = state.tools.insert(start.tool_call_id, tool);
             state.busy.tool(

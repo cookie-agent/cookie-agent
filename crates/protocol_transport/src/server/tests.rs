@@ -362,6 +362,12 @@ impl ServerProtocol for StubServer {
     ) -> Result<cookie_agent_protocol::RuntimesListResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
+    async fn list_session_runtimes(
+        &self,
+        _: cookie_agent_protocol::SessionRuntimesListParams,
+    ) -> Result<cookie_agent_protocol::RuntimesListResult, ServerFault> {
+        Err(ServerFault::method_not_found("stub"))
+    }
     async fn reconnect_runtime(
         &self,
         _: cookie_agent_protocol::RuntimesReconnectParams,

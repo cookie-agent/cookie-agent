@@ -97,7 +97,8 @@ native-model sessions in the tree.
 - **Names as the user knows them.** A request for one of cookie's tools
   shows the tool by cookie's name (`bash`, not `mcp__cookie__bash`), with a
   `cookie` badge saying it is one of cookie's tools and its machine when it
-  has one. A request for a tool of an MCP server the agent connected itself
+  has one. *(The `cookie` badge was removed 2026-11-05; see
+  [The machine on a tool call](tool-call-machines.md).)* A request for a tool of an MCP server the agent connected itself
   shows `<server>_<tool>`, cookie's name for it, with the server as its
   badge. The harness's own tools show the request's title, as today.
 - **A request for one of cookie's tools** (`mcp__cookie__<tool>`) is

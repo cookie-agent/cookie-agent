@@ -164,6 +164,10 @@ async fn a_guest_reaches_its_session_and_nothing_else_of_the_daemon() {
             })
             .await
     ));
+    // Its session's runtimes, and no other's.
+    guest.list_session_runtimes(daemon.root).await.unwrap();
+    assert!(is_refused(guest.list_session_runtimes(daemon.other).await));
+    assert!(is_refused(guest.list_runtimes().await));
     assert!(is_refused(
         guest.list_sessions(SessionListParams::default()).await
     ));

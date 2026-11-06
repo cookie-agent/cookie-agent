@@ -108,7 +108,12 @@ impl App {
         let updates = self.rpc_updates_tx.clone();
         self.spawn_rpc(async move {
             let homes = client.list_runtimes().await.ok().map(|listing| {
-                cookie_agent_client_state::paths::RuntimeHomes::from_listing(&listing)
+                (
+                    cookie_agent_client_state::paths::RuntimeHomes::from_listing(&listing),
+                    cookie_agent_client_state::call_machines::RuntimeMachines::from_listing(
+                        &listing,
+                    ),
+                )
             });
             let _ = updates.send(RpcUpdate::RuntimeHomesRefreshed { homes });
         });
@@ -837,8 +842,9 @@ impl App {
             RpcUpdate::RuntimeHomesRefreshed { homes } => {
                 let again = self.runtime_homes_refresh.landed();
                 // A failure keeps the homes known so far.
-                if let Some(homes) = homes {
+                if let Some((homes, machines)) = homes {
                     self.install_runtime_homes(homes);
+                    self.runtime_machines = Some(machines);
                 }
                 if again {
                     self.poll_runtime_homes();

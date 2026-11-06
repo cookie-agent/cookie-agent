@@ -97,6 +97,8 @@ pub struct WorkSummary {
     pub elapsed: Duration,
     pub tool_calls: usize,
     pub failed: usize,
+    /// The runtimes its calls ran on, in the order it first used them.
+    pub runtimes: Vec<cookie_agent_protocol::RuntimeId>,
 }
 
 impl WorkSummary {
@@ -180,6 +182,7 @@ fn fold_summary<'a>(
             elapsed: span(started, ended),
             tool_calls: 0,
             failed: 0,
+            runtimes: Vec::new(),
         },
     )
 }
@@ -203,12 +206,14 @@ fn tally<'a>(
         match child {
             AssistantChild::Tool { call_id } => {
                 summary.tool_calls += 1;
-                if state
-                    .tools
-                    .get(call_id)
-                    .is_some_and(|tool| tool.status == ToolStatus::Failed)
-                {
+                let tool = state.tools.get(call_id);
+                if tool.is_some_and(|tool| tool.status == ToolStatus::Failed) {
                     summary.failed += 1;
+                }
+                if let Some(runtime) = tool.and_then(crate::call_machines::call_runtime)
+                    && !summary.runtimes.contains(runtime)
+                {
+                    summary.runtimes.push(runtime.clone());
                 }
             }
             AssistantChild::CommittedTool { .. } => summary.tool_calls += 1,
@@ -232,6 +237,8 @@ pub struct WorkLines {
     /// user; none while no call runs, when the line counts the calls
     /// ([`WorkSummary::calls_label`]).
     pub tool: Option<String>,
+    /// The runtime of that call, for its machine's label.
+    pub tool_runtime: Option<cookie_agent_protocol::RuntimeId>,
 }
 
 /// The lines under a live work row whose `work` is these children, each
@@ -268,17 +275,21 @@ pub fn work_lines<'a>(
             let header = call.header_text();
             // Cut like the text: arguments streaming on past the row's
             // room leave the line as it is.
-            Some(cut_line(
-                if needs_user(state, call_id) {
-                    format!("Waiting for approval: {header}")
-                } else {
-                    header
-                },
-                room,
+            Some((
+                cut_line(
+                    if needs_user(state, call_id) {
+                        format!("Waiting for approval: {header}")
+                    } else {
+                        header
+                    },
+                    room,
+                ),
+                crate::call_machines::call_runtime(call).cloned(),
             ))
         }
         _ => None,
     });
+    let (tool, tool_runtime) = tool.map_or((None, None), |(line, runtime)| (Some(line), runtime));
     let called = work.clone().any(|(_, child)| {
         matches!(
             child,
@@ -295,7 +306,11 @@ pub fn work_lines<'a>(
         (None, false) => Some("Starting…".to_owned()),
         _ => None,
     });
-    WorkLines { text, tool }
+    WorkLines {
+        text,
+        tool,
+        tool_runtime,
+    }
 }
 
 /// The newest line of `text` a work row may show: with `streaming`, a line
@@ -981,6 +996,7 @@ impl FoldPlan {
                         elapsed: span(started, ended),
                         tool_calls: 0,
                         failed: 0,
+                        runtimes: Vec::new(),
                     },
                 )
             }

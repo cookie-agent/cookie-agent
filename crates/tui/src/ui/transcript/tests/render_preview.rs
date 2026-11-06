@@ -62,9 +62,11 @@ async fn render_preview() {
     app.selected = Some(session);
     app.tree_root = Some(session);
     let state = &app.store.sessions[&session];
+    // Every call open, unless `PREVIEW_FOLDED` asks to see their headers.
     let mut expanded = state
         .tools
         .keys()
+        .filter(|_| std::env::var("PREVIEW_FOLDED").is_err())
         .map(|id| BlockId::Tool(*id))
         .collect::<HashSet<_>>();
     let open_work = std::env::var("PREVIEW_OPEN_WORK").is_ok();
@@ -88,6 +90,34 @@ async fn render_preview() {
     if open_work {
         app.tui_config.transcript =
             cookie_agent_client_state::transcript_mode::TranscriptMode::Reduced;
+    }
+
+    // `PREVIEW_MACHINES=local=yunhao-labserver,unicorn=unicorn` labels calls as
+    // that listing would.
+    if let Ok(machines) = std::env::var("PREVIEW_MACHINES") {
+        let listing = cookie_agent_protocol::RuntimesListResult {
+            runtimes: machines
+                .split(',')
+                .map(|pair| {
+                    let (runtime, machine) = pair.split_once('=').expect("runtime=machine");
+                    cookie_agent_protocol::RuntimeListing {
+                        runtime_id: cookie_agent_protocol::RuntimeId::new(runtime).unwrap(),
+                        lifetime: cookie_agent_protocol::RuntimeLifetime::Spawned,
+                        connected: true,
+                        capabilities: Vec::new(),
+                        platform: None,
+                        machine: Some(cookie_agent_protocol::MachineName::new(machine).unwrap()),
+                        home: None,
+                        message: None,
+                        active_runs: 0,
+                        background_calls: 0,
+                    }
+                })
+                .collect(),
+            instances: Vec::new(),
+        };
+        app.runtime_machines =
+            Some(cookie_agent_client_state::call_machines::RuntimeMachines::from_listing(&listing));
     }
 
     let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();

@@ -625,6 +625,8 @@ impl From<TranscriptLayout> for ChunkedLayout {
 pub(super) struct LayoutCacheKey {
     pub(super) session_id: SessionId,
     pub(super) session_generation: u64,
+    /// The machines' labels' fingerprint, which tool and work rows show.
+    pub(super) machines: u64,
     pub(super) width: u16,
     pub(super) theme: ThemeKey,
     pub(super) highlighter: usize,
@@ -1074,6 +1076,8 @@ struct ToolLayoutKey {
     expanded: [bool; 4],
     /// Animation bucket while the call runs (0 otherwise).
     clock: u8,
+    /// The machines' labels' fingerprint.
+    machines: u64,
 }
 
 #[derive(Clone)]
@@ -1096,6 +1100,8 @@ struct TranscriptRenderContext<'a> {
     /// Animation bucket (0–3) driving the streaming "thinking…" ellipsis.
     clock_bucket: u8,
     model_names: &'a ModelDisplayNames,
+    /// The machines' labels of this session's calls.
+    machines: &'a cookie_agent_client_state::call_machines::MachineLabels,
     assistant_part_cache: &'a mut HashMap<u64, CachedAssistantPartLayout>,
     assistant_part_layout_passes: &'a mut u64,
     tool_cache: &'a mut HashMap<BlockId, CachedToolLayout>,
@@ -1240,13 +1246,15 @@ pub(super) fn ensure_cached_transcript_layout(
 /// diagnostics filter, the transcript mode, and the time live work rows
 /// count to.
 #[derive(Clone, Copy, Debug)]
-pub(super) struct TranscriptView {
+pub(super) struct TranscriptView<'a> {
     pub(super) minimum_event_level: crate::state::EventLevel,
     pub(super) transcript: TranscriptMode,
     pub(super) now: jiff::Timestamp,
+    /// Each runtime's machine, once a listing answered.
+    pub(super) machines: Option<&'a cookie_agent_client_state::call_machines::RuntimeMachines>,
 }
 
-impl TranscriptView {
+impl TranscriptView<'_> {
     /// The reduced mode's folds of `state`; none in the full mode.
     pub(super) fn folds(&self, state: &SessionState) -> std::sync::Arc<FoldPlan> {
         match self.transcript {
@@ -1263,6 +1271,7 @@ impl TranscriptView {
             minimum_event_level,
             transcript: TranscriptMode::Full,
             now: jiff::Timestamp::UNIX_EPOCH,
+            machines: None,
         }
     }
 }
@@ -1277,7 +1286,7 @@ pub(super) fn ensure_cached_transcript_layout_in(
     width: u16,
     theme: &Theme,
     highlighter: &dyn Highlighter,
-    view: TranscriptView,
+    view: TranscriptView<'_>,
     clock_bucket: u8,
     model_names: &ModelDisplayNames,
     page_url: Option<&str>,
@@ -1286,7 +1295,10 @@ pub(super) fn ensure_cached_transcript_layout_in(
         minimum_event_level,
         transcript,
         now,
+        machines,
     } = view;
+    let machines =
+        cookie_agent_client_state::call_machines::MachineLabels::of_session(state, machines);
     let folds = view.folds(state);
     let room = work_line_room(width);
     // Only the rows still working change with the clock; the plan holds
@@ -1307,11 +1319,14 @@ pub(super) fn ensure_cached_transcript_layout_in(
         live,
     };
     let fold_key = |item: &TranscriptItem| {
-        item_fold_key(&folds, &work_rows, item, expanded) ^ attachments_key(state, item)
+        item_fold_key(&folds, &work_rows, item, expanded)
+            ^ attachments_key(state, item)
+            ^ machines.key()
     };
     let key = LayoutCacheKey {
         session_id,
         session_generation: state.generation,
+        machines: machines.key(),
         width,
         theme: theme.key(),
         highlighter: highlighter as *const dyn Highlighter as *const () as usize,
@@ -1461,6 +1476,7 @@ pub(super) fn ensure_cached_transcript_layout_in(
                 work_rows: &work_rows,
                 clock_bucket,
                 model_names,
+                machines: &machines,
                 assistant_part_cache: &mut cache.assistant_parts,
                 assistant_part_layout_passes: &mut cache.assistant_part_layout_passes,
                 tool_cache: &mut cache.tool_rows,
@@ -2410,6 +2426,7 @@ impl App {
             minimum_event_level: self.tui_config.minimum_event_level,
             transcript: self.tui_config.transcript,
             now: self.transcript_now(),
+            machines: self.runtime_machines.as_ref(),
         };
         let changed = !ensure_cached_transcript_layout_in(
             &mut self.layout_cache,
@@ -2929,7 +2946,7 @@ pub(super) fn transcript_layout_viewed(
     width: u16,
     theme: &Theme,
     highlighter: &dyn Highlighter,
-    view: TranscriptView,
+    view: TranscriptView<'_>,
     clock_bucket: u8,
 ) -> TranscriptLayout {
     let minimum_event_level = view.minimum_event_level;
@@ -2970,6 +2987,7 @@ pub(super) fn transcript_layout_viewed(
             );
         }
     }
+    let no_machines = cookie_agent_client_state::call_machines::MachineLabels::default();
     for item in &state.transcript {
         let mut assistant_child_lines = Vec::new();
         let mut deferred_highlights = Vec::new();
@@ -2986,6 +3004,7 @@ pub(super) fn transcript_layout_viewed(
                 work_rows: &work_rows,
                 clock_bucket,
                 model_names: &model_names,
+                machines: &no_machines,
                 assistant_part_cache: &mut assistant_parts,
                 assistant_part_layout_passes: &mut assistant_part_layout_passes,
                 tool_cache: &mut tool_rows,

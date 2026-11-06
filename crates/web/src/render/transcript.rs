@@ -34,6 +34,8 @@ use super::{
     escape,
     markdown::{block_html, document_html},
 };
+use cookie_agent_client_state::call_machines::{MachineLabel, MachineLabels};
+
 use crate::icons::{self, Icon, svg};
 
 /// What the page shows besides the projection itself.
@@ -51,6 +53,8 @@ pub struct TranscriptView<'a> {
     /// Every runtime's home: a tool row shows its runtime's paths as
     /// `~/…`.
     pub homes: &'a cookie_agent_client_state::paths::RuntimeHomes,
+    /// The machines' labels of this session's calls.
+    pub machines: &'a MachineLabels,
     /// How the transcript shows agent work.
     pub transcript: TranscriptMode,
     /// The time live work rows count their elapsed time to.
@@ -183,7 +187,7 @@ impl<'a, 'v> Pass<'a, 'v> {
     fn new(view: &'a TranscriptView<'v>) -> Self {
         Self {
             view,
-            homes: homes_key(view.homes),
+            homes: homes_key(view.homes) ^ view.machines.key(),
             waiting: view
                 .state
                 .approvals
@@ -334,7 +338,12 @@ impl<'a, 'v> Pass<'a, 'v> {
 
     /// The HTML of the work row of the fold `key`.
     fn work_row(&self, key: WorkKey) -> Option<String> {
-        Some(work_row_html(key, &self.row(key)?, self.open(key)))
+        Some(work_row_html(
+            key,
+            &self.row(key)?,
+            self.open(key),
+            self.view.machines,
+        ))
     }
 
     /// Hashes what a call's row shows besides the call's own revision.
@@ -372,6 +381,8 @@ pub struct Delegate {
     pub handle: Option<String>,
     /// What it does while it runs.
     pub activity: Option<crate::tree::Activity>,
+    /// Where it works, when that says more than the parent's own machine.
+    pub machines: Vec<String>,
 }
 
 const NOTE: &str = "text-xs text-muted";
@@ -1297,8 +1308,40 @@ fn reply_parts(
 /// The reduced mode's row for a block's work: `Worked for 1m 23s · 7 tool
 /// calls`, a failed count in the warning colour, and while it works what
 /// it does now. A click opens and folds the work.
-fn work_row_html(key: WorkKey, row: &transcript_mode::WorkRow, open: bool) -> String {
+fn work_row_html(
+    key: WorkKey,
+    row: &transcript_mode::WorkRow,
+    open: bool,
+    machines: &MachineLabels,
+) -> String {
     let summary = &row.summary;
+    // A finished row names the machines its work touched.
+    let touched = if summary.live {
+        String::new()
+    } else {
+        let (shown, more) = machines.work_row(&summary.runtimes);
+        let mut names = shown
+            .into_iter()
+            .map(|label| {
+                format!(
+                    "<span class=\"inline-flex min-w-0 items-center gap-1.5 font-mono text-xs\" title=\"{}\">{}{}</span>",
+                    escape(&label.name),
+                    machine_dot(label),
+                    machine_name(label)
+                )
+            })
+            .collect::<String>();
+        if more > 0 {
+            names.push_str(&format!("<span class=\"text-xs\">+{more}</span>"));
+        }
+        if names.is_empty() {
+            names
+        } else {
+            format!(
+                "<span class=\"inline-flex min-w-0 shrink-0 items-center gap-2.5\" data-work-machines>{names}</span>"
+            )
+        }
+    };
     let block = work_key(key);
     let chevron = if open {
         icondata::LuChevronDown
@@ -1343,8 +1386,19 @@ fn work_row_html(key: WorkKey, row: &transcript_mode::WorkRow, open: bool) -> St
             // The call running now, or while none runs the calls so far.
             let tool = match lines.tool.as_deref() {
                 Some(tool) => format!(
-                    "<span class=\"work-line flex min-w-0 items-center gap-1.5 pl-5 font-mono {NOTE} opacity-75\" data-key=\"c{:x}\" data-work-tool><span aria-hidden=\"true\">↳</span><span class=\"min-w-0 truncate\">{}</span></span>",
+                    "<span class=\"work-line flex min-w-0 items-center gap-1.5 pl-5 font-mono {NOTE} opacity-75\" data-key=\"c{:x}\" data-work-tool><span aria-hidden=\"true\">↳</span>{}<span class=\"min-w-0 truncate\">{}</span></span>",
                     line_key(tool),
+                    lines
+                        .tool_runtime
+                        .as_ref()
+                        .and_then(|runtime| machines.runtime(runtime))
+                        .map(|label| format!(
+                            "<span class=\"inline-flex shrink-0 items-center gap-1.5\" title=\"{}\" data-work-machine>{}{}</span><span class=\"opacity-50\" aria-hidden=\"true\">·</span>",
+                            escape(&label.name),
+                            machine_dot(label),
+                            machine_name(label)
+                        ))
+                        .unwrap_or_default(),
                     escape(tool)
                 ),
                 None => {
@@ -1378,7 +1432,7 @@ fn work_row_html(key: WorkKey, row: &transcript_mode::WorkRow, open: bool) -> St
         ("", "rounded-lg hover:bg-hover")
     };
     format!(
-        "<div class=\"collapsible-row\" data-work=\"{}\" data-block-key=\"{block}\"{open_attribute}><button type=\"button\" data-action=\"toggle-block\" data-block-key=\"{block}\" aria-expanded=\"{open}\" class=\"flex min-h-11 w-full min-w-0 flex-col justify-center gap-0.5 {surface} px-2 py-1 text-left text-sm text-muted active:bg-press\"><span class=\"flex min-w-0 items-center gap-2\">{}{spinner}<span class=\"min-w-0 truncate\" data-work-label>{}</span>{label_failed}</span>{lines}</button></div>",
+        "<div class=\"collapsible-row\" data-work=\"{}\" data-block-key=\"{block}\"{open_attribute}><button type=\"button\" data-action=\"toggle-block\" data-block-key=\"{block}\" aria-expanded=\"{open}\" class=\"flex min-h-11 w-full min-w-0 flex-col justify-center gap-0.5 {surface} px-2 py-1 text-left text-sm text-muted active:bg-press\"><span class=\"flex min-w-0 items-center gap-2\">{}{spinner}<span class=\"min-w-0 truncate\" data-work-label>{}</span>{label_failed}{touched}</span>{lines}</button></div>",
         if summary.live { "live" } else { "done" },
         svg(chevron, "text-[0.625rem] opacity-70"),
         escape(&summary.label()),
@@ -1788,6 +1842,40 @@ pub fn all_output_key(call: &str) -> String {
     format!("{call}:all")
 }
 
+/// A machine's name on a row: whole, or on a phone without the prefix it
+/// shares with the session's other machines.
+fn machine_name(label: &MachineLabel) -> String {
+    let name = escape(&label.name);
+    if label.short == label.name {
+        return format!("<span class=\"truncate\">{name}</span>");
+    }
+    format!(
+        "<span class=\"truncate compact:hidden\">{name}</span><span class=\"hidden truncate compact:inline\">{}</span>",
+        escape(&label.short)
+    )
+}
+
+/// A machine's dot, in the colour of its badges.
+fn machine_dot(label: &MachineLabel) -> String {
+    format!(
+        "<span class=\"inline-block size-2 shrink-0 rounded-full {}\" aria-hidden=\"true\"></span>",
+        crate::badges::dot_class(label.hue)
+    )
+}
+
+/// The label of the machine a call ran on: a column as wide as the session's
+/// longest name, so dots and names line up down the transcript.
+fn machine_chip(machines: &MachineLabels, label: &MachineLabel) -> String {
+    format!(
+        "<span class=\"inline-flex h-5 w-[calc(var(--machine-wide)+0.875rem)] shrink-0 items-center gap-1.5 font-mono text-xs text-muted compact:w-[calc(var(--machine-narrow)+0.875rem)]\" style=\"--machine-wide:{}ch;--machine-narrow:{}ch\" title=\"{}\" data-tool-machine>{}{}</span>",
+        machines.wide_columns(),
+        machines.narrow_columns(),
+        escape(&label.name),
+        machine_dot(label),
+        machine_name(label),
+    )
+}
+
 /// A tool row's header text, with the paths of the runtime it runs on
 /// shown under that runtime's home.
 fn tool_header_text(view: &TranscriptView<'_>, tool: &ToolCallState) -> String {
@@ -1813,6 +1901,11 @@ fn tool_header_text(view: &TranscriptView<'_>, tool: &ToolCallState) -> String {
 /// open row adds the arguments and the output, within the row budget.
 fn tool_html(view: &TranscriptView<'_>, tool: &ToolCallState) -> String {
     let id = tool.id.to_string();
+    let machine = view
+        .machines
+        .call(tool)
+        .map(|label| machine_chip(view.machines, label))
+        .unwrap_or_default();
     let mark = icons::tool_status(&tool.status, tool.backgrounded);
     // A finished or running call says so with its icon alone; one that
     // stopped short says why in words too.
@@ -1895,7 +1988,7 @@ fn tool_html(view: &TranscriptView<'_>, tool: &ToolCallState) -> String {
         .and_then(|url| header.find(url).map(|at| (at, url)));
     let toggle = match link {
         None => format!(
-            "<button type=\"button\" data-action=\"toggle-tool\" data-call=\"{}\" aria-expanded=\"{expanded}\" class=\"flex min-h-11 min-w-0 flex-1 {align} gap-2 rounded-lg px-2 {pad} text-left font-mono text-[0.8125rem] hover:bg-hover active:bg-press\">{chevron}{icon}<span class=\"min-w-0 shrink {fit}\" data-header>{}</span>{progress}<span class=\"flex-1\"></span>{status}</button>",
+            "<button type=\"button\" data-action=\"toggle-tool\" data-call=\"{}\" aria-expanded=\"{expanded}\" class=\"flex min-h-11 min-w-0 flex-1 {align} gap-2 rounded-lg px-2 {pad} text-left font-mono text-[0.8125rem] hover:bg-hover active:bg-press\">{chevron}{icon}<span class=\"min-w-0 shrink {fit}\" data-header>{}</span>{progress}<span class=\"flex-1\"></span>{machine}{status}</button>",
             escape(&id),
             escape(&header),
         ),
@@ -1910,7 +2003,7 @@ fn tool_html(view: &TranscriptView<'_>, tool: &ToolCallState) -> String {
                 )
             };
             format!(
-                "<div class=\"flex min-w-0 flex-1 {align} rounded-lg hover:bg-hover\" data-header-row><button type=\"button\" data-action=\"toggle-tool\" data-call=\"{id}\" aria-expanded=\"{expanded}\" class=\"flex min-h-11 min-w-0 shrink {align} gap-2 rounded-l-lg {pad} pl-2 text-left font-mono text-sm active:bg-press\">{chevron}{icon}<span class=\"min-w-0 shrink {fit}\" data-header>{}</span></button><button type=\"button\" data-action=\"open-memory\" data-memory-url=\"{url}\" title=\"Open it in Memory\" class=\"ml-2 min-h-11 min-w-0 shrink {fit} rounded-md px-1 text-left font-mono text-sm underline decoration-dotted underline-offset-2 hover:bg-press active:bg-surface-2\" data-memory-link>{url}</button><button type=\"button\" data-action=\"toggle-tool\" data-call=\"{id}\" aria-expanded=\"{expanded}\" tabindex=\"-1\" class=\"flex min-h-11 min-w-0 flex-1 {align} gap-2 rounded-r-lg {pad} pr-2 pl-2 text-left font-mono text-sm active:bg-press\">{suffix}{progress}<span class=\"flex-1\"></span>{status}</button></div>",
+                "<div class=\"flex min-w-0 flex-1 {align} rounded-lg hover:bg-hover\" data-header-row><button type=\"button\" data-action=\"toggle-tool\" data-call=\"{id}\" aria-expanded=\"{expanded}\" class=\"flex min-h-11 min-w-0 shrink {align} gap-2 rounded-l-lg {pad} pl-2 text-left font-mono text-sm active:bg-press\">{chevron}{icon}<span class=\"min-w-0 shrink {fit}\" data-header>{}</span></button><button type=\"button\" data-action=\"open-memory\" data-memory-url=\"{url}\" title=\"Open it in Memory\" class=\"ml-2 min-h-11 min-w-0 shrink {fit} rounded-md px-1 text-left font-mono text-sm underline decoration-dotted underline-offset-2 hover:bg-press active:bg-surface-2\" data-memory-link>{url}</button><button type=\"button\" data-action=\"toggle-tool\" data-call=\"{id}\" aria-expanded=\"{expanded}\" tabindex=\"-1\" class=\"flex min-h-11 min-w-0 flex-1 {align} gap-2 rounded-r-lg {pad} pr-2 pl-2 text-left font-mono text-sm active:bg-press\">{suffix}{progress}<span class=\"flex-1\"></span>{machine}{status}</button></div>",
                 escape(header[..at].trim_end()),
                 id = escape(&id),
                 url = escape(url),
@@ -2018,6 +2111,17 @@ fn cut_result_html(
 /// A delegate call's subagent: its agent and handle, what it does while it
 /// runs, and the way to open it.
 fn delegate_html(delegate: &Delegate, running: bool) -> String {
+    let machines = delegate
+        .machines
+        .iter()
+        .map(|name| {
+            format!(
+                "<span class=\"inline-flex items-center gap-1.5 font-mono\" data-delegate-machine><span class=\"inline-block size-2 shrink-0 rounded-full {}\" aria-hidden=\"true\"></span>{}</span>",
+                crate::badges::dot_class(cookie_agent_client_state::badges::badge_hue(name)),
+                escape(name)
+            )
+        })
+        .collect::<String>();
     let activity = delegate
         .activity
         .filter(|_| running)
@@ -2030,7 +2134,7 @@ fn delegate_html(delegate: &Delegate, running: bool) -> String {
         })
         .unwrap_or_default();
     format!(
-        "<div class=\"flex flex-wrap items-center gap-2 px-2 pb-1 {NOTE}\" data-delegate=\"{}\"><span class=\"font-mono\">{}{}</span>{activity}<button type=\"button\" data-action=\"open-session\" data-session=\"{}\" class=\"inline-flex min-h-11 items-center gap-1 rounded-md px-2 hover:bg-hover active:bg-press\">{}open</button></div>",
+        "<div class=\"flex flex-wrap items-center gap-2 px-2 pb-1 {NOTE}\" data-delegate=\"{}\"><span class=\"font-mono\">{}{}</span>{machines}{activity}<button type=\"button\" data-action=\"open-session\" data-session=\"{}\" class=\"inline-flex min-h-11 items-center gap-1 rounded-md px-2 hover:bg-hover active:bg-press\">{}open</button></div>",
         delegate.session_id,
         escape(&delegate.agent),
         delegate
@@ -2058,6 +2162,9 @@ mod tests {
 
     static NO_HOMES: std::sync::LazyLock<cookie_agent_client_state::paths::RuntimeHomes> =
         std::sync::LazyLock::new(Default::default);
+    static NO_MACHINES: std::sync::LazyLock<
+        cookie_agent_client_state::call_machines::MachineLabels,
+    > = std::sync::LazyLock::new(Default::default);
 
     static NO_DELEGATES: std::sync::LazyLock<
         std::collections::HashMap<cookie_agent_protocol::ToolCallId, Delegate>,
@@ -2090,6 +2197,7 @@ mod tests {
             expanded: &expanded,
             delegates: &NO_DELEGATES,
             homes: &NO_HOMES,
+            machines: &NO_MACHINES,
             transcript: TranscriptMode::Full,
             now: jiff::Timestamp::UNIX_EPOCH,
         };
@@ -2210,10 +2318,111 @@ mod tests {
             expanded,
             delegates: &NO_DELEGATES,
             homes: &NO_HOMES,
+            machines: &NO_MACHINES,
             transcript: TranscriptMode::Full,
             now: jiff::Timestamp::UNIX_EPOCH,
         };
         tool_html(&view, tool)
+    }
+
+    /// Labels for a session attached to `local` and `unicorn`.
+    fn two_machines() -> (
+        SessionState,
+        cookie_agent_client_state::call_machines::MachineLabels,
+    ) {
+        use cookie_agent_protocol::{
+            AttachmentName, CapabilityName, EventPayload, MachineName, RuntimeId, RuntimeKind,
+            RuntimeLifetime, RuntimeListing, RuntimesListResult,
+        };
+        let mut state = SessionState::default();
+        let mut listing = Vec::new();
+        for (id, machine) in [("local", "yunhao-labserver"), ("unicorn", "unicorn")] {
+            state
+                .runtime_attachments
+                .observe(&EventPayload::RuntimeAttached {
+                    name: AttachmentName::new(format!("{id}_work")).unwrap(),
+                    runtime_id: RuntimeId::new(id).unwrap(),
+                    capability: CapabilityName::coding(),
+                    kind: RuntimeKind::new("coding").unwrap(),
+                    workspace: None,
+                });
+            listing.push(RuntimeListing {
+                runtime_id: RuntimeId::new(id).unwrap(),
+                lifetime: RuntimeLifetime::Spawned,
+                connected: true,
+                capabilities: Vec::new(),
+                platform: None,
+                machine: Some(MachineName::new(machine).unwrap()),
+                home: None,
+                message: None,
+                active_runs: 0,
+                background_calls: 0,
+            });
+        }
+        let machines = cookie_agent_client_state::call_machines::RuntimeMachines::from_listing(
+            &RuntimesListResult {
+                runtimes: listing,
+                instances: Vec::new(),
+            },
+        );
+        let labels = cookie_agent_client_state::call_machines::MachineLabels::of_session(
+            &state,
+            Some(&machines),
+        );
+        (state, labels)
+    }
+
+    #[test]
+    fn a_calls_machine_shows_on_either_form_of_its_header() {
+        let (state, labels) = two_machines();
+        let names = ModelDisplayNames::default();
+        let expanded = Expanded::default();
+        let view = TranscriptView {
+            session_id: cookie_agent_protocol::SessionId::new_v7(),
+            state: &state,
+            names: &names,
+            minimum_level: EventLevel::Warning,
+            expanded: &expanded,
+            delegates: &NO_DELEGATES,
+            homes: &NO_HOMES,
+            machines: &labels,
+            transcript: TranscriptMode::Full,
+            now: jiff::Timestamp::UNIX_EPOCH,
+        };
+        let source = |id: &str| {
+            cookie_agent_protocol::Open::Known(cookie_agent_protocol::ToolSource::Runtime {
+                runtime_id: cookie_agent_protocol::RuntimeId::new(id).unwrap(),
+                attachment: cookie_agent_protocol::AttachmentName::new("work").unwrap(),
+                capability: cookie_agent_protocol::CapabilityName::coding(),
+            })
+        };
+        let labelled = |title: &str, primary: Option<&str>, on: Option<&str>| {
+            let mut call = tool(
+                cookie_agent_protocol::PreparedPresentation::new(
+                    cookie_agent_protocol::SafeDisplayText::new(title).unwrap(),
+                    primary.map(|primary| {
+                        cookie_agent_protocol::BoundedDisplayText::new(primary).unwrap()
+                    }),
+                ),
+                "{}",
+            );
+            call.presentation.tool.source = on.map(source);
+            tool_html(&view, &call)
+        };
+        let plain = labelled("Read a.txt", None, Some("unicorn"));
+        assert!(plain.contains("data-tool-machine"), "{plain}");
+        assert!(plain.contains("title=\"unicorn\""), "{plain}");
+        let memory = labelled(
+            "Read memory",
+            Some("project://cookie/release"),
+            Some("local"),
+        );
+        assert!(memory.contains("data-memory-link"), "{memory}");
+        assert!(memory.contains("data-tool-machine"), "{memory}");
+        assert!(memory.contains("yunhao-labserver"), "{memory}");
+        // A global tool, or one on no machine, stands bare.
+        assert!(!labelled("Search memory", None, Some("global")).contains("data-tool-machine"));
+        assert!(!labelled("Search memory", None, None).contains("data-tool-machine"));
     }
 
     /// The text of the header's title span.
@@ -2240,6 +2449,7 @@ mod tests {
                 expanded,
                 delegates: &NO_DELEGATES,
                 homes: &NO_HOMES,
+                machines: &NO_MACHINES,
                 transcript: TranscriptMode::Full,
                 now: jiff::Timestamp::UNIX_EPOCH,
             };
@@ -2429,6 +2639,7 @@ mod tests {
             expanded: &expanded,
             delegates: &NO_DELEGATES,
             homes: &NO_HOMES,
+            machines: &NO_MACHINES,
             transcript: TranscriptMode::Full,
             now: jiff::Timestamp::UNIX_EPOCH,
         };
@@ -2452,6 +2663,7 @@ mod tests {
             expanded: &expanded,
             delegates: &NO_DELEGATES,
             homes: &NO_HOMES,
+            machines: &NO_MACHINES,
             transcript: TranscriptMode::Full,
             now: jiff::Timestamp::UNIX_EPOCH,
         };
@@ -2507,6 +2719,7 @@ mod tests {
             expanded,
             delegates: &NO_DELEGATES,
             homes: &NO_HOMES,
+            machines: &NO_MACHINES,
             transcript: TranscriptMode::Full,
             now: jiff::Timestamp::UNIX_EPOCH,
         };
@@ -2548,6 +2761,7 @@ mod tests {
             expanded,
             delegates: &NO_DELEGATES,
             homes: &NO_HOMES,
+            machines: &NO_MACHINES,
             transcript: TranscriptMode::Full,
             now: jiff::Timestamp::UNIX_EPOCH,
         };
@@ -2572,6 +2786,7 @@ mod tests {
             expanded: &expanded,
             delegates: &NO_DELEGATES,
             homes: &NO_HOMES,
+            machines: &NO_MACHINES,
             transcript: TranscriptMode::Full,
             now: jiff::Timestamp::UNIX_EPOCH,
         };
@@ -2743,6 +2958,7 @@ mod tests {
             expanded,
             delegates: &NO_DELEGATES,
             homes: &NO_HOMES,
+            machines: &NO_MACHINES,
             transcript: TranscriptMode::Reduced,
             now: jiff::Timestamp::UNIX_EPOCH,
         };
@@ -2847,6 +3063,7 @@ mod tests {
                 expanded,
                 delegates: &NO_DELEGATES,
                 homes: &NO_HOMES,
+                machines: &NO_MACHINES,
                 transcript: TranscriptMode::Reduced,
                 now: jiff::Timestamp::UNIX_EPOCH,
             };
@@ -2939,6 +3156,7 @@ mod tests {
             expanded: &expanded,
             delegates: &NO_DELEGATES,
             homes: &NO_HOMES,
+            machines: &NO_MACHINES,
             transcript,
             now: jiff::Timestamp::UNIX_EPOCH,
         };
@@ -3006,6 +3224,7 @@ mod tests {
                 expanded: &expanded,
                 delegates: &NO_DELEGATES,
                 homes: &NO_HOMES,
+                machines: &NO_MACHINES,
                 transcript: TranscriptMode::Full,
                 now: jiff::Timestamp::UNIX_EPOCH,
             };
@@ -3058,6 +3277,7 @@ mod tests {
                 expanded,
                 delegates: &NO_DELEGATES,
                 homes: &NO_HOMES,
+                machines: &NO_MACHINES,
                 transcript: TranscriptMode::Full,
                 now: jiff::Timestamp::UNIX_EPOCH,
             };
@@ -3101,6 +3321,7 @@ mod tests {
             expanded: &expanded,
             delegates: &NO_DELEGATES,
             homes: &NO_HOMES,
+            machines: &NO_MACHINES,
             transcript: TranscriptMode::Full,
             now: jiff::Timestamp::UNIX_EPOCH,
         };
@@ -3156,6 +3377,7 @@ mod tests {
                 expanded: &expanded,
                 delegates: &NO_DELEGATES,
                 homes: &NO_HOMES,
+                machines: &NO_MACHINES,
                 transcript: TranscriptMode::Full,
                 now: jiff::Timestamp::UNIX_EPOCH,
             };
@@ -3235,6 +3457,7 @@ mod tests {
                 expanded: &expanded,
                 delegates: &NO_DELEGATES,
                 homes: &NO_HOMES,
+                machines: &NO_MACHINES,
                 transcript: TranscriptMode::Full,
                 now: jiff::Timestamp::UNIX_EPOCH,
             };
@@ -3305,6 +3528,7 @@ mod tests {
                 expanded: &expanded,
                 delegates: &NO_DELEGATES,
                 homes: &NO_HOMES,
+                machines: &NO_MACHINES,
                 transcript: TranscriptMode::Full,
                 now: jiff::Timestamp::UNIX_EPOCH,
             };
@@ -3359,6 +3583,7 @@ mod tests {
                 expanded: &expanded,
                 delegates: &NO_DELEGATES,
                 homes: &NO_HOMES,
+                machines: &NO_MACHINES,
                 transcript: TranscriptMode::Full,
                 now: jiff::Timestamp::UNIX_EPOCH,
             };
@@ -3392,6 +3617,7 @@ mod tests {
                 expanded,
                 delegates: &NO_DELEGATES,
                 homes: &NO_HOMES,
+                machines: &NO_MACHINES,
                 transcript: TranscriptMode::Full,
                 now: jiff::Timestamp::UNIX_EPOCH,
             };
@@ -3473,6 +3699,7 @@ mod tests {
                 expanded: &expanded,
                 delegates: &NO_DELEGATES,
                 homes: &NO_HOMES,
+                machines: &NO_MACHINES,
                 transcript: TranscriptMode::Full,
                 now: jiff::Timestamp::UNIX_EPOCH,
             };

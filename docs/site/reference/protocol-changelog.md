@@ -5,6 +5,13 @@ The client protocol's version is `MAJOR.MINOR.PATCH`
 adds and a major breaks; before it, every minor could break the wire (see the
 [compatibility spec](../specs/compatibility-v1.md) section 3).
 
+## 1.89.0
+
+- `session.runtimes.list` (`SessionRuntimesListParams`, answered with a
+  `RuntimesListResult`): the runtimes one session works on, without what describes
+  the daemon beyond it, which a guest may read in place of `runtimes.list`
+  ([The machine on a tool call](../specs/tool-call-machines.md)).
+
 ## 1.88.0
 
 - Conversation shares ([spec](../specs/conversation-shares.md)):

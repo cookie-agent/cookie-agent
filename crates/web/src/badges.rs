@@ -41,6 +41,11 @@ const DOTS: [&str; 8] = [
     "bg-hue-7 dark:bg-hue-7-dark",
 ];
 
+/// The colour classes of a dot of `hue`.
+pub fn dot_class(hue: u8) -> &'static str {
+    DOTS[usize::from(hue) % DOTS.len()]
+}
+
 /// The colour classes of a badge of `hue`; grey without one.
 pub fn hue_class(hue: Option<u8>) -> &'static str {
     hue.and_then(|hue| HUES.get(usize::from(hue)).copied())
@@ -50,7 +55,7 @@ pub fn hue_class(hue: Option<u8>) -> &'static str {
 /// A small dot marking the runtime `runtime_id` in the hue of `hue_key`,
 /// its machine's name ([`cookie_agent_client_state::badges::hue_key`]).
 pub fn runtime_dot(hue_key: &str, runtime_id: &str) -> impl IntoView + use<> {
-    let colour = DOTS[usize::from(badge_hue(hue_key))];
+    let colour = dot_class(badge_hue(hue_key));
     view! {
         <span
             class=format!("inline-block size-2 shrink-0 rounded-full {colour}")

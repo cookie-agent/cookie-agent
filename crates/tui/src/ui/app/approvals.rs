@@ -557,10 +557,13 @@ fn plain_rows(lines: Vec<Line<'static>>) -> Vec<ApprovalPreviewRow> {
 
 /// The scrolling body of the panel and the index of its `details` toggle
 /// row. `width` is the text width inside the panel's padding.
+// Each argument is an independent input of the panel.
+#[allow(clippy::too_many_arguments)]
 fn approval_body(
     approval: &ApprovalState,
     tool: Option<&crate::state::ToolCallState>,
     source: Option<&str>,
+    machine: Option<&cookie_agent_client_state::call_machines::MachineLabel>,
     panel: &ApprovalPanel,
     width: u16,
     theme: &Theme,
@@ -581,6 +584,13 @@ fn approval_body(
         Span::raw(" "),
         Span::styled(title.clone(), theme.heading()),
     ];
+    // Where it will run, while the session labels its calls.
+    if let Some(machine) = machine {
+        hero.push(Span::raw(" "));
+        hero.push(Span::styled("[", theme.muted()));
+        hero.push(Span::styled("●", theme.machine(machine.hue)));
+        hero.push(Span::styled(format!(" {}]", machine.name), theme.muted()));
+    }
     // Whose tool it is, in a session an ACP agent runs.
     if let Some(source) = source {
         hero.push(Span::raw(" "));
@@ -1288,12 +1298,22 @@ impl App {
             let session = self.store.sessions.get(&approval.session_id)?;
             cookie_agent_client_state::acp::tool_source_label(session, tool)
         });
+        let machine = tool.as_ref().and_then(|tool| {
+            let session = self.store.sessions.get(&approval.session_id)?;
+            cookie_agent_client_state::call_machines::MachineLabels::of_session(
+                session,
+                self.runtime_machines.as_ref(),
+            )
+            .call(tool)
+            .cloned()
+        });
         let theme = &self.theme;
         let text_width = screen.width.saturating_sub(4).max(1);
         let (rows, details_row) = approval_body(
             approval,
             tool.as_ref(),
             source.as_deref(),
+            machine.as_ref(),
             &self.approval_panel,
             text_width,
             theme,

@@ -121,6 +121,7 @@ fn rendered(
             minimum_event_level: EventLevel::Warning,
             transcript,
             now: time(now),
+            machines: None,
         },
         0,
     );
@@ -241,6 +242,7 @@ fn a_cached_live_row_counts_the_calls_once_its_call_ends() {
                 minimum_event_level: EventLevel::Warning,
                 transcript: TranscriptMode::Reduced,
                 now: time(130),
+                machines: None,
             },
             0,
             &crate::state::ModelDisplayNames::default(),

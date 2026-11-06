@@ -826,6 +826,10 @@ pub struct App {
     /// under as `~/…`; empty before `runtimes.list` answers, and from a
     /// daemon before client protocol 1.7.0.
     pub(in crate::ui) runtime_homes: cookie_agent_client_state::paths::RuntimeHomes,
+    /// Each runtime's machine, which labels tool calls; `None` before a
+    /// listing answers.
+    pub(in crate::ui) runtime_machines:
+        Option<cookie_agent_client_state::call_machines::RuntimeMachines>,
     pub(super) client: Client,
     pub(super) deliveries: Option<tokio::sync::mpsc::UnboundedReceiver<ClientDelivery>>,
     pub(super) rpc_updates_tx: tokio::sync::mpsc::UnboundedSender<RpcUpdate>,
@@ -1335,7 +1339,10 @@ pub(in crate::ui) enum RpcUpdate {
     /// `runtimes.list` answered for the runtimes' homes alone; `None` when
     /// it failed.
     RuntimeHomesRefreshed {
-        homes: Option<cookie_agent_client_state::paths::RuntimeHomes>,
+        homes: Option<(
+            cookie_agent_client_state::paths::RuntimeHomes,
+            cookie_agent_client_state::call_machines::RuntimeMachines,
+        )>,
     },
     /// `runtimes.agents.*` answered for the machines view's agents.
     RuntimeAgents {
@@ -1723,6 +1730,7 @@ impl App {
             connection_label: None,
             page_url: None,
             runtime_homes: Default::default(),
+            runtime_machines: None,
             deliveries: Some(deliveries),
             rpc_updates_tx,
             rpc_updates_rx,

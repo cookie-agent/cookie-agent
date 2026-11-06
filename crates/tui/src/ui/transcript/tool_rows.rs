@@ -145,6 +145,56 @@ pub(super) fn tool_header_title(tool: &crate::state::ToolCallState, budget: usiz
     )
 }
 
+/// Below this width a row names a machine by its short name.
+pub(super) const MACHINE_SHORT_BELOW: u16 = 60;
+/// Columns a title must keep beside a machine's label for the label to show.
+const MIN_TITLE_BESIDE_MACHINE: usize = 16;
+
+/// A machine's dot, in its colour, and its name.
+pub(super) fn machine_spans(
+    machine: &cookie_agent_client_state::call_machines::MachineLabel,
+    short: bool,
+    theme: &Theme,
+) -> Vec<Span<'static>> {
+    let name = if short { &machine.short } else { &machine.name };
+    vec![
+        Span::styled("● ", theme.machine(machine.hue)),
+        Span::styled(name.clone(), theme.muted()),
+    ]
+}
+
+/// The machine's label on a call's header: a column as wide as the session's
+/// longest name, so labels line up, and how many columns it takes.
+fn machine_column(
+    tool: &crate::state::ToolCallState,
+    machines: &cookie_agent_client_state::call_machines::MachineLabels,
+    width: u16,
+    room: usize,
+    theme: &Theme,
+) -> Option<(Vec<Span<'static>>, usize)> {
+    let machine = machines.call(tool)?;
+    let short = width < MACHINE_SHORT_BELOW;
+    let (name, name_columns) = if short {
+        (&machine.short, machines.narrow_columns())
+    } else {
+        (&machine.name, machines.wide_columns())
+    };
+    let columns = 2 + name_columns;
+    // Two columns of air keep it off the title.
+    if room < columns + 2 + MIN_TITLE_BESIDE_MACHINE {
+        return None;
+    }
+    let cut = crate::ui::app::truncate_with_ellipsis(name, name_columns);
+    let pad = name_columns.saturating_sub(UnicodeWidthStr::width(cut.as_str()));
+    Some((
+        vec![
+            Span::styled("● ", theme.machine(machine.hue)),
+            Span::styled(format!("{cut}{}", " ".repeat(pad)), theme.muted()),
+        ],
+        columns,
+    ))
+}
+
 /// The button at the right end of a running background-capable call's title
 /// row; clicking it moves the call to the background.
 pub(in crate::ui) const BACKGROUND_BUTTON: &str = "[background]";
@@ -275,17 +325,43 @@ pub(super) fn tool_child_layout(
     let offer_background = tool.status == ToolStatus::Running
         && tool.backgroundable
         && content_width >= button_width + 1 + MIN_TITLE_BESIDE_BUTTON;
-    let row_width = if offer_background {
-        header_width.saturating_sub(u16::try_from(button_width + 1).unwrap_or(u16::MAX))
+    let button_columns = if offer_background {
+        button_width + 1
     } else {
-        header_width
+        0
     };
-    let (mut header, title) = tool_header_row(tool, chevron, &suffix, row_width);
+    let machine = machine_column(
+        tool,
+        context.machines,
+        context.width,
+        content_width.saturating_sub(button_columns),
+        context.theme,
+    );
+    let machine_columns = machine.as_ref().map_or(0, |(_, columns)| columns + 2);
+    let row_width = header_width
+        .saturating_sub(u16::try_from(button_columns + machine_columns).unwrap_or(u16::MAX));
+    let (header, title) = tool_header_row(tool, chevron, &suffix, row_width);
+    // What the row ends in, pushed to its right edge: the machine, then the
+    // button.
+    let (machine_spans, machine_width) = machine.unwrap_or_default();
+    let mut tail = machine_spans.clone();
     if offer_background {
-        let used = UnicodeWidthStr::width(header.as_str());
-        header.push_str(&" ".repeat(content_width.saturating_sub(used + button_width)));
-        header.push_str(BACKGROUND_BUTTON);
+        tail.push(Span::raw(if machine_width > 0 { " " } else { "" }));
+        tail.push(Span::raw(BACKGROUND_BUTTON));
     }
+    let end_columns = machine_width
+        + if offer_background {
+            button_width + usize::from(machine_width > 0)
+        } else {
+            0
+        };
+    let gap = if tail.is_empty() {
+        String::new()
+    } else {
+        " ".repeat(
+            content_width.saturating_sub(UnicodeWidthStr::width(header.as_str()) + end_columns),
+        )
+    };
     let mut body = Vec::new();
     if is_expanded {
         body.extend(expanded_title_lines(
@@ -295,6 +371,8 @@ pub(super) fn tool_child_layout(
                 title: &title,
                 chevron,
                 suffix: &suffix,
+                gap: &gap,
+                tail: &tail,
             },
             context.width,
         ));
@@ -339,16 +417,16 @@ pub(super) fn tool_child_layout(
     } else {
         // Collapsed rows are muted body text; only a failure's status suffix
         // keeps the error colour, so failed calls still stand out.
-        let line = match header.strip_suffix(suffix.as_str()) {
-            Some(head) if matches!(role, Role::ToolFailure) && !suffix.is_empty() => {
-                Line::from(vec![
-                    Span::raw(head.to_owned()),
-                    Span::styled(suffix.clone(), context.theme.tool_failure()),
-                ])
-            }
-            _ => Line::from(header),
+        let mut spans = match header.strip_suffix(suffix.as_str()) {
+            Some(head) if matches!(role, Role::ToolFailure) && !suffix.is_empty() => vec![
+                Span::raw(head.to_owned()),
+                Span::styled(suffix.clone(), context.theme.tool_failure()),
+            ],
+            _ => vec![Span::raw(header)],
         };
-        body.push(ToolBodyLine::wrapped(line));
+        spans.push(Span::raw(gap));
+        spans.extend(tail);
+        body.push(ToolBodyLine::wrapped(Line::from(spans)));
     }
     // Collapsed rows are muted body text; expanded blocks are ordinary text
     // whose header suffix still names a failure.
@@ -516,6 +594,10 @@ pub(super) struct ExpandedHeader<'a> {
     pub(super) title: &'a str,
     pub(super) chevron: char,
     pub(super) suffix: &'a str,
+    /// The space before `tail`, on a row the title fits.
+    pub(super) gap: &'a str,
+    /// What the row ends in: the machine's label and the button.
+    pub(super) tail: &'a [Span<'static>],
 }
 
 /// An expanded tool's title block: the header row, or, when the collapsed
@@ -536,13 +618,18 @@ fn expanded_title_lines(
     if header.title == full {
         let indent =
             UnicodeWidthStr::width(chrome.as_str()) + UnicodeWidthStr::width(name.as_str()) + 1;
-        return vec![ToolBodyLine::title(Line::from(header.row), indent)];
+        let mut spans = vec![Span::raw(header.row), Span::raw(header.gap.to_owned())];
+        spans.extend(header.tail.iter().cloned());
+        return vec![ToolBodyLine::title(Line::from(spans), indent)];
     }
+    // The whole of a shortened title wraps, and the row's end follows it.
     let indent = UnicodeWidthStr::width(chrome.as_str());
-    vec![ToolBodyLine::title(
-        Line::from(format!("{chrome}{full}{}", header.suffix)),
-        indent,
-    )]
+    let mut spans = vec![Span::raw(format!("{chrome}{full}{}", header.suffix))];
+    if !header.tail.is_empty() {
+        spans.push(Span::raw("  "));
+        spans.extend(header.tail.iter().cloned());
+    }
+    vec![ToolBodyLine::title(Line::from(spans), indent)]
 }
 
 /// Identity for a tool row: a started call or a committed placeholder index.
