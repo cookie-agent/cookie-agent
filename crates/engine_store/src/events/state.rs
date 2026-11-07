@@ -292,6 +292,12 @@ impl LogState {
             .map(|event| event.seq)
     }
 
+    /// The `user_input_submitted` records of the latest run no
+    /// `user_input_applied` answered yet, while the run is unfinished.
+    pub fn all_unapplied_submissions(&self) -> impl Iterator<Item = u64> + '_ {
+        self.inputs.submitted.keys().copied()
+    }
+
     /// What a tree load takes from the log.
     #[must_use]
     pub fn harvest(&self) -> &HarvestFold {
@@ -398,6 +404,12 @@ impl LogState {
     #[must_use]
     pub fn open_call(&self, id: ToolCallId) -> Option<&Arc<StoredEvent>> {
         self.calls.get(&id)
+    }
+
+    /// The `tool_call_started` of every call no termination recorded the end
+    /// of.
+    pub fn open_calls(&self) -> impl Iterator<Item = &Arc<StoredEvent>> {
+        self.calls.values()
     }
 
     /// The approval `id` while it is pending or escalated.
@@ -527,7 +539,9 @@ impl LogState {
         }
     }
 
-    /// Whether the log holds a `skill_loaded` of `name` with `body`.
+    /// Whether the log holds a `skill_loaded` of `name` with `body` since its
+    /// latest checkpoint that composed the context afresh, which carries no
+    /// skill.
     #[must_use]
     pub fn skill_loaded(&self, name: &str, body: &[u8]) -> bool {
         self.once
@@ -1409,6 +1423,12 @@ impl OnceFacts {
                     name.clone(),
                     Sha256Digest::of_bytes(rendered_body.as_bytes()),
                 ));
+            }
+            // A checkpoint that composed the context afresh carries no skill
+            // (`docs/site/specs/forever-sessions.md` section 5.2): one loaded
+            // before it shows the model its body when loaded again.
+            EventPayload::ContextCheckpointCommitted { commit } if commit.context_fresh => {
+                self.skills.clear();
             }
             EventPayload::ToolCallLinked {
                 tool_call_id,

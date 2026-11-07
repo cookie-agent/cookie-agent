@@ -33,6 +33,7 @@ use crate::ownership::{WriteAuthority, WriteCapability};
 pub mod blobs;
 mod durability;
 mod history;
+pub mod model_context;
 pub(crate) mod sorted;
 pub mod state;
 pub mod state_file;
@@ -146,6 +147,10 @@ pub struct EventLog {
     /// Test-only: the log opened from its `state.json`.
     #[cfg(any(test, feature = "test-support"))]
     opened_from_state: bool,
+    /// Test-only: what a native window would hold, as of the cuts counted
+    /// then (`Self::assert_model_context_holds`).
+    #[cfg(any(test, feature = "test-support"))]
+    model_context_shadow: Mutex<Option<(u64, Vec<Arc<StoredEvent>>)>>,
 }
 
 #[derive(Clone, Copy)]
@@ -1514,6 +1519,8 @@ impl EventLog {
             #[cfg(any(test, feature = "test-support"))]
             history_calls: Mutex::default(),
             #[cfg(any(test, feature = "test-support"))]
+            model_context_shadow: Mutex::default(),
+            #[cfg(any(test, feature = "test-support"))]
             opened_from_state: false,
         });
         if !matches!(creation, EventPayload::SessionCreated { .. }) {
@@ -1655,6 +1662,8 @@ impl EventLog {
             #[cfg(any(test, feature = "test-support"))]
             history_calls: Mutex::default(),
             #[cfg(any(test, feature = "test-support"))]
+            model_context_shadow: Mutex::default(),
+            #[cfg(any(test, feature = "test-support"))]
             opened_from_state: state_covers.is_some(),
         });
         #[cfg(any(test, feature = "test-support"))]
@@ -1742,6 +1751,8 @@ impl EventLog {
             state_written: AtomicU64::new(0),
             #[cfg(any(test, feature = "test-support"))]
             history_calls: Mutex::default(),
+            #[cfg(any(test, feature = "test-support"))]
+            model_context_shadow: Mutex::default(),
             #[cfg(any(test, feature = "test-support"))]
             opened_from_state: false,
         }))
@@ -1885,6 +1896,8 @@ impl EventLog {
             #[cfg(any(test, feature = "test-support"))]
             history_calls: Mutex::default(),
             #[cfg(any(test, feature = "test-support"))]
+            model_context_shadow: Mutex::default(),
+            #[cfg(any(test, feature = "test-support"))]
             opened_from_state: false,
         })
     }
@@ -1936,6 +1949,8 @@ impl EventLog {
             state_written: AtomicU64::new(self.state_written.load(Ordering::Acquire)),
             #[cfg(any(test, feature = "test-support"))]
             history_calls: Mutex::default(),
+            #[cfg(any(test, feature = "test-support"))]
+            model_context_shadow: Mutex::default(),
             #[cfg(any(test, feature = "test-support"))]
             opened_from_state: self.opened_from_state,
         }))
@@ -2653,22 +2668,68 @@ impl EventLog {
 
     /// The events a native model's context is assembled from: pinned records
     /// and the window, in order (`docs/site/specs/forever-sessions.md` section
-    /// 5.1). A native log stays whole until phase 7, and a log an ACP agent's
-    /// window narrowed is read whole, which is why this is fallible. So only
-    /// what serves a native model takes it.
+    /// 5.1, and [`model_context`] for what is pinned). A native log stays
+    /// whole until phase 7, and a log an ACP agent's window narrowed is read
+    /// whole, which is why this is fallible. So only what serves a native
+    /// model takes it.
     pub fn model_context_events(&self) -> Result<EventSnapshot, EventLogError> {
         Ok(self.model_context_and_state()?.0)
     }
 
     /// [`Self::model_context_events`] and [`Self::state`] of the same moment.
     pub fn model_context_and_state(&self) -> Result<(EventSnapshot, Arc<LogState>), EventLogError> {
-        {
+        let held = {
             let storage = self.storage();
-            if storage.window.is_none() {
-                return Ok((storage.snapshot(), Arc::clone(&storage.index.state)));
-            }
-        }
-        self.read_whole()
+            storage
+                .window
+                .is_none()
+                .then(|| (storage.snapshot(), Arc::clone(&storage.index.state)))
+        };
+        let (whole, state) = match held {
+            Some(held) => held,
+            None => self.read_whole()?,
+        };
+        let selected = model_context::model_context(&whole, &state).map(Arc::new);
+        #[cfg(any(test, feature = "test-support"))]
+        self.assert_model_context_holds(&whole, &state, selected.as_ref());
+        Ok((selected.unwrap_or(whole), state))
+    }
+
+    /// Test-only: what a log that let go of everything [`model_context`] did
+    /// not return, each time it was asked, would return now is what the
+    /// whole log gives (`docs/site/specs/forever-sessions.md` section 5.3), so
+    /// a native window can hold only that. A cut of the file starts it over.
+    #[cfg(any(test, feature = "test-support"))]
+    fn assert_model_context_holds(
+        &self,
+        whole: &[Arc<StoredEvent>],
+        state: &LogState,
+        selected: Option<&EventSnapshot>,
+    ) {
+        let selected = selected.map_or(whole, |selected| selected.as_slice());
+        let cuts = self.cuts.load(Ordering::SeqCst);
+        let mut shadow = self
+            .model_context_shadow
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut held = match shadow.take() {
+            Some((at_cuts, held)) if at_cuts == cuts => held,
+            _ => Vec::new(),
+        };
+        let tip = held.last().map_or(0, |event| event.seq);
+        held.extend(whole.iter().filter(|event| event.seq > tip).cloned());
+        let narrowed = model_context::model_context(&held, state).unwrap_or(held);
+        assert!(
+            narrowed.len() == selected.len()
+                && narrowed
+                    .iter()
+                    .zip(selected)
+                    .all(|(held, whole)| held.seq == whole.seq && held == whole),
+            "a log holding only what its model's context needed would give {:?}, the whole log {:?}",
+            narrowed.iter().map(|event| event.seq).collect::<Vec<_>>(),
+            selected.iter().map(|event| event.seq).collect::<Vec<_>>(),
+        );
+        *shadow = Some((cuts, narrowed));
     }
 
     /// Reads a windowed log whole, holding appends off (section 5.4). A log whose

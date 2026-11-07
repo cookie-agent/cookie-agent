@@ -907,6 +907,11 @@ fn once_scan(events: &Events) -> OnceScan<'_> {
                     Sha256Digest::of_bytes(rendered_body.as_bytes()),
                 ));
             }
+            // A checkpoint that composed the context afresh carries no
+            // skill: one loaded before it is loaded again.
+            Event::ContextCheckpointCommitted { commit } if commit.context_fresh => {
+                scan.skills.clear();
+            }
             Event::ToolCallLinked {
                 tool_call_id,
                 child_session_id,
