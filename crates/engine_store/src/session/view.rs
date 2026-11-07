@@ -197,19 +197,21 @@ impl SessionStore {
         }
         let log = Arc::clone(&resident.log);
         drop(resident);
-        let state = {
-            let _slot = self.lock_session(id);
-            self.get_resident(id)
-                .filter(|session| Arc::ptr_eq(&session.log, &log))
-                .and_then(|session| log.state_file(&session))
-        };
-        let Some(state) = state else {
-            return;
-        };
-        match write_state(&log, &state) {
-            Ok(()) => log.note_state_written(&state),
-            Err(error) => eprintln!("session {id}: state.json was not written: {error}"),
-        }
+        crate::blocking::off_worker(|| {
+            let state = {
+                let _slot = self.lock_session(id);
+                self.get_resident(id)
+                    .filter(|session| Arc::ptr_eq(&session.log, &log))
+                    .and_then(|session| log.state_file(&session))
+            };
+            let Some(state) = state else {
+                return;
+            };
+            match write_state(&log, &state) {
+                Ok(()) => log.note_state_written(&state),
+                Err(error) => eprintln!("session {id}: state.json was not written: {error}"),
+            }
+        });
     }
 
     /// Brings `id`'s view cache up to `log`, its whole log, when the cache

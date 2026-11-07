@@ -4111,6 +4111,20 @@ impl SessionStore {
     }
 
     pub fn release_ownership(&self) {
+        // The sessions leave memory with this, before any lock.
+        let resident = self
+            .residency
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .resident
+            .keys()
+            .copied()
+            .collect::<Vec<_>>();
+        for id in resident {
+            self.refresh_state(id, |log| {
+                log.state_behind().is_some_and(|behind| behind > 0)
+            });
+        }
         self.closed.store(true, Ordering::Release);
         let _mutation = self.lock_mutation();
         // Best effort, like the writer suspension below: a tip an in-run append

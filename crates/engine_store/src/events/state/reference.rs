@@ -1258,17 +1258,18 @@ pub fn differences(state: &LogState, events: &Events) -> Vec<&'static str> {
     found
 }
 
-/// `TreeFold::harvest_records` and `ParentFactsFold`: the grants, the delegation
-/// records, the queued delegations, and those a producer message accepted.
-#[must_use]
-pub fn harvest(
-    events: &Events,
-) -> (
+/// What [`harvest`] reads: the grants, the delegation records, the queued
+/// delegations, and those a producer message accepted.
+type Harvest = (
     Vec<TreeApprovalGrant>,
     Vec<HarvestedDelegation>,
     Vec<(RunId, SessionId)>,
     Vec<InvocationId>,
-) {
+);
+
+/// `TreeFold::harvest_records` and `ParentFactsFold`.
+#[must_use]
+pub fn harvest(events: &Events) -> Harvest {
     let mut revisions = cookie_agent_protocol::RevisionFold::default();
     let (mut grants, mut delegations, mut queued, mut accepted) =
         (Vec::new(), Vec::new(), Vec::new(), Vec::new());

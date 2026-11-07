@@ -689,6 +689,115 @@ fn golden_acp_root() -> std::path::PathBuf {
         .join("events.jsonl")
 }
 
+/// A session that left memory comes back from its state file, parsing nothing,
+/// and goes on as the file says: the store compares that open with a parse, and
+/// each committed turn with a reopening.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_session_that_left_memory_comes_back_from_its_state_file() {
+    let acp = acp_fixture(&[], &[]).await;
+    let engine = acp.engine();
+    let session = engine.create_session(selection()).unwrap().session_id;
+    for round in 0..3 {
+        quiet_turn(engine, session, &format!("turn-{round}"), "say something").await;
+    }
+    let directory = engine.inner.store.session_dir(session);
+    let state = directory.join(crate::session::STATE_FILE);
+    let tip = log_of(engine, session).physical_tip_seq();
+    assert!(engine.inner.store.evict(session).unwrap());
+    assert!(state.is_file(), "leaving memory writes the file");
+    let written = std::fs::read(&state).unwrap();
+
+    let parses = crate::events::EVENT_LOG_PARSES.with(std::cell::Cell::get);
+    let log = log_of(engine, session);
+    assert!(log.opened_from_state_for_test());
+    assert_eq!(log.physical_tip_seq(), tip);
+    assert_eq!(
+        crate::events::EVENT_LOG_PARSES.with(std::cell::Cell::get),
+        parses,
+        "nothing parsed"
+    );
+    assert_eq!(
+        std::fs::read(&state).unwrap(),
+        written,
+        "nothing to rewrite"
+    );
+
+    quiet_turn(engine, session, "after", "say something").await;
+    assert!(log_of(engine, session).physical_tip_seq() > tip);
+    assert_answers_as_reopened(&log_of(engine, session), "after it came back");
+}
+
+/// A committed turn writes the file once over 1 MiB of log came since the last
+/// write, so a long run is covered and an ordinary turn does not pay for one.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_committed_turn_writes_the_state_file_per_mib_of_log() {
+    // The reference fold writes a state file of its own at each committed turn.
+    crate::session::skip_reference_fold();
+    let acp = acp_fixture(&[], &[]).await;
+    let engine = acp.engine();
+    let session = engine.create_session(selection()).unwrap().session_id;
+    let words = "word ".repeat(16 * 1024);
+    let directory = engine.inner.store.session_dir(session);
+    let state = directory.join(crate::session::STATE_FILE);
+    let log_path = directory.join("events.jsonl");
+    let mut last_written: Option<(Vec<u8>, u64)> = None;
+    let mut writes = 0;
+    for round in 0..80 {
+        quiet_turn(
+            engine,
+            session,
+            &format!("turn-{round}"),
+            &format!("say {words}"),
+        )
+        .await;
+        let length = std::fs::metadata(&log_path).unwrap().len();
+        let Ok(bytes) = std::fs::read(&state) else {
+            assert!(
+                length < 2 * 1024 * 1024,
+                "no file with {length} bytes of log"
+            );
+            continue;
+        };
+        match &last_written {
+            Some((last, _)) if *last == bytes => {}
+            previous => {
+                let since = previous.as_ref().map_or(0, |(_, at)| *at);
+                assert!(
+                    length - since > 1024 * 1024,
+                    "a write {} bytes after the last",
+                    length - since
+                );
+                writes += 1;
+                last_written = Some((bytes, length));
+            }
+        }
+        if writes == 2 {
+            break;
+        }
+    }
+    assert_eq!(writes, 2, "a write per MiB of log");
+    let log = log_of(engine, session);
+    assert!(log.state_behind().unwrap() < 1024 * 1024);
+}
+
+/// A revert removes the file: it names what the revert cut.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_revert_removes_the_state_file() {
+    let acp = acp_fixture(&[], &[]).await;
+    let engine = acp.engine();
+    let session = engine.create_session(selection()).unwrap().session_id;
+    quiet_turn(engine, session, "first", "say something").await;
+    let keep = log_of(engine, session).physical_tip_seq();
+    quiet_turn(engine, session, "second", "say something").await;
+    let directory = engine.inner.store.session_dir(session);
+    assert!(engine.inner.store.evict(session).unwrap());
+    let state = directory.join(crate::session::STATE_FILE);
+    assert!(state.is_file());
+    log_of(engine, session);
+    engine.inner.store.truncate(session, keep).unwrap();
+    assert!(!state.exists());
+}
+
 /// An open of an ACP agent's log holds its window from the start, whoever opens
 /// it, as what it lets go of is in the file.
 #[test]

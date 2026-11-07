@@ -18,9 +18,6 @@ fn assert_same_bytes<T: Serialize>(actual: &T, expected: &T, what: &str) {
     );
 }
 
-/// A line the parse keeps must read the same; one this log says is in the file
-/// may be kept by a parse only for holding references to blobs, which a log that
-/// wrote it has no raw line for.
 fn assert_raw_lines_as_parsed(raw: &RawLines, parsed: &RawLines) {
     assert_eq!(raw.lines.len(), parsed.lines.len(), "the raw lines");
     for (line, expected) in raw.lines.iter().zip(&parsed.lines) {
@@ -32,12 +29,7 @@ fn assert_raw_lines_as_parsed(raw: &RawLines, parsed: &RawLines) {
             (RawBytes::Kept(bytes), RawBytes::Kept(kept)) => {
                 assert!(bytes == kept, "a kept raw line");
             }
-            (RawBytes::InFile { .. }, RawBytes::Kept(kept)) => {
-                assert!(blobs::has_references(kept), "a raw line a parse keeps");
-            }
-            (RawBytes::Kept(_), RawBytes::InFile { .. }) => {
-                panic!("a raw line a parse leaves in the file is kept");
-            }
+            _ => panic!("a raw line is kept by one read and left in the file by the other"),
         }
     }
 }

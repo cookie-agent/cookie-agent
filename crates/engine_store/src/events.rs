@@ -562,10 +562,10 @@ impl LineIndex {
 /// line or read it without some member, and artifact liveness sees every
 /// member of every record, known or not.
 ///
-/// A line read into its record stays in the file only, which those rare
-/// readers read again (`Self::read`); a line no record reproduces (one this
-/// build skipped, quarantined, or repaired, or one of a log converted in
-/// memory) is kept here.
+/// A line read into its record, its values in blobs read back or not, stays in
+/// the file only, which those rare readers read again (`Self::read`); a line no
+/// record reproduces (one this build skipped, quarantined, or repaired, or one
+/// of a log converted in memory) is kept here.
 #[derive(Clone, Default)]
 pub struct RawLines {
     /// The file the lines left in a file were read from.
@@ -583,7 +583,7 @@ struct RawLine {
 #[derive(Clone, Debug)]
 enum RawBytes {
     /// A line read into the record of its sequence, at `start..end` of the
-    /// file, newline excluded.
+    /// file, newline excluded, whose values in blobs that record holds.
     InFile { start: u64, end: u64 },
     /// A line no record reproduces.
     Kept(Arc<[u8]>),
@@ -622,6 +622,16 @@ struct LoadedLine {
     end: usize,
     /// The line decoded into its record as it is, with no repair.
     strict: bool,
+}
+
+/// The record `line`, which names values in the blobs of `blob_dir`, reads as
+/// with them read back, as the loader reads it, typed as it is. `None` when one
+/// is missing, or the loader would repair or skip the line.
+fn read_restored(line: &[u8], blob_dir: &Path) -> Option<StoredEvent> {
+    let mut value = serde_json::from_slice::<Value>(line).ok()?;
+    let payload = value.get_mut("payload")?;
+    blobs::internalize(payload, &mut |digest| blobs::read(blob_dir, digest)).ok()?;
+    StoredEvent::decode_strict(&serde_json::to_vec(&value).ok()?)
 }
 
 impl RawLines {
@@ -788,7 +798,12 @@ impl ReadRawLines<'_> {
             RawBytes::InFile { start, end } => {
                 let bytes = self.window.as_ref()?.line(*start, *end)?;
                 let record = record?;
-                let mut read = StoredEvent::decode_strict(bytes)?;
+                let mut read = if blobs::has_references(bytes) {
+                    let file = self.raw.file.as_deref()?;
+                    read_restored(bytes, &blobs::tree_blob_dir(file))?
+                } else {
+                    StoredEvent::decode_strict(bytes)?
+                };
                 read.session_id = record.session_id;
                 (read == *record).then_some(bytes)
             }
@@ -5119,7 +5134,8 @@ fn load_event_jsonl_in_place(
 #[derive(Default)]
 struct LineRead {
     /// The line's sequence, when it carries one that advances the log, and
-    /// whether it decoded into its record as it is, with no repair.
+    /// whether it decoded into its record as it is, with no repair but its
+    /// values in blobs read back.
     sequenced: Option<(u64, bool)>,
     /// The line's record; `None` when it holds none this build can read.
     record: Option<StoredEvent>,
@@ -5382,6 +5398,8 @@ impl<'a> LineReader<'a> {
                         engine_version: event.engine_version.clone(),
                         skipped: false,
                     });
+                } else if references && let Some((_, strict)) = &mut read.sequenced {
+                    *strict = true;
                 }
                 read.record = Some(event);
             }
@@ -5764,14 +5782,6 @@ pub fn read_records_from(
         .rposition(|byte| *byte == b'\n')
         .map_or(0, |at| at + 1);
     let blob_dir = blobs::tree_blob_dir(path);
-    // A record whose large values are in blobs, whole, as the loader reads
-    // it back before typing it.
-    let restored = |line: &[u8]| -> Option<Vec<u8>> {
-        let mut value = serde_json::from_slice::<Value>(line).ok()?;
-        let payload = value.get_mut("payload")?;
-        blobs::internalize(payload, &mut |digest| blobs::read(&blob_dir, digest)).ok()?;
-        serde_json::to_vec(&value).ok()
-    };
     cookie_agent_protocol::read_stored_history(|| {
         let mut records: Vec<StoredEvent> = Vec::new();
         for line in bytes[..complete]
@@ -5779,7 +5789,7 @@ pub fn read_records_from(
             .filter(|line| !line.is_empty())
         {
             let record = if blobs::has_references(line) {
-                restored(line).and_then(|whole| StoredEvent::decode_strict(&whole))
+                read_restored(line, &blob_dir)
             } else {
                 StoredEvent::decode_strict(line)
             };
