@@ -871,28 +871,36 @@ impl TailWindowReader {
     }
 }
 
-/// Where [`cache_start`] puts a cache of a log's newest-first view, and the
-/// header of what precedes it, kept up to date one event at a time for a log
-/// that no longer holds its events
-/// (`docs/site/specs/forever-sessions.md` section 12).
+/// Where a cache of a log's newest-first view starts, and the header of what
+/// precedes it, kept up to date one event at a time for a log that no longer
+/// holds its events (`docs/site/specs/forever-sessions.md` section 12).
 ///
-/// It holds the settled header, the run boundaries the cache can still move to,
-/// and of the events since the cache's start only those [`state_events`] reads:
-/// never the rest, so a run's output costs it nothing.
+/// The start is a run boundary whose events on do not fit the budget, as
+/// [`cache_start`]'s is, so [`tail_window_after`] answers from it. It is not
+/// the latest such boundary: the fold notes the header at a boundary every
+/// quarter of the budget, and those are the starts it can move to. So it holds a
+/// few headers, whose events they mostly share, and the events it read since it
+/// last worked its header out, whatever the number of runs a budget's bytes
+/// span, and reads nothing to move.
 #[derive(Clone, Debug)]
 pub struct CacheStartFold {
     budget: usize,
     /// The bytes of the events it measured.
     total: usize,
-    /// The run boundaries whose events on still fit, in order: each with the
-    /// bytes of what it measured before it.
-    boundaries: std::collections::VecDeque<(CacheBoundary, usize)>,
-    /// The last boundary whose events on do not fit, once there is one.
-    start: Option<CacheBoundary>,
-    /// [`state_events`] of everything before `start`.
-    before: StateEventsFold,
-    /// What [`state_events`] reads of the events from `start` on.
-    since_start: std::collections::VecDeque<Arc<StoredEvent>>,
+    /// The boundaries it can move to, each with the bytes measured before it.
+    noted: std::collections::VecDeque<(NotedStart, usize)>,
+    /// Where the bytes of the last boundary noted reached.
+    noted_at: usize,
+    start: Option<NotedStart>,
+    /// [`state_events`] of every event it read.
+    header: StateEventsFold,
+}
+
+/// A boundary of a log, with the header of what precedes it.
+#[derive(Clone, Debug)]
+struct NotedStart {
+    boundary: CacheBoundary,
+    header: Vec<Arc<StoredEvent>>,
 }
 
 /// A run boundary of a log: where a cache of its view can start.
@@ -917,86 +925,77 @@ impl CacheStartFold {
         Self {
             budget,
             total: 0,
-            boundaries: std::collections::VecDeque::new(),
+            noted: std::collections::VecDeque::new(),
+            noted_at: 0,
             start: None,
-            before: StateEventsFold::default(),
-            since_start: std::collections::VecDeque::new(),
+            header: StateEventsFold::default(),
         }
     }
 
-    /// The fold of `events`, a log's events from its start, held in memory: it
-    /// measures only what fits, walking back from the end.
+    /// The fold of `events`, a log's events from its start, held in memory,
+    /// starting at [`cache_start`] of them. It measures only what fits, walking
+    /// back from the end, and reads on from there.
     #[must_use]
     pub fn of(events: &[Arc<StoredEvent>], budget: usize) -> Self {
-        let sizes = Sizes::new(events, EventsView::Display);
-        let fit = sizes.fit_before(events.len(), budget);
-        let start = (0..fit)
-            .rev()
-            .find(|&index| is_run_boundary(&events[index]));
         let mut fold = Self::new(budget);
-        let first = start.unwrap_or(0);
-        fold.start = start.map(|start| CacheBoundary::of(&events[start]));
-        for event in &events[..first] {
-            fold.before.observe(event);
-        }
-        fold.since_start = events[first..]
-            .iter()
-            .filter(|event| concerns_state(&event.payload))
-            .cloned()
-            .collect();
-        for (index, event) in events.iter().enumerate().skip(fit) {
-            if is_run_boundary(event) {
-                fold.boundaries
-                    .push_back((CacheBoundary::of(event), fold.total));
+        let sizes = Sizes::new(events, EventsView::Display);
+        if sizes.fit_before(events.len(), budget) == 0 {
+            for event in events {
+                fold.observe(event);
             }
-            fold.total = fold.total.saturating_add(sizes.of(index));
+            return fold;
+        }
+        let start = cache_start(events, budget);
+        if let Some(start) = start {
+            fold.start = Some(NotedStart {
+                boundary: CacheBoundary::of(&events[start]),
+                header: state_events(&events[..start]),
+            });
+        }
+        for event in events {
+            fold.header.observe(event);
         }
         fold
     }
 
     /// Reads the next event of the log.
     pub fn observe(&mut self, event: &Arc<StoredEvent>) {
-        if is_run_boundary(event) {
-            self.boundaries
-                .push_back((CacheBoundary::of(event), self.total));
+        if is_run_boundary(event)
+            && (self.noted.is_empty() || self.total - self.noted_at >= self.budget / 4)
+        {
+            self.header.settle();
+            self.noted.push_back((
+                NotedStart {
+                    boundary: CacheBoundary::of(event),
+                    header: self.header.held.clone(),
+                },
+                self.total,
+            ));
+            self.noted_at = self.total;
         }
+        self.header.observe(event);
         self.total = self
             .total
             .saturating_add(view_size(event, EventsView::Display));
-        if concerns_state(&event.payload) {
-            self.since_start.push_back(Arc::clone(event));
-        }
-        let mut start = None;
-        while let Some(&(boundary, before)) = self.boundaries.front()
+        while let Some((_, before)) = self.noted.front()
             && self.total - before > self.budget
         {
-            start = Some(boundary);
-            self.boundaries.pop_front();
-        }
-        if let Some(start) = start {
-            self.start = Some(start);
-            while self
-                .since_start
-                .front()
-                .is_some_and(|held| held.seq < start.seq)
-            {
-                let held = self.since_start.pop_front().expect("just looked at it");
-                self.before.observe(&held);
-            }
+            let (noted, _) = self.noted.pop_front().expect("just looked at it");
+            self.start = Some(noted);
         }
     }
 
-    /// The boundary the cache starts at: [`cache_start`] of the events it read.
-    /// `None` when they all fit.
+    /// The boundary a cache starts at. `None` when no boundary is yet known
+    /// whose events on do not fit.
     #[must_use]
     pub fn start(&self) -> Option<CacheBoundary> {
-        self.start
+        self.start.as_ref().map(|start| start.boundary)
     }
 
     /// [`state_events`] of every event before [`Self::start`].
     #[must_use]
-    pub fn header(&self) -> Vec<Arc<StoredEvent>> {
-        self.before.clone().finish()
+    pub fn header(&self) -> &[Arc<StoredEvent>] {
+        self.start.as_ref().map_or(&[], |start| &start.header)
     }
 }
 

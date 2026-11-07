@@ -124,7 +124,7 @@ pub(super) fn write_view(
     }
     let header = header
         .take()
-        .or_else(|| fold.as_ref().map(display_view::CacheStartFold::header))
+        .or_else(|| fold.as_ref().map(|fold| fold.header().to_vec()))
         .unwrap_or_default();
     let cache = ViewCache {
         version: VIEW_VERSION,

@@ -910,17 +910,28 @@ fn assert_readers_match(events: &[Arc<StoredEvent>]) {
                         .iter()
                         .for_each(|event| read_on.observe(event));
                     for fold in [&placed, &seeded, &read_on] {
+                        let Some(placed) = fold.start() else {
+                            continue;
+                        };
+                        // At or before the latest start, and it answers.
+                        let at = through
+                            .iter()
+                            .position(|event| event.seq == placed.seq)
+                            .expect("a record of the log");
+                        assert!(start.is_some_and(|start| at <= start), "{context}");
+                        assert!(is_run_boundary(&through[at]), "{context}");
+                        assert_eq!(fold.header(), state_events(&through[..at]), "{context}");
                         assert_eq!(
-                            fold.start().map(|boundary| boundary.seq),
-                            start.map(|start| through[start].seq),
-                            "{context}"
-                        );
-                        assert_eq!(
-                            fold.header(),
-                            state_events(&through[..start.unwrap_or(0)]),
+                            tail_window_after(fold.header(), &through[at..], view, budget),
+                            Some(tail_window(through, view, budget)),
                             "{context}"
                         );
                     }
+                    assert_eq!(
+                        seeded.start().map(|start| start.seq),
+                        start.map(|start| through[start].seq),
+                        "{context}"
+                    );
                 }
             }
         }
@@ -934,6 +945,45 @@ fn assert_readers_match(events: &[Arc<StoredEvent>]) {
             "through {read}"
         );
     }
+}
+
+/// A cache's start keeps up with a log read one event at a time, from what it
+/// noted, and what it holds does not grow with the number of runs.
+#[test]
+fn a_cache_start_read_one_event_at_a_time_keeps_up_and_holds_a_few_headers() {
+    let events = coding();
+    let budget = 16 * 1024;
+    let mut fold = CacheStartFold::new(budget);
+    let mut moved = std::collections::HashSet::new();
+    let mut log = Vec::new();
+    for round in 0..40_u64 {
+        for event in events.iter().take(40) {
+            let mut copy = (**event).clone();
+            copy.seq = log.len() as u64 + 1;
+            let copy = Arc::new(copy);
+            fold.observe(&copy);
+            log.push(copy);
+            moved.extend(fold.start().map(|start| start.seq));
+        }
+        assert!(
+            fold.noted.len() <= 5,
+            "round {round} notes {} starts",
+            fold.noted.len()
+        );
+    }
+    assert!(moved.len() > 2, "the start moved {} times", moved.len());
+    let latest = cache_start(&log, budget).expect("the log does not fit");
+    let placed = fold.start().expect("a start");
+    assert!(placed.seq <= log[latest].seq);
+    let at = log
+        .iter()
+        .position(|event| event.seq == placed.seq)
+        .unwrap();
+    let span: usize = log[at..]
+        .iter()
+        .map(|event| view_size(event, EventsView::Display))
+        .sum();
+    assert!(span <= 2 * budget + 64 * 1024, "{span}");
 }
 
 #[test]

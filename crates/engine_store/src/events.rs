@@ -2111,16 +2111,25 @@ impl EventLog {
             reopened_storage.index.latest_real_usage(),
             "the latest usage"
         );
-        if let Some(view_start) = &storage.view_start {
-            let start = cookie_agent_protocol::display_view::cache_start(&whole, VIEW_BUDGET);
+        if let Some(view_start) = &storage.view_start
+            && let Some(placed) = view_start.start()
+        {
+            let at = whole
+                .iter()
+                .position(|event| event.seq == placed.seq)
+                .expect("a view cache starts at a record of the log");
             assert_eq!(
-                view_start.start().map(|start| start.seq),
-                start.map(|start| whole[start].seq),
+                whole[at].timestamp, placed.timestamp,
                 "where a view cache starts"
+            );
+            assert!(
+                cookie_agent_protocol::display_view::cache_start(&whole, VIEW_BUDGET)
+                    .is_some_and(|latest| at <= latest),
+                "a view cache starts where a window can reach before it"
             );
             assert_eq!(
                 view_start.header(),
-                cookie_agent_protocol::display_view::state_events(&whole[..start.unwrap_or(0)]),
+                cookie_agent_protocol::display_view::state_events(&whole[..at]),
                 "a view cache's header"
             );
         }
@@ -2311,7 +2320,7 @@ impl EventLog {
             .storage()
             .view_start
             .as_ref()
-            .and_then(|view_start| Some((view_start.start()?, view_start.header())));
+            .and_then(|view_start| Some((view_start.start()?, view_start.header().to_vec())));
         let from_cache_start = match start {
             Some((start, header)) => Some((start, header, self.pass(start.seq..)?)),
             None => None,
