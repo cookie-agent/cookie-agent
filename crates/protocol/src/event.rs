@@ -2865,7 +2865,7 @@ impl ApprovalFinalization {
 /// The history format this build writes and reads: the major version of the
 /// session log layout, stamped on `session_created`. It bumps only for a
 /// change that cannot follow the additive rules of session history.
-pub const HISTORY_FORMAT: u32 = 2;
+pub const HISTORY_FORMAT: u32 = 3;
 
 /// The history format the protocols froze with, the only one a client
 /// before client protocol 1.63.0 reads.

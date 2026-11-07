@@ -580,6 +580,18 @@ fn raw_output_block(output: &Value) -> Option<DisplayBlock> {
     Some(block)
 }
 
+/// A call's raw output as its record stores it: an image the display blocks
+/// stored is named, not stored again.
+fn stored_raw_output(fields: &ToolCallFields, blocks: &[DisplayBlock]) -> Option<Value> {
+    let mut output = fields.raw_output.clone()?;
+    cookie_agent_engine_store::events::blobs::reference_stored_images(&mut output, &mut |digest| {
+        blocks.iter().any(|block| {
+                matches!(block, DisplayBlock::Media { artifact, .. } if artifact.sha256 == digest)
+            })
+    });
+    Some(output)
+}
+
 /// The raw input fields a call's header can show after its title, in the
 /// order one is chosen.
 const PRIMARY_KEYS: [&str; 8] = [
@@ -2381,6 +2393,7 @@ impl Turn<'_> {
                 blocks.extend(raw_output_block(output));
             }
         }
+        let raw_output = stored_raw_output(&shown.fields, &blocks);
         let title = display_text(shown.fields.title.as_deref().unwrap_or("ACP tool call"));
         let tool_call_id = shown.tool_call_id;
         let presentation = shown.final_presentation();
@@ -2396,7 +2409,7 @@ impl Turn<'_> {
                 "acp": {
                     "kind": shown.fields.kind,
                     "raw_input": shown.fields.raw_input,
-                    "raw_output": shown.fields.raw_output,
+                    "raw_output": raw_output,
                     "tool_name": shown.fields.tool_name(),
                 }
             }),
@@ -4888,6 +4901,40 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    #[test]
+    fn an_image_a_display_block_stored_is_named_in_the_stored_raw_output() {
+        use base64::Engine as _;
+        let bytes = vec![9_u8; 4096];
+        let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
+        let digest = cookie_agent_engine_store::events::blobs::digest(&bytes);
+        let fields = ToolCallFields {
+            raw_output: Some(json!([
+                {"type": "image", "source": {"data": encoded, "media_type": "image/png"}},
+                {"type": "text", "text": "kept"},
+            ])),
+            ..ToolCallFields::default()
+        };
+        let media = DisplayBlock::Media {
+            artifact: cookie_agent_protocol::ArtifactRef {
+                sha256: digest.clone(),
+                byte_length: bytes.len() as u64,
+                media_type: "image/png".to_owned(),
+                filename: None,
+            },
+            alt: None,
+        };
+        assert_eq!(
+            stored_raw_output(&fields, &[media]),
+            Some(json!([
+                {"type": "image", "source": {"data": format!("artifact://sha256/{digest}"),
+                    "media_type": "image/png"}},
+                {"type": "text", "text": "kept"},
+            ]))
+        );
+        // No block stored it, so the record is the only copy.
+        assert_eq!(stored_raw_output(&fields, &[]), fields.raw_output);
+    }
 
     #[test]
     fn codexs_resume_warning_is_dropped_once_the_model_is_set_back() {

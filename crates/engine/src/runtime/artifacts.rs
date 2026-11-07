@@ -1569,6 +1569,24 @@ pub(crate) fn artifact_references_in_log(
 }
 
 #[cfg(test)]
+mod reference_tests {
+    use std::collections::HashSet;
+
+    use super::collect_artifact_references;
+
+    #[test]
+    fn a_reference_in_a_raw_output_keeps_its_file_alive() {
+        let digest = "a".repeat(64);
+        let metadata = serde_json::json!({"acp": {"raw_output": [
+            {"source": {"data": format!("artifact://sha256/{digest}")}},
+        ]}});
+        let mut live = HashSet::new();
+        collect_artifact_references(&metadata, &mut live);
+        assert_eq!(live, HashSet::from([digest]));
+    }
+}
+
+#[cfg(test)]
 mod verified_read_cache_tests {
     use std::io::Write as _;
 

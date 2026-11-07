@@ -161,6 +161,12 @@ The formats:
     `agent.fallback_chain` and each internal agent's `fallbacks`, become
     `<member>_blob` when their JSON is 512 bytes or more, the blob holding
     that JSON, so a list repeated across records is stored once.
+- **3** stores an image an ACP tool returned once: a string in a tool result's
+  `metadata.acp.raw_output` that is entirely the canonical base64 of a file in
+  `blobs/` is `artifact://sha256/<digest>` instead, which encoding that file
+  again turns back. The rest of the raw output is unchanged. A store's conversion
+  deletes the blobs that held the base64 when its backups go; `blobs.obsolete`
+  beside the root's log lists them until then.
 
   A reference is `"artifact://sha256/<digest>"`, so a fork takes the blobs
   its history names along and a revert collects the ones only its dropped

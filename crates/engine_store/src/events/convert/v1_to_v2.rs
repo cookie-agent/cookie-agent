@@ -28,13 +28,14 @@ use std::collections::{HashMap, HashSet};
 
 use serde_json::{Map, Value};
 
-use super::Blobs;
+use super::Step;
 use crate::events::blobs;
 
 const PRESENTATION: &str = "tool_presentation";
 const CONTEXT: &str = "context";
 
-pub(super) fn convert(lines: Vec<Value>, moved: &mut Blobs) -> Result<Vec<Value>, String> {
+pub(super) fn convert(lines: Vec<Value>, step: &mut Step<'_>) -> Result<Vec<Value>, String> {
+    let moved = &mut *step.moved;
     let live = LiveState::of(&lines);
     Ok(lines
         .into_iter()
@@ -231,7 +232,8 @@ mod tests {
     }
 
     fn converted(lines: Vec<Value>) -> Vec<Value> {
-        convert(lines, &mut Blobs::new()).expect("converts")
+        let (mut moved, mut obsolete) = Default::default();
+        convert(lines, &mut Step::in_memory(&mut moved, &mut obsolete)).expect("converts")
     }
 
     fn omitted(line: &Value) -> bool {

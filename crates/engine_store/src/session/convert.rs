@@ -1,6 +1,8 @@
 //! Converting a session tree's history to this build's format on disk
 //! (`docs/site/specs/compatibility-v1.md` section 8.7).
 
+use std::collections::BTreeSet;
+
 use super::*;
 use crate::events::blobs::{self, BLOBS_DIR, LEGACY_ARTIFACTS_DIR};
 use crate::events::convert::{self as history, ConvertError};
@@ -32,7 +34,14 @@ struct Staged {
     format: u32,
     log: PathBuf,
     metadata: PathBuf,
+    /// The blobs the log stopped naming.
+    obsolete: BTreeSet<String>,
 }
+
+/// The blobs a conversion stopped naming, as a JSON list beside the tree's
+/// root log. Backups of the old logs need them, so they stay until the backups
+/// go ([`remove_obsolete_blobs`]).
+pub(super) const OBSOLETE_BLOBS_FILE: &str = "blobs.obsolete";
 
 const STAGED_SUFFIX: &str = "convert.tmp";
 
@@ -48,9 +57,10 @@ const STAGED_SUFFIX: &str = "convert.tmp";
 /// every log converted does each original become `events.jsonl.v<N>.bak`
 /// and the new file take its place; `subagents/index.json`, a cache of the
 /// old summaries, is removed and rebuilt by the next tree load. A failure
-/// before that leaves every original log untouched. A log already current,
-/// of a newer format, or of one no conversion exists from is left for its
-/// open to judge. Each step can be repeated, so a conversion a crash cut
+/// before that leaves every original log untouched. The blobs the logs stopped
+/// naming are recorded before the first original goes, and stay. A log already
+/// current, of a newer format, or of one no conversion exists from is left for
+/// its open to judge. Each step can be repeated, so a conversion a crash cut
 /// short goes on at the next.
 pub fn convert_tree(root: SessionId, root_dir: &Path) -> Result<TreeConversion, SessionError> {
     let artifacts_moved = move_legacy_artifacts(root_dir)?;
@@ -89,6 +99,7 @@ pub fn convert_tree(root: SessionId, root_dir: &Path) -> Result<TreeConversion, 
             }
         }
     }
+    record_obsolete_blobs(root_dir, &members, &staged)?;
     for log in &staged {
         commit(log)?;
     }
@@ -106,6 +117,126 @@ pub fn convert_tree(root: SessionId, root_dir: &Path) -> Result<TreeConversion, 
         }
     }
     Ok(conversion)
+}
+
+/// Adds the blobs the staged logs stopped naming to the tree's record, but for
+/// any that a log of the tree still names.
+fn record_obsolete_blobs(
+    root_dir: &Path,
+    members: &[(SessionId, PathBuf)],
+    staged: &[Staged],
+) -> Result<(), SessionError> {
+    let mut obsolete = staged
+        .iter()
+        .flat_map(|log| log.obsolete.iter().cloned())
+        .collect::<BTreeSet<_>>();
+    if obsolete.is_empty() {
+        return Ok(());
+    }
+    for (_, dir) in members {
+        let path = staged
+            .iter()
+            .find(|log| log.dir == *dir)
+            .map_or_else(|| dir.join(EVENTS_FILE), |log| log.log.clone());
+        keep_unnamed(&path, &mut obsolete)?;
+    }
+    let path = root_dir.join(OBSOLETE_BLOBS_FILE);
+    obsolete.extend(read_obsolete_blobs(root_dir));
+    let bytes = serde_json::to_vec(&obsolete).map_err(|source| SessionError::Json {
+        path: path.clone(),
+        source,
+    })?;
+    write_staged(&path, &bytes)?;
+    fsync_directory(root_dir)?;
+    Ok(())
+}
+
+/// Removes from `digests` every one the log at `path` mentions, as a whole run
+/// of hex digits anywhere in it. A log that does not exist mentions nothing.
+fn keep_unnamed(path: &Path, digests: &mut BTreeSet<String>) -> Result<(), SessionError> {
+    let bytes = match fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(source) => {
+            return Err(SessionError::Io {
+                path: path.to_owned(),
+                source,
+            });
+        }
+    };
+    for run in bytes.split(|byte| !byte.is_ascii_hexdigit()) {
+        if let Ok(run) = std::str::from_utf8(run)
+            && blobs::is_digest(run)
+        {
+            digests.remove(run);
+        }
+    }
+    Ok(())
+}
+
+fn read_obsolete_blobs(root_dir: &Path) -> BTreeSet<String> {
+    fs::read(root_dir.join(OBSOLETE_BLOBS_FILE))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<BTreeSet<String>>(&bytes).ok())
+        .unwrap_or_default()
+}
+
+/// The logs of the tree at `root_dir`: its root's and each child's.
+fn member_dirs(root_dir: &Path) -> Vec<PathBuf> {
+    let mut members = vec![root_dir.to_owned()];
+    if let Ok(entries) = fs::read_dir(root_dir.join(SUBAGENTS_DIR)) {
+        members.extend(entries.flatten().map(|entry| entry.path()));
+    }
+    members
+}
+
+/// Whether the file `name` is the backup of a converted log.
+pub(super) fn is_log_backup(name: &str) -> bool {
+    name.strip_prefix(&format!("{EVENTS_FILE}.v"))
+        .and_then(|rest| rest.strip_suffix(".bak"))
+        .is_some_and(|format| format.parse::<u32>().is_ok())
+}
+
+/// Deletes the blobs the tree at `root_dir` recorded as obsolete, once no
+/// backup beside a log needs them, and the record. A blob that a log has named
+/// again stays. The caller holds the tree's lock. Each step can be repeated.
+pub(super) fn remove_obsolete_blobs(root_dir: &Path) -> Result<(), SessionError> {
+    let path = root_dir.join(OBSOLETE_BLOBS_FILE);
+    if !path.exists() {
+        return Ok(());
+    }
+    let members = member_dirs(root_dir);
+    let backed_up = members.iter().any(|dir| {
+        fs::read_dir(dir).is_ok_and(|entries| {
+            entries
+                .flatten()
+                .any(|entry| entry.file_name().to_str().is_some_and(is_log_backup))
+        })
+    });
+    if backed_up {
+        return Ok(());
+    }
+    let mut obsolete = read_obsolete_blobs(root_dir);
+    for dir in &members {
+        keep_unnamed(&dir.join(EVENTS_FILE), &mut obsolete)?;
+    }
+    let folder = root_dir.join(BLOBS_DIR);
+    for digest in obsolete.iter().filter(|digest| blobs::is_digest(digest)) {
+        match fs::remove_file(folder.join(digest)) {
+            Ok(()) => {}
+            Err(source) if source.kind() == std::io::ErrorKind::NotFound => {}
+            Err(source) => {
+                return Err(SessionError::Io {
+                    path: folder.join(digest),
+                    source,
+                });
+            }
+        }
+    }
+    fs::remove_file(&path).map_err(|source| SessionError::Io {
+        path: path.clone(),
+        source,
+    })
 }
 
 /// Moves the tree's artifacts from `artifacts/`, where trees kept them
@@ -203,15 +334,20 @@ fn stage(id: SessionId, dir: &Path) -> Result<Stage, SessionError> {
         .iter()
         .rposition(|byte| *byte == b'\n')
         .map_or(0, |at| at + 1);
-    let (converted, moved) =
-        history::convert_bytes(format, &bytes[..complete]).map_err(|error: ConvertError| {
+    let blob_dir = blobs::tree_blob_dir(&path);
+    let history::Converted {
+        log: converted,
+        moved,
+        obsolete,
+    } = history::convert_bytes(format, &bytes[..complete], Some(&blob_dir)).map_err(
+        |error: ConvertError| {
             SessionError::Event(EventLogError::Corrupt {
                 path: path.clone(),
                 message: error.to_string(),
             })
-        })?;
+        },
+    )?;
     // The blobs are in place and synced before any log names them.
-    let blob_dir = blobs::tree_blob_dir(&path);
     blobs::write_synced(&blob_dir, &moved).map_err(|source| SessionError::Io {
         path: blob_dir,
         source,
@@ -223,6 +359,7 @@ fn stage(id: SessionId, dir: &Path) -> Result<Stage, SessionError> {
         format,
         log,
         metadata,
+        obsolete,
     };
     let result = (|| {
         write_staged(&staged.log, &converted)?;

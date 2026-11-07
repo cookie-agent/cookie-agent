@@ -9,7 +9,9 @@
 //! Converters never use old Rust types; they read and write JSON. A step
 //! may move values out of the log into the tree's blobs ([`Blobs`], by
 //! digest): the caller writes them to `blobs/` before the converted log
-//! (`convert_tree`), or keeps them in memory for a read-only open.
+//! (`convert_tree`), or keeps them in memory for a read-only open. A step that
+//! rewrites a value in a blob reads it through its [`Step`] and names the blob
+//! it stopped using, which the caller deletes once nothing needs it.
 //!
 //! A log without a `history_format` predates history formats and is not
 //! converted.
@@ -21,7 +23,7 @@
 //! `v<N>_to_v<N+1>.rs`, as `v1_to_v2.rs` did for format 2:
 //!
 //! 1. Bump [`HISTORY_FORMAT`] in `cookie_agent_protocol`.
-//! 2. Write `pub(super) fn convert(lines: Vec<Value>, blobs: &mut Blobs)
+//! 2. Write `pub(super) fn convert(lines: Vec<Value>, step: &mut Step<'_>)
 //!    -> Result<Vec<Value>, String>` in `v<N>_to_v<N+1>.rs`: it reads
 //!    format-`N` lines as JSON (envelopes and payloads exactly as a
 //!    format-`N` writer stored them, the storage encodings included, such as
@@ -46,6 +48,8 @@
 //! The test-only step from format 0 (`TEST_CONVERTERS`) exercises the
 //! chain, the tree conversion, and the backups apart from any real format.
 
+use std::{collections::BTreeSet, io, path::Path};
+
 use cookie_agent_protocol::HISTORY_FORMAT;
 use serde_json::Value;
 
@@ -54,21 +58,86 @@ pub use super::blobs::Blobs;
 #[cfg(any(test, feature = "test-support"))]
 mod v0_to_v1;
 mod v1_to_v2;
+mod v2_to_v3;
 
 /// One conversion step, from format `from` to `from + 1`.
 pub struct Converter {
     pub from: u32,
     /// The log's lines in format `from + 1`, with the values it moved to
-    /// blobs added to the blobs. The chain stamps the new format on
+    /// blobs added to the step's. The chain stamps the new format on
     /// `session_created` afterwards.
-    pub convert: fn(Vec<Value>, &mut Blobs) -> Result<Vec<Value>, String>,
+    pub convert: fn(Vec<Value>, &mut Step<'_>) -> Result<Vec<Value>, String>,
+}
+
+/// What one conversion step reads blobs from and leaves behind.
+pub struct Step<'a> {
+    /// The blobs the conversion moved values to so far.
+    pub moved: &'a mut Blobs,
+    /// The blobs the log named before this step and does not any more.
+    pub obsolete: &'a mut BTreeSet<String>,
+    /// The tree's folder of blobs, when the caller knows it.
+    folder: Option<&'a Path>,
+}
+
+impl<'a> Step<'a> {
+    /// A step over blobs in memory alone.
+    #[cfg(test)]
+    pub(super) fn in_memory(moved: &'a mut Blobs, obsolete: &'a mut BTreeSet<String>) -> Self {
+        Self {
+            moved,
+            obsolete,
+            folder: None,
+        }
+    }
+
+    /// The content of blob `digest`, verified against its digest.
+    pub fn read(&self, digest: &str) -> io::Result<Vec<u8>> {
+        if let Some(bytes) = self.moved.get(digest) {
+            return Ok(bytes.clone());
+        }
+        let folder = self
+            .folder
+            .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?;
+        super::blobs::read(folder, digest)
+    }
+
+    /// Whether the tree holds blob `digest`: moved, in its folder, or among
+    /// the artifacts of a tree not converted yet.
+    #[must_use]
+    pub fn holds(&self, digest: &str) -> bool {
+        self.moved.contains_key(digest)
+            || self.folder.is_some_and(|folder| {
+                folder.join(digest).is_file()
+                    || folder.parent().is_some_and(|tree| {
+                        tree.join(super::blobs::LEGACY_ARTIFACTS_DIR)
+                            .join(digest)
+                            .is_file()
+                    })
+            })
+    }
+}
+
+/// A log's lines or bytes in this build's format, with what the steps left.
+#[derive(Debug)]
+pub struct Converted<T> {
+    pub log: T,
+    /// The values the steps moved to blobs.
+    pub moved: Blobs,
+    /// The blobs the log stopped naming.
+    pub obsolete: BTreeSet<String>,
 }
 
 /// Every conversion step this build has, by the format it reads.
-const CONVERTERS: &[Converter] = &[Converter {
-    from: 1,
-    convert: v1_to_v2::convert,
-}];
+const CONVERTERS: &[Converter] = &[
+    Converter {
+        from: 1,
+        convert: v1_to_v2::convert,
+    },
+    Converter {
+        from: 2,
+        convert: v2_to_v3::convert,
+    },
+];
 
 /// Steps only tests use: format 0 exists only to exercise the machinery
 /// before the first real converter does.
@@ -112,12 +181,25 @@ pub fn convertible(format: u32) -> bool {
 }
 
 /// Converts a log's lines from `from` to [`HISTORY_FORMAT`], one step at a
-/// time, returning them with the blobs the steps moved values to.
-pub fn convert(from: u32, mut lines: Vec<Value>) -> Result<(Vec<Value>, Blobs), ConvertError> {
-    let mut blobs = Blobs::new();
+/// time, reading blobs from `folder`, the tree's, when it is known.
+pub fn convert(
+    from: u32,
+    mut lines: Vec<Value>,
+    folder: Option<&Path>,
+) -> Result<Converted<Vec<Value>>, ConvertError> {
+    let mut moved = Blobs::new();
+    let mut obsolete = BTreeSet::new();
     for format in from..HISTORY_FORMAT {
         let step = converter(format).ok_or(ConvertError::NoPath(format))?;
-        lines = (step.convert)(lines, &mut blobs).map_err(|message| ConvertError::Failed {
+        lines = (step.convert)(
+            lines,
+            &mut Step {
+                moved: &mut moved,
+                obsolete: &mut obsolete,
+                folder,
+            },
+        )
+        .map_err(|message| ConvertError::Failed {
             from: format,
             message,
         })?;
@@ -133,20 +215,32 @@ pub fn convert(from: u32, mut lines: Vec<Value>) -> Result<(Vec<Value>, Blobs), 
             })?;
         creation["history_format"] = Value::from(format + 1);
     }
-    Ok((lines, blobs))
+    Ok(Converted {
+        log: lines,
+        moved,
+        obsolete,
+    })
 }
 
 /// Converts the complete lines of a log in `from` to [`HISTORY_FORMAT`] and
 /// returns the new log's bytes, with the blobs it names that the
 /// conversion moved values to. A line that is not JSON is left out; the
 /// original keeps it.
-pub fn convert_bytes(from: u32, bytes: &[u8]) -> Result<(Vec<u8>, Blobs), ConvertError> {
+pub fn convert_bytes(
+    from: u32,
+    bytes: &[u8],
+    folder: Option<&Path>,
+) -> Result<Converted<Vec<u8>>, ConvertError> {
     let lines = bytes
         .split(|byte| *byte == b'\n')
         .filter(|line| !line.is_empty())
         .filter_map(|line| serde_json::from_slice::<Value>(line).ok())
         .collect::<Vec<_>>();
-    let (lines, blobs) = convert(from, lines)?;
+    let Converted {
+        log: lines,
+        moved,
+        obsolete,
+    } = convert(from, lines, folder)?;
     let mut converted = Vec::with_capacity(bytes.len());
     for line in lines {
         serde_json::to_writer(&mut converted, &line).map_err(|error| ConvertError::Failed {
@@ -155,5 +249,9 @@ pub fn convert_bytes(from: u32, bytes: &[u8]) -> Result<(Vec<u8>, Blobs), Conver
         })?;
         converted.push(b'\n');
     }
-    Ok((converted, blobs))
+    Ok(Converted {
+        log: converted,
+        moved,
+        obsolete,
+    })
 }

@@ -168,6 +168,7 @@ nav:
   - Specs:
       - Status and scope: specs/index.md
       - Implemented:
+          - "History format 3: an ACP tool's images stored once": specs/history-format-3.md
           - The web page opens a session newest first: specs/web-newest-first.md
           - The machine on a tool call: specs/tool-call-machines.md
           - Conversation shares: specs/conversation-shares.md

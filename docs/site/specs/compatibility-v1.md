@@ -553,7 +553,8 @@ A writer stamps `"skippable": true` in the envelope of every audit event.
 ### 8.7 History format and conversion
 
 `session_created` carries `history_format` (1 at the freeze, 2 since
-[session storage v3](session-storage-v3.md)). A reader handles a log as
+[session storage v3](session-storage-v3.md), 3 since an ACP tool's images are
+[stored once](history-format-3.md)). A reader handles a log as
 follows:
 
 - **No `history_format`:** a pre-1.0 log. It is not converted, and the open

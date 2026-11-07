@@ -30,6 +30,11 @@
 //! reads a line, and the writer moves them out as it writes one. So
 //! everything that reads a record (model replay, compaction, the approval
 //! reviewer, clients, plugins) gets the whole value.
+//!
+//! An image an ACP tool returned is a file of the tree. Its copy in
+//! `metadata.acp.raw_output` is a reference to that file since history format
+//! 3 ([`reference_stored_images`]), which a reader that wants the base64 can
+//! encode again exactly.
 
 use std::{
     collections::HashMap,
@@ -272,6 +277,56 @@ fn referenced(reference: &Value) -> Result<&str, String> {
         .and_then(|reference| reference.strip_prefix(URI_PREFIX))
         .filter(|digest| is_digest(digest))
         .ok_or_else(|| format!("{reference} is not a blob reference"))
+}
+
+/// A string this long or longer may be the base64 of a stored file.
+pub const STORED_IMAGE_MIN_BYTES: usize = 1024;
+
+/// Replaces each string at any depth of `value` that is entirely the canonical
+/// base64 of a file `stored` knows by digest with a reference to that file:
+/// whether it replaced any. Nothing is lost, as encoding the file again gives
+/// the string back (`docs/site/specs/history-format-3.md`).
+pub fn reference_stored_images(value: &mut Value, stored: &mut dyn FnMut(&str) -> bool) -> bool {
+    use base64::Engine as _;
+    match value {
+        Value::Array(items) => {
+            // Every item, not up to the first that replaces.
+            let mut replaced = false;
+            for item in items {
+                replaced |= reference_stored_images(item, stored);
+            }
+            replaced
+        }
+        Value::Object(members) => {
+            let mut replaced = false;
+            for member in members.values_mut() {
+                replaced |= reference_stored_images(member, stored);
+            }
+            replaced
+        }
+        Value::String(text) if text.len() >= STORED_IMAGE_MIN_BYTES => {
+            let engine = base64::engine::general_purpose::STANDARD;
+            let Ok(bytes) = engine.decode(text.as_bytes()) else {
+                return false;
+            };
+            let name = digest(&bytes);
+            if !stored(&name) || engine.encode(&bytes) != *text {
+                return false;
+            }
+            *text = reference(&name);
+            true
+        }
+        _ => false,
+    }
+}
+
+/// `metadata.acp.raw_output` of a tool result.
+#[must_use]
+pub fn acp_raw_output(result: &mut Value) -> Option<&mut Value> {
+    result
+        .get_mut("metadata")?
+        .get_mut("acp")?
+        .get_mut("raw_output")
 }
 
 /// Whether `name` is a blob's name: 64 lowercase hex digits.
@@ -742,5 +797,46 @@ mod tests {
             tree_blob_dir(&root.join("subagents/child/events.jsonl")),
             root.join(BLOBS_DIR)
         );
+    }
+
+    #[test]
+    fn a_stored_images_base64_becomes_a_reference_at_any_depth() {
+        use base64::Engine as _;
+        let engine = base64::engine::general_purpose::STANDARD;
+        let bytes = vec![7_u8; STORED_IMAGE_MIN_BYTES];
+        let encoded = engine.encode(&bytes);
+        let name = digest(&bytes);
+        let mut stored = |candidate: &str| candidate == name;
+        let reference = format!("artifact://sha256/{name}");
+
+        let mut nested = json!({"content": [{"source": {"data": encoded}}], "kept": "text"});
+        assert!(reference_stored_images(&mut nested, &mut stored));
+        assert_eq!(
+            nested,
+            json!({"content": [{"source": {"data": reference}}], "kept": "text"})
+        );
+
+        // Every image of a value, not only the first.
+        let mut two = json!([{"data": encoded}, {"data": encoded}]);
+        assert!(reference_stored_images(&mut two, &mut stored));
+        assert_eq!(two, json!([{"data": reference}, {"data": reference}]));
+
+        // Each condition of the rule leaves the value alone when it fails.
+        let short = engine.encode(&bytes[..16]);
+        let other = engine.encode(vec![8_u8; STORED_IMAGE_MIN_BYTES]);
+        let surrounded = format!("{encoded}\n");
+        // Valid base64 but for its last character's unused bits.
+        let mut not_canonical = engine.encode(vec![7_u8; STORED_IMAGE_MIN_BYTES + 1]);
+        not_canonical.pop();
+        not_canonical.pop();
+        not_canonical.pop();
+        not_canonical.push_str("x==");
+        for text in [short, other, surrounded, not_canonical] {
+            let before = json!({"data": text});
+            let mut value = before.clone();
+            let mut known = |candidate: &str| candidate == name;
+            assert!(!reference_stored_images(&mut value, &mut known));
+            assert_eq!(value, before);
+        }
     }
 }

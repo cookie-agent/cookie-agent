@@ -6,7 +6,10 @@ use serde_json::Value;
 
 /// A line carrying `"convert_fails": true` fails the conversion, for tests
 /// of what a failure leaves behind.
-pub(super) fn convert(lines: Vec<Value>, _blobs: &mut super::Blobs) -> Result<Vec<Value>, String> {
+pub(super) fn convert(
+    lines: Vec<Value>,
+    _step: &mut super::Step<'_>,
+) -> Result<Vec<Value>, String> {
     lines
         .into_iter()
         .map(|mut line| {

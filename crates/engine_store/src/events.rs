@@ -3968,12 +3968,15 @@ fn in_current_format(
         .and_then(|line| serde_json::from_slice::<Value>(line).ok());
     match first.as_ref().and_then(convert::history_format) {
         Some(format) if convert::convertible(format) => {
+            let folder = blobs::tree_blob_dir(path);
             let converted =
-                convert::convert_bytes(format, &bytes).map_err(|error| EventLogError::Corrupt {
-                    path: path.to_owned(),
-                    message: error.to_string(),
+                convert::convert_bytes(format, &bytes, Some(&folder)).map_err(|error| {
+                    EventLogError::Corrupt {
+                        path: path.to_owned(),
+                        message: error.to_string(),
+                    }
                 })?;
-            Ok((converted.0, Some(converted.1)))
+            Ok((converted.log, Some(converted.moved)))
         }
         _ => Ok((bytes, None)),
     }

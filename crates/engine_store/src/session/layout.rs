@@ -654,12 +654,7 @@ fn back_up_converted(sessions_dir: &Path, tree: &OldTree) {
         };
         for entry in entries.flatten() {
             let name = entry.file_name();
-            let is_backup = name.to_str().is_some_and(|name| {
-                name.strip_prefix(&format!("{EVENTS_FILE}.v"))
-                    .and_then(|rest| rest.strip_suffix(".bak"))
-                    .is_some_and(|format| format.parse::<u32>().is_ok())
-            });
-            if !is_backup {
+            if !name.to_str().is_some_and(convert::is_log_backup) {
                 continue;
             }
             let original = entry.path();
@@ -851,6 +846,7 @@ fn merge_runtime_revisions(sessions_dir: &Path, work_dirs: &[PathBuf]) -> Result
 fn sweep_top_level(sessions_dir: &Path, pending: &[PendingTree]) -> Vec<SessionId> {
     let deleted = delete::sweep_tombstones(sessions_dir);
     let backup = sessions_dir.join(BACKUP_DIR);
+    remove_backed_up_obsolete_blobs(sessions_dir, &backup);
     if backup.exists()
         && let Err(error) = fs::remove_dir_all(&backup)
     {
@@ -869,6 +865,32 @@ fn sweep_top_level(sessions_dir: &Path, pending: &[PendingTree]) -> Vec<SessionI
         }
     }
     deleted
+}
+
+/// Deletes the blobs the trees in `backup` stopped naming, before their backups
+/// go, so a crash in between does this again at the next start. A tree another
+/// process holds keeps them.
+fn remove_backed_up_obsolete_blobs(sessions_dir: &Path, backup: &Path) {
+    for root in session_dir_ids(backup) {
+        let dir = root_dir_in(sessions_dir, root);
+        if !dir.is_dir() {
+            continue;
+        }
+        let removed = match try_acquire(&dir) {
+            Ok(SessionOwnership::Owned(_lock)) => convert::remove_obsolete_blobs(&dir),
+            Ok(SessionOwnership::Foreign) => continue,
+            Err(source) => Err(SessionError::Io {
+                path: dir.clone(),
+                source,
+            }),
+        };
+        if let Err(error) = removed {
+            eprintln!(
+                "cookie-agent: the old blobs of {} stay: {error}",
+                dir.display()
+            );
+        }
+    }
 }
 
 /// Removes the temporaries a replaced file staged in `directory` and a

@@ -6,6 +6,8 @@ use std::collections::HashSet;
 
 use jiff::Timestamp;
 
+use crate::events::blobs;
+
 use super::super::{
     ACTIVITY_DIR, LAYOUT_MARKER_FILE, LAYOUT_VERSION, ListWindow, Month, RUNTIME_REVISIONS_FILE,
     StoreLayout, read_layout, root_dir_in,
@@ -1028,4 +1030,159 @@ fn a_conversion_cut_short_by_a_crash_goes_on_at_the_next_start() {
             .history_format,
         cookie_agent_protocol::HISTORY_FORMAT
     );
+}
+
+/// A format-2 tree whose log holds a tool result with an image in `raw_output`:
+/// its log, the image's digest, and the digest of the blob holding the base64.
+fn tree_with_a_stored_image(dir: &Path) -> (String, String) {
+    use base64::Engine as _;
+    let log = dir.join(EVENTS_FILE);
+    let text = fs::read_to_string(&log).expect("log");
+    let mut lines = text
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("a line"))
+        .collect::<Vec<_>>();
+    lines[0]["payload"]["history_format"] = serde_json::json!(2);
+    let image = vec![5_u8; 64 * 1024];
+    let image_digest = blobs::digest(&image);
+    let folder = dir.join(blobs::BLOBS_DIR);
+    fs::create_dir_all(&folder).expect("blobs");
+    fs::write(folder.join(&image_digest), &image).expect("the image");
+    let mut payload = serde_json::json!({
+        "type": "tool_call_terminated",
+        "tool_call_id": "a-call",
+        "result": {
+            "title": "Read",
+            "output": "",
+            "display": [],
+            "metadata": {"acp": {"raw_output": [{"source": {
+                "data": base64::engine::general_purpose::STANDARD.encode(&image),
+            }}]}},
+        },
+    });
+    let mut json_blob = String::new();
+    blobs::externalize(&mut payload, &mut |digest, bytes| {
+        json_blob = digest.to_owned();
+        fs::write(folder.join(digest), bytes).expect("the blob");
+    });
+    let mut record = lines.last().expect("a line").clone();
+    record["seq"] = serde_json::json!(record["seq"].as_u64().expect("seq") + 1);
+    record["payload"] = payload;
+    lines.push(record);
+    let written = lines
+        .iter()
+        .map(|line| serde_json::to_string(line).expect("line") + "\n")
+        .collect::<String>();
+    fs::write(&log, written).expect("format 2");
+    (image_digest, json_blob)
+}
+
+fn format_two_marker(sessions_dir: &Path) {
+    fs::write(
+        sessions_dir.join(LAYOUT_MARKER_FILE),
+        r#"{"version": 3, "history_format": 2, "pending": []}"#,
+    )
+    .expect("a format-2 marker");
+}
+
+#[test]
+fn a_stores_conversion_deletes_the_old_blobs_when_the_backups_go() {
+    let temporary = private_tempdir();
+    let data = temporary.path().join("data");
+    let store = open_store(&data);
+    let root = persist_test_session(&store);
+    drop(store);
+    let sessions_dir = sessions(&data);
+    let dir = root_dir_in(&sessions_dir, root);
+    let (image, json_blob) = tree_with_a_stored_image(&dir);
+    format_two_marker(&sessions_dir);
+
+    drop(open_store(&data));
+
+    let folder = dir.join(blobs::BLOBS_DIR);
+    assert!(folder.join(&image).is_file(), "the image stays");
+    assert!(!folder.join(&json_blob).exists(), "its base64 goes");
+    let log = fs::read_to_string(dir.join(EVENTS_FILE)).expect("log");
+    assert!(log.contains(&format!("artifact://sha256/{image}")));
+    assert!(!log.contains(&json_blob));
+    assert!(
+        !dir.join(super::super::convert::OBSOLETE_BLOBS_FILE)
+            .exists()
+    );
+    assert!(!sessions_dir.join(super::super::layout::BACKUP_DIR).exists());
+}
+
+#[test]
+fn old_blobs_stay_while_a_backup_beside_the_log_needs_them() {
+    let temporary = private_tempdir();
+    let data = temporary.path().join("data");
+    let store = open_store(&data);
+    let root = persist_test_session(&store);
+    drop(store);
+    let dir = root_dir_in(&sessions(&data), root);
+    let (_, json_blob) = tree_with_a_stored_image(&dir);
+
+    super::super::convert::convert_tree(root, &dir).expect("convert");
+    let backup = dir.join(format!("{EVENTS_FILE}.v2.bak"));
+    assert!(backup.is_file());
+    let folder = dir.join(blobs::BLOBS_DIR);
+    super::super::convert::remove_obsolete_blobs(&dir).expect("removes nothing");
+    assert!(folder.join(&json_blob).is_file(), "the backup names it");
+    // The backup can still be read whole.
+    assert!(
+        fs::read_to_string(&backup)
+            .expect("backup")
+            .contains(&json_blob)
+    );
+
+    // Once the user deleted it, the blob can go.
+    fs::remove_file(&backup).expect("the user deletes the backup");
+    super::super::convert::remove_obsolete_blobs(&dir).expect("removes it");
+    assert!(!folder.join(&json_blob).exists());
+}
+
+#[test]
+fn an_old_blob_a_log_still_names_stays() {
+    let temporary = private_tempdir();
+    let data = temporary.path().join("data");
+    let store = open_store(&data);
+    let root = persist_test_session(&store);
+    drop(store);
+    let dir = root_dir_in(&sessions(&data), root);
+    let (_, json_blob) = tree_with_a_stored_image(&dir);
+    super::super::convert::convert_tree(root, &dir).expect("convert");
+    fs::remove_file(dir.join(format!("{EVENTS_FILE}.v2.bak"))).expect("no backup");
+    // Something named it since the conversion, as a record or anything else.
+    let log = dir.join(EVENTS_FILE);
+    let mut text = fs::read_to_string(&log).expect("log");
+    let last = text.lines().last().expect("a line").to_owned();
+    let mut record = serde_json::from_str::<serde_json::Value>(&last).expect("line");
+    record["seq"] = serde_json::json!(record["seq"].as_u64().expect("seq") + 1);
+    record["payload"] = serde_json::json!({"type": "from_a_newer_build", "names": json_blob});
+    text.push_str(&(serde_json::to_string(&record).expect("line") + "\n"));
+    fs::write(&log, text).expect("append");
+
+    super::super::convert::remove_obsolete_blobs(&dir).expect("removes nothing");
+
+    assert!(dir.join(blobs::BLOBS_DIR).join(&json_blob).is_file());
+}
+
+#[test]
+fn a_conversion_is_read_only_until_a_tree_is_taken_and_reads_the_same() {
+    let temporary = private_tempdir();
+    let data = temporary.path().join("data");
+    let store = open_store(&data);
+    let root = persist_test_session(&store);
+    drop(store);
+    let dir = root_dir_in(&sessions(&data), root);
+    let (image, json_blob) = tree_with_a_stored_image(&dir);
+    let before = fs::read(dir.join(EVENTS_FILE)).expect("log");
+
+    let log = crate::events::EventLog::open_read_only(dir.join(EVENTS_FILE), root)
+        .expect("a format-2 log opens read-only");
+
+    assert!(log.event_snapshot().len() > 1);
+    assert_eq!(fs::read(dir.join(EVENTS_FILE)).expect("log"), before);
+    let folder = dir.join(blobs::BLOBS_DIR);
+    assert!(folder.join(&image).is_file() && folder.join(&json_blob).is_file());
 }
