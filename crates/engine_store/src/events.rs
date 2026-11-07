@@ -1806,10 +1806,12 @@ impl EventLog {
     }
 
     /// Moves the window to where the log's records say it starts, if this log
-    /// can have one (`docs/site/specs/forever-sessions.md` section 3.2): a file
-    /// this process owns holds what it lets go of, so a read-only log, which
-    /// its owner can cut or rewrite with no word to this process, a log still
-    /// buffered, and one whose records are not the file's stay whole.
+    /// can have one (`docs/site/specs/forever-sessions.md` section 3.2): the file
+    /// holds what it lets go of, so a log still buffered, and one whose records
+    /// are not the file's stay whole. A read-only log has what it opened with:
+    /// one that read itself whole has a reason, damage or an older format, and
+    /// no appends move its tip. An open that did not read a log whole holds only
+    /// its window ([`state_file`]).
     fn narrow(&self, storage: &mut EventStorage) {
         if self.read_only
             || self.converted

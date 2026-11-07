@@ -594,26 +594,74 @@ fn a_pass_of_a_read_only_log_finds_its_owner_cut_the_file() {
 /// its lines left in the file, values in blobs and all.
 #[test]
 fn a_fork_of_a_log_opened_from_its_state_copies_what_a_parse_does() {
-    let (_directory, path) = copy_of(&acp_log());
+    let mut named_blobs = false;
+    for log in golden_logs() {
+        let (_directory, path) = copy_of(&log);
+        let session = session_of(&path);
+        named_blobs |= blobs::has_references(&fs::read(&path).expect("a log"));
+        let states = states_at_turn_boundaries(&path);
+        let Some((latest, _)) = states.last() else {
+            continue;
+        };
+        let (earlier, _) = &states[states.len() / 2];
+        write_state(&path, latest);
+        let opened = EventLog::open_read_only(path.clone(), session).expect("an open");
+        assert!(opened.opened_from_state_for_test());
+        let parsed = EventLog::parsed_read_only(path.clone(), session).expect("a parse");
+        let target = tempdir().expect("a temporary directory");
+        let fork_of = |log: &EventLog, name: &str| {
+            let authority = WriteAuthority::new();
+            let prefix = log
+                .read_fork_prefix(session, earlier.at.seq)
+                .expect("a prefix");
+            let file = target.path().join(name);
+            EventLog::fork_buffered(file.clone(), prefix, authority.capability())
+                .write_whole(&file)
+                .expect("a copy");
+            fs::read(file).expect("a copy")
+        };
+        assert!(
+            fork_of(&opened, "opened") == fork_of(&parsed, "parsed"),
+            "{}",
+            log.display()
+        );
+    }
+    assert!(named_blobs, "no golden log names a blob");
+}
+
+/// A line naming blobs stays in the file, and what a fork copies of it is the line,
+/// with what this build does not know.
+#[test]
+fn a_line_naming_blobs_is_read_from_the_file_with_what_this_build_does_not_know() {
+    let log = golden_logs()
+        .into_iter()
+        .find(|log| blobs::has_references(&fs::read(log).expect("a log")))
+        .expect("a golden log naming blobs");
+    let (_directory, path) = copy_of(&log);
     let session = session_of(&path);
-    let states = states_at_turn_boundaries(&path);
-    let (latest, _) = states.last().expect("a turn");
-    let (earlier, _) = &states[states.len() / 2];
-    write_state(&path, latest);
-    let opened = EventLog::open_read_only(path.clone(), session).expect("an open");
-    assert!(opened.opened_from_state_for_test());
-    let parsed = EventLog::parsed_read_only(path.clone(), session).expect("a parse");
-    let target = tempdir().expect("a temporary directory");
-    let fork_of = |log: &EventLog, name: &str| {
-        let authority = WriteAuthority::new();
-        let prefix = log
-            .read_fork_prefix(session, earlier.at.seq)
-            .expect("a prefix");
-        let file = target.path().join(name);
-        EventLog::fork_buffered(file.clone(), prefix, authority.capability())
-            .write_whole(&file)
-            .expect("a copy");
-        fs::read(file).expect("a copy")
-    };
-    assert!(fork_of(&opened, "opened") == fork_of(&parsed, "parsed"));
+    let lines = fs::read(&path).expect("a log");
+    let mut changed = Vec::new();
+    let mut named = None;
+    for (index, line) in lines.split_inclusive(|byte| *byte == b'\n').enumerate() {
+        if named.is_none() && blobs::has_references(line) {
+            let mut value = serde_json::from_slice::<Value>(line).expect("a line");
+            value["from_a_newer_build"] = Value::Bool(true);
+            serde_json::to_writer(&mut changed, &value).expect("a line");
+            changed.push(b'\n');
+            named = Some((index, value["seq"].as_u64().expect("a sequence")));
+        } else {
+            changed.extend_from_slice(line);
+        }
+    }
+    fs::write(&path, &changed).expect("a log");
+    let (_, seq) = named.expect("a line naming blobs");
+    let opened = EventLog::open(path.clone(), session).expect("an open");
+    assert!(opened.kept_raw_seqs_for_test().is_empty(), "held in memory");
+    let mut found = false;
+    opened
+        .visit_json(seq..=seq, |value| {
+            found = value.get("from_a_newer_build").is_some();
+        })
+        .expect("the line");
+    assert!(found, "what this build did not read survives");
 }

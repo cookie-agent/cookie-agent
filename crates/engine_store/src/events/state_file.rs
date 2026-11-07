@@ -8,7 +8,7 @@
 //! one means folding the log from its start, one record at a time and keeping
 //! only the window, so what that takes in memory does not depend on the log's
 //! length. Only a log that is damaged, or of an older history format, reads the
-//! way it always has: whole, as [`super::validate_loaded`] needs.
+//! way it always has: whole, as quarantining a record needs.
 //!
 //! It stays valid across builds. A change to what a fold gives leaves the file's
 //! shape alone and its contents wrong, so it must raise [`STATE_VERSION`], and a
