@@ -552,10 +552,10 @@ fn golden_logs_read_as_a_pass_give_what_the_whole_list_gives() {
             }
             let mut count = display_view::DisplayCount::default();
             for event in log.history().unwrap() {
-                count.observe(&*event.unwrap());
+                count.observe(&event.unwrap());
             }
             for event in log.history().unwrap() {
-                count.count(&*event.unwrap());
+                count.count(&event.unwrap());
             }
             assert_eq!(
                 count.shown(),
