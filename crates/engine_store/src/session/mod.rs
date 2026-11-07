@@ -2900,6 +2900,7 @@ impl SessionStore {
         if self.tree_load_pending_for(source_id) {
             self.ensure_tree_for(source_id)?;
         }
+        self.ensure_open()?;
         let session_id = SessionId::new_v7();
         // What a fork copies of its source, which may mean reading the source's
         // file, is read before `mutation`, which every session's write waits on.

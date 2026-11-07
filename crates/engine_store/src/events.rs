@@ -1679,15 +1679,12 @@ impl EventLog {
             return;
         }
         #[cfg(any(test, feature = "test-support"))]
-        let held = storage.snapshot();
-        let before = storage.window;
+        let (held, before) = (storage.snapshot(), storage.window);
         storage.narrow();
         #[cfg(any(test, feature = "test-support"))]
         if storage.window != before {
             self.assert_file_reads_as(storage, &held);
         }
-        #[cfg(not(any(test, feature = "test-support")))]
-        let _ = before;
     }
 
     /// Test-only: the records the window just let go of read from the file as
@@ -1722,8 +1719,9 @@ impl EventLog {
         }
     }
 
-    /// The log's window, moved up to its latest committed turn once what opened
-    /// the log has done with the whole list.
+    /// Moves the log's window up to its latest committed turn, for what opened
+    /// the log once it has done with the whole list. A log that cannot have a
+    /// window stays as it is.
     pub fn narrow_window(&self) {
         let _append = self
             .append

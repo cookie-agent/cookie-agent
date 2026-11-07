@@ -80,6 +80,9 @@ pub(super) fn read_view(dir: &Path, events_path: &Path) -> Option<CachedView> {
 /// starts, or `None` when the log has no cache: it fits a window whole, its
 /// file's layout is not known, or its load skipped or repaired a record
 /// after the boundary, which the reader would not read as the loader did.
+///
+/// A log that holds its events walks back from their end to find where. A
+/// windowed one kept up with that as it grew, so this reads none of its log.
 pub(super) fn write_view(
     log: &EventLog,
     written: Option<ViewStart>,
@@ -87,8 +90,6 @@ pub(super) fn write_view(
     if !log.is_persisted() || log.is_render_only() || log.is_converted() {
         return Ok(None);
     }
-    // A windowed log kept up with where the cache starts as it grew, and a log
-    // that holds its events walks back from their end.
     let fold = log.view_start_fold();
     let (seq, timestamp, mut header) = match &fold {
         Some(fold) => {
