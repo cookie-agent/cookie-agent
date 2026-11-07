@@ -32,7 +32,7 @@ pub const STATE_FILE: &str = "state.json";
 /// or the file's shape does: a different one means folding the log from its
 /// start. The test `the_folds_of_the_golden_logs_match_their_recorded_digest`
 /// says when.
-pub const STATE_VERSION: u32 = 3;
+pub const STATE_VERSION: u32 = 4;
 
 /// How much of a log comes between two writes of [`STATE_FILE`] on a run's way,
 /// so a long run is covered and a turn does not pay for a write.
@@ -88,12 +88,17 @@ struct StoredRaw {
     /// Where lines in the file end, for those another line follows that carries
     /// no sequence.
     ends: Vec<(u64, u64)>,
+    /// Only the kept lines are known: [`RawLines::partial`].
+    partial: bool,
 }
 
 impl StoredRaw {
     /// `None` when `raw` does not match `lines`.
     fn of(raw: &RawLines, lines: &LineIndex) -> Option<Self> {
-        let mut stored = Self::default();
+        let mut stored = Self {
+            partial: raw.partial,
+            ..Self::default()
+        };
         for line in &raw.lines {
             match &line.bytes {
                 RawBytes::Kept(bytes) => stored.kept.push((line.seq, STANDARD.encode(bytes))),
@@ -115,6 +120,22 @@ impl StoredRaw {
     }
 
     fn restore(self, lines: &LineIndex, path: &Path) -> Option<RawLines> {
+        if self.partial {
+            return Some(RawLines {
+                file: Some(Arc::from(path)),
+                lines: self
+                    .kept
+                    .into_iter()
+                    .map(|(seq, bytes)| {
+                        Some(RawLine {
+                            seq,
+                            bytes: RawBytes::Kept(Arc::from(STANDARD.decode(bytes).ok()?)),
+                        })
+                    })
+                    .collect::<Option<_>>()?,
+                partial: true,
+            });
+        }
         let mut kept = self.kept.into_iter().peekable();
         let mut ends = self.ends.into_iter().peekable();
         let mut in_file = false;
@@ -136,6 +157,7 @@ impl StoredRaw {
         (kept.peek().is_none() && ends.peek().is_none()).then(|| RawLines {
             file: in_file.then(|| Arc::from(path)),
             lines: raw,
+            partial: false,
         })
     }
 }
@@ -255,9 +277,12 @@ impl Folding<'_> {
             } else {
                 RawBytes::Kept(Arc::from(line))
             };
-            Arc::make_mut(&mut self.storage.raw)
-                .lines
-                .push(RawLine { seq, bytes });
+            // A log that let go of its lines keeps only those no record reproduces.
+            if !self.storage.raw.partial || matches!(bytes, RawBytes::Kept(_)) {
+                Arc::make_mut(&mut self.storage.raw)
+                    .lines
+                    .push(RawLine { seq, bytes });
+            }
         }
         let Some(record) = read.record else {
             return Some(());
@@ -614,10 +639,10 @@ impl EventLog {
             return None;
         }
         let initial_taint = self.initial_taint();
-        let unexplained = lines.starts.windows(2).any(|pair| {
-            let gap = (pair[0].0 + 1, pair[1].0 - 1);
-            pair[1].0 > pair[0].0 + 1 && !initial_taint.broad.contains(&gap)
-        });
+        let unexplained = lines
+            .gaps
+            .iter()
+            .any(|gap| !initial_taint.broad.contains(gap));
         if unexplained {
             return None;
         }

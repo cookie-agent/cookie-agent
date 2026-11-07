@@ -19,8 +19,14 @@ fn assert_same_bytes<T: Serialize>(actual: &T, expected: &T, what: &str) {
 }
 
 fn assert_raw_lines_as_parsed(raw: &RawLines, parsed: &RawLines) {
-    assert_eq!(raw.lines.len(), parsed.lines.len(), "the raw lines");
-    for (line, expected) in raw.lines.iter().zip(&parsed.lines) {
+    // A log that let go of its lines keeps those no record reproduces.
+    let parsed = parsed
+        .lines
+        .iter()
+        .filter(|line| !raw.partial || parsed.partial || matches!(line.bytes, RawBytes::Kept(_)))
+        .collect::<Vec<_>>();
+    assert_eq!(raw.lines.len(), parsed.len(), "the raw lines");
+    for (line, expected) in raw.lines.iter().zip(parsed) {
         assert_eq!(line.seq, expected.seq, "a raw line's sequence");
         match (&line.bytes, &expected.bytes) {
             (RawBytes::InFile { start, end }, RawBytes::InFile { start: s, end: e }) => {
@@ -68,7 +74,15 @@ impl EventLog {
         {
             let storage = self.storage();
             let expected = parsed.storage();
-            assert_eq!(storage.lines, expected.lines, "the file's line index");
+            assert_eq!(
+                storage.lines,
+                expected
+                    .lines
+                    .as_ref()
+                    .zip(storage.lines.as_ref())
+                    .map(|(parsed, lines)| parsed.let_go_as(lines)),
+                "the file's line index"
+            );
             assert_eq!(storage.refused, expected.refused, "the records refused");
             assert_eq!(
                 storage.physical_model_turns, expected.physical_model_turns,

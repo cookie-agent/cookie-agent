@@ -15,8 +15,8 @@ use crate::session::projection;
 /// The digest of what every fold gives at every turn boundary of the golden logs,
 /// and the [`STATE_VERSION`] it was recorded under.
 const RECORDED_DIGEST: (u32, &str) = (
-    3,
-    "acfcf662484a4526ef55dddf9ced5cee1b11fa961486605940687ee26aead65c",
+    4,
+    "c7f39ed9f90778f2febfea6bdd68c46d01b36ffe24642ed1e90b90dbf7a2ed2e",
 );
 
 fn golden_root() -> PathBuf {

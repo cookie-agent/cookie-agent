@@ -541,38 +541,222 @@ struct EventStorage {
     raw: Arc<RawLines>,
 }
 
-/// Byte offsets of the sequenced lines of an event file, in file order.
+/// Byte offsets of the sequenced lines of an event file, in file order: of each
+/// line from where a window's log holds its records, and of a bounded number of
+/// those before (`docs/site/specs/forever-sessions.md` section 6), so what the
+/// file holds before the window is found by reading it from the nearest of them.
 #[derive(Clone, Debug, Default, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct LineIndex {
     /// `(seq, start offset)` of every line that carries a sequence, records
-    /// and skipped lines alike. Sequences strictly increase down the file.
+    /// and skipped lines alike, from the first the log holds its records of:
+    /// every one until a window lets go of the rest. Sequences strictly
+    /// increase down the file.
     starts: Vec<(u64, u64)>,
+    /// Some of the lines before `starts`, spread over the file.
+    marks: Marks,
+    /// The sequences the file skips, each `(first, last)`, which a load's taint
+    /// must explain.
+    gaps: Vec<(u64, u64)>,
     /// Length of the file's complete lines.
     len: u64,
+}
+
+/// Where some of the lines a window let go of start: at least `spacing` bytes
+/// apart, and never more than [`MARKS_KEPT`], so a read from the nearest reads
+/// a bounded share of the file. When full, every other one goes and the spacing
+/// doubles. Each line is noted in file order, so it holds the same whatever
+/// moments a window let go at.
+#[derive(Clone, Debug, Default, PartialEq, serde::Deserialize, serde::Serialize)]
+struct Marks {
+    points: Vec<(u64, u64)>,
+    spacing: u64,
+}
+
+const MARKS_KEPT: usize = 512;
+const FIRST_MARK_SPACING: u64 = 64 * 1024;
+
+impl Marks {
+    fn note(&mut self, seq: u64, start: u64) {
+        let spacing = self.spacing.max(FIRST_MARK_SPACING);
+        if self
+            .points
+            .last()
+            .is_some_and(|(_, last)| start < last + spacing)
+        {
+            return;
+        }
+        self.points.push((seq, start));
+        self.spacing = spacing;
+        if self.points.len() > MARKS_KEPT {
+            let mut index = 0;
+            self.points.retain(|_| {
+                index += 1;
+                index % 2 == 1
+            });
+            self.spacing = spacing * 2;
+        }
+    }
 }
 
 impl LineIndex {
     /// Notes a line of `length` bytes, newline included, appended at the end.
     pub fn push(&mut self, seq: Option<u64>, length: u64) {
         if let Some(seq) = seq {
-            self.starts.push((seq, self.len));
+            self.note(seq, self.len);
         }
         self.len += length;
     }
 
-    /// The length that keeps every line up to the first one sequenced after
-    /// `through_seq`; lines without a sequence before it stay.
-    fn cut_after(&self, through_seq: u64) -> (usize, u64) {
-        let kept = self.starts.partition_point(|(seq, _)| *seq <= through_seq);
-        let length = self.starts.get(kept).map_or(self.len, |(_, start)| *start);
-        (kept, length)
+    /// Notes the sequenced line at `start`, after every one noted.
+    fn note(&mut self, seq: u64, start: u64) {
+        if let Some((last, _)) = self.starts.last()
+            && seq > last + 1
+        {
+            self.gaps.push((last + 1, seq - 1));
+        }
+        self.starts.push((seq, start));
     }
 
-    fn truncate(&mut self, through_seq: u64) {
-        let (kept, length) = self.cut_after(through_seq);
+    /// The first sequence of `starts`, while the index let go of any line.
+    fn held_from(&self) -> Option<u64> {
+        (!self.marks.points.is_empty()).then(|| self.starts.first().map(|(seq, _)| *seq))?
+    }
+
+    /// Lets go of every line sequenced before `seq`, keeping marks of them.
+    fn let_go_before(&mut self, seq: u64) {
+        let gone = self.starts.partition_point(|(line, _)| *line < seq);
+        if gone == 0 {
+            return;
+        }
+        for (line, start) in self.starts.drain(..gone) {
+            self.marks.note(line, start);
+        }
+    }
+
+    /// Where a line at or before the one of `seq` starts: a line of the file, so a
+    /// read from there meets `seq`'s first.
+    fn start_at_or_before(&self, seq: u64) -> u64 {
+        if self.starts.first().is_none_or(|(first, _)| seq < *first) {
+            let marks = &self.marks.points;
+            let index = marks.partition_point(|(mark, _)| *mark <= seq);
+            return index.checked_sub(1).map_or(0, |index| marks[index].1);
+        }
+        let index = self.starts.partition_point(|(line, _)| *line < seq);
+        self.starts.get(index).map_or(self.len, |(_, at)| *at)
+    }
+
+    /// Where the first line sequenced at or after `seq` starts, or a later line,
+    /// or the file's end: what a read that stops before `seq` may stop at.
+    fn start_at_or_after(&self, seq: u64) -> u64 {
+        if self.starts.first().is_none_or(|(first, _)| seq < *first) {
+            let marks = &self.marks.points;
+            let index = marks.partition_point(|(mark, _)| *mark < seq);
+            if let Some((_, at)) = marks.get(index) {
+                return *at;
+            }
+        }
+        let index = self.starts.partition_point(|(line, _)| *line < seq);
+        self.starts.get(index).map_or(self.len, |(_, at)| *at)
+    }
+
+    /// The length that keeps every line up to the first one sequenced after
+    /// `through_seq`; lines without a sequence before it stay. `None` when that
+    /// line is one the index let go of: the file has to be read for it, from
+    /// [`Self::start_at_or_before`].
+    fn cut_after(&self, through_seq: u64) -> Option<u64> {
+        if self.held_from().is_some_and(|first| through_seq < first) {
+            return None;
+        }
+        let kept = self.starts.partition_point(|(seq, _)| *seq <= through_seq);
+        Some(self.starts.get(kept).map_or(self.len, |(_, start)| *start))
+    }
+
+    /// Drops what follows `through_seq`, the file now `length` long.
+    fn truncate(&mut self, through_seq: u64, length: u64) {
+        let kept = self.starts.partition_point(|(seq, _)| *seq <= through_seq);
         self.starts.truncate(kept);
+        self.marks.points.retain(|(seq, _)| *seq <= through_seq);
+        self.gaps.retain(|(first, _)| *first <= through_seq);
+        for (_, last) in &mut self.gaps {
+            *last = (*last).min(through_seq);
+        }
         self.len = length;
     }
+
+    /// The index of the first `length` bytes of the log at `path`, read from it,
+    /// holding every line from `held_from` on and marks of those before: what a
+    /// revert into what a window let go of needs, read as the window's moves would
+    /// have built it.
+    fn scanned(path: &Path, length: u64, held_from: Option<u64>) -> Result<Self, EventLogError> {
+        let mut index = Self::default();
+        for (seq, start) in scan_line_starts(path, 0, length)? {
+            index.note(seq, start);
+            if held_from.is_some_and(|held_from| seq < held_from) {
+                index.let_go_before(seq + 1);
+            }
+        }
+        index.len = length;
+        Ok(index)
+    }
+
+    /// Test-only: this index as one that let go where `other` did: what a log
+    /// that read its file whole, and did not let go of anything, compares with.
+    #[cfg(any(test, feature = "test-support"))]
+    fn let_go_as(&self, other: &Self) -> Self {
+        let mut index = self.clone();
+        if let Some(first) = other.held_from() {
+            index.let_go_before(first);
+        }
+        index
+    }
+}
+
+/// `(seq, start)` of each line of `path` in `from..until` that carries a
+/// sequence, read as [`scanned_cut_length`] reads one.
+fn scan_line_starts(path: &Path, from: u64, until: u64) -> Result<Vec<(u64, u64)>, EventLogError> {
+    use std::io::{BufRead as _, Read as _, Seek as _};
+    #[derive(Deserialize)]
+    struct Sequenced {
+        seq: u64,
+    }
+    let io_error = |source| EventLogError::Io {
+        path: path.to_owned(),
+        source,
+    };
+    crate::blocking::off_worker(|| {
+        let mut file = fs::File::open(path).map_err(io_error)?;
+        file.seek(io::SeekFrom::Start(from)).map_err(io_error)?;
+        let mut reader = io::BufReader::new(file.take(until.saturating_sub(from)));
+        let mut line = Vec::new();
+        let mut at = from;
+        let mut starts = Vec::new();
+        loop {
+            line.clear();
+            let read = reader.read_until(b'\n', &mut line).map_err(io_error)?;
+            if read == 0 {
+                return Ok(starts);
+            }
+            if let Ok(sequenced) = serde_json::from_slice::<Sequenced>(&line) {
+                starts.push((sequenced.seq, at));
+            }
+            at += read as u64;
+        }
+    })
+}
+
+/// The length a cut of `path` after `through_seq` keeps, reading it from `from`,
+/// a line's start before the cut.
+fn scanned_cut_from(path: &Path, from: u64, through_seq: u64) -> Result<u64, EventLogError> {
+    let length = fs::metadata(path)
+        .map_err(|source| EventLogError::Io {
+            path: path.to_owned(),
+            source,
+        })?
+        .len();
+    Ok(scan_line_starts(path, from, length)?
+        .into_iter()
+        .find(|(seq, _)| *seq > through_seq)
+        .map_or(length, |(_, start)| start))
 }
 
 /// The lines a log was read from: a rewrite of the log (a fork) copies them,
@@ -588,8 +772,13 @@ impl LineIndex {
 pub struct RawLines {
     /// The file the lines left in a file were read from.
     file: Option<Arc<Path>>,
-    /// Every sequenced line read, ascending by sequence.
+    /// Every sequenced line read, ascending by sequence: of a log whose window
+    /// let go of its records, only those kept, as the file holds every other
+    /// line as its record ([`Self::partial`]).
     lines: Vec<RawLine>,
+    /// Only the lines kept are listed: a log that holds only its window lets go
+    /// of the rest (`docs/site/specs/forever-sessions.md` section 6).
+    partial: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -619,6 +808,7 @@ impl std::fmt::Debug for RawLines {
             .field("file", &self.file)
             .field("lines", &self.lines.len())
             .field("kept", &kept)
+            .field("partial", &self.partial)
             .finish()
     }
 }
@@ -683,7 +873,57 @@ impl RawLines {
         Self {
             file: in_file.then(|| Arc::from(path)),
             lines,
+            partial: false,
         }
+    }
+
+    /// Lets go of the lines the file holds as their records: what a log holding
+    /// only its window keeps of them.
+    fn keep_only_kept(&mut self) {
+        if !self.partial {
+            self.lines
+                .retain(|line| matches!(line.bytes, RawBytes::Kept(_)));
+            self.partial = true;
+        }
+    }
+
+    /// The lines of the log `path` through `through_seq`, from the file, with
+    /// those of this, which kept only what no record reproduces, in their
+    /// places: what a fork copies.
+    fn read_whole(&self, path: &Path, through_seq: u64) -> Result<Self, EventLogError> {
+        if !self.partial {
+            return Ok(self.through(through_seq));
+        }
+        let length = fs::metadata(path)
+            .map_err(|source| EventLogError::Io {
+                path: path.to_owned(),
+                source,
+            })?
+            .len();
+        let starts = scan_line_starts(path, 0, length)?;
+        let mut kept = self.lines.iter().peekable();
+        let mut lines = Vec::new();
+        for (index, (seq, start)) in starts.iter().enumerate() {
+            if *seq > through_seq {
+                break;
+            }
+            let bytes = match kept.next_if(|line| line.seq == *seq) {
+                Some(line) => line.bytes.clone(),
+                None => RawBytes::InFile {
+                    start: *start,
+                    end: starts
+                        .get(index + 1)
+                        .map_or(length, |(_, next)| *next)
+                        .saturating_sub(1),
+                },
+            };
+            lines.push(RawLine { seq: *seq, bytes });
+        }
+        Ok(Self {
+            file: Some(Arc::from(path)),
+            lines,
+            partial: false,
+        })
     }
 
     fn get(&self, seq: u64) -> Option<&RawLine> {
@@ -699,6 +939,7 @@ impl RawLines {
         Self {
             file: self.file.clone(),
             lines: self.lines[..kept].to_vec(),
+            partial: self.partial,
         }
     }
 
@@ -917,21 +1158,64 @@ impl EventStorage {
         let kept = self.all.partition_point(|event| event.seq < start);
         self.all = Arc::new(self.all[kept..].to_vec());
         self.window = Some(start);
+        self.let_go_of_lines();
+    }
+
+    /// Lets go of where the lines before what the log holds start, but for where a
+    /// view cache can start, and of the lines the file holds as their records.
+    fn let_go_of_lines(&mut self) {
+        let Some(window) = self.window else {
+            return;
+        };
+        let held_from = self
+            .view_start
+            .as_ref()
+            .and_then(|view_start| view_start.start())
+            .map_or(window, |start| start.seq.min(window));
+        if let Some(lines) = &mut self.lines {
+            lines.let_go_before(held_from);
+        }
+        Arc::make_mut(&mut self.raw).keep_only_kept();
     }
 
     /// Drops every physical event after `through_seq` from what it holds of the
     /// file's lines.
-    fn truncate_lines(&mut self, through_seq: u64) {
+    /// After a cut to `length` of a log whose index let go of lines, the index read
+    /// from the file again, holding what the window it went back to holds: a cut
+    /// cannot tell which lines the window would have let go of by then.
+    fn read_lines_again(
+        &mut self,
+        path: &Path,
+        length: Option<u64>,
+        let_go: bool,
+    ) -> Result<(), EventLogError> {
+        let (Some(_), Some(length), true) = (&self.lines, length, let_go) else {
+            return Ok(());
+        };
+        let held_from = self.window.map(|window| {
+            self.view_start
+                .as_ref()
+                .and_then(|view_start| view_start.start())
+                .map_or(window, |start| start.seq.min(window))
+        });
+        self.lines = Some(LineIndex::scanned(path, length, held_from)?);
+        Ok(())
+    }
+
+    fn truncate_lines(&mut self, through_seq: u64, length: Option<u64>) {
         if let Some(lines) = &mut self.lines {
-            lines.truncate(through_seq);
+            match length {
+                Some(length) => lines.truncate(through_seq, length),
+                None => self.lines = None,
+            }
         }
         Arc::make_mut(&mut self.raw).truncate(through_seq);
         Arc::make_mut(&mut self.refused).retain(|seq| *seq <= through_seq);
     }
 
     /// Drops every physical event after `through_seq`.
-    fn truncate(&mut self, through_seq: u64) {
-        self.truncate_lines(through_seq);
+    fn truncate(&mut self, through_seq: u64, length: Option<u64>) {
+        self.truncate_lines(through_seq, length);
         Arc::make_mut(&mut self.all).retain(|event| event.seq <= through_seq);
         self.physical_model_turns =
             self.all.iter().filter(|event| is_model_turn(event)).count() as u64;
@@ -1523,7 +1807,8 @@ impl EventLog {
         let validation = rebuild_validation(&self.path, session_id, &records, &taint)?;
         // The lines the source read come along as bytes, except those of
         // the records left behind, which are written as their replacements.
-        let mut raw = self.storage().raw.through(through_seq);
+        let held = Arc::clone(&self.storage().raw);
+        let mut raw = held.read_whole(&self.path, through_seq)?;
         raw.remove(&omitted);
         let next_seq = records
             .last()
@@ -1899,13 +2184,10 @@ impl EventLog {
         until: u64,
     ) -> Option<history::FileRange> {
         let (offset, end) = match &storage.lines {
-            Some(lines) => {
-                let start_of = |seq: u64| {
-                    let index = lines.starts.partition_point(|(line, _)| *line < seq);
-                    lines.starts.get(index).map_or(lines.len, |(_, at)| *at)
-                };
-                (start_of(from), Some(start_of(until)))
-            }
+            Some(lines) => (
+                lines.start_at_or_before(from),
+                Some(lines.start_at_or_after(until)),
+            ),
             None => (0, None),
         };
         // A read-only log's window is read by offset too, and only its owner
@@ -1999,6 +2281,10 @@ impl EventLog {
             let storage = self.storage();
             (storage.snapshot(), Arc::clone(&storage.raw))
         };
+        debug_assert!(
+            !raw.partial,
+            "a log written whole holds all its records and lines"
+        );
         crate::blocking::off_worker(|| {
             cookie_agent_protocol::read_stored_history(|| {
                 write_event_jsonl_in_place(path, self.session_id, &events, &raw.read(&..))
@@ -2018,7 +2304,7 @@ impl EventLog {
     ) -> Result<(), EventLogError> {
         let (events, raw, windowed) = {
             let storage = self.storage();
-            let windowed = storage.window.is_some();
+            let windowed = storage.window.is_some() || storage.raw.partial;
             (storage.snapshot(), Arc::clone(&storage.raw), windowed)
         };
         if windowed {
@@ -2082,9 +2368,7 @@ impl EventLog {
         let (offset, end, seen_cuts) = {
             let storage = self.storage();
             let (offset, end) = storage.lines.as_ref().map_or((0, None), |lines| {
-                let index = lines.starts.partition_point(|(line, _)| *line < first);
-                let offset = lines.starts.get(index).map_or(lines.len, |(_, at)| *at);
-                (offset, Some(lines.len))
+                (lines.start_at_or_before(first), Some(lines.len))
             });
             (offset, end, self.cuts.load(Ordering::Acquire))
         };
@@ -2277,7 +2561,12 @@ impl EventLog {
             "the model turns"
         );
         assert_eq!(
-            storage.lines, reopened_storage.lines,
+            storage.lines,
+            reopened_storage
+                .lines
+                .as_ref()
+                .zip(storage.lines.as_ref())
+                .map(|(parsed, lines)| parsed.let_go_as(lines)),
             "the file's line index"
         );
         assert_eq!(
@@ -2929,6 +3218,7 @@ impl EventLog {
         } else {
             None
         };
+        let mut cut_length = None;
         if self.persisted.load(Ordering::Acquire) {
             // Before the cut, so a crash leaves no file naming what it cut. One
             // that a write in flight puts back no longer matches the log.
@@ -2958,33 +3248,45 @@ impl EventLog {
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .take();
-            let cut = self
-                .storage()
-                .lines
-                .as_ref()
-                .map(|lines| lines.cut_after(through_seq).1);
-            match cut {
-                Some(length) => cut_event_file(&self.path, length)?,
-                None => truncate_event_file(&self.path, through_seq)?,
-            }
+            let lines = self.storage().lines.clone();
+            let length = match lines {
+                Some(lines) => match lines.cut_after(through_seq) {
+                    Some(length) => length,
+                    // Before the lines it holds: read from the nearest mark.
+                    None => scanned_cut_from(
+                        &self.path,
+                        lines.start_at_or_before(through_seq),
+                        through_seq,
+                    )?,
+                },
+                None => scanned_cut_from(&self.path, 0, through_seq)?,
+            };
+            cut_event_file(&self.path, length)?;
+            cut_length = Some(length);
             self.durability.cut()?;
         }
         let mut events = self
             .events
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let let_go_lines = events
+            .lines
+            .as_ref()
+            .is_some_and(|lines| lines.held_from().is_some());
         let validation = match folded {
             Some(folded) => {
-                events.truncate_lines(through_seq);
+                events.truncate_lines(through_seq, cut_length);
                 events.index = folded.index;
                 events.physical_model_turns = folded.physical_model_turns;
                 events.view_start = folded.window.map(|_| Box::new(folded.view_start));
                 events.window = folded.window;
                 events.all = Arc::new(folded.held);
+                events.read_lines_again(&self.path, cut_length, let_go_lines)?;
                 folded.validation
             }
             None => {
-                events.truncate(through_seq);
+                events.truncate(through_seq, cut_length);
+                events.read_lines_again(&self.path, cut_length, let_go_lines)?;
                 #[cfg(any(test, feature = "test-support"))]
                 state::reference::assert_matches_scans(&events.index.state, &events.all);
                 rebuild_validation(&self.path, self.session_id, &events.all, &kept_taint)?
@@ -3159,7 +3461,7 @@ impl EventLog {
         self.storage()
             .lines
             .as_ref()
-            .map(|lines| lines.cut_after(through_seq).1)
+            .and_then(|lines| lines.cut_after(through_seq))
     }
 
     #[cfg(test)]
@@ -5517,8 +5819,8 @@ fn load_event_jsonl_in_place(
         None => blobs::read(&blob_dir, digest),
     };
     let mut lines = LineIndex {
-        starts: Vec::new(),
         len: bytes.len() as u64,
+        ..LineIndex::default()
     };
     let line_start = |line: &[u8]| (line.as_ptr() as usize - bytes.as_ptr() as usize) as u64;
     let raw_line = |seq: u64, line: &[u8], strict: bool| {
@@ -5540,7 +5842,7 @@ fn load_event_jsonl_in_place(
     {
         let read = reader.read(index, line, &mut fetch)?;
         if let Some((seq, strict)) = read.sequenced {
-            lines.starts.push((seq, line_start(line)));
+            lines.note(seq, line_start(line));
             raw.push(raw_line(seq, line, strict));
         }
         if read.stop {
@@ -6246,19 +6548,6 @@ pub fn read_records_from(
             records.push(record);
         }
         Ok(Some(records))
-    })
-}
-
-/// Cuts `path` at the first record whose sequence is past `through_seq` and
-/// syncs it. Records keep their bytes; lines without a sequence before the cut
-/// stay too, as the loader already tolerated them.
-fn truncate_event_file(path: &Path, through_seq: u64) -> Result<(), EventLogError> {
-    crate::blocking::off_worker(|| {
-        let bytes = fs::read(path).map_err(|source| EventLogError::Io {
-            path: path.to_owned(),
-            source,
-        })?;
-        cut_event_file(path, scanned_cut_length(&bytes, through_seq))
     })
 }
 
