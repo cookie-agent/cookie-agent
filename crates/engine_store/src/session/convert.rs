@@ -363,7 +363,7 @@ fn stage(id: SessionId, dir: &Path) -> Result<Stage, SessionError> {
     };
     let result = (|| {
         write_staged(&staged.log, &converted)?;
-        let meta = projection(EventLog::open_read_only(staged.log.clone(), id)?)?.meta;
+        let meta = projection(EventLog::open_read_only(staged.log.clone(), id)?)?.meta.clone();
         let meta = serde_json::to_vec_pretty(&meta).map_err(|source| SessionError::Json {
             path: staged.metadata.clone(),
             source,

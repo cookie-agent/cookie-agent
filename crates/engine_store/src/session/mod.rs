@@ -238,8 +238,10 @@ pub struct RunProjection {
     pub pending_calls: HashMap<ToolCallId, String>,
 }
 
+/// What a log's records fold to for a session: a [`SessionProjection`] without
+/// its log, as a log that opened from its `state.json` holds it until asked.
 #[derive(Clone, Debug)]
-pub struct SessionProjection {
+pub struct ProjectionFolds {
     pub meta: SessionMeta,
     pub creation_agent: Arc<AgentSnapshot>,
     pub status: SessionStatus,
@@ -260,7 +262,27 @@ pub struct SessionProjection {
     pub automatic_title_eligible: bool,
     /// What an appended event needs to be folded in place.
     pub fold: ProjectionFoldState,
+}
+
+/// A session as its log folds, with that log.
+#[derive(Clone, Debug)]
+pub struct SessionProjection {
+    folds: ProjectionFolds,
     pub log: Arc<EventLog>,
+}
+
+impl std::ops::Deref for SessionProjection {
+    type Target = ProjectionFolds;
+
+    fn deref(&self) -> &ProjectionFolds {
+        &self.folds
+    }
+}
+
+impl std::ops::DerefMut for SessionProjection {
+    fn deref_mut(&mut self) -> &mut ProjectionFolds {
+        &mut self.folds
+    }
 }
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
@@ -3341,7 +3363,7 @@ impl SessionStore {
         };
         eprintln!("{error}; rebuilding it from the session's log");
         let log = self.read_only_log(id, dir.join(EVENTS_FILE))?;
-        let meta = projection(log)?.meta;
+        let meta = projection(log)?.meta.clone();
         if self.is_owned(id) {
             write_cache(&path, &meta, CacheSync::Atomic)?;
         }

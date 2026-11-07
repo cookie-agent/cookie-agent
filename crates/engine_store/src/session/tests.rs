@@ -3241,7 +3241,7 @@ fn replayed_stamps_keep_footer_and_session_cost_equal_across_pricing_changes() {
         None
     );
     assert_eq!(
-        crate::usage::with_pricing(rebuilt.usage_rollup).estimated_cost_usd,
+        crate::usage::with_pricing(rebuilt.usage_rollup.clone()).estimated_cost_usd,
         expected
     );
 }
@@ -3487,7 +3487,7 @@ fn internal_usage_is_once_per_fallback_phase_and_all_kinds_survive_reopen() {
     assert_eq!(rebuilt.usage_rollup.request_count, 5);
     assert_eq!(rebuilt.usage_rollup.input_tokens, 503);
     assert_eq!(
-        crate::usage::with_pricing(rebuilt.usage_rollup).estimated_cost_usd,
+        crate::usage::with_pricing(rebuilt.usage_rollup.clone()).estimated_cost_usd,
         None
     );
 }
@@ -4104,7 +4104,7 @@ fn aborted_commit_without_usage_does_not_poison_the_usage_rollup() {
     );
     assert_eq!(rebuilt.usage_rollup.input_tokens, 120);
     assert_eq!(rebuilt.usage_rollup.output_tokens, 30);
-    let priced = crate::usage::with_pricing(rebuilt.usage_rollup);
+    let priced = crate::usage::with_pricing(rebuilt.usage_rollup.clone());
     assert_eq!(
         priced.estimated_cost_usd,
         Some(1.0),
@@ -4118,7 +4118,7 @@ fn completed_commit_without_usage_still_counts_as_an_unpriced_request() {
     // reporting usage leaves the session cost unknown rather than understated.
     let rebuilt = usage_rollup_after_a_usage_less_commit(ModelFinishReason::Stop);
     assert_eq!(rebuilt.usage_rollup.request_count, 2);
-    let priced = crate::usage::with_pricing(rebuilt.usage_rollup);
+    let priced = crate::usage::with_pricing(rebuilt.usage_rollup.clone());
     assert_eq!(priced.estimated_cost_usd, None);
 }
 

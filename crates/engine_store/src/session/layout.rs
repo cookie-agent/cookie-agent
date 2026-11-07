@@ -773,7 +773,7 @@ pub(super) fn root_meta(root: SessionId, dir: &Path) -> Option<SessionMeta> {
             .map_err(SessionError::from)
             .and_then(projection)
         {
-            Ok(projection) => projection.meta,
+            Ok(projection) => projection.meta.clone(),
             Err(error) => {
                 eprintln!("cookie-agent: session {root} is not listed: {error}");
                 return None;

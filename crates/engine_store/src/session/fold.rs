@@ -218,19 +218,21 @@ fn projection_fold_with(
         pinned: false,
     };
     let mut projection = SessionProjection {
-        meta,
-        creation_agent,
-        status: SessionStatus::Idle,
-        usage: None,
-        usage_rollup: UsageRollup::default(),
-        runs: HashMap::new(),
-        rename_records: HashMap::new(),
-        permission_overlay: SessionPermissionOverlay::default(),
-        tool_exposure: cookie_agent_protocol::ToolExposure::default(),
-        permission_mode: None,
-        runtime_attachments: cookie_agent_protocol::RuntimeAttachmentFold::default(),
-        automatic_title_eligible: AutomaticTitleEligibility::default().eligible(),
-        fold: ProjectionFoldState::default(),
+        folds: ProjectionFolds {
+            meta,
+            creation_agent,
+            status: SessionStatus::Idle,
+            usage: None,
+            usage_rollup: UsageRollup::default(),
+            runs: HashMap::new(),
+            rename_records: HashMap::new(),
+            permission_overlay: SessionPermissionOverlay::default(),
+            tool_exposure: cookie_agent_protocol::ToolExposure::default(),
+            permission_mode: None,
+            runtime_attachments: cookie_agent_protocol::RuntimeAttachmentFold::default(),
+            automatic_title_eligible: AutomaticTitleEligibility::default().eligible(),
+            fold: ProjectionFoldState::default(),
+        },
         log: log.clone(),
     };
     let step = FoldStep::Full {
@@ -309,7 +311,7 @@ struct ProvisionalUsage {
     observation: usize,
 }
 
-impl SessionProjection {
+impl ProjectionFolds {
     /// Folds one visible event into the projection. The metadata tip is the
     /// caller's: a full fold takes it from the log, an append from the event.
     ///
@@ -457,19 +459,6 @@ impl SessionProjection {
         Observed::Applied {
             durable_meta: durable_meta || self.status != status_before,
         }
-    }
-
-    /// Folds an event just appended to this projection's log, tip included,
-    /// refolding the log when the event cannot be applied in place.
-    pub(super) fn observe_appended(&mut self, event: &StoredEvent) -> Result<(), SessionError> {
-        match self.observe(event, FoldStep::Append) {
-            Observed::Applied { .. } => {
-                self.meta.last_event_seq = event.seq;
-                self.meta.last_activity = event.timestamp;
-            }
-            Observed::NeedsRefold => *self = refold(self.log.clone(), Some(self))?,
-        }
-        Ok(())
     }
 
     /// The run-owned part of [`Self::observe`]. `false` when the step needs a
@@ -654,6 +643,21 @@ impl SessionProjection {
             _ => {}
         }
         true
+    }
+}
+
+impl SessionProjection {
+    /// Folds an event just appended to this projection's log, tip included,
+    /// refolding the log when the event cannot be applied in place.
+    pub(super) fn observe_appended(&mut self, event: &StoredEvent) -> Result<(), SessionError> {
+        match self.observe(event, FoldStep::Append) {
+            Observed::Applied { .. } => {
+                self.meta.last_event_seq = event.seq;
+                self.meta.last_activity = event.timestamp;
+            }
+            Observed::NeedsRefold => *self = refold(self.log.clone(), Some(self))?,
+        }
+        Ok(())
     }
 }
 
