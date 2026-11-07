@@ -1204,6 +1204,40 @@ pub fn differences(state: &LogState, events: &Events) -> Vec<&'static str> {
         );
     }
 
+    let inputs = events
+        .iter()
+        .filter(|event| matches!(event.payload, Event::UserInputSubmitted { .. }));
+    check(
+        "opening inputs",
+        state
+            .opening_inputs()
+            .iter()
+            .map(|event| event.seq)
+            .eq(inputs
+                .clone()
+                .take(super::OPENING_INPUTS)
+                .map(|event| event.seq)),
+    );
+    if let Some(run) = events
+        .iter()
+        .rev()
+        .find(|event| matches!(event.payload, Event::RunStarted { .. }))
+        .and_then(|started| started.run_id)
+    {
+        let mut inputs = inputs;
+        check(
+            "first input of the latest run",
+            state
+                .first_input_of_run(run)
+                .map(|input| input.map(|input| input.seq))
+                == Some(
+                    inputs
+                        .find(|event| event.run_id == Some(run))
+                        .map(|event| event.seq),
+                ),
+        );
+    }
+
     found
 }
 

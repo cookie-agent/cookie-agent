@@ -130,7 +130,8 @@ pub struct EventLog {
     /// How many cuts of the file began: a pass that reads the file sees it
     /// change under it.
     cuts: Arc<AtomicU64>,
-    /// Test-only: how many passes were asked for, with what asked and from where.
+    /// Test-only: what asked for a pass over the log, and what took one that
+    /// reads the file, each where it did so.
     #[cfg(any(test, feature = "test-support"))]
     history_calls: Mutex<Vec<String>>,
 }
@@ -2020,11 +2021,116 @@ impl EventLog {
         self.snapshot_under_append()
     }
 
+    /// Test-only: panics unless what a windowed log answers is what a reopening
+    /// of its file gives (`docs/site/specs/forever-sessions.md` section 7).
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn assert_window_reads_as_reopened(&self) {
+        let _append = self
+            .append
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if self.storage().window.is_none() {
+            return;
+        }
+        let reopened = Self::open_read_only(self.path.clone(), self.session_id)
+            .expect("a windowed log reopens");
+        let (whole, reopened_validation) = {
+            let storage = reopened.storage();
+            (
+                storage.snapshot(),
+                reopened
+                    .validation
+                    .lock()
+                    .expect("validation lock poisoned")
+                    .clone(),
+            )
+        };
+        let (read, recent, state) = {
+            let read = self
+                .unnoted_pass(..)
+                .and_then(Iterator::collect::<Result<Vec<_>, _>>)
+                .expect("a windowed log reads whole");
+            let (recent, state) = self.recent_and_state();
+            (read, recent, state)
+        };
+        assert_eq!(read.len(), whole.len(), "the records read");
+        for (read, whole) in read.iter().zip(whole.iter()) {
+            assert!(
+                read == whole,
+                "record {} reads otherwise than a reopening reads it",
+                whole.seq
+            );
+        }
+        assert_eq!(
+            self.creation().map(|creation| creation.seq),
+            whole.first().map(|creation| creation.seq),
+            "the creation"
+        );
+        let held = whole.len() - recent.len();
+        assert!(
+            recent.iter().zip(&whole[held..]).all(|(a, b)| a == b),
+            "the window is not the log's tail"
+        );
+        state::reference::assert_matches_scans(&state, &whole);
+        assert!(
+            *self.validation.lock().expect("validation lock poisoned") == reopened_validation,
+            "the validation state differs from a reopening's"
+        );
+        let reopened_storage = reopened.storage();
+        let storage = self.storage();
+        assert_eq!(
+            storage.physical_model_turns, reopened_storage.physical_model_turns,
+            "the model turns"
+        );
+        assert_eq!(
+            storage.lines, reopened_storage.lines,
+            "the file's line index"
+        );
+        assert_eq!(
+            storage.index.window_start, reopened_storage.index.window_start,
+            "the window's start"
+        );
+        assert_eq!(
+            storage.index.prompt_blocks, reopened_storage.index.prompt_blocks,
+            "the prompt blocks"
+        );
+        assert_eq!(
+            storage.index.deferral, reopened_storage.index.deferral,
+            "the deferred tools"
+        );
+        assert_eq!(
+            storage.index.last_run_started, reopened_storage.index.last_run_started,
+            "the latest run"
+        );
+        assert_eq!(
+            storage.index.run_attempts, reopened_storage.index.run_attempts,
+            "the run attempts"
+        );
+        assert_eq!(
+            storage.index.latest_real_usage(),
+            reopened_storage.index.latest_real_usage(),
+            "the latest usage"
+        );
+        if let Some(view_start) = &storage.view_start {
+            let start = cookie_agent_protocol::display_view::cache_start(&whole, VIEW_BUDGET);
+            assert_eq!(
+                view_start.start().map(|start| start.seq),
+                start.map(|start| whole[start].seq),
+                "where a view cache starts"
+            );
+            assert_eq!(
+                view_start.header(),
+                cookie_agent_protocol::display_view::state_events(&whole[..start.unwrap_or(0)]),
+                "a view cache's header"
+            );
+        }
+    }
+
     /// [`Self::snapshot_and_state`], for a caller that holds `append`.
     #[cfg(any(test, feature = "test-support"))]
     fn snapshot_under_append(&self) -> (EventSnapshot, Arc<LogState>) {
         let events = self
-            .pass(..)
+            .unnoted_pass(..)
             .and_then(Iterator::collect)
             .expect("a test's log reads whole");
         (Arc::new(events), self.state())
@@ -2091,15 +2197,22 @@ impl EventLog {
         seqs: impl std::ops::RangeBounds<u64>,
     ) -> Result<History, EventLogError> {
         #[cfg(any(test, feature = "test-support"))]
-        self.history_calls
-            .lock()
-            .expect("history calls lock poisoned")
-            .push(std::panic::Location::caller().to_string());
+        self.note_history_call("history");
         self.pass(seqs)
     }
 
-    /// Test-only: where the passes asked of this log since the last time this
-    /// was called came from.
+    #[cfg(any(test, feature = "test-support"))]
+    #[track_caller]
+    fn note_history_call(&self, kind: &str) {
+        self.history_calls
+            .lock()
+            .expect("history calls lock poisoned")
+            .push(format!("{kind}: {}", std::panic::Location::caller()));
+    }
+
+    /// Test-only: the passes over this log asked for since the last time this
+    /// was called, each named `history` when a reader asked for one by name and
+    /// `file` when it reads the file, whatever asked, with where it was asked.
     #[cfg(any(test, feature = "test-support"))]
     pub fn take_history_calls_for_test(&self) -> Vec<String> {
         std::mem::take(
@@ -2117,7 +2230,20 @@ impl EventLog {
         self.storage().window
     }
 
+    #[cfg_attr(any(test, feature = "test-support"), track_caller)]
     fn pass(&self, seqs: impl std::ops::RangeBounds<u64>) -> Result<History, EventLogError> {
+        let pass = self.unnoted_pass(seqs)?;
+        #[cfg(any(test, feature = "test-support"))]
+        if pass.reads_the_file() {
+            self.note_history_call("file");
+        }
+        Ok(pass)
+    }
+
+    fn unnoted_pass(
+        &self,
+        seqs: impl std::ops::RangeBounds<u64>,
+    ) -> Result<History, EventLogError> {
         let storage = self.storage();
         let events = storage.snapshot();
         let start = events.partition_point(|event| match seqs.start_bound() {
@@ -2164,10 +2290,7 @@ impl EventLog {
     #[cfg_attr(any(test, feature = "test-support"), track_caller)]
     pub fn newest_pass(&self) -> Result<NewestPass, EventLogError> {
         #[cfg(any(test, feature = "test-support"))]
-        self.history_calls
-            .lock()
-            .expect("history calls lock poisoned")
-            .push(std::panic::Location::caller().to_string());
+        self.note_history_call("history");
         let start = self
             .storage()
             .view_start
@@ -2253,7 +2376,7 @@ impl EventLog {
         let mut page = Vec::new();
         let mut page_bytes = 0_usize;
         let mut has_more = false;
-        for event in self.history_range((after, std::ops::Bound::Unbounded))? {
+        for event in self.pass((after, std::ops::Bound::Unbounded))? {
             let event = event?;
             if page.len() == limit {
                 has_more = true;
@@ -2279,7 +2402,7 @@ impl EventLog {
     #[must_use]
     pub fn event_matches(&self, seq: u64, timestamp: Timestamp) -> bool {
         // A record that cannot be read is no match: the reader starts over.
-        self.history_range(seq..=seq)
+        self.pass(seq..=seq)
             .ok()
             .and_then(|mut record| record.next())
             .and_then(Result::ok)

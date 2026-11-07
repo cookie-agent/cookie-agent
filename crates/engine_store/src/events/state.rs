@@ -29,6 +29,9 @@ use crate::goal_projection::{GoalProducerFold, GoalProducerProjection};
 #[cfg(any(test, feature = "test-support"))]
 pub mod reference;
 
+/// How many of a log's first submitted inputs [`LogState::opening_inputs`] holds.
+pub const OPENING_INPUTS: usize = 16;
+
 /// The folds of a log's events. Shared with the readers handed it; an append
 /// copies it only when one still holds it.
 #[derive(Clone, Debug, Default)]
@@ -49,6 +52,8 @@ pub struct LogState {
     latest_turn: Option<(RunId, u64)>,
     fallback: Option<(RunId, usize)>,
     request: RequestFold,
+    opening_inputs: Vec<Arc<StoredEvent>>,
+    latest_run_input: Option<Arc<StoredEvent>>,
 }
 
 impl LogState {
@@ -73,6 +78,15 @@ impl LogState {
                 self.calls.remove(&termination.tool_call_id);
             }
             EventPayload::SessionPermissionOverlaySet { .. } => self.overlay_epoch = event.seq,
+            EventPayload::RunStarted { .. } => self.latest_run_input = None,
+            EventPayload::UserInputSubmitted { .. } => {
+                if self.opening_inputs.len() < OPENING_INPUTS {
+                    self.opening_inputs.push(Arc::clone(event));
+                }
+                if self.latest_run_input.is_none() && event.run_id == self.run_started_id() {
+                    self.latest_run_input = Some(Arc::clone(event));
+                }
+            }
             EventPayload::InternalAgentStarted {
                 invocation_id,
                 internal_run_id,
@@ -271,6 +285,25 @@ impl LogState {
             .values()
             .filter(move |event| event.run_id == Some(run))
             .map(|event| event.seq)
+    }
+
+    /// The log's first `user_input_submitted` records, up to [`OPENING_INPUTS`]
+    /// of them: what a session's title is generated from.
+    #[must_use]
+    pub fn opening_inputs(&self) -> &[Arc<StoredEvent>] {
+        &self.opening_inputs
+    }
+
+    /// The first `user_input_submitted` of `run` when it is the log's latest
+    /// run, which may have none yet; `None` when it is not.
+    #[must_use]
+    pub fn first_input_of_run(&self, run: RunId) -> Option<Option<&Arc<StoredEvent>>> {
+        self.run_started(run)?;
+        Some(self.latest_run_input.as_ref())
+    }
+
+    fn run_started_id(&self) -> Option<RunId> {
+        self.run.started.as_ref().and_then(|started| started.run_id)
     }
 
     /// The `run_started` of the log's latest run.

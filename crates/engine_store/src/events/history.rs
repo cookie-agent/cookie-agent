@@ -253,6 +253,12 @@ impl History {
         }
     }
 
+    /// Test-only: whether any of this pass comes from the file.
+    #[cfg(any(test, feature = "test-support"))]
+    pub(super) fn reads_the_file(&self) -> bool {
+        self.file.is_some()
+    }
+
     /// The records of this pass, when the log holds them all: a window need
     /// measure only what fits, walking back from the end, and a pass must
     /// measure every record to know that (section 2: a log not yet windowed

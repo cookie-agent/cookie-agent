@@ -67,25 +67,52 @@ impl Engine {
         {
             return Ok(());
         }
-        // The session's opening messages, and the first of the run: a pass that
-        // stops once it has them.
-        let mut inputs = Vec::new();
-        let mut input = None;
-        for event in projection.log.history()? {
-            let event = event?;
-            let through = event.seq >= input_through_seq;
-            if let Event::UserInputSubmitted { content } = &event.payload {
-                if event.seq <= input_through_seq && inputs.len() < policy.max_input_messages {
-                    inputs.push(content.as_plain_text().into_owned());
+        let state = projection.log.state();
+        let text = |event: &cookie_agent_protocol::StoredEvent| match &event.payload {
+            Event::UserInputSubmitted { content } => content.as_plain_text().into_owned(),
+            _ => String::new(),
+        };
+        let opening = state.opening_inputs();
+        let held = opening.len() < crate::events::state::OPENING_INPUTS
+            || policy.max_input_messages <= opening.len();
+        let (inputs, input) = match state.first_input_of_run(run) {
+            // Until a title commits this comes around every turn, so it reads
+            // the fold. Asked of an older run, or for more than it keeps, it
+            // takes a pass.
+            Some(first) if held => (
+                opening
+                    .iter()
+                    .filter(|event| event.seq <= input_through_seq)
+                    .take(policy.max_input_messages)
+                    .map(|event| text(event))
+                    .collect::<Vec<_>>(),
+                first.map(|event| text(event)),
+            ),
+            _ => {
+                // The session's opening messages, and the first of the run: a
+                // pass that stops once it has them.
+                let mut inputs = Vec::new();
+                let mut input = None;
+                for event in projection.log.history()? {
+                    let event = event?;
+                    let through = event.seq >= input_through_seq;
+                    if matches!(event.payload, Event::UserInputSubmitted { .. }) {
+                        if event.seq <= input_through_seq
+                            && inputs.len() < policy.max_input_messages
+                        {
+                            inputs.push(text(&event));
+                        }
+                        if input.is_none() && event.run_id == Some(run) {
+                            input = Some(text(&event));
+                        }
+                    }
+                    if input.is_some() && (through || inputs.len() >= policy.max_input_messages) {
+                        break;
+                    }
                 }
-                if input.is_none() && event.run_id == Some(run) {
-                    input = Some(content.as_plain_text().into_owned());
-                }
+                (inputs, input)
             }
-            if input.is_some() && (through || inputs.len() >= policy.max_input_messages) {
-                break;
-            }
-        }
+        };
         let input = input.unwrap_or_default();
         let prompt = title_prompt(inputs.iter().map(String::as_str), policy.max_input_messages);
         let generated = self

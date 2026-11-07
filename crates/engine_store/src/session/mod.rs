@@ -2386,6 +2386,18 @@ impl SessionStore {
             assert_projection_equivalent(&resident, &reference);
             let (events, state) = log.snapshot_and_state();
             crate::events::state::reference::assert_matches_scans(&state, &events);
+            // A window that moved answers as a reopening of the file does.
+            if matches!(envelope.payload, EventPayload::ModelTurnCommitted { .. }) {
+                log.assert_window_reads_as_reopened();
+                let reopened = EventLog::open_read_only(log.path().to_owned(), id)
+                    .map(|reopened| projection_fold(reopened).expect("reference fold"));
+                if log.window_for_test().is_some() {
+                    assert_projection_equivalent(
+                        &resident,
+                        &reopened.expect("a windowed log reopens"),
+                    );
+                }
+            }
         }
         let upserted = if index_changed && let Some(resident) = self.get_resident(id) {
             if resident.log.is_persisted() {
@@ -2899,9 +2911,18 @@ impl SessionStore {
                 && through_seq <= source.log.physical_tip_seq()
             {
                 let cuts = source.log.cut_count();
-                let prefix = source.log.read_fork_prefix(session_id, through_seq)?;
-                let detached = acp_detached(&source.log, through_seq)?;
-                Some((Arc::clone(&source.log), cuts, prefix, detached))
+                let read = source
+                    .log
+                    .read_fork_prefix(session_id, through_seq)
+                    .and_then(|prefix| Ok((prefix, acp_detached(&source.log, through_seq)?)));
+                match read {
+                    Ok((prefix, detached)) => {
+                        Some((Arc::clone(&source.log), cuts, prefix, detached))
+                    }
+                    // A revert won that race: read it again under the lock.
+                    Err(EventLogError::HistoryCut { .. }) => None,
+                    Err(error) => return Err(error.into()),
+                }
             } else {
                 None
             }
