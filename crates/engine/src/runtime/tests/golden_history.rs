@@ -816,7 +816,7 @@ fn the_golden_acp_scenario_reaches_the_folds() {
 
 /// What the scripted model answers at one step of a turn.
 #[derive(Clone, Debug)]
-enum Reply {
+pub(super) enum Reply {
     Text(String),
     Tools(Vec<(&'static str, Value)>),
     /// Answers after a pause, so the recorder can act while the request is
@@ -824,7 +824,7 @@ enum Reply {
     Slow(u64, Box<Reply>),
 }
 
-fn text(text: &str) -> Reply {
+pub(super) fn text(text: &str) -> Reply {
     Reply::Text(text.into())
 }
 
@@ -832,7 +832,7 @@ fn tool(name: &'static str, arguments: Value) -> Reply {
     Reply::Tools(vec![(name, arguments)])
 }
 
-type Rules = BTreeMap<&'static str, Vec<Reply>>;
+pub(super) type Rules = BTreeMap<&'static str, Vec<Reply>>;
 
 /// The scenario's root, for `$child:<n>` in a reply's arguments: the handle
 /// of the root's `n`th child. `$page` is the URL of the page the fixture
@@ -947,7 +947,7 @@ fn reply_body(reply: &Reply, call_prefix: &str) -> String {
 
 /// A fake OpenAI-compatible model answering every request from `rules`, and
 /// serving `GET /page.md` for `webfetch`.
-async fn script_server(rules: Rules) -> String {
+pub(super) async fn script_server(rules: Rules) -> String {
     script_server_with(rules, Arc::default()).await
 }
 
@@ -1003,15 +1003,15 @@ async fn script_server_with(rules: Rules, children: Children) -> String {
     format!("http://{address}/v1")
 }
 
-fn origin() -> EventOrigin {
+pub(super) fn origin() -> EventOrigin {
     EventOrigin::new("client:golden").unwrap()
 }
 
-fn user_text(text: &str) -> UserContent {
+pub(super) fn user_text(text: &str) -> UserContent {
     text.into()
 }
 
-async fn run(
+pub(super) async fn run(
     engine: &Engine,
     session: SessionId,
     selection: &RunSelection,
@@ -1035,7 +1035,7 @@ async fn run(
 }
 
 /// Waits until nothing in `root`'s tree runs or waits, for a full second.
-async fn quiesce(engine: &Engine, root: SessionId) {
+pub(super) async fn quiesce(engine: &Engine, root: SessionId) {
     fn running(tree: &cookie_agent_protocol::SessionTree) -> bool {
         tree.session.status == SessionStatus::Running || tree.children.iter().any(running)
     }
@@ -1752,16 +1752,16 @@ async fn record_acp(scenario: &Path) {
 
 const CODING_CAPABILITIES: &str = "input = [\"text\", \"image\", \"video\"]\noutput = [\"text\"]\ncontext_tokens = 200000\noutput_tokens = 1024\ntool_calling = true\nparallel_tool_calls = true\nstructured_output = false\nreasoning = false\ntemperature = true\ntop_p = true\nseed = true\nnative_replay = \"unsupported\"\nmedia = { image = { mime_types = [\"image/png\"], max_bytes = 4194304, max_count = 4 }, video = { mime_types = [\"video/mp4\"], max_bytes = 4194304, max_count = 1 } }";
 
-const CODING_AGENT: &str = "---\ndescription: Golden coding agent\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  read: allow\n  bash: allow\n  write: ask\n  webfetch: ask\n  delegate: allow\n  message: allow\n---\nWork in the repository.\n";
+pub(super) const CODING_AGENT: &str = "---\ndescription: Golden coding agent\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  read: allow\n  bash: allow\n  write: ask\n  webfetch: ask\n  delegate: allow\n  message: allow\n---\nWork in the repository.\n";
 
 /// An engine whose local runtime is the coding runtime over the runtime
 /// protocol, working in the fixture's directory, with `plugin` configured.
-struct CodingFixture {
-    engine: Engine,
-    root: PanicResistantTempDir,
+pub(super) struct CodingFixture {
+    pub(super) engine: Engine,
+    pub(super) root: PanicResistantTempDir,
 }
 
-async fn coding_fixture(
+pub(super) async fn coding_fixture(
     endpoint: &str,
     primary: &str,
     plugin: Option<(&str, cookie_agent_config::PluginConfig)>,
