@@ -795,10 +795,14 @@ struct RunFold {
     /// Whether the latest run's first input went in.
     initial_input_submitted: bool,
     runless: Vec<Arc<StoredEvent>>,
-    #[serde(with = "crate::events::sorted::set")]
-    cancelled: HashSet<RunId>,
+    /// The latest runs `run_finished` recorded as cancelled, oldest first: a
+    /// cancellation asks of the run it just cancelled.
+    cancelled: VecDeque<RunId>,
     last_attempt: Option<(RunId, ResolvedModelRef)>,
 }
+
+/// How many cancelled runs a log's state remembers.
+const CANCELLED_KEPT: usize = 16;
 
 impl RunFold {
     fn observe(&mut self, event: &Arc<StoredEvent>, producers: &GoalProducerFold) {
@@ -828,8 +832,12 @@ impl RunFold {
                 }
                 if let (Some(run), Open::Known(RunOutcome::Cancelled { .. })) =
                     (event.run_id, outcome)
+                    && !self.cancelled.contains(&run)
                 {
-                    self.cancelled.insert(run);
+                    self.cancelled.push_back(run);
+                    if self.cancelled.len() > CANCELLED_KEPT {
+                        self.cancelled.pop_front();
+                    }
                 }
             }
             EventPayload::RuntimeAttached { name, .. } => {
@@ -901,7 +909,15 @@ struct ApprovalFold {
     decisions: HashMap<ApprovalId, Arc<UserDecision>>,
     /// The approval that settled last.
     settled: Option<OpenApproval>,
+    /// The latest decisions, oldest first: `responses` and `decisions` keep
+    /// those of the newest [`DECISIONS_KEPT`], and of approvals still open.
+    decided: VecDeque<(ApprovalId, ClientResponseId)>,
 }
+
+/// How many user decisions an approval fold keeps beyond those of open
+/// approvals: a client's retry of a response, and an ACP agent's read of the
+/// answer it just got, ask of the latest.
+const DECISIONS_KEPT: usize = 16;
 
 impl ApprovalFold {
     fn observe(&mut self, event: &Arc<StoredEvent>) {
@@ -942,6 +958,20 @@ impl ApprovalFold {
                 .entry(client_response_id.clone())
                 .or_insert_with(|| Arc::clone(&recorded));
             self.decisions.insert(*approval_id, recorded);
+            self.decided
+                .push_back((*approval_id, client_response_id.clone()));
+            if self.decided.len() > DECISIONS_KEPT
+                && let Some((approval, response)) = self.decided.pop_front()
+            {
+                if !self.decided.iter().any(|(_, kept)| *kept == response) {
+                    self.responses.remove(&response);
+                }
+                if !self.open.contains_key(&approval)
+                    && !self.decided.iter().any(|(kept, _)| *kept == approval)
+                {
+                    self.decisions.remove(&approval);
+                }
+            }
         }
         let Some(approval_id) = approval_event_id(&event.payload) else {
             return;
@@ -953,6 +983,10 @@ impl ApprovalFold {
                 ApprovalStatus::Pending | ApprovalStatus::Escalated
             ) {
                 self.settled = self.open.remove(&approval_id);
+                // Its decision goes with the rest, unless it is among the latest.
+                if !self.decided.iter().any(|(kept, _)| *kept == approval_id) {
+                    self.decisions.remove(&approval_id);
+                }
             }
         } else if let Some(settled) = self
             .settled

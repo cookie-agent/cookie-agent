@@ -1091,9 +1091,16 @@ pub fn differences(state: &LogState, events: &Events) -> Vec<&'static str> {
         "attached since the run's end",
         state.attached_since_run_end().cloned() == attached_since_run_end(events),
     );
+    // The latest of them, as the fold keeps (section 12).
+    let cancelled = cancelled_runs(events);
     check(
         "cancelled runs",
-        state.run.cancelled == cancelled_runs(events),
+        state
+            .run
+            .cancelled
+            .iter()
+            .all(|run| cancelled.contains(run))
+            && state.run.cancelled.len() == cancelled.len().min(super::CANCELLED_KEPT),
     );
     check(
         "last run's end",
@@ -1165,27 +1172,35 @@ pub fn differences(state: &LogState, events: &Events) -> Vec<&'static str> {
                 && approval_run_id(events, id) == settled.run,
         );
     }
-    let mut responses = HashSet::new();
-    let mut approvals = HashSet::new();
-    for event in events {
-        if let Some((id, decision)) = decision_of(event) {
-            responses.insert(id);
-            approvals.insert(decision.approval_id);
-        }
-    }
+    // The fold keeps the latest decisions, and those of open approvals.
+    let decided = events
+        .iter()
+        .filter_map(|event| decision_of(event))
+        .collect::<Vec<_>>();
+    let latest = &decided[decided.len().saturating_sub(super::DECISIONS_KEPT)..];
     check(
         "responses",
-        state.approvals.responses.len() == responses.len()
-            && responses
-                .iter()
-                .all(|id| state.response(id).map(AsRef::as_ref) == response(events, id).as_ref()),
+        state
+            .approvals
+            .responses
+            .iter()
+            .all(|(id, kept)| Some(kept.as_ref()) == response(events, id).as_ref())
+            && latest.iter().all(|(id, _)| state.response(id).is_some()),
     );
     check(
         "user decisions",
-        state.approvals.decisions.len() == approvals.len()
-            && approvals.iter().all(|id| {
-                state.user_decision(*id).map(AsRef::as_ref) == user_decision(events, *id).as_ref()
-            }),
+        state
+            .approvals
+            .decisions
+            .iter()
+            .all(|(id, kept)| Some(kept.as_ref()) == user_decision(events, *id).as_ref())
+            && latest
+                .iter()
+                .map(|(_, decision)| decision.approval_id)
+                .chain(open.keys().copied())
+                .all(|id| {
+                    state.user_decision(id).map(AsRef::as_ref) == user_decision(events, id).as_ref()
+                }),
     );
 
     // "Once" facts.

@@ -179,9 +179,10 @@ struct EventIndex {
     last_checkpoint_input_through_seq: u64,
     last_recorded_usage: Option<(u64, u64)>,
     last_turn_usage: Option<(u64, u64)>,
-    /// Visible `ModelAttemptStarted` records per run.
-    #[serde(with = "crate::events::sorted::map")]
-    run_attempts: HashMap<RunId, u32>,
+    /// Visible `ModelAttemptStarted` records of each of the latest
+    /// [`ATTEMPTED_RUNS_KEPT`] runs to try a model, oldest first: an attempt asks
+    /// of its own run, the latest.
+    run_attempts: VecDeque<(RunId, u32)>,
     /// Tool names of the latest visible `ModelToolsPublished` record.
     last_model_tools: Option<(Vec<String>, Vec<String>)>,
     /// The latest runtime revisions the log records.
@@ -204,6 +205,9 @@ struct EventIndex {
     /// section 3.2). A native run ends that: its model reads the log.
     window_start: Option<u64>,
 }
+
+/// How many runs' attempt counts a log's index keeps.
+const ATTEMPTED_RUNS_KEPT: usize = 16;
 
 /// What a log records about prompt blocks (stable prefix spec, section 6):
 /// the blocks the latest run's system prompt carries, and the blocks the
@@ -486,7 +490,19 @@ impl EventIndex {
             }
             EventPayload::ModelAttemptStarted { .. } => {
                 if let Some(run) = event.run_id {
-                    *self.run_attempts.entry(run).or_default() += 1;
+                    match self
+                        .run_attempts
+                        .iter_mut()
+                        .find(|(attempted, _)| *attempted == run)
+                    {
+                        Some((_, attempts)) => *attempts += 1,
+                        None => {
+                            self.run_attempts.push_back((run, 1));
+                            if self.run_attempts.len() > ATTEMPTED_RUNS_KEPT {
+                                self.run_attempts.pop_front();
+                            }
+                        }
+                    }
                 }
             }
             EventPayload::ModelToolsPublished {
@@ -2880,9 +2896,9 @@ impl EventLog {
         self.storage()
             .index
             .run_attempts
-            .get(&run)
-            .copied()
-            .unwrap_or_default()
+            .iter()
+            .find(|(attempted, _)| *attempted == run)
+            .map_or(0, |(_, attempts)| *attempts)
     }
 
     /// Physical events after `cursor`, at most `limit` of them, read without
