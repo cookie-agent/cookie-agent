@@ -1399,10 +1399,9 @@ pub fn governing_agent(
             || {
                 session
                     .log
-                    .event_snapshot()
-                    .iter()
-                    .rev()
-                    .find_map(|event| match &event.payload {
+                    .state()
+                    .latest_run_started()
+                    .and_then(|started| match &started.payload {
                         EventPayload::RunStarted { agent, .. } => {
                             Some(Arc::new(agent.as_ref().clone()))
                         }

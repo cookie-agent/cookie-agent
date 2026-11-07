@@ -2607,7 +2607,7 @@ impl Engine {
                     .any(super::messaging::producers::pending)
                 || self.producer_wake_in_flight(child_session_id);
             if !running {
-                let text = last_assistant_message(&child);
+                let text = last_assistant_message(&child)?;
                 return paginated_subagent_result(
                     (child_session_id, child.meta.short_id.as_deref()),
                     session_status_name(child.status),
@@ -3654,23 +3654,19 @@ fn delegate_final_text(child: &session::SessionProjection, child_run_id: Option<
 /// The last assistant message the session emitted: the most recent completed
 /// run's final text, falling back to the most recent committed model turn's
 /// text when a run ended without a completed turn (cancel/failure/interrupt).
-fn last_assistant_message(child: &session::SessionProjection) -> String {
-    let events = child.log.event_snapshot();
-    if let Some(text) = events.iter().rev().find_map(|event| match &event.payload {
-        Event::RunFinished {
-            outcome:
-                cookie_agent_protocol::Open::Known(cookie_agent_protocol::RunOutcome::Completed {
-                    final_text: Some(text),
-                }),
-        } => Some(text.clone()),
-        _ => None,
-    }) {
-        return text;
-    }
-    events
-        .iter()
-        .rev()
-        .find_map(|event| match &event.payload {
+fn last_assistant_message(child: &session::SessionProjection) -> Result<String, EngineError> {
+    let mut run_text = None;
+    let mut turn_text = None;
+    for event in child.log.history()? {
+        let event = event?;
+        match &event.payload {
+            Event::RunFinished {
+                outcome:
+                    cookie_agent_protocol::Open::Known(cookie_agent_protocol::RunOutcome::Completed {
+                        final_text: Some(text),
+                    }),
+            } => run_text = Some(text.clone()),
+            // Only worth keeping while no completed run answers.
             Event::ModelTurnCommitted { turn, .. } => {
                 let text = turn
                     .content
@@ -3680,11 +3676,14 @@ fn last_assistant_message(child: &session::SessionProjection) -> String {
                         _ => None,
                     })
                     .collect::<String>();
-                (!text.is_empty()).then_some(text)
+                if !text.is_empty() {
+                    turn_text = Some(text);
+                }
             }
-            _ => None,
-        })
-        .unwrap_or_default()
+            _ => {}
+        }
+    }
+    Ok(run_text.or(turn_text).unwrap_or_default())
 }
 
 /// A subagent report within `limits`, or its first and last lines around a

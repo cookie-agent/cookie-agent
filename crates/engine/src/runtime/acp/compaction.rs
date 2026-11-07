@@ -68,25 +68,21 @@ impl Engine {
                 .runs
                 .get(&run)
                 .is_none_or(|run| run.status != SessionStatus::Running);
-            let outcome = ended
-                .then(|| {
-                    projection
-                        .log
-                        .event_snapshot()
-                        .iter()
-                        .rev()
-                        .take_while(|event| {
-                            !(event.run_id == Some(run)
-                                && matches!(event.payload, Event::RunStarted { .. }))
-                        })
-                        .find_map(|event| match &event.payload {
-                            Event::RunFinished {
-                                outcome: cookie_agent_protocol::Open::Known(outcome),
-                            } if event.run_id == Some(run) => Some(outcome.clone()),
-                            _ => None,
-                        })
-                })
-                .flatten();
+            // A queued input can have started another run, so this one's end may
+            // be older than the latest turn.
+            let outcome = if ended {
+                projection
+                    .log
+                    .history()?
+                    .last_map_ok(|event| match &event.payload {
+                        Event::RunFinished {
+                            outcome: cookie_agent_protocol::Open::Known(outcome),
+                        } if event.run_id == Some(run) => Some(outcome.clone()),
+                        _ => None,
+                    })?
+            } else {
+                None
+            };
             match outcome {
                 // A run's end signals the session's subagent waits.
                 None => super::super::delegation::subagent_changed_or_recheck(&mut changes).await,

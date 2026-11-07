@@ -434,10 +434,10 @@ impl Engine {
                 Some(event) => started(&event.payload),
                 None => projection
                     .log
-                    .event_snapshot()
-                    .iter()
-                    .rev()
-                    .find_map(|event| started(&event.payload)),
+                    .history()
+                    .and_then(|events| events.last_map_ok(|event| started(&event.payload)))
+                    .ok()
+                    .flatten(),
             }
         });
         let (tool, summary) = presentation.map_or_else(

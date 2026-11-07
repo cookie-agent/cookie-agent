@@ -20,7 +20,7 @@ use cookie_agent_models::adapters::{
 };
 use cookie_agent_protocol::{
     CacheTtlSource, CacheTtlStamp, CheckpointReason, CronJobId, EventPayload as Event, Open,
-    PlannedCacheCompaction, ResolvedModelRef, SessionId, StoredEvent,
+    PlannedCacheCompaction, SessionId,
 };
 use jiff::{SignedDuration, Timestamp};
 use tokio::{sync::Notify, task::JoinHandle};
@@ -38,10 +38,6 @@ const FULL_PASS_EVERY: Duration = Duration::from_secs(60);
 /// How long the TTL of the `chatgpt` provider is assumed to be: the
 /// documented GPT-5.6+ default (section 11.2).
 const CHATGPT_ASSUMED_TTL: Duration = Duration::from_secs(30 * 60);
-
-/// How far back from a usage event the scan looks for the request it
-/// measured.
-const REQUEST_SCAN_LIMIT: usize = 4_096;
 
 /// The TTL a request cached its conversation for: what the cache strategy
 /// it was sent with sets, else what the configuration declares or assumes
@@ -99,81 +95,7 @@ pub(crate) fn request_cache_ttl(
     }
 }
 
-/// What the rule reads of a session's latest request.
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) struct LatestRequest {
-    /// The sequence of its usage event.
-    pub(crate) usage_seq: u64,
-    /// When it was sent: its prepared request, else its usage event.
-    pub(crate) sent_at: Timestamp,
-    pub(crate) stamp: CacheTtlStamp,
-    /// Its reported input plus output tokens.
-    pub(crate) tokens: u64,
-    pub(crate) model: ResolvedModelRef,
-}
-
-/// The session's latest request, read back from `events`; `None` when it
-/// has none with a cache TTL, or a checkpoint came after it (rule 5).
-pub(crate) fn latest_request(events: &[Arc<StoredEvent>]) -> Option<LatestRequest> {
-    let mut checkpoint_after = false;
-    let mut found = None;
-    let mut attempt = None;
-    for (scanned, event) in events.iter().rev().enumerate() {
-        match (&event.payload, &found) {
-            (Event::ContextCheckpointCommitted { .. }, None) => checkpoint_after = true,
-            (
-                Event::ModelUsageRecorded {
-                    model_turn_seq,
-                    resolved_model,
-                    usage,
-                    cache_ttl,
-                    ..
-                },
-                None,
-            ) => {
-                if checkpoint_after {
-                    return None;
-                }
-                let stamp = (*cache_ttl)?;
-                let tokens = usage
-                    .input_tokens
-                    .unwrap_or(0)
-                    .saturating_add(usage.output_tokens.unwrap_or(0));
-                found = Some((
-                    *model_turn_seq,
-                    LatestRequest {
-                        usage_seq: event.seq,
-                        sent_at: event.timestamp,
-                        stamp,
-                        tokens,
-                        model: resolved_model.clone(),
-                    },
-                ));
-            }
-            (
-                Event::ModelTurnCommitted {
-                    model_turn_seq,
-                    attempt_id,
-                    ..
-                },
-                Some((turn, _)),
-            ) if model_turn_seq == turn && attempt.is_none() => attempt = Some(*attempt_id),
-            (Event::ModelRequestPrepared { attempt_id, .. }, Some(_))
-            | (Event::ModelAttemptStarted { attempt_id, .. }, Some(_))
-                if Some(*attempt_id) == attempt =>
-            {
-                let (_, mut request) = found.take()?;
-                request.sent_at = event.timestamp;
-                return Some(request);
-            }
-            _ => {}
-        }
-        if found.is_some() && scanned > REQUEST_SCAN_LIMIT {
-            break;
-        }
-    }
-    found.map(|(_, request)| request)
-}
+pub(crate) use crate::events::state::LatestRequest;
 
 /// A compaction the rule plans.
 #[derive(Clone, Debug, PartialEq)]
@@ -533,7 +455,11 @@ impl Engine {
         let cached = lock(&state.requests).get(&session).cloned();
         let reading = match (self.inner.store.get_resident(session), cached) {
             (Some(projection), _) => {
-                let reading = latest_request(&projection.log.event_snapshot())
+                let reading = projection
+                    .log
+                    .state()
+                    .latest_request()
+                    .cloned()
                     .map(|request| (request, projection.meta.held.is_some()));
                 lock(&state.requests).insert(session, reading.clone());
                 reading
@@ -545,7 +471,11 @@ impl Engine {
                     .await
                     .ok()?
                     .ok()?;
-                let reading = latest_request(&projection.log.event_snapshot())
+                let reading = projection
+                    .log
+                    .state()
+                    .latest_request()
+                    .cloned()
                     .map(|request| (request, projection.meta.held.is_some()));
                 lock(&state.requests).insert(session, reading.clone());
                 reading

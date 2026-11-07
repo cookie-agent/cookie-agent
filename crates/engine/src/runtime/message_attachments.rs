@@ -506,22 +506,27 @@ impl Engine {
     /// The latest record of the tag at `key`: from memory while it waits,
     /// else from the session's log.
     fn attachment_record(&self, key: TagKey) -> Option<(AttachTag, AttachmentOutcome)> {
-        let events = self.inner.store.log(key.session).ok()?.event_snapshot();
-        events.iter().rev().find_map(|event| match &event.payload {
-            Event::AssistantAttachment {
-                model_turn_seq,
-                content_index,
-                ordinal,
-                tag,
-                outcome,
-            } if *model_turn_seq == key.model_turn_seq
-                && *content_index == key.content_index
-                && *ordinal == key.ordinal =>
-            {
-                Some((tag.clone(), outcome.clone()))
-            }
-            _ => None,
-        })
+        let log = self.inner.store.log(key.session).ok()?;
+        log.history()
+            .and_then(|events| {
+                events.last_map_ok(|event| match &event.payload {
+                    Event::AssistantAttachment {
+                        model_turn_seq,
+                        content_index,
+                        ordinal,
+                        tag,
+                        outcome,
+                    } if *model_turn_seq == key.model_turn_seq
+                        && *content_index == key.content_index
+                        && *ordinal == key.ordinal =>
+                    {
+                        Some((tag.clone(), outcome.clone()))
+                    }
+                    _ => None,
+                })
+            })
+            .ok()
+            .flatten()
     }
 
     /// `attachment.decide`.

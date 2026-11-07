@@ -141,29 +141,28 @@ impl Engine {
         child_acp: &str,
     ) -> Result<SessionId, EngineError> {
         let projection = self.inner.store.get(parent.session)?;
-        let events = projection.log.event_snapshot();
-        let (selection, agent, revisions) = events
-            .iter()
-            .find_map(|event| match &event.payload {
-                Event::SessionCreated {
-                    creation_selection,
-                    creation_agent,
-                    revisions,
-                    ..
-                } => Some((
-                    creation_selection.clone(),
-                    creation_agent.clone(),
-                    revisions.clone(),
-                )),
-                _ => None,
-            })
+        let created = projection
+            .log
+            .creation()
             .ok_or_else(|| EngineError::Acp("the parent session has no creation".to_owned()))?;
+        let Event::SessionCreated {
+            creation_selection: selection,
+            creation_agent: agent,
+            revisions,
+            ..
+        } = created.payload.clone()
+        else {
+            return Err(EngineError::Acp(
+                "the parent session has no creation".to_owned(),
+            ));
+        };
         let parent_run = run
             .or_else(|| {
-                events.iter().rev().find_map(|event| match &event.payload {
-                    Event::RunStarted { .. } => event.run_id,
-                    _ => None,
-                })
+                projection
+                    .log
+                    .state()
+                    .latest_run_started()
+                    .and_then(|started| started.run_id)
             })
             .ok_or_else(|| EngineError::Acp("the parent session has no run".to_owned()))?;
         // The agent's call that started the subagent is the agent's own;

@@ -767,27 +767,35 @@ impl Engine {
         &self,
         session: SessionId,
     ) -> Result<(), EngineError> {
-        let events = self.inner.store.log(session)?.event_snapshot();
-        let surviving: HashSet<_> = events
-            .iter()
-            .filter_map(|event| match &event.payload {
-                super::Event::ToolCallTerminated { termination }
-                    if completed_start(termination) =>
-                {
-                    Some(termination.tool_call_id)
-                }
-                _ => None,
-            })
-            .collect();
-        for (tool_call_id, job) in self
+        // The session's jobs: no pass over a log that has none.
+        let mut gone = self
             .inner
             .background
             .jobs
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .iter()
-        {
-            if job.session == session && !surviving.contains(tool_call_id) {
+            .filter(|(_, job)| job.session == session)
+            .map(|(tool_call_id, _)| *tool_call_id)
+            .collect::<HashSet<_>>();
+        if gone.is_empty() {
+            return Ok(());
+        }
+        for event in self.inner.store.log(session)?.history()? {
+            if let super::Event::ToolCallTerminated { termination } = &event?.payload
+                && completed_start(termination)
+            {
+                gone.remove(&termination.tool_call_id);
+            }
+        }
+        let jobs = self
+            .inner
+            .background
+            .jobs
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        for tool_call_id in gone {
+            if let Some(job) = jobs.get(&tool_call_id) {
                 job.kill.cancel();
             }
         }
@@ -841,22 +849,23 @@ impl Engine {
         retained_output: Option<RetainedToolOutput>,
     ) -> Result<(), EngineError> {
         let authority = tool_authority(tool_call_id);
-        let events = self.inner.store.log(session)?.event_snapshot();
-        let started = events.iter().any(|event| {
-            matches!(
-                &event.payload,
+        let mut started = false;
+        for event in self.inner.store.log(session)?.history()? {
+            match &event?.payload {
                 super::Event::ToolCallTerminated { termination }
-                    if termination.tool_call_id == tool_call_id && completed_start(termination)
-            )
-        });
-        let accepted = events.iter().any(|event| {
-            matches!(
-                &event.payload,
+                    if termination.tool_call_id == tool_call_id && completed_start(termination) =>
+                {
+                    started = true;
+                }
                 super::Event::ProducerMessageAccepted { producer_owner, .. }
-                    if *producer_owner == authority.owner
-            )
-        });
-        if !started || accepted {
+                    if *producer_owner == authority.owner =>
+                {
+                    return Ok(());
+                }
+                _ => {}
+            }
+        }
+        if !started {
             return Ok(());
         }
         self.accept_producer_with_output_direct(

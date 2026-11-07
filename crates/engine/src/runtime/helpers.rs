@@ -43,16 +43,15 @@ impl Engine {
         };
         // A call being ended is open; a pass over the log answers for one
         // that already ended, which its second termination then fails on.
-        log.state()
+        let open = log
+            .state()
             .open_call(tool_call_id)
-            .and_then(|event| owner(event))
-            .or_else(|| {
-                log.event_snapshot()
-                    .iter()
-                    .rev()
-                    .find_map(|event| owner(event))
-            })
-            .ok_or_else(|| EngineError::ToolFailed("tool ownership is missing".into()))
+            .and_then(|event| owner(event));
+        match open {
+            Some(owner) => Some(owner),
+            None => log.history()?.last_map_ok(owner)?,
+        }
+        .ok_or_else(|| EngineError::ToolFailed("tool ownership is missing".into()))
     }
 
     pub(super) fn terminate_tool_direct(
@@ -99,16 +98,15 @@ impl Engine {
             _ => None,
         };
         // The run asked about is nearly always the latest.
-        log.state()
+        let latest = log
+            .state()
             .run_started(run_id)
-            .and_then(|event| prompt(event))
-            .or_else(|| {
-                log.event_snapshot()
-                    .iter()
-                    .rev()
-                    .find_map(|event| prompt(event))
-            })
-            .ok_or(EngineError::MissingRun(run_id))
+            .and_then(|event| prompt(event));
+        match latest {
+            Some(prompt) => Some(prompt),
+            None => log.history()?.last_map_ok(prompt)?,
+        }
+        .ok_or(EngineError::MissingRun(run_id))
     }
 }
 

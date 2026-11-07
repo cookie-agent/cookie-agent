@@ -13,9 +13,7 @@ use cookie_agent_protocol::{
 };
 use jiff::Timestamp;
 
-use super::{
-    LatestRequest, SessionState, latest_request, plan, request_cache_ttl, worth_compacting,
-};
+use super::{LatestRequest, SessionState, plan, request_cache_ttl, worth_compacting};
 
 const FALLBACK: Duration = Duration::from_secs(17 * 60);
 
@@ -372,6 +370,15 @@ fn checkpoint(seq: u64) -> Arc<StoredEvent> {
             },
         },
     )
+}
+
+/// What the log's fold holds of `events`.
+fn latest_request(events: &[Arc<StoredEvent>]) -> Option<LatestRequest> {
+    let mut state = crate::events::LogState::default();
+    for event in events {
+        state.observe(event);
+    }
+    state.latest_request().cloned()
 }
 
 #[test]

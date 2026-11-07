@@ -195,13 +195,14 @@ impl Engine {
         // A foreground call that got the child's result reported it already.
         let call = entry.reservation.parent_tool_call_id;
         let parent = self.inner.store.get(parent)?;
-        let ended =
+        // A call still open has no result to read.
+        let ended = if parent.log.state().open_call(call).is_some() {
+            None
+        } else {
             parent
                 .log
-                .event_snapshot()
-                .iter()
-                .rev()
-                .find_map(|event| match &event.payload {
+                .history()?
+                .last_map_ok(|event| match &event.payload {
                     Event::ToolCallTerminated { termination }
                         if termination.tool_call_id == call =>
                     {
@@ -213,7 +214,8 @@ impl Engine {
                         }))
                     }
                     _ => None,
-                });
+                })?
+        };
         match ended {
             Some(reported) => Ok(!reported),
             // Nothing waits on the call, which has not ended either, as after
