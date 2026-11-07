@@ -644,6 +644,71 @@ fn golden_logs_read_as_a_pass_give_what_the_whole_list_gives() {
     }
 }
 
+/// What a request assembles from a golden log's model context is what it
+/// assembles from the log through the same record, at every turn boundary,
+/// on each model its runs bound and on another; and a log that let go of the
+/// rest each time would hold the same (`docs/site/specs/forever-sessions.md`
+/// section 5.3). These logs' checkpoints were written before `context_fresh`,
+/// so they pin as they did.
+#[tokio::test]
+async fn golden_logs_assemble_from_their_model_context_as_from_the_whole_log() {
+    let mut boundaries = 0;
+    for (_, scenario) in golden_scenarios() {
+        let opened = open_scenario(&scenario, Opening::ReadOnly).await;
+        for log in scenario_logs(&scenario) {
+            let events = log.event_snapshot();
+            let mut state = crate::events::state::LogState::default();
+            let mut held = Vec::<Arc<cookie_agent_protocol::StoredEvent>>::new();
+            let mut bindings = vec![crate::test_support::model_binding()];
+            for (index, event) in events.iter().enumerate() {
+                state.observe(event);
+                if let EventPayload::RunStarted { .. } = &event.payload
+                    && let Some(run) = event.run_id
+                    && let Ok(policy) = opened.engine.historical_title_policy(&log, run)
+                {
+                    bindings.extend(policy.selected_suffix.first().cloned());
+                }
+                let boundary = index + 1 == events.len()
+                    || matches!(
+                        event.payload,
+                        EventPayload::ModelTurnCommitted { .. }
+                            | EventPayload::ContextCheckpointCommitted { .. }
+                            | EventPayload::RunFinished { .. }
+                    );
+                if !boundary {
+                    continue;
+                }
+                boundaries += 1;
+                let through = &events[..=index];
+                let selected = crate::events::model_context::model_context(through, &state)
+                    .unwrap_or_else(|| through.to_vec());
+                let tip = held.last().map_or(0, |event| event.seq);
+                held.extend(through.iter().filter(|event| event.seq > tip).cloned());
+                held = crate::events::model_context::model_context(&held, &state).unwrap_or(held);
+                assert!(
+                    held.iter()
+                        .map(|event| event.seq)
+                        .eq(selected.iter().map(|event| event.seq)),
+                    "{}: what a native window would hold through {}",
+                    log.path().display(),
+                    event.seq
+                );
+                for binding in &bindings {
+                    crate::model_history::assert_assembles_as_whole(
+                        &selected,
+                        through,
+                        &opened.engine.inner.artifacts,
+                        binding,
+                        "System prompt.",
+                    );
+                }
+            }
+        }
+        opened.engine.shutdown().await;
+    }
+    assert!(boundaries > 0);
+}
+
 /// The ACP scenario holds the records every fold reads, so a fold that went
 /// wrong has something to differ on.
 #[test]

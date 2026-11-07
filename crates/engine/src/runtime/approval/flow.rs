@@ -488,9 +488,14 @@ impl Engine {
         let Ok(log) = self.inner.store.log(active.session) else {
             return ReviewOutcome::Failed;
         };
-        // The reviewer applies only to a native session (approval reviewer
-        // spec), so this is the model's context until its own log (phase 8).
-        let Ok(events) = log.model_context_events() else {
+        // The reviewer's conversation renders from the whole log until it has
+        // its own (`docs/site/specs/forever-sessions.md` section 5.5): its
+        // epochs and run numbers count from the log's start, which the
+        // model's context no longer reaches after a checkpoint.
+        let Ok(events) = log
+            .history()
+            .and_then(|pass| pass.collect::<Result<Vec<_>, _>>())
+        else {
             return ReviewOutcome::Failed;
         };
         let Ok(inherited) = self.reviewer_inheritance(session) else {

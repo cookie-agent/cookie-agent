@@ -108,7 +108,7 @@ Anything else needed to continue: environment facts, identifiers, URLs, numbers.
 Rules:
 - Be terse; prefer bullets to prose.
 - Preserve exact paths, identifiers, commands, error messages, and numbers.
-- Omit pinned context such as AGENTS.md and loaded skills; it stays available separately.
+- Omit pinned context such as AGENTS.md; it stays available separately.
 - Do not mention this checkpoint or the summarization.
 - Do not continue the task, ask questions, or call tools. Return the checkpoint text only."#;
 pub(super) const TOOL_OUTPUT_ELISION_MIN_BYTES: usize = 8 * 1024;
@@ -539,6 +539,12 @@ impl Engine {
 
         let composed_prompt = self.run_agent_prompt(input.session, input.run)?;
         let mut events = input.events.clone();
+        #[cfg(test)]
+        self.assert_assembles_as_whole(&events, input.binding, &composed_prompt);
+        // The context before the conversation is read as compaction starts,
+        // so its size counts in the budgets below, and recorded only just
+        // before the checkpoint commits (forever sessions spec, section 5.2).
+        let fresh = self.checkpoint_context(&input, &events).await?;
         // Native compaction runs beside the summary when the model has it and
         // the provider record allows it (native compaction spec section 3).
         let native_model = (input.binding.descriptor.capabilities.compaction
@@ -607,8 +613,12 @@ impl Engine {
         };
         let summary_limit = SummaryByteLimit::new(config.max_summary_bytes as u64)
             .map_err(|error| EngineError::from(ModelError::invalid_request(error.to_string())))?;
-        let checkpoint_prefix =
-            model_history::checkpoint_retained_history(&context.history, &events, None);
+        let checkpoint_prefix = model_history::checkpoint_retained_history(
+            &context.history,
+            &events,
+            Some(&fresh.turns),
+            None,
+        );
         let prior_summary_count = usize::from(summary_base.is_some());
 
         let native = async {
@@ -660,6 +670,7 @@ impl Engine {
                 input_through_seq,
                 None,
                 &summary_reserve,
+                Some(&fresh.turns),
             )?;
             let base_tokens =
                 self.estimated_request_tokens(input.session, &base.history, input.tools)?;
@@ -682,6 +693,7 @@ impl Engine {
                         input_through_seq,
                         Some(candidate),
                         &summary_reserve,
+                        Some(&fresh.turns),
                     )?;
                     self.estimated_request_tokens(input.session, &projected.history, input.tools)
                 },
@@ -841,6 +853,7 @@ impl Engine {
                 input_through_seq,
                 recent_from_seq,
                 checkpoint.summary(),
+                Some(&fresh.turns),
             )?;
             let input_tokens_after = self.estimated_request_tokens(
                 input.session,
@@ -855,6 +868,7 @@ impl Engine {
                 input_through_seq,
                 None,
                 checkpoint.summary(),
+                Some(&fresh.turns),
             )?;
             let actual_base_tokens =
                 self.estimated_request_tokens(input.session, &actual_base.history, input.tools)?;
@@ -905,7 +919,7 @@ impl Engine {
             boundaries,
             budgets,
             reason: input.reason.clone(),
-            context_fresh: false,
+            context_fresh: true,
         };
         if commit.validate().is_err() {
             // A window the boundaries cannot hold leaves the summary alone.
@@ -916,12 +930,21 @@ impl Engine {
                 return Ok(events);
             }
         }
-        self.append(
-            input.session,
-            Some(input.run),
-            input.origin.clone(),
-            Event::ContextCheckpointCommitted { commit },
-        )
+        // What it read as it began, then the checkpoint, so a compaction that
+        // fails before here leaves no trace.
+        let records = fresh.records();
+        let (session, run, origin) = (input.session, input.run, input.origin.clone());
+        self.on_actor(session, move |engine| {
+            for (origin, event) in records {
+                engine.append_direct(session, Some(run), super::event_origin(origin), event)?;
+            }
+            engine.append_direct(
+                session,
+                Some(run),
+                origin,
+                Event::ContextCheckpointCommitted { commit },
+            )
+        })
         .await?;
         // A checkpoint ends whatever compaction was planned before the
         // prompt cache expires.
@@ -934,6 +957,77 @@ impl Engine {
             .store
             .log(input.session)?
             .model_context_events()?)
+    }
+
+    /// What a checkpoint records of the context before the conversation, read
+    /// as compaction starts (forever sessions spec, section 5.2): a root
+    /// session's `AGENTS.md` from every coding attachment, as its runs load
+    /// it, and the memory snapshot. What cannot be read is the record the
+    /// model reads now again, from `events`, the log's model context.
+    async fn checkpoint_context(
+        &self,
+        input: &CompactionInput<'_>,
+        events: &[Arc<StoredEvent>],
+    ) -> Result<CheckpointContext, EngineError> {
+        let policy = input.owner_policy;
+        let projection = self.inner.store.get(input.session)?;
+        let root = matches!(
+            projection.meta.origin,
+            cookie_agent_protocol::SessionOrigin::Root
+        );
+        let agent_md = if root && policy.acp_agent().is_none() {
+            let preset =
+                projection
+                    .log
+                    .state()
+                    .run_started(input.run)
+                    .and_then(|event| match &event.payload {
+                        Event::RunStarted { selection, .. } => selection.preset.clone(),
+                        _ => None,
+                    });
+            let agent_override = policy
+                .registry
+                .get(&policy.agent.agent)
+                .and_then(|agent| agent.document.frontmatter.agent_md);
+            let current = model_history::latest_agent_md_events(&crate::events::event_refs(events))
+                .into_iter()
+                .filter_map(|event| match &event.payload {
+                    Event::AgentMdLoaded {
+                        entries,
+                        attachment,
+                        project,
+                        ..
+                    } => Some(super::agent_md::AttachmentAgentMd {
+                        attachment: attachment.clone(),
+                        entries: entries.clone(),
+                        skipped: Vec::new(),
+                        project: project.clone(),
+                    }),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            self.checkpoint_agent_md(input.session, preset.as_deref(), agent_override, &current)
+                .await?
+        } else {
+            Vec::new()
+        };
+        let memory = if policy.acp_agent().is_none() {
+            self.checkpoint_memory_snapshot(input.session, policy)
+                .await?
+        } else {
+            None
+        };
+        let turns = model_history::FreshTurns {
+            agent_md: model_history::fresh_agent_md_turn(&agent_md),
+            memory: memory
+                .as_ref()
+                .and_then(crate::memory::render::snapshot_turn),
+        };
+        Ok(CheckpointContext {
+            agent_md,
+            memory,
+            turns,
+        })
     }
 
     /// The context native compaction compacts from: the latest window when
@@ -969,6 +1063,8 @@ impl Engine {
         composed_prompt: &str,
         model: &dyn oven_sdk::LanguageModel,
     ) -> Result<model_history::ModelContext, EngineError> {
+        #[cfg(test)]
+        self.assert_assembles_as_whole(events, binding, composed_prompt);
         let use_windows = self.inner.native_compaction.allows_windows(binding);
         let context = model_history::assemble_model_context_with(
             events,
@@ -996,6 +1092,42 @@ impl Engine {
             }
             _ => Ok(context),
         }
+    }
+
+    /// Test-only: what a request assembles from `events`, a log's model
+    /// context, is what it assembles from the whole log through the same
+    /// record (`docs/site/specs/forever-sessions.md` section 5.3). Every
+    /// request and every compaction asks.
+    #[cfg(test)]
+    pub(in crate::runtime) fn assert_assembles_as_whole(
+        &self,
+        events: &[Arc<StoredEvent>],
+        binding: &cookie_agent_protocol::FrozenModelBinding,
+        composed_prompt: &str,
+    ) {
+        let Some(tip) = events.last() else {
+            return;
+        };
+        let Ok(log) = self.inner.store.log(tip.session_id) else {
+            return;
+        };
+        let whole = log
+            .event_snapshot()
+            .iter()
+            .filter(|event| event.seq <= tip.seq)
+            .cloned()
+            .collect::<Vec<_>>();
+        if whole.last().is_none_or(|last| last != tip) {
+            // A revert cut the log since.
+            return;
+        }
+        model_history::assert_assembles_as_whole(
+            events,
+            &whole,
+            &self.inner.artifacts,
+            binding,
+            composed_prompt,
+        );
     }
 
     /// The tools a checkpoint folds (deferred tools in cookie, section 8.3):
@@ -1203,6 +1335,52 @@ impl Engine {
             return Ok(calibrated);
         }
         Ok(estimated_tokens_for_bytes(bytes))
+    }
+}
+
+/// What a checkpoint read of the context before the conversation as it
+/// began, to record just before it commits.
+struct CheckpointContext {
+    agent_md: Vec<super::agent_md::AttachmentAgentMd>,
+    memory: Option<cookie_agent_protocol::MemorySnapshot>,
+    /// What they render to, for the budgets.
+    turns: model_history::FreshTurns,
+}
+
+impl CheckpointContext {
+    /// The records, with their origins, in the order a run's admission
+    /// appends them.
+    fn records(self) -> Vec<(&'static str, Event)> {
+        let mut records = Vec::new();
+        for loaded in self.agent_md {
+            if !loaded.entries.is_empty() {
+                records.push((
+                    "engine:agent-md",
+                    Event::AgentMdLoaded {
+                        entries: loaded.entries,
+                        attachment: loaded.attachment.clone(),
+                        project: loaded.project.clone(),
+                        in_place: false,
+                    },
+                ));
+            }
+            for skip in loaded.skipped {
+                records.push((
+                    "engine:agent-md",
+                    Event::agent_md_skipped(&skip, &loaded.attachment),
+                ));
+            }
+        }
+        if let Some(snapshot) = self.memory {
+            records.push((
+                "engine:memory",
+                Event::MemoryLoaded {
+                    snapshot,
+                    in_place: false,
+                },
+            ));
+        }
+        records
     }
 }
 

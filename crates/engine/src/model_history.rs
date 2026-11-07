@@ -34,24 +34,20 @@ pub(crate) use cookie_agent_protocol::model_text::{
     TOOL_EMITTED_SYSTEM_USER_MARKER, framed_compaction_summary, tool_output_elision_marker,
 };
 
+/// The turns of `history` the coming checkpoint keeps before its summary:
+/// the system prompt and the turns before the conversation. The coming
+/// checkpoint composes the context afresh, so no loaded skill sits there
+/// (`docs/site/specs/forever-sessions.md` section 5.2); `fresh` is what it
+/// read, when it did, and otherwise the turns are the current ones.
 pub(crate) fn checkpoint_retained_history<E: Borrow<StoredEvent>>(
     history: &[HistoryTurn],
     events: &[E],
+    fresh: Option<&FreshTurns>,
     summary: Option<&str>,
 ) -> Vec<HistoryTurn> {
     let events = crate::events::event_refs(events);
     let events = events.as_slice();
-    // Every skill before the coming checkpoint sits before the
-    // conversation after it.
-    let pinned_skills = events
-        .iter()
-        .filter(|event| matches!(event.payload, EventPayload::SkillLoaded { .. }))
-        .count();
-    let pinned_agent_md = usize::from(!latest_agent_md_events(events).is_empty());
-    let pinned_memory = usize::from(latest_memory_turn(events).is_some());
-    let pinned_count = pinned_agent_md
-        .saturating_add(pinned_memory)
-        .saturating_add(pinned_skills);
+    let pinned_count = pinned_history_len(events, Floors::fresh_at(u64::MAX), fresh);
     let mut history = history.iter();
     let mut retained = history.next().cloned().into_iter().collect::<Vec<_>>();
     retained.extend(
@@ -302,7 +298,7 @@ struct AssistantRecord<'a> {
 /// An assistant turn of an assembled history: where it was committed and the
 /// request prefix it was made in, when recorded (frozen context spec,
 /// section 4). A turn not from the log (a delegated seed) has neither.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct AssistantPrefix {
     pub(crate) seq: u64,
     pub(crate) fingerprint: Option<cookie_agent_protocol::Sha256Digest>,
@@ -367,6 +363,7 @@ struct CallRecord<'a> {
     in_stream_result: bool,
 }
 
+#[cfg_attr(test, derive(Debug, PartialEq))]
 pub(crate) struct ModelContext {
     pub(crate) history: Vec<HistoryTurn>,
     pub(crate) native_context: Option<OvenNativeContextWindow>,
@@ -405,6 +402,9 @@ pub(crate) fn latest_summary_checkpoint<'a>(
     })
 }
 
+/// Whether a checkpoint through `through_seq` that pins its older context, as
+/// one without `context_fresh` does, keeps `event`: every loaded skill, and
+/// `latest_pinned_seqs`.
 fn is_pinned_event(event: &StoredEvent, latest_pinned_seqs: &[u64], through_seq: u64) -> bool {
     event.seq <= through_seq
         && (matches!(event.payload, EventPayload::SkillLoaded { .. })
@@ -421,6 +421,27 @@ fn latest_pinned_seqs(events: &[&StoredEvent]) -> Vec<u64> {
         .collect()
 }
 
+/// What a checkpoint keeps of the context before the conversation from
+/// before itself.
+#[derive(Clone, Copy)]
+enum Pins {
+    /// Nothing: it composed the context afresh (`context_fresh`).
+    None,
+    /// Every loaded skill, and the latest `AGENTS.md` and memory records, as
+    /// a checkpoint an earlier build wrote does.
+    Older,
+}
+
+impl Pins {
+    fn of(commit: &cookie_agent_protocol::ContextCheckpointCommit) -> Self {
+        if commit.context_fresh {
+            Self::None
+        } else {
+            Self::Older
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 enum CheckpointSelectionMode {
     InternalSummary,
@@ -433,8 +454,13 @@ fn selected_checkpoint_events<'a>(
     recent_from_seq: Option<u64>,
     close_dependencies: bool,
     mode: CheckpointSelectionMode,
+    pins: Pins,
 ) -> Vec<&'a StoredEvent> {
-    let latest_pinned_seqs = latest_pinned_seqs(events);
+    let latest_pinned_seqs = match pins {
+        Pins::Older => latest_pinned_seqs(events),
+        Pins::None => Vec::new(),
+    };
+    let pins_older = matches!(pins, Pins::Older);
     let pending_producer_admissions = match mode {
         CheckpointSelectionMode::InternalSummary => GoalProducerProjection::from_events(events)
             .messages
@@ -447,7 +473,7 @@ fn selected_checkpoint_events<'a>(
     let mut selected = events
         .iter()
         .filter(|event| {
-            is_pinned_event(event, &latest_pinned_seqs, source_through_seq)
+            (pins_older && is_pinned_event(event, &latest_pinned_seqs, source_through_seq))
                 || pending_producer_admissions.contains(&event.seq)
                 || recent_from_seq
                     .is_some_and(|from| (from..=source_through_seq).contains(&event.seq))
@@ -518,14 +544,73 @@ fn close_event_dependencies<'a>(events: &[&'a StoredEvent], selected: &mut Vec<&
     }
 }
 
-fn pinned_history_len(events: &[&StoredEvent], pin_floor: Option<u64>) -> usize {
-    let boundary = context_boundary(events).max(pin_floor);
-    usize::from(!latest_agent_md_events(events).is_empty())
-        + usize::from(latest_memory_turn(events).is_some())
+/// The `AGENTS.md` and memory turns a checkpoint read as it began, to sit
+/// before the conversation once it commits with `context_fresh`
+/// (`docs/site/specs/forever-sessions.md` section 5.2): what a projection of
+/// it counts, before the log holds them.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct FreshTurns {
+    pub(crate) agent_md: Option<String>,
+    pub(crate) memory: Option<String>,
+}
+
+/// Checkpoints the log does not hold yet, such as one being projected.
+#[derive(Clone, Copy, Debug, Default)]
+struct Floors {
+    /// A skill before it sits before the conversation, unless `fresh` says
+    /// otherwise.
+    pin: Option<u64>,
+    /// It composes the context afresh: no skill before it sits before the
+    /// conversation.
+    fresh: Option<u64>,
+}
+
+impl Floors {
+    fn pinning(seq: u64) -> Self {
+        Self {
+            pin: Some(seq),
+            fresh: None,
+        }
+    }
+
+    fn fresh_at(seq: u64) -> Self {
+        Self {
+            pin: Some(seq),
+            fresh: Some(seq),
+        }
+    }
+}
+
+fn pinned_history_len(
+    events: &[&StoredEvent],
+    floors: Floors,
+    fresh: Option<&FreshTurns>,
+) -> usize {
+    let boundary = context_boundary(events).max(floors.pin);
+    let fresh_floor = latest_fresh_checkpoint(events).max(floors.fresh);
+    let (agent_md, memory) = match fresh {
+        Some(fresh) => (fresh.agent_md.is_some(), fresh.memory.is_some()),
+        None => (
+            !latest_agent_md_events(events).is_empty(),
+            latest_memory_turn(events).is_some(),
+        ),
+    };
+    usize::from(agent_md)
+        + usize::from(memory)
         + events
             .iter()
-            .filter(|event| pinned_skill(event, boundary))
+            .filter(|event| pinned_skill(event, boundary, fresh_floor))
             .count()
+}
+
+/// The latest checkpoint that composed the context afresh.
+fn latest_fresh_checkpoint(events: &[&StoredEvent]) -> Option<u64> {
+    events.iter().rev().find_map(|event| match &event.payload {
+        EventPayload::ContextCheckpointCommitted { commit } if commit.context_fresh => {
+            Some(event.seq)
+        }
+        _ => None,
+    })
 }
 
 /// Where the context before the conversation was last composed between
@@ -551,19 +636,24 @@ fn latest_refresh(events: &[&StoredEvent]) -> Option<u64> {
 
 /// Whether a skill sits with the turns before the conversation: one loaded
 /// before the latest checkpoint or refresh. A later one renders where it was
-/// loaded (frozen context spec, section 6.4).
-fn pinned_skill(event: &StoredEvent, boundary: Option<u64>) -> bool {
+/// loaded (frozen context spec, section 6.4). So does one loaded before a
+/// checkpoint that composed the context afresh, the latest such being
+/// `fresh_floor`: it is a turn like any other, kept where it was loaded or
+/// summarized (`docs/site/specs/forever-sessions.md` section 5.2).
+fn pinned_skill(event: &StoredEvent, boundary: Option<u64>, fresh_floor: Option<u64>) -> bool {
     matches!(event.payload, EventPayload::SkillLoaded { .. })
         && boundary.is_some_and(|boundary| event.seq < boundary)
+        && fresh_floor.is_none_or(|fresh| event.seq > fresh)
 }
 
 fn insert_summary(
     assembled: &mut AssembledHistory,
     events: &[&StoredEvent],
     summary: &str,
-    pin_floor: Option<u64>,
+    floors: Floors,
+    fresh: Option<&FreshTurns>,
 ) {
-    let history_index = 1 + pinned_history_len(events, pin_floor);
+    let history_index = 1 + pinned_history_len(events, floors, fresh);
     assembled.history.insert(
         history_index,
         HistoryTurn::user(user_text(&framed_compaction_summary(summary))),
@@ -575,6 +665,12 @@ fn insert_summary(
     }
 }
 
+/// The context a checkpoint through `source_through_seq` that is not
+/// committed yet would give, keeping the events from `recent_from_seq` after
+/// `summary`. It composes the context afresh, so `fresh` holds the turns it
+/// read for before the conversation, and no skill loaded before it is pinned
+/// (`docs/site/specs/forever-sessions.md` section 5.2).
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn project_summary_context<E: Borrow<StoredEvent>>(
     events: &[E],
     store: &ArtifactRouter,
@@ -583,28 +679,54 @@ pub(crate) fn project_summary_context<E: Borrow<StoredEvent>>(
     source_through_seq: u64,
     recent_from_seq: Option<u64>,
     summary: &str,
+    fresh: Option<&FreshTurns>,
 ) -> Result<ModelContext, HistoryError> {
     let events = crate::events::event_refs(events);
-    let events = events.as_slice();
+    summary_context(
+        &events,
+        store,
+        binding,
+        composed_prompt,
+        (source_through_seq, recent_from_seq),
+        summary,
+        Pins::None,
+        Floors::fresh_at(source_through_seq.saturating_add(1)),
+        fresh,
+    )
+}
+
+/// The context a summary checkpoint through `range.0` gives, keeping the
+/// events from `range.1` after `summary`, with what it pins.
+#[allow(clippy::too_many_arguments)]
+fn summary_context(
+    events: &[&StoredEvent],
+    store: &ArtifactRouter,
+    binding: &FrozenModelBinding,
+    composed_prompt: &str,
+    (source_through_seq, recent_from_seq): (u64, Option<u64>),
+    summary: &str,
+    pins: Pins,
+    floors: Floors,
+    fresh: Option<&FreshTurns>,
+) -> Result<ModelContext, HistoryError> {
     let selected = selected_checkpoint_events(
         events,
         source_through_seq,
         recent_from_seq,
         true,
         CheckpointSelectionMode::InternalSummary,
+        pins,
     );
-    // What the summary covers sits before the conversation, whether the
-    // checkpoint is committed yet or only projected.
-    let pin_floor = Some(source_through_seq.saturating_add(1));
     let mut assembled = assemble_history_with_replay(
         &selected,
         events,
         store,
         binding,
         composed_prompt,
-        pin_floor,
+        floors,
+        fresh,
     )?;
-    insert_summary(&mut assembled, events, summary, pin_floor);
+    insert_summary(&mut assembled, events, summary, floors, fresh);
     Ok(ModelContext {
         history: assembled.history,
         native_context: None,
@@ -650,23 +772,32 @@ pub(crate) fn compaction_prefix_history<E: Borrow<StoredEvent>>(
                     commit.boundaries.recent_from_seq,
                     true,
                     CheckpointSelectionMode::InternalSummary,
+                    Pins::of(commit),
                 ),
                 Some(summary),
             )
         } else {
             (events.to_vec(), None)
         };
+    // The summarizer sees what it replaces, loaded skills included, which the
+    // checkpoint does not carry (`docs/site/specs/forever-sessions.md`
+    // section 5.2), and the current `AGENTS.md` and memory it is told to omit.
     let latest_pinned_seqs = latest_pinned_seqs(events);
-    visible.retain(|event| {
-        event.seq < recent_from_seq || is_pinned_event(event, &latest_pinned_seqs, u64::MAX)
-    });
+    visible.retain(|event| event.seq < recent_from_seq || latest_pinned_seqs.contains(&event.seq));
     close_event_dependencies(events, &mut visible);
     visible.sort_by_key(|event| event.seq);
     visible.dedup_by_key(|event| event.seq);
-    let mut assembled =
-        assemble_history_with_replay(&visible, events, store, binding, composed_prompt, None)?;
+    let mut assembled = assemble_history_with_replay(
+        &visible,
+        events,
+        store,
+        binding,
+        composed_prompt,
+        Floors::default(),
+        None,
+    )?;
     if let Some(summary) = prior_summary {
-        insert_summary(&mut assembled, events, summary, None);
+        insert_summary(&mut assembled, events, summary, Floors::default(), None);
     }
     Ok(assembled.history)
 }
@@ -688,10 +819,16 @@ pub(crate) fn compaction_tail_candidates<E: Borrow<StoredEvent>>(events: &[E]) -
             commit.boundaries.recent_from_seq,
             true,
             CheckpointSelectionMode::InternalSummary,
+            Pins::of(commit),
         )
     } else {
         events.to_vec()
     };
+    // A kept tail starts in the window: a group that starts at a record
+    // pinned before it, an input submitted or a message admitted there,
+    // would reach back past what the log holds of that range
+    // (`docs/site/specs/forever-sessions.md` section 12, phase 6).
+    let window_start = crate::events::model_context::context_window_start(events).unwrap_or(0);
     let visible_seqs = visible
         .iter()
         .map(|event| event.seq)
@@ -836,6 +973,7 @@ pub(crate) fn compaction_tail_candidates<E: Borrow<StoredEvent>>(events: &[E]) -
                 .any(|(start, end)| *start < group.start && group.start <= *end)
         })
         .filter(|group| visible_seqs.contains(&group.start))
+        .filter(|group| group.start >= window_start)
         .map(|group| group.start)
         .collect()
 }
@@ -873,8 +1011,15 @@ pub(crate) fn assemble_model_context_with<E: Borrow<StoredEvent>>(
     let events = crate::events::event_refs(events);
     let events = events.as_slice();
     let Some(commit) = latest_checkpoint(events) else {
-        let assembled =
-            assemble_history_with_replay(events, events, store, binding, composed_prompt, None)?;
+        let assembled = assemble_history_with_replay(
+            events,
+            events,
+            store,
+            binding,
+            composed_prompt,
+            Floors::default(),
+            None,
+        )?;
         return Ok(ModelContext {
             history: assembled.history,
             native_context: None,
@@ -890,9 +1035,17 @@ pub(crate) fn assemble_model_context_with<E: Borrow<StoredEvent>>(
             None,
             false,
             CheckpointSelectionMode::NativeWindow,
+            Pins::of(commit),
         );
-        let assembled =
-            assemble_history_with_replay(&selected, events, store, binding, composed_prompt, None)?;
+        let assembled = assemble_history_with_replay(
+            &selected,
+            events,
+            store,
+            binding,
+            composed_prompt,
+            Floors::default(),
+            None,
+        )?;
         return Ok(ModelContext {
             history: assembled.history,
             native_context: Some(native_context),
@@ -941,14 +1094,20 @@ pub(crate) fn assemble_summary_view<E: Borrow<StoredEvent>>(
     let events = crate::events::event_refs(events);
     let events = events.as_slice();
     match latest_summary_checkpoint(events) {
-        Some((_, commit, summary)) => project_summary_context(
+        // What the summary covers sits before the conversation.
+        Some((_, commit, summary)) => summary_context(
             events,
             store,
             binding,
             composed_prompt,
-            commit.boundaries.source_through_seq,
-            commit.boundaries.recent_from_seq,
+            (
+                commit.boundaries.source_through_seq,
+                commit.boundaries.recent_from_seq,
+            ),
             summary,
+            Pins::of(commit),
+            Floors::pinning(commit.boundaries.source_through_seq.saturating_add(1)),
+            None,
         ),
         None => {
             let assembled = assemble_history_with_replay(
@@ -957,6 +1116,7 @@ pub(crate) fn assemble_summary_view<E: Borrow<StoredEvent>>(
                 store,
                 binding,
                 composed_prompt,
+                Floors::default(),
                 None,
             )?;
             Ok(ModelContext {
@@ -977,23 +1137,31 @@ pub(crate) fn assemble_full_history<E: Borrow<StoredEvent>>(
 ) -> Result<Vec<HistoryTurn>, HistoryError> {
     let events = crate::events::event_refs(events);
     let events = events.as_slice();
-    Ok(
-        assemble_history_with_replay(events, events, store, binding, composed_prompt, None)?
-            .history,
-    )
+    Ok(assemble_history_with_replay(
+        events,
+        events,
+        store,
+        binding,
+        composed_prompt,
+        Floors::default(),
+        None,
+    )?
+    .history)
 }
 
 // Message selection must not roll back session-wide replay decisions or pinned context.
 // context_events is the full visible snapshot, before checkpoint or summary-prefix filtering.
-/// `pin_floor` is a boundary the log does not hold yet, such as a summary
-/// checkpoint being projected: skills before it sit before the conversation.
+/// `floors` are checkpoints the log does not hold yet, such as a summary
+/// checkpoint being projected, and `fresh` the turns before the conversation
+/// such a checkpoint read, in place of the log's.
 fn assemble_history_with_replay(
     events: &[&StoredEvent],
     context_events: &[&StoredEvent],
     store: &ArtifactRouter,
     binding: &FrozenModelBinding,
     composed_prompt: &str,
-    pin_floor: Option<u64>,
+    floors: Floors,
+    fresh: Option<&FreshTurns>,
 ) -> Result<AssembledHistory, HistoryError> {
     // Attachments resolve in the tree of the session whose log this is.
     let store = store.for_session(
@@ -1010,14 +1178,17 @@ fn assemble_history_with_replay(
     // The latest cut: reasoning of turns committed at or before it is not
     // replayed (`docs/site/specs/thinking-replay-recovery.md`).
     let mut replay_cut = None::<u64>;
-    let boundary = context_boundary(context_events).max(pin_floor);
+    let boundary = context_boundary(context_events).max(floors.pin);
+    let fresh_floor = latest_fresh_checkpoint(context_events).max(floors.fresh);
     let refreshed = latest_refresh(context_events);
     for event in context_events {
         match &event.payload {
             EventPayload::NativeReplayCut { through_seq, .. } => {
                 replay_cut = replay_cut.max(Some(*through_seq));
             }
-            EventPayload::SkillLoaded { rendered_body, .. } if pinned_skill(event, boundary) => {
+            EventPayload::SkillLoaded { rendered_body, .. }
+                if pinned_skill(event, boundary, fresh_floor) =>
+            {
                 loaded_skills.push(rendered_body);
             }
             EventPayload::ToolCallLinked {
@@ -1061,7 +1232,9 @@ fn assemble_history_with_replay(
                 })
         })
         .collect::<HashMap<_, _>>();
-    let loaded_agent_md = {
+    let loaded_agent_md = if let Some(fresh) = fresh {
+        fresh.agent_md.clone()
+    } else {
         let loaded = latest_agent_md_events(context_events)
             .into_iter()
             .filter_map(|event| match &event.payload {
@@ -1076,7 +1249,10 @@ fn assemble_history_with_replay(
             .collect::<Vec<_>>();
         (!loaded.is_empty()).then(|| agent_md_turn(&loaded))
     };
-    let loaded_memory = latest_memory_turn(context_events);
+    let loaded_memory = match fresh {
+        Some(fresh) => fresh.memory.clone(),
+        None => latest_memory_turn(context_events),
+    };
     let tail = CheckpointTail::of(context_events);
     let mut logical = Vec::<LogicalTurn<'_>>::new();
     let mut submitted = HashMap::<u64, &UserContent>::new();
@@ -1133,7 +1309,7 @@ fn assemble_history_with_replay(
             // A skill loaded since the latest checkpoint or refresh, where
             // it was loaded (frozen context spec, section 6.4).
             EventPayload::SkillLoaded { rendered_body, .. }
-                if !pinned_skill(envelope, boundary) =>
+                if !pinned_skill(envelope, boundary, fresh_floor) =>
             {
                 logical.push(LogicalTurn::User(user_text(rendered_body)));
             }
@@ -1580,42 +1756,19 @@ fn assemble_history_with_replay(
 }
 
 /// The current `AGENTS.md` context: the latest run's `agent_md_loaded`
-/// events, the latest one per attachment and the project's, in log order.
-fn latest_agent_md_events<'a>(events: &[&'a StoredEvent]) -> Vec<&'a StoredEvent> {
-    let latest_run = events.iter().rev().find_map(|event| {
-        matches!(event.payload, EventPayload::RunStarted { .. }).then_some(event.run_id)
-    });
-    let mut seen = HashSet::new();
-    let mut latest = events
-        .iter()
-        .rev()
-        .copied()
-        .filter(|event| latest_run.is_none_or(|run| event.run_id == run))
-        .filter(|event| match &event.payload {
-            EventPayload::AgentMdLoaded {
-                attachment,
-                project,
-                in_place: false,
-                ..
-            } => seen.insert((project.is_some(), attachment.as_str())),
-            _ => false,
-        })
-        .collect::<Vec<_>>();
-    latest.reverse();
-    latest
+/// events, the latest one per attachment and the project's, in log order;
+/// after a checkpoint that composed the context afresh in that run, those it
+/// recorded.
+pub(crate) fn latest_agent_md_events<'a>(events: &[&'a StoredEvent]) -> Vec<&'a StoredEvent> {
+    crate::events::model_context::current_agent_md_positions(events)
+        .into_iter()
+        .map(|position| events[position])
+        .collect()
 }
 
 /// The latest `memory_loaded` of the log, empty or not.
 fn latest_memory_event<'a>(events: &[&'a StoredEvent]) -> Option<&'a StoredEvent> {
-    events.iter().rev().copied().find(|event| {
-        matches!(
-            event.payload,
-            EventPayload::MemoryLoaded {
-                in_place: false,
-                ..
-            }
-        )
-    })
+    crate::events::model_context::latest_memory_position(events).map(|position| events[position])
 }
 
 /// The memory turn of the latest `memory_loaded`, placed after `AGENTS.md`
@@ -1644,6 +1797,117 @@ fn agent_md_turn(loaded: &[(&str, bool, &[cookie_agent_protocol::AgentMdEntry])]
         )
         .collect::<Vec<_>>();
     cookie_agent_protocol::model_text::agent_md_turn(&sources)
+}
+
+/// The `AGENTS.md` turn of what a checkpoint read, as the records it writes
+/// will render; none when no attachment has a file.
+pub(crate) fn fresh_agent_md_turn(
+    loaded: &[crate::runtime::agent_md::AttachmentAgentMd],
+) -> Option<String> {
+    let loaded = loaded
+        .iter()
+        .filter(|loaded| !loaded.entries.is_empty())
+        .map(|loaded| {
+            (
+                loaded.attachment.as_str(),
+                loaded.project.is_some(),
+                loaded.entries.as_slice(),
+            )
+        })
+        .collect::<Vec<_>>();
+    (!loaded.is_empty()).then(|| agent_md_turn(&loaded))
+}
+
+/// Test-only: what a request assembles from `selected`, a log's model context
+/// ([`crate::events::EventLog::model_context_events`]), is what it assembles
+/// from `whole`, the log through the same record: the context with and
+/// without provider windows, the summary view, the candidates for a kept tail
+/// and the views a compaction projects from them, the summarizer's input, and
+/// what a checkpoint keeps (`docs/site/specs/forever-sessions.md` section
+/// 5.3).
+#[cfg(test)]
+pub(crate) fn assert_assembles_as_whole(
+    selected: &[std::sync::Arc<StoredEvent>],
+    whole: &[std::sync::Arc<StoredEvent>],
+    store: &ArtifactRouter,
+    binding: &FrozenModelBinding,
+    composed_prompt: &str,
+) {
+    fn same<T: PartialEq + std::fmt::Debug>(
+        what: &str,
+        selected: Result<T, HistoryError>,
+        whole: Result<T, HistoryError>,
+    ) {
+        match (selected, whole) {
+            (Ok(selected), Ok(whole)) => assert!(
+                selected == whole,
+                "{what} differs from the whole log's:\nselected: {selected:#?}\nwhole: {whole:#?}"
+            ),
+            (Err(selected), Err(whole)) => {
+                assert_eq!(selected.to_string(), whole.to_string(), "{what}");
+            }
+            (selected, whole) => panic!(
+                "{what}: from the model context {:?}, from the whole log {:?}",
+                selected.err().map(|error| error.to_string()),
+                whole.err().map(|error| error.to_string())
+            ),
+        }
+    }
+    for use_windows in [true, false] {
+        same(
+            "the request's context",
+            assemble_model_context_with(selected, store, binding, composed_prompt, use_windows),
+            assemble_model_context_with(whole, store, binding, composed_prompt, use_windows),
+        );
+    }
+    let summary_view = |events| assemble_summary_view(events, store, binding, composed_prompt);
+    same(
+        "the summary view",
+        summary_view(selected),
+        summary_view(whole),
+    );
+    let candidates = compaction_tail_candidates(selected);
+    assert_eq!(
+        candidates,
+        compaction_tail_candidates(whole),
+        "the candidates for a kept tail"
+    );
+    if let Ok(context) = summary_view(whole) {
+        assert_eq!(
+            checkpoint_retained_history(&context.history, selected, None, None),
+            checkpoint_retained_history(&context.history, whole, None, None),
+            "what a checkpoint keeps"
+        );
+    }
+    let tip = whole.last().map_or(0, |event| event.seq);
+    let mut tails = vec![None];
+    tails.extend(candidates.first().map(|seq| Some(*seq)));
+    tails.extend(candidates.last().map(|seq| Some(*seq)));
+    let fresh = FreshTurns {
+        agent_md: Some("fresh AGENTS.md".into()),
+        memory: None,
+    };
+    for recent_from in tails {
+        for fresh in [None, Some(&fresh)] {
+            let project = |events| {
+                project_summary_context(
+                    events,
+                    store,
+                    binding,
+                    composed_prompt,
+                    tip,
+                    recent_from,
+                    "summary",
+                    fresh,
+                )
+            };
+            same("a projected checkpoint", project(selected), project(whole));
+        }
+        let prefix = |events| {
+            compaction_prefix_history(events, store, binding, composed_prompt, recent_from)
+        };
+        same("the summarizer's input", prefix(selected), prefix(whole));
+    }
 }
 
 #[cfg(test)]

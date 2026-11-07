@@ -1208,8 +1208,10 @@ async fn a_finished_compaction_takes_a_new_snapshot_at_the_next_run() {
     run(&fixture, session, &selection, "two", "after compaction").await;
     let requests = captured.await.unwrap();
 
+    // The compaction takes one as it composes the context afresh, and the
+    // next run, which composes it afresh too, another.
     let taken = snapshots(&fixture, session);
-    assert_eq!(taken.len(), 2);
+    assert_eq!(taken.len(), 3);
     let feedback = |snapshot: &MemorySnapshot| {
         snapshot
             .user
@@ -1221,6 +1223,7 @@ async fn a_finished_compaction_takes_a_new_snapshot_at_the_next_run() {
     };
     assert_eq!(feedback(&taken[0]), "");
     assert_eq!(feedback(&taken[1]), "- edited later\n");
+    assert_eq!(feedback(&taken[2]), "- edited later\n");
     // After the compaction the new snapshot sits before the summary.
     let texts = message_texts(&requests[2]);
     let memory = texts

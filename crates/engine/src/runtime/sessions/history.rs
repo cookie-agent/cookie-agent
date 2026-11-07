@@ -40,13 +40,18 @@ impl Engine {
         let binding = active_compaction_binding(&policy, &log, run)?;
         let composed_prompt = self.run_agent_prompt(session, run)?;
         match view {
-            EngineHistoryView::Assembled => Ok(model_history::assemble_model_context(
-                &log.model_context_events()?,
-                &self.inner.artifacts,
-                binding,
-                &composed_prompt,
-            )?
-            .history),
+            EngineHistoryView::Assembled => {
+                let events = log.model_context_events()?;
+                #[cfg(test)]
+                self.assert_assembles_as_whole(&events, binding, &composed_prompt);
+                Ok(model_history::assemble_model_context(
+                    &events,
+                    &self.inner.artifacts,
+                    binding,
+                    &composed_prompt,
+                )?
+                .history)
+            }
             // Everything the session recorded, which its answer holds too.
             EngineHistoryView::Full => Ok(model_history::assemble_full_history(
                 &log.history()?.collect::<Result<Vec<_>, _>>()?,

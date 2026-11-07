@@ -537,7 +537,9 @@ fn compaction_summary_framing_is_byte_stable() {
 }
 
 #[test]
-fn checkpoint_accounting_retains_agent_md_and_every_skill_body() {
+/// A coming checkpoint composes the context afresh: it keeps the `AGENTS.md`
+/// turn and carries no loaded skill (forever sessions spec, section 5.2).
+fn checkpoint_accounting_retains_agent_md_and_no_skill_body() {
     let run = RunId::new_v7();
     let skill_event = |seq, name: &str, body: &str| {
         event(
@@ -583,13 +585,13 @@ fn checkpoint_accounting_retains_agent_md_and_every_skill_body() {
         HistoryTurn::user(super::user_text("second pinned body")),
         HistoryTurn::user(super::user_text("discarded conversation")),
     ];
-    let native = checkpoint_retained_history(&history, &events, None);
-    assert_eq!(native.len(), 4);
-    let summarized = checkpoint_retained_history(&history, &events, Some("summary"));
-    assert_eq!(summarized.len(), 5);
+    let native = checkpoint_retained_history(&history, &events, None, None);
+    assert_eq!(native.len(), 2);
+    let summarized = checkpoint_retained_history(&history, &events, None, Some("summary"));
+    assert_eq!(summarized.len(), 3);
     let encoded = serde_json::to_string(&summarized).expect("history JSON");
-    assert!(encoded.contains("first pinned body"));
-    assert!(encoded.contains("second pinned body"));
+    assert!(!encoded.contains("first pinned body"));
+    assert!(!encoded.contains("second pinned body"));
     assert!(encoded.contains("pinned AGENTS.md context"));
     assert!(encoded.contains("<summary>\\nsummary"));
     assert!(!encoded.contains("stale summary"));
@@ -1968,7 +1970,7 @@ fn native_checkpoint_does_not_reappend_covered_pending_producer_input() {
     ];
     let pre_checkpoint = assemble_model_context(&events, &store, &binding, "System prompt.")
         .expect("pre-checkpoint context");
-    let retained = checkpoint_retained_history(&pre_checkpoint.history, &events, None);
+    let retained = checkpoint_retained_history(&pre_checkpoint.history, &events, None, None);
     events.push(event(
         5,
         run,
@@ -2086,13 +2088,17 @@ fn projected_summary_matches_persisted_checkpoint_replay() {
         4,
         Some(3),
         "projected summary",
+        None,
     )
     .expect("projection");
     events.push(event(
         5,
         run,
         EventPayload::ContextCheckpointCommitted {
-            commit: summary_commit("projected summary", 1, 4, Some(3), None),
+            commit: ContextCheckpointCommit {
+                context_fresh: true,
+                ..summary_commit("projected summary", 1, 4, Some(3), None)
+            },
         },
     ));
     let replayed = assemble_model_context(&events, &store, &binding, "System prompt.")
@@ -2156,9 +2162,17 @@ fn compaction_prefix_uses_current_agent_md_across_run_boundary() {
         assert!(!encoded.contains("retained run B user"));
         assert!(!encoded.contains("historical reasoning"));
 
-        let projected =
-            project_summary_context(&events, &store, &binding, "system", 9, Some(5), "summary")
-                .expect("projected checkpoint");
+        let projected = project_summary_context(
+            &events,
+            &store,
+            &binding,
+            "system",
+            9,
+            Some(5),
+            "summary",
+            None,
+        )
+        .expect("projected checkpoint");
         let encoded = serde_json::to_string(&projected.history).unwrap();
         assert!(!encoded.contains("stale run A instructions"));
         assert_eq!(
@@ -2184,6 +2198,9 @@ fn compaction_prefix_uses_current_agent_md_across_run_boundary() {
     }
 }
 
+/// A coming checkpoint pins no skill: one in its kept range stays where it
+/// was loaded, after the summary, and once (forever sessions spec, section
+/// 5.2).
 #[test]
 fn summary_projection_orders_and_deduplicates_pinned_context() {
     let directory = tempfile::tempdir().expect("tempdir");
@@ -2221,17 +2238,25 @@ fn summary_projection_orders_and_deduplicates_pinned_context() {
     ];
     events.extend(user_events(3, run, "tail user"));
 
-    let context =
-        project_summary_context(&events, &store, &binding, "system", 4, Some(2), "summary")
-            .expect("projection");
+    let context = project_summary_context(
+        &events,
+        &store,
+        &binding,
+        "system",
+        4,
+        Some(2),
+        "summary",
+        None,
+    )
+    .expect("projection");
     let turns = context
         .history
         .iter()
         .map(|turn| serde_json::to_string(turn).unwrap())
         .collect::<Vec<_>>();
     assert!(turns[1].contains("pinned agent rules"));
-    assert!(turns[2].contains("pinned skill body"));
-    assert!(turns[3].contains("<summary>\\nsummary"));
+    assert!(turns[2].contains("<summary>\\nsummary"));
+    assert!(turns[3].contains("pinned skill body"));
     assert!(turns[4].contains("tail user"));
     let encoded = turns.join("\n");
     assert_eq!(encoded.matches("pinned agent rules").count(), 1);
@@ -2408,6 +2433,7 @@ fn tail_candidates_stop_at_pending_tool_group_until_late_termination() {
             6,
             recent_from_seq,
             "summary",
+            None,
         )
         .expect("late termination replay");
         let encoded = serde_json::to_string(&replay.history).unwrap();
@@ -2986,6 +3012,10 @@ fn the_latest_memory_snapshot_sits_after_agent_md_and_before_skills() {
     assert!(!encoded.contains("# Memory"), "{encoded}");
 }
 
+/// A checkpoint an earlier build wrote pins the latest memory snapshot,
+/// `AGENTS.md`, and every skill before it; one this build writes records
+/// them again just before itself and carries no skill (forever sessions
+/// spec, section 5.2).
 #[test]
 fn compaction_pins_the_latest_memory_snapshot() {
     let directory = tempfile::tempdir().expect("tempdir");
@@ -3001,10 +3031,19 @@ fn compaction_pins_the_latest_memory_snapshot() {
     events.extend(user_events(4, run, "summarized user"));
     events.extend(user_events(6, run, "tail user"));
 
-    let projected =
-        project_summary_context(&events, &store, &binding, "system", 7, Some(6), "summary")
-            .expect("projection");
-    let turns = turn_texts(&projected.history);
+    let mut older = events.clone();
+    older.push(event(
+        8,
+        run,
+        EventPayload::ContextCheckpointCommitted {
+            commit: summary_commit("summary", 1, 7, Some(6), None),
+        },
+    ));
+    let turns = turn_texts(
+        &assemble_model_context(&older, &store, &binding, "system")
+            .unwrap()
+            .history,
+    );
     assert!(turns[1].contains("workspace rules"), "{turns:?}");
     assert!(turns[2].contains("pinned lessons"));
     assert!(turns[3].contains("pinned skill body"));
@@ -3012,24 +3051,48 @@ fn compaction_pins_the_latest_memory_snapshot() {
     assert!(turns[5].contains("tail user"));
     assert!(!turns.join("\n").contains("summarized user"));
 
+    let projected = project_summary_context(
+        &events,
+        &store,
+        &binding,
+        "system",
+        7,
+        Some(6),
+        "summary",
+        None,
+    )
+    .expect("projection");
+    let turns = turn_texts(&projected.history);
+    assert!(turns[1].contains("workspace rules"), "{turns:?}");
+    assert!(turns[2].contains("pinned lessons"));
+    assert!(turns[3].contains("<summary>\\nsummary"));
+    assert!(turns[4].contains("tail user"));
+    assert!(!turns.join("\n").contains("pinned skill body"));
+    assert!(!turns.join("\n").contains("summarized user"));
+
+    // A native checkpoint keeps the turns before the conversation too.
+    let history = assemble_model_context(&events, &store, &binding, "system")
+        .unwrap()
+        .history;
+    let retained = checkpoint_retained_history(&history, &events, None, None);
+    let retained = turn_texts(&retained);
+    assert_eq!(retained.len(), 3, "{retained:?}");
+    assert!(retained[2].contains("pinned lessons"));
+
+    events.push(agent_md_event(8, run, "workspace rules"));
+    events.push(memory_event(9, run, Some("pinned lessons")));
     events.push(event(
-        8,
+        10,
         run,
         EventPayload::ContextCheckpointCommitted {
-            commit: summary_commit("summary", 1, 7, Some(6), None),
+            commit: ContextCheckpointCommit {
+                context_fresh: true,
+                ..summary_commit("summary", 1, 7, Some(6), None)
+            },
         },
     ));
     let replayed = assemble_model_context(&events, &store, &binding, "system").unwrap();
     assert_eq!(projected.history, replayed.history);
-
-    // A native checkpoint keeps the pinned turns too.
-    let history = assemble_model_context(&events[..7], &store, &binding, "system")
-        .unwrap()
-        .history;
-    let retained = checkpoint_retained_history(&history, &events[..7], None);
-    let retained = turn_texts(&retained);
-    assert_eq!(retained.len(), 4, "{retained:?}");
-    assert!(retained[2].contains("pinned lessons"));
 }
 
 /// A Responses binding with native compaction, and a window it compacted.
@@ -3400,3 +3463,5 @@ fn in_place_context_sits_where_it_was_loaded_until_a_refresh() {
     assert!(after[4].contains("late skill"));
     assert!(after.iter().all(|turn| !turn.contains("attached rules")));
 }
+
+mod forever;

@@ -57,4 +57,57 @@ impl Engine {
         }
         Ok(loaded)
     }
+
+    /// [`Self::load_agent_md`] for a checkpoint that composes the context
+    /// afresh (`docs/site/specs/forever-sessions.md` section 5.2): a
+    /// workspace whose runtime is away, or whose files cannot be read, keeps
+    /// its record of `current`, the `AGENTS.md` the model reads now, as the
+    /// checkpoint pins nothing from before it.
+    pub(crate) async fn checkpoint_agent_md(
+        &self,
+        session: SessionId,
+        preset: Option<&str>,
+        agent_override: Option<bool>,
+        current: &[AttachmentAgentMd],
+    ) -> Result<Vec<AttachmentAgentMd>, EngineError> {
+        if !agent_override.unwrap_or(self.inner.config.load().runtime.agent_md.enabled) {
+            return Ok(Vec::new());
+        }
+        let mut loaded = Vec::new();
+        if let Some(project) = self.project_agent_md(session).await {
+            loaded.push(project);
+        }
+        for attachment in self.session_runtimes(session)? {
+            if attachment.workspace.is_none() {
+                continue;
+            }
+            let read = match self.inner.runtimes.instance(&attachment) {
+                Some(instance) => instance.agent_md(preset).await.ok(),
+                None => None,
+            };
+            match read {
+                Some(Some(context)) => {
+                    if !context.entries.is_empty() || !context.skipped.is_empty() {
+                        loaded.push(AttachmentAgentMd {
+                            attachment: attachment.name,
+                            entries: context.entries,
+                            skipped: context.skipped,
+                            project: None,
+                        });
+                    }
+                }
+                Some(None) => {}
+                None => loaded.extend(
+                    current
+                        .iter()
+                        .find(|kept| kept.project.is_none() && kept.attachment == attachment.name)
+                        .map(|kept| AttachmentAgentMd {
+                            skipped: Vec::new(),
+                            ..kept.clone()
+                        }),
+                ),
+            }
+        }
+        Ok(loaded)
+    }
 }

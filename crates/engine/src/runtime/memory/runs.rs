@@ -413,14 +413,84 @@ impl Engine {
         policy: &FrozenRunPolicy,
         mode: SnapshotMode,
     ) -> Result<bool, EngineError> {
+        let Some((snapshot, changed)) = self.take_memory_snapshot(session, policy, mode).await?
+        else {
+            return Ok(false);
+        };
+        self.append(
+            session,
+            Some(run),
+            event_origin("engine:memory"),
+            Event::MemoryLoaded {
+                snapshot,
+                in_place: false,
+            },
+        )
+        .await?;
+        Ok(changed)
+    }
+
+    /// The snapshot a checkpoint records just before it commits, as it
+    /// composes the context afresh (`docs/site/specs/forever-sessions.md`
+    /// section 5.2): one taken as a refresh takes it, or, when it cannot be
+    /// read, the latest record's again, as the checkpoint pins nothing from
+    /// before it. `None` when there is nothing to record: memory is not
+    /// available and the model reads none.
+    pub(in crate::runtime) async fn checkpoint_memory_snapshot(
+        &self,
+        session: SessionId,
+        policy: &FrozenRunPolicy,
+    ) -> Result<Option<MemorySnapshot>, EngineError> {
+        match self
+            .take_memory_snapshot_or_fail(session, policy, SnapshotMode::Refresh)
+            .await?
+        {
+            Ok(taken) => Ok(taken.map(|(snapshot, _)| snapshot)),
+            Err(()) => Ok(self
+                .inner
+                .store
+                .get(session)?
+                .log
+                .last_memory_loaded()
+                .and_then(|(event, _)| match &event.payload {
+                    Event::MemoryLoaded { snapshot, .. } => Some(snapshot.clone()),
+                    _ => None,
+                })),
+        }
+    }
+
+    /// The `memory_loaded` a run's admission records in `mode`, and whether
+    /// the turn the model reads changed; `None` when it records none. A
+    /// snapshot that cannot be read is reported and left out, keeping the
+    /// latest one.
+    async fn take_memory_snapshot(
+        &self,
+        session: SessionId,
+        policy: &FrozenRunPolicy,
+        mode: SnapshotMode,
+    ) -> Result<Option<(MemorySnapshot, bool)>, EngineError> {
+        Ok(self
+            .take_memory_snapshot_or_fail(session, policy, mode)
+            .await?
+            .unwrap_or(None))
+    }
+
+    /// [`Self::take_memory_snapshot`], with `Err(())` for a snapshot that
+    /// could not be read, which this reports.
+    async fn take_memory_snapshot_or_fail(
+        &self,
+        session: SessionId,
+        policy: &FrozenRunPolicy,
+        mode: SnapshotMode,
+    ) -> Result<Result<Option<(MemorySnapshot, bool)>, ()>, EngineError> {
         let projection = self.inner.store.get(session)?;
         // An ACP agent's own subagent gets what its agent gives it, never a
         // snapshot of cookie's: none is recorded as though it had.
         if projection.log.is_acp_subagent() {
-            return Ok(false);
+            return Ok(Ok(None));
         }
         if mode == SnapshotMode::Frozen {
-            return Ok(false);
+            return Ok(Ok(None));
         }
         let latest = projection.log.last_memory_loaded();
         let delegated = matches!(projection.meta.origin, SessionOrigin::Delegated { .. });
@@ -461,7 +531,7 @@ impl Engine {
             _ => snapshot_change(latest_snapshot(latest.as_ref()), &facts),
         };
         let snapshot = match change {
-            SnapshotChange::Keep => return Ok(false),
+            SnapshotChange::Keep => return Ok(Ok(None)),
             SnapshotChange::Clear => MemorySnapshot::unavailable(),
             SnapshotChange::Take => {
                 let caller = MemoryCaller {
@@ -497,27 +567,17 @@ impl Engine {
                     }
                     Ok(Err(error)) => {
                         eprintln!("cookie-agent: memory snapshot of session {session}: {error}");
-                        return Ok(false);
+                        return Ok(Err(()));
                     }
                     Err(error) => {
                         eprintln!("cookie-agent: memory snapshot of session {session}: {error}");
-                        return Ok(false);
+                        return Ok(Err(()));
                     }
                 }
             }
         };
         let changed = crate::memory::render::snapshot_turn(&snapshot) != shown;
-        self.append(
-            session,
-            Some(run),
-            event_origin("engine:memory"),
-            Event::MemoryLoaded {
-                snapshot,
-                in_place: false,
-            },
-        )
-        .await?;
-        Ok(changed)
+        Ok(Ok(Some((snapshot, changed))))
     }
 
     /// The memories of the machines `session` has now that `before` lacked,
