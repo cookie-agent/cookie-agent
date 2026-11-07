@@ -1304,11 +1304,11 @@ impl Engine {
                     ));
                 }
             };
-            let status = match handle
-                .child_run_id
-                .and_then(|run_id| child.runs.get(&run_id).map(|run| run.status))
-                .unwrap_or(child.status)
-            {
+            let run_status = match handle.child_run_id {
+                Some(run_id) => child.run_outcome(run_id)?.map(|run| run.status),
+                None => None,
+            };
+            let status = match run_status.unwrap_or(child.status) {
                 // A status a newer build wrote: the child is not running
                 // here, so its delegation ends as interrupted.
                 SessionStatus::Unknown => SessionStatus::Interrupted,
@@ -1621,7 +1621,7 @@ impl Engine {
             self.mark_admission_starting(invocation_id, generation)?;
         }
         if let Some(run_id) = entry.child_run_id
-            && child.runs.contains_key(&run_id)
+            && child.run_outcome(run_id)?.is_some()
         {
             if let Some((invocation_id, generation)) = admission {
                 self.publish_admission_run(
@@ -1921,7 +1921,7 @@ impl Engine {
         let recalled = self
             .on_actor(child_session_id, move |engine| {
                 let projection = engine.inner.store.get(child_session_id)?;
-                if !projection.runs.contains_key(&child_run_id) {
+                if projection.run_outcome(child_run_id)?.is_none() {
                     return Err(EngineError::MissingRun(child_run_id));
                 }
                 let recalled = pending_inputs(&projection.log.state(), child_run_id)
@@ -2113,8 +2113,7 @@ impl Engine {
             status
         } else if let Some(child_run_id) = entry.child_run_id {
             child
-                .runs
-                .get(&child_run_id)
+                .run_outcome(child_run_id)?
                 .map(|run| run.status)
                 .ok_or_else(|| EngineError::ToolFailed("delegate child run is missing".into()))?
         } else {
@@ -3637,18 +3636,18 @@ pub(super) fn delegate_teaser(
         .unwrap_or_else(|| child_session_id.to_string());
     DelegateTeaser {
         session_id: child_session_id,
-        preview: preview_text(text, &short_id, limits),
+        preview: preview_text(&text, &short_id, limits),
         short_id,
         status,
         total_lines: text.lines().count() as u64,
     }
 }
 
-fn delegate_final_text(child: &session::SessionProjection, child_run_id: Option<RunId>) -> &str {
+fn delegate_final_text(child: &session::SessionProjection, child_run_id: Option<RunId>) -> String {
     child_run_id
-        .and_then(|run_id| child.runs.get(&run_id))
-        .and_then(|run| run.final_text.as_deref())
-        .unwrap_or("")
+        .and_then(|run_id| child.run_outcome(run_id).ok().flatten())
+        .and_then(|run| run.final_text)
+        .unwrap_or_default()
 }
 
 /// The last assistant message the session emitted: the most recent completed
@@ -3818,7 +3817,7 @@ fn terminal_delegate_result(
                 session_status_name(teaser.status)
             ),
         )),
-        (!report.trim().is_empty()).then(|| report_markdown(report)),
+        (!report.trim().is_empty()).then(|| report_markdown(&report)),
     );
     structured_delegate_result("Subagent finished", output, metadata, Some(display))
 }

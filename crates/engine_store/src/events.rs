@@ -414,6 +414,22 @@ fn is_acp_model(model: &cookie_agent_protocol::ModelSelection) -> bool {
     model.model.provider_id().as_str() == cookie_agent_protocol::ACP_MODEL_PROVIDER
 }
 
+/// What `payload` makes of whether a log's window is an ACP agent's, the rule the
+/// log's own window follows ([`EventIndex::observe`]), and `None` when it says
+/// nothing of that: a committed turn sets it, and a native model's turn or run
+/// ends it. What is settled is let go of only while it holds.
+pub(crate) fn windowed_after(payload: &EventPayload) -> Option<bool> {
+    match payload {
+        EventPayload::RunStarted { selection, .. } if !is_acp_model(&selection.model) => {
+            Some(false)
+        }
+        EventPayload::ModelTurnCommitted { resolved_model, .. } => {
+            Some(is_acp_model(&resolved_model.selection))
+        }
+        _ => None,
+    }
+}
+
 impl EventIndex {
     fn observe(&mut self, event: &Arc<StoredEvent>) {
         Arc::make_mut(&mut self.state).observe(event);
@@ -1927,7 +1943,23 @@ impl EventLog {
     /// The validation state of what the log holds, wherever it holds it: the
     /// caller holds `append`, and an append that failed left it wrong.
     fn rebuilt_validation(&self) -> Result<ValidationState, EventLogError> {
-        let mut state = ValidationState::new(self.initial_taint());
+        match self.validation_pass(ValidationState::new(self.initial_taint())) {
+            Err(EventLogError::Corrupt { .. }) => {
+                // A record names what a record-at-a-time validation lets go of,
+                // which a whole read accepted: validate it whole too.
+                let mut state =
+                    self.validation_pass(ValidationState::whole(self.initial_taint()))?;
+                state.finish_whole();
+                Ok(state)
+            }
+            folded => folded,
+        }
+    }
+
+    fn validation_pass(
+        &self,
+        mut state: ValidationState,
+    ) -> Result<ValidationState, EventLogError> {
         for record in self.pass(..)? {
             validate_record_incremental(&self.path, self.session_id, &*record?, &mut state, false)?;
         }
@@ -2234,10 +2266,10 @@ impl EventLog {
             "the window is not the log's tail"
         );
         state::reference::assert_matches_scans(&state, &whole);
-        assert!(
-            *self.validation.lock().expect("validation lock poisoned") == reopened_validation,
-            "the validation state differs from a reopening's"
-        );
+        self.validation
+            .lock()
+            .expect("validation lock poisoned")
+            .assert_agrees_with_whole(&reopened_validation, "a reopening's");
         let reopened_storage = reopened.storage();
         let storage = self.storage();
         assert_eq!(
@@ -2345,6 +2377,23 @@ impl EventLog {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let whole = Arc::new(self.pass(..)?.collect::<Result<Vec<_>, _>>()?);
+        // A native model's log keeps everything for validation too, as it does
+        // its records: it may name what an ACP agent's window let go of, as a
+        // compaction's elision of an old call does.
+        let native = self.storage().index.window_start.is_none();
+        let let_go = self
+            .validation
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .let_go;
+        if native && let_go {
+            let rebuilt =
+                rebuild_validation(&self.path, self.session_id, &whole, &self.initial_taint())?;
+            *self
+                .validation
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = rebuilt;
+        }
         let mut storage = self.storage();
         if storage.index.window_start.is_none() {
             storage.all = Arc::clone(&whole);
@@ -2867,7 +2916,16 @@ impl EventLog {
         let mut kept_taint = self.initial_taint();
         kept_taint.truncate(through_seq);
         let folded = if self.storage().window.is_some() {
-            Some(self.fold_prefix(through_seq, kept_taint.clone())?)
+            Some(
+                match self.fold_prefix(through_seq, ValidationState::new(kept_taint.clone())) {
+                    // A record names what a record-at-a-time validation lets go
+                    // of, which a whole read accepted: validate it whole too.
+                    Err(EventLogError::Corrupt { .. }) => {
+                        self.fold_prefix(through_seq, ValidationState::whole(kept_taint.clone()))?
+                    }
+                    folded => folded?,
+                },
+            )
         } else {
             None
         };
@@ -2960,10 +3018,9 @@ impl EventLog {
     fn fold_prefix(
         &self,
         through_seq: u64,
-        taint: ValidationTaint,
+        mut validation: ValidationState,
     ) -> Result<FoldedPrefix, EventLogError> {
         let mut index = EventIndex::default();
-        let mut validation = ValidationState::new(taint);
         let mut physical_model_turns = 0;
         let mut view_start = CacheStartFold::new(VIEW_BUDGET);
         let mut held = Vec::new();
@@ -2987,6 +3044,7 @@ impl EventLog {
             }
             held.push(record);
         }
+        validation.finish_whole();
         // Back before the window's first turn, or at a native run: whole.
         let window = index.window_start;
         if window.is_none() && let_go {
@@ -3126,10 +3184,13 @@ struct RunAttribution {
     attempts_on_active: u32,
     active_attempt: Option<AttemptId>,
     ordering_tainted: bool,
+    /// The record that ended it, when one did.
+    ended_seq: Option<u64>,
 }
 
 #[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
 struct AttemptAttribution {
+    started_seq: u64,
     run_id: RunId,
     resolved_model: cookie_agent_protocol::ResolvedModelRef,
     finished: bool,
@@ -3149,6 +3210,7 @@ struct InternalRunAttribution {
     usage_recorded_in_phase: bool,
     model_phase_taint_seen: u64,
     usage_phase_taint_seen: u64,
+    finished_seq: Option<u64>,
 }
 
 #[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
@@ -3159,6 +3221,7 @@ struct DelegationAttribution {
     started: bool,
     child_run_id: Option<RunId>,
     finished: bool,
+    finished_seq: Option<u64>,
 }
 
 #[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
@@ -3167,7 +3230,7 @@ struct ValidationState {
     #[serde(with = "crate::events::sorted::map")]
     runs: HashMap<RunId, RunAttribution>,
     #[serde(with = "crate::events::sorted::map")]
-    approval_owners: HashMap<cookie_agent_protocol::ApprovalId, RunId>,
+    approval_owners: HashMap<cookie_agent_protocol::ApprovalId, ApprovalOwner>,
     #[serde(with = "crate::events::sorted::map")]
     attempts: HashMap<AttemptId, AttemptAttribution>,
     #[serde(with = "crate::events::sorted::map")]
@@ -3186,19 +3249,73 @@ struct ValidationState {
     provider_item_owners: HashMap<(RunId, ProviderItemId), AssistantToolCallRef>,
     #[serde(with = "crate::events::sorted::map")]
     tool_starts: HashMap<ToolCallId, (RunId, AssistantToolCallRef)>,
-    #[serde(with = "crate::events::sorted::set")]
-    terminated_tools: HashSet<ToolCallId>,
+    /// The calls that ended, with the record that ended each.
+    #[serde(with = "crate::events::sorted::map")]
+    terminated_tools: HashMap<ToolCallId, u64>,
     #[serde(with = "crate::events::sorted::set")]
     elided_tools: HashSet<ToolCallId>,
     /// Admitted inputs by sequence with their run (`None` for a runless
     /// admission), kept as a digest of the text.
     #[serde(with = "crate::events::sorted::map")]
     admissions: HashMap<u64, (Option<RunId>, InputDigest)>,
+    /// What holds a run open besides its own records: a producer claim until its
+    /// release, by the claim's sequence, and a question until its answer.
+    #[serde(with = "crate::events::sorted::map")]
+    claims: HashMap<u64, RunId>,
+    #[serde(with = "crate::events::sorted::map")]
+    questions: HashMap<cookie_agent_protocol::ElicitationId, RunId>,
     next_model_turn_seq: u64,
     previous_seq: Option<u64>,
     previous_timestamp: Option<Timestamp>,
     active_run: Option<RunId>,
     record_count: usize,
+    /// The log's window is an ACP agent's ([`windowed_after`]): what settled is
+    /// let go of at each committed turn and run's end.
+    windowed: bool,
+    /// Something was let go of: a record naming what this does not hold may name
+    /// what is older than its floor.
+    let_go: bool,
+    /// Validating a log whole, as its load does, keeping everything, until
+    /// [`Self::finish_whole`] lets go of what settled.
+    #[serde(skip)]
+    keep_all: bool,
+}
+
+/// The run that asked for an approval, and the record that settled it.
+#[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
+struct ApprovalOwner {
+    run: RunId,
+    settled_seq: Option<u64>,
+}
+
+/// How much of what settled a windowed log's validation keeps, newest first, so
+/// that a record that follows its settling by a moment still validates: an
+/// abandon after a commit, a grant after its approval's end, a title agent's
+/// usage after its run's end (`docs/site/specs/forever-sessions.md` section 12).
+const SETTLED_KEPT: usize = 16;
+/// The committed turns it keeps: a call's start and a turn's usage name the
+/// latest, in every log of the store.
+const TURNS_KEPT: u64 = 16;
+/// The admitted inputs it keeps, which a recall names while they wait.
+const ADMISSIONS_KEPT: usize = 256;
+
+/// The keys of `map` whose value `settled` gives a sequence for, but for the
+/// newest `kept` of them.
+fn settled_beyond<K: Copy + Eq + std::hash::Hash, V>(
+    map: &HashMap<K, V>,
+    kept: usize,
+    settled: impl Fn(&K, &V) -> Option<u64>,
+) -> Vec<K> {
+    let mut settled = map
+        .iter()
+        .filter_map(|(key, value)| Some((settled(key, value)?, *key)))
+        .collect::<Vec<_>>();
+    if settled.len() <= kept {
+        return Vec::new();
+    }
+    settled.sort_unstable_by_key(|(seq, _)| *seq);
+    settled.truncate(settled.len() - kept);
+    settled.into_iter().map(|(_, key)| key).collect()
 }
 
 /// What validation keeps of a committed model turn: its run, and the call
@@ -3250,14 +3367,266 @@ impl ValidationState {
             model_call_owners: HashMap::new(),
             provider_item_owners: HashMap::new(),
             tool_starts: HashMap::new(),
-            terminated_tools: HashSet::new(),
+            terminated_tools: HashMap::new(),
             elided_tools: HashSet::new(),
             admissions: HashMap::new(),
+            claims: HashMap::new(),
+            questions: HashMap::new(),
             next_model_turn_seq: 1,
             previous_seq: None,
             previous_timestamp: None,
             active_run: None,
             record_count: 0,
+            windowed: false,
+            let_go: false,
+            keep_all: false,
+        }
+    }
+
+    /// A state that keeps everything until [`Self::finish_whole`]: a whole log's
+    /// validation, where a record may name anything before it.
+    fn whole(taint: ValidationTaint) -> Self {
+        Self {
+            keep_all: true,
+            ..Self::new(taint)
+        }
+    }
+
+    /// Ends a whole log's validation: from here on, what settled goes as it does
+    /// for a log validated a record at a time.
+    fn finish_whole(&mut self) {
+        self.keep_all = false;
+        if self.windowed {
+            self.let_go_settled();
+        }
+    }
+
+    /// Lets go of what no valid record can still name, in a windowed log whose
+    /// load found no damage (`docs/site/specs/forever-sessions.md` section 6): a
+    /// damaged log's taint excuses records by what this holds, so it keeps all.
+    ///
+    /// What stays, and why each may still be named, is in section 12. In short:
+    /// what is open stays, whatever its age: a run that has not ended or that a
+    /// call, an approval, a delegation, an internal agent, a producer claim, or a
+    /// question holds open; a call that has not ended; an approval, a delegation,
+    /// or an internal agent that has not settled. Of what settled, the newest
+    /// [`SETTLED_KEPT`] of each stay, the last [`TURNS_KEPT`] committed turns, and
+    /// the last [`ADMISSIONS_KEPT`] admitted inputs. What goes is what settled
+    /// before all of those, and a record naming it is refused: the floor.
+    ///
+    /// It depends only on what the state holds, so letting go at every turn, or
+    /// once at a whole log's end, keeps the same.
+    fn let_go_settled(&mut self) {
+        if self.keep_all || self.taint != ValidationTaint::default() {
+            return;
+        }
+        let before = self.held();
+        let floor = self.next_model_turn_seq.saturating_sub(TURNS_KEPT);
+        self.turns.retain(|seq, _| *seq >= floor);
+        self.turn_models.retain(|seq, _| *seq >= floor);
+        self.usage_turns.retain(|seq| *seq >= floor);
+        self.model_call_owners
+            .retain(|_, owner| owner.model_turn_seq >= floor);
+        self.provider_item_owners
+            .retain(|_, owner| owner.model_turn_seq >= floor);
+        for call in settled_beyond(&self.terminated_tools, SETTLED_KEPT, |_, seq| Some(*seq)) {
+            self.terminated_tools.remove(&call);
+            self.tool_starts.remove(&call);
+            self.elided_tools.remove(&call);
+        }
+        for approval in settled_beyond(&self.approval_owners, SETTLED_KEPT, |_, owner| {
+            owner.settled_seq
+        }) {
+            self.approval_owners.remove(&approval);
+        }
+        for invocation in settled_beyond(&self.delegations, SETTLED_KEPT, |_, delegation| {
+            delegation.finished_seq
+        }) {
+            self.delegations.remove(&invocation);
+        }
+        for internal in settled_beyond(&self.internal_runs, SETTLED_KEPT, |_, internal| {
+            internal.finished_seq
+        }) {
+            self.internal_runs.remove(&internal);
+        }
+        // A run that ended is held open by what names it and has not settled.
+        let mut held_open = HashSet::new();
+        held_open.extend(
+            self.tool_starts
+                .iter()
+                .filter(|(call, _)| !self.terminated_tools.contains_key(call))
+                .map(|(_, (run, _))| *run),
+        );
+        held_open.extend(
+            self.approval_owners
+                .values()
+                .filter(|owner| owner.settled_seq.is_none())
+                .map(|owner| owner.run),
+        );
+        held_open.extend(
+            self.delegations
+                .values()
+                .filter(|delegation| !delegation.finished)
+                .map(|delegation| delegation.parent_run_id),
+        );
+        held_open.extend(
+            self.internal_runs
+                .values()
+                .filter(|internal| internal.finished_seq.is_none())
+                .map(|internal| internal.run_id),
+        );
+        held_open.extend(self.claims.values().copied());
+        held_open.extend(self.questions.values().copied());
+        held_open.extend(
+            self.attempts
+                .values()
+                .filter(|attempt| !attempt.finished)
+                .map(|attempt| attempt.run_id),
+        );
+        for run in settled_beyond(&self.runs, SETTLED_KEPT, |id, run| {
+            run.ended_seq.filter(|_| !held_open.contains(id))
+        }) {
+            self.runs.remove(&run);
+        }
+        // An attempt goes with its run, and once it ended, as its run's do.
+        let runs = &self.runs;
+        self.attempts
+            .retain(|_, attempt| runs.contains_key(&attempt.run_id));
+        for attempt in settled_beyond(&self.attempts, SETTLED_KEPT, |_, attempt| {
+            attempt.finished.then_some(attempt.started_seq)
+        }) {
+            self.attempts.remove(&attempt);
+        }
+        // What names a run it no longer holds goes with it: what settled does.
+        self.tool_starts
+            .retain(|_, (run, _)| runs.contains_key(run));
+        self.terminated_tools
+            .retain(|call, _| self.tool_starts.contains_key(call));
+        self.elided_tools
+            .retain(|call| self.tool_starts.contains_key(call));
+        self.approval_owners
+            .retain(|_, owner| runs.contains_key(&owner.run));
+        self.internal_runs
+            .retain(|_, internal| runs.contains_key(&internal.run_id));
+        self.delegations
+            .retain(|_, delegation| runs.contains_key(&delegation.parent_run_id));
+        if self.admissions.len() > ADMISSIONS_KEPT {
+            let mut seqs = self.admissions.keys().copied().collect::<Vec<_>>();
+            seqs.sort_unstable();
+            for seq in &seqs[..seqs.len() - ADMISSIONS_KEPT] {
+                self.admissions.remove(seq);
+            }
+        }
+        self.let_go |= self.held() != before;
+    }
+
+    /// Test-only: panics unless this state, which may have let go of what
+    /// settled as it went, agrees with `whole`, the same log's validated whole,
+    /// which let go only at its end, and only if the log was windowed then
+    /// (`docs/site/specs/forever-sessions.md` section 12). What this holds, `whole`
+    /// holds the same; and once each lets go of all that settled, they are equal,
+    /// which says this let go of nothing it should have kept.
+    #[cfg(any(test, feature = "test-support"))]
+    fn assert_agrees_with_whole(&self, whole: &Self, what: &str) {
+        fn within<K: Eq + std::hash::Hash, V: PartialEq>(
+            held: &HashMap<K, V>,
+            whole: &HashMap<K, V>,
+        ) -> bool {
+            held.iter()
+                .all(|(key, value)| whole.get(key).is_some_and(|known| known == value))
+        }
+        fn set_within<K: Eq + std::hash::Hash>(held: &HashSet<K>, whole: &HashSet<K>) -> bool {
+            held.iter().all(|key| whole.contains(key))
+        }
+        assert!(
+            within(&self.runs, &whole.runs)
+                && within(&self.approval_owners, &whole.approval_owners)
+                && within(&self.attempts, &whole.attempts)
+                && within(&self.turns, &whole.turns)
+                && within(&self.turn_models, &whole.turn_models)
+                && set_within(&self.usage_turns, &whole.usage_turns)
+                && within(&self.internal_runs, &whole.internal_runs)
+                && within(&self.delegations, &whole.delegations)
+                && within(&self.model_call_owners, &whole.model_call_owners)
+                && within(&self.provider_item_owners, &whole.provider_item_owners)
+                && within(&self.tool_starts, &whole.tool_starts)
+                && within(&self.terminated_tools, &whole.terminated_tools)
+                && set_within(&self.elided_tools, &whole.elided_tools)
+                && within(&self.admissions, &whole.admissions),
+            "the validation state holds what {what} does not, or otherwise"
+        );
+        let settled = |state: &Self| {
+            let mut state = state.clone();
+            state.keep_all = false;
+            state.let_go_settled();
+            state
+        };
+        assert!(
+            settled(self) == settled(whole),
+            "the validation state differs from {what} once each lets go of what settled"
+        );
+    }
+
+    /// How many entries its maps hold, to tell whether a letting go let go.
+    fn held(&self) -> usize {
+        self.runs.len()
+            + self.approval_owners.len()
+            + self.attempts.len()
+            + self.turns.len()
+            + self.turn_models.len()
+            + self.usage_turns.len()
+            + self.internal_runs.len()
+            + self.delegations.len()
+            + self.model_call_owners.len()
+            + self.provider_item_owners.len()
+            + self.tool_starts.len()
+            + self.terminated_tools.len()
+            + self.elided_tools.len()
+            + self.admissions.len()
+    }
+
+    /// Notes what `record`, which validated, settles or holds open.
+    fn note_settling(&mut self, record: &StoredEvent) {
+        match &record.payload {
+            EventPayload::RunFinished { .. } => {
+                if let Some(run) = record.run_id.and_then(|run| self.runs.get_mut(&run)) {
+                    run.ended_seq.get_or_insert(record.seq);
+                }
+            }
+            EventPayload::InternalAgentFinished {
+                internal_run_id, ..
+            } => {
+                if let Some(internal) = self.internal_runs.get_mut(internal_run_id) {
+                    internal.finished_seq.get_or_insert(record.seq);
+                }
+            }
+            EventPayload::ApprovalFinalized { approval_id, .. } => {
+                if let Some(owner) = self.approval_owners.get_mut(approval_id) {
+                    owner.settled_seq.get_or_insert(record.seq);
+                }
+            }
+            EventPayload::DelegationFinished { invocation_id, .. } => {
+                if let Some(delegation) = self.delegations.get_mut(invocation_id) {
+                    delegation.finished_seq.get_or_insert(record.seq);
+                }
+            }
+            EventPayload::ProducerMessagesClaimed { .. } => {
+                if let Some(run) = record.run_id {
+                    self.claims.insert(record.seq, run);
+                }
+            }
+            EventPayload::ProducerMessagesReleased { claim_seq } => {
+                self.claims.remove(claim_seq);
+            }
+            EventPayload::ElicitationRequested { request } => {
+                if let Some(run) = record.run_id {
+                    self.questions.insert(request.elicitation_id, run);
+                }
+            }
+            EventPayload::ElicitationResolved { resolution } => {
+                self.questions.remove(&resolution.elicitation_id);
+            }
+            _ => {}
         }
     }
 
@@ -3889,7 +4258,7 @@ fn validate_loaded(
 ) -> Result<(Vec<Arc<StoredEvent>>, ValidationState), EventLogError> {
     let mut refused = duplicate_records(&records).into_iter().peekable();
     let mut accepted: Vec<Arc<StoredEvent>> = Vec::with_capacity(records.len());
-    let mut state = ValidationState::new(taint.clone());
+    let mut state = ValidationState::whole(taint.clone());
     let mut quarantined = 0_usize;
     for (index, record) in records.into_iter().enumerate() {
         let mut duplicate = None;
@@ -3931,8 +4300,9 @@ fn validate_loaded(
         // The failed check may have changed the state before it failed; the
         // records before it validate as they did, since taint only reaches
         // later records.
-        state = rebuild_validation(path, session_id, &accepted, taint)?;
+        state = rebuild_whole(path, session_id, &accepted, taint)?;
     }
+    state.finish_whole();
     if quarantined > MAX_QUARANTINE_DIAGNOSTICS {
         diagnostics.push(EventLoadDiagnostic {
             seq: accepted.last().map_or(1, |record| record.seq),
@@ -3957,14 +4327,64 @@ fn rebuild_validation<E: Borrow<StoredEvent>>(
     records: &[E],
     initial_taint: &ValidationTaint,
 ) -> Result<ValidationState, EventLogError> {
-    let mut state = ValidationState::new(initial_taint.clone());
+    let mut state = rebuild_whole(path, session_id, records, initial_taint)?;
+    state.finish_whole();
+    Ok(state)
+}
+
+/// [`rebuild_validation`], still keeping everything.
+fn rebuild_whole<E: Borrow<StoredEvent>>(
+    path: &Path,
+    session_id: SessionId,
+    records: &[E],
+    initial_taint: &ValidationTaint,
+) -> Result<ValidationState, EventLogError> {
+    let mut state = ValidationState::whole(initial_taint.clone());
     for record in records {
         validate_record_incremental(path, session_id, record.borrow(), &mut state, false)?;
     }
     Ok(state)
 }
 
+/// Validates `record` as the next of a log whose validation is `state`, and folds
+/// it in. A windowed log lets go of what settled at each committed turn and run's
+/// end, so a record naming what it let go of is refused: older than the floor
+/// (`docs/site/specs/forever-sessions.md` sections 6 and 11).
 fn validate_record_incremental(
+    path: &Path,
+    session_id: SessionId,
+    record: &StoredEvent,
+    state: &mut ValidationState,
+    strict: bool,
+) -> Result<(), EventLogError> {
+    if let Err(error) = validate_record(path, session_id, record, state, strict) {
+        return Err(match error {
+            EventLogError::Corrupt { path, message } if state.let_go => EventLogError::Corrupt {
+                path,
+                message: format!(
+                    "{message} (or it names what settled before the validation floor, \
+                     which this log no longer holds)"
+                ),
+            },
+            error => error,
+        });
+    }
+    state.note_settling(record);
+    if let Some(windowed) = windowed_after(&record.payload) {
+        state.windowed = windowed;
+    }
+    if state.windowed
+        && matches!(
+            record.payload,
+            EventPayload::RunFinished { .. } | EventPayload::ModelTurnCommitted { .. }
+        )
+    {
+        state.let_go_settled();
+    }
+    Ok(())
+}
+
+fn validate_record(
     path: &Path,
     session_id: SessionId,
     record: &StoredEvent,
@@ -4028,6 +4448,7 @@ fn validate_record_incremental(
         admissions,
         next_model_turn_seq,
         active_run,
+        let_go,
         ..
     } = state;
     if let EventPayload::UserInputAdmitted { content } = &record.payload {
@@ -4201,6 +4622,7 @@ fn validate_record_incremental(
                             started: false,
                             child_run_id: None,
                             finished: false,
+                            finished_seq: None,
                         },
                     )
                     .is_some()
@@ -4332,6 +4754,7 @@ fn validate_record_incremental(
                 attempts_on_active: 0,
                 active_attempt: None,
                 ordering_tainted: false,
+                ended_seq: None,
             };
             if runs.insert(run_id, attribution).is_some() {
                 return corrupt(path, "run_id has more than one RunStarted event");
@@ -4418,6 +4841,7 @@ fn validate_record_incremental(
             attempts.insert(
                 *attempt_id,
                 AttemptAttribution {
+                    started_seq: record.seq,
                     run_id,
                     resolved_model: resolved_model.clone(),
                     finished: false,
@@ -4574,6 +4998,7 @@ fn validate_record_incremental(
                         usage_recorded_in_phase: false,
                         model_phase_taint_seen: 0,
                         usage_phase_taint_seen: 0,
+                        finished_seq: None,
                     },
                 )
                 .is_some()
@@ -4782,7 +5207,10 @@ fn validate_record_incremental(
                     "cannot strictly append tool termination after a missing terminal transition",
                 );
             }
-            if !terminated_tools.insert(termination.tool_call_id) {
+            if terminated_tools
+                .insert(termination.tool_call_id, record.seq)
+                .is_some()
+            {
                 return corrupt(path, "tool call has more than one terminal event");
             }
         }
@@ -4792,7 +5220,7 @@ fn validate_record_incremental(
             };
             let terminal_tainted = taint.tool_terminal_before(*tool_call_id, record.seq);
             if record.run_id != Some(*run_id)
-                || (!terminated_tools.contains(tool_call_id) && !terminal_tainted)
+                || (!terminated_tools.contains_key(tool_call_id) && !terminal_tainted)
                 || (strict && terminal_tainted)
                 || !elided_tools.insert(*tool_call_id)
             {
@@ -4805,7 +5233,7 @@ fn validate_record_incremental(
             };
             let terminal_tainted = taint.tool_terminal_before(*tool_call_id, record.seq);
             if record.run_id != Some(*run_id)
-                || terminated_tools.contains(tool_call_id)
+                || terminated_tools.contains_key(tool_call_id)
                 || (strict && terminal_tainted)
             {
                 return corrupt(
@@ -4822,7 +5250,13 @@ fn validate_record_incremental(
                 return corrupt(path, "approval references a run before RunStarted");
             }
             if approval_owners
-                .insert(request.approval_id(), run_id)
+                .insert(
+                    request.approval_id(),
+                    ApprovalOwner {
+                        run: run_id,
+                        settled_seq: None,
+                    },
+                )
                 .is_some()
             {
                 return corrupt(
@@ -4841,10 +5275,16 @@ fn validate_record_incremental(
         // A diagnostic about a run belongs to it; any other is runless. An
         // omitted record keeps the run of the record it stands for. An
         // attachment resolves after its run, so it is runless.
-        EventPayload::Diagnostic { .. }
-        | EventPayload::RecordOmitted { .. }
-        | EventPayload::AssistantAttachment { .. } => {
+        EventPayload::Diagnostic { .. } | EventPayload::AssistantAttachment { .. } => {
             if record.run_id.is_some() {
+                require_started_run(path, runs, record.run_id)?;
+            }
+        }
+        // A fork's stand-in for a delegation record keeps that record's run,
+        // which nothing in the fork holds open: once runs were let go, it may
+        // name one older than the floor.
+        EventPayload::RecordOmitted { .. } => {
+            if record.run_id.is_some() && !*let_go {
                 require_started_run(path, runs, record.run_id)?;
             }
         }
@@ -5613,7 +6053,7 @@ fn validate_tool_owner(
 
 fn validate_approval_owner(
     path: &Path,
-    owners: &HashMap<cookie_agent_protocol::ApprovalId, cookie_agent_protocol::RunId>,
+    owners: &HashMap<cookie_agent_protocol::ApprovalId, ApprovalOwner>,
     approval_id: cookie_agent_protocol::ApprovalId,
     event_run_id: Option<cookie_agent_protocol::RunId>,
 ) -> Result<(), EventLogError> {
@@ -5623,7 +6063,7 @@ fn validate_approval_owner(
             "approval lifecycle event appeared before ApprovalRequested",
         );
     };
-    if event_run_id != Some(*owner) {
+    if event_run_id != Some(owner.run) {
         return corrupt(path, "approval lifecycle event uses a non-owning run_id");
     }
     Ok(())

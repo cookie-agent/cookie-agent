@@ -573,6 +573,7 @@ fn reference_validate_records(
                                 started: false,
                                 child_run_id: None,
                                 finished: false,
+                                finished_seq: None,
                             },
                         )
                         .is_some()
@@ -714,6 +715,7 @@ fn reference_validate_records(
                     attempts_on_active: 0,
                     active_attempt: None,
                     ordering_tainted: false,
+                    ended_seq: None,
                 };
                 if runs.insert(run_id, attribution).is_some() {
                     return corrupt(path, "run_id has more than one RunStarted event");
@@ -801,6 +803,7 @@ fn reference_validate_records(
                 attempts.insert(
                     *attempt_id,
                     AttemptAttribution {
+                        started_seq: record.seq,
                         run_id,
                         resolved_model: resolved_model.clone(),
                         finished: false,
@@ -954,6 +957,7 @@ fn reference_validate_records(
                             usage_recorded_in_phase: false,
                             model_phase_taint_seen: 0,
                             usage_phase_taint_seen: 0,
+                            finished_seq: None,
                         },
                     )
                     .is_some()
@@ -1203,7 +1207,13 @@ fn reference_validate_records(
                     return corrupt(path, "approval references a run before RunStarted");
                 }
                 if approval_owners
-                    .insert(request.approval_id(), run_id)
+                    .insert(
+                        request.approval_id(),
+                        ApprovalOwner {
+                            run: run_id,
+                            settled_seq: None,
+                        },
+                    )
                     .is_some()
                 {
                     return corrupt(
@@ -3880,6 +3890,7 @@ fn a_replay_evaluation_base_must_be_an_earlier_attempt_of_its_run_and_model() {
     let run = RunId::new_v7();
     let attempt =
         |run_id, resolved_model: &cookie_agent_protocol::ResolvedModelRef| AttemptAttribution {
+            started_seq: 0,
             run_id,
             resolved_model: resolved_model.clone(),
             finished: true,

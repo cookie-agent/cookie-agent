@@ -466,13 +466,17 @@ impl Engine {
         // A run whose end is appended no longer counts, though its task has
         // yet to drop it from the active runs: the parent refreshes on that
         // append, not on the drop.
-        let ended = projection.runs.get(&run).is_some_and(|run| {
-            !matches!(
-                run.status,
-                cookie_agent_protocol::SessionStatus::Running
-                    | cookie_agent_protocol::SessionStatus::Idle
-            )
-        });
+        let ended = projection
+            .run_outcome(run)
+            .ok()
+            .flatten()
+            .is_some_and(|run| {
+                !matches!(
+                    run.status,
+                    cookie_agent_protocol::SessionStatus::Running
+                        | cookie_agent_protocol::SessionStatus::Idle
+                )
+            });
         (!ended && !self.foreground_waits_for(child, run)).then_some(projection)
     }
 

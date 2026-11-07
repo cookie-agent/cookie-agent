@@ -777,7 +777,11 @@ impl Engine {
                 Err(EngineError::MissingRun(missing)) => {
                     let recorded = target.child_session_id.and_then(|child| {
                         self.inner.store.get(child).ok().and_then(|projection| {
-                            projection.runs.get(&run_id).map(|run| run.status)
+                            projection
+                                .run_outcome(run_id)
+                                .ok()
+                                .flatten()
+                                .map(|run| run.status)
                         })
                     });
                     match recorded {

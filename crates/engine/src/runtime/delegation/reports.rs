@@ -258,15 +258,19 @@ impl Engine {
         };
         // A run still going reports when it ends.
         let ended = self.inner.store.get(child).is_ok_and(|projection| {
-            projection.runs.get(&child_run).is_some_and(|run| {
-                matches!(
-                    run.status,
-                    SessionStatus::Completed
-                        | SessionStatus::Failed
-                        | SessionStatus::Cancelled
-                        | SessionStatus::Interrupted
-                )
-            })
+            projection
+                .run_outcome(child_run)
+                .ok()
+                .flatten()
+                .is_some_and(|run| {
+                    matches!(
+                        run.status,
+                        SessionStatus::Completed
+                            | SessionStatus::Failed
+                            | SessionStatus::Cancelled
+                            | SessionStatus::Interrupted
+                    )
+                })
         });
         if !ended {
             return;

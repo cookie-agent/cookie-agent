@@ -89,8 +89,10 @@ fn parts(bytes: &[u8]) -> Vec<(String, usize)> {
                 {
                     for (key, state_part) in state {
                         sizes.push((format!("{name}.state.{key}"), size(state_part)));
-                        if matches!(key.as_str(), "harvest" | "once" | "approvals" | "acp" | "run")
-                            && let Some(deep) = state_part.as_object()
+                        if matches!(
+                            key.as_str(),
+                            "harvest" | "once" | "approvals" | "acp" | "run"
+                        ) && let Some(deep) = state_part.as_object()
                         {
                             for (deep_key, deep_part) in deep {
                                 sizes.push((
@@ -154,7 +156,11 @@ fn main() {
             let window = projection.log.recent().len();
             println!(
                 "open {}: {:.0} ms, live {:.2} MB, peak {:.2} MB, {records} records, {window} held, {} runs",
-                if had_file { "from state.json" } else { "by fold" },
+                if had_file {
+                    "from state.json"
+                } else {
+                    "by fold"
+                },
                 elapsed.as_secs_f64() * 1000.0,
                 megabytes(live),
                 megabytes(peak),

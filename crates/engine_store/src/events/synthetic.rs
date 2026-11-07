@@ -725,8 +725,9 @@ impl RunWriter<'_> {
         let turns = if index % 159 == 158 {
             87
         } else {
-            self.numbers
-                .pick(&[1, 1, 2, 2, 2, 3, 3, 3, 4, 4, 4, 5, 5, 6, 7, 8, 10, 12, 15, 40])
+            self.numbers.pick(&[
+                1, 1, 2, 2, 2, 3, 3, 3, 4, 4, 4, 5, 5, 6, 7, 8, 10, 12, 15, 40,
+            ])
         };
         for turn in 0..turns {
             // 0.87 calls a turn, and the last turn answers.

@@ -54,11 +54,13 @@ impl EventLog {
             self.torn_tail_ignored, parsed.torn_tail_ignored,
             "a torn final record"
         );
-        assert!(
-            *self.validation.lock().expect("validation lock poisoned")
-                == *parsed.validation.lock().expect("validation lock poisoned"),
-            "the validation state differs from a parse of the whole file"
-        );
+        self.validation
+            .lock()
+            .expect("validation lock poisoned")
+            .assert_agrees_with_whole(
+                &parsed.validation.lock().expect("validation lock poisoned"),
+                "a parse of the whole file",
+            );
         assert!(
             self.initial_taint() == parsed.initial_taint(),
             "the load's taint differs from a parse of the whole file"
@@ -103,6 +105,25 @@ impl EventLog {
             read.iter().zip(whole.iter()).all(|(a, b)| a == b),
             "a pass reads otherwise than a parse"
         );
+        // A snapshot and its tail fold to what the whole file folds to a record at
+        // a time, exactly: what each let go of is the same.
+        if self.opened_from_state
+            && let Some(folded) = fold_file(&self.path, self.session_id, TornTail::Ignore)
+        {
+            EVENT_LOG_PARSES.with(|parses| parses.set(parses.get().saturating_sub(1)));
+            assert!(
+                *self.validation.lock().expect("validation lock poisoned") == folded.validation,
+                "the validation state differs from a fold of the whole file"
+            );
+            let storage = self.storage();
+            assert_eq!(
+                storage.lines, folded.storage.lines,
+                "the line index of a fold"
+            );
+            assert_same_bytes(&storage.index, &folded.storage.index, "a fold's index");
+            assert_raw_lines_as_parsed(&storage.raw, &folded.storage.raw);
+            assert_eq!(storage.window, folded.storage.window, "a fold's window");
+        }
         let opened = self.opened.lock().expect("opened lock poisoned").clone();
         if let Some((tip, folds)) = opened {
             assert_eq!(tip, parsed.physical_tip_seq(), "the tip folded to");

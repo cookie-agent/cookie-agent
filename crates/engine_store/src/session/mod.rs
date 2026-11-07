@@ -25,6 +25,7 @@ pub use dirs::create_unix_session_directory_all;
 #[cfg(windows)]
 pub use dirs::create_windows_session_directory;
 use dirs::*;
+pub use fold::RunOutcome;
 pub use fold::projection;
 use fold::refold;
 pub use fold::restart_stable_grant;
@@ -240,6 +241,8 @@ pub struct RunProjection {
     pub final_text: Option<String>,
     #[serde(with = "crate::events::sorted::map")]
     pub pending_calls: HashMap<ToolCallId, String>,
+    /// The record that ended it, when one did.
+    pub ended_seq: Option<u64>,
 }
 
 /// What a log's records fold to for a session: a [`SessionProjection`] without

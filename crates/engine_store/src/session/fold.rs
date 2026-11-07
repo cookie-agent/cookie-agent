@@ -233,6 +233,11 @@ pub(super) enum Observed {
     NeedsRefold,
 }
 
+/// How many runs that ended a windowed log's projection keeps, and what may still
+/// name them: a retry of a run's `client_run_id`, and records that follow a run's
+/// end by a moment, as a title's internal agent does.
+pub(crate) const ENDED_RUNS_KEPT: usize = 16;
+
 /// Fold state a projection keeps beyond its public fields, so an appended
 /// event can be applied in place instead of refolding the log.
 #[derive(Clone, Debug, Default, serde::Deserialize, serde::Serialize)]
@@ -252,6 +257,16 @@ pub struct ProjectionFoldState {
     provisional_usage: HashMap<u64, ProvisionalUsage>,
     /// The session's goal, which `meta.waiting_on` reports while active.
     goals: crate::goal_projection::GoalFold,
+    /// The log's window is an ACP agent's: what settled can go
+    /// (`docs/site/specs/forever-sessions.md` section 6).
+    windowed: bool,
+    /// Some run left [`ProjectionFolds::runs`]: [`SessionProjection::run_outcome`]
+    /// reads the log for one not there.
+    runs_let_go: bool,
+    /// The delegations no record finished yet, by their parent run: a tree load
+    /// asks of such a run how it ended.
+    #[serde(with = "crate::events::sorted::map")]
+    open_delegations: HashMap<cookie_agent_protocol::InvocationId, RunId>,
 }
 
 impl ProjectionFoldState {
@@ -504,6 +519,14 @@ impl ProjectionFolds {
                     }
                 }
             }
+            EventPayload::DelegationReserved { reservation, .. } => {
+                self.fold
+                    .open_delegations
+                    .insert(reservation.invocation_id, reservation.parent_run_id);
+            }
+            EventPayload::DelegationFinished { invocation_id, .. } => {
+                self.fold.open_delegations.remove(invocation_id);
+            }
             _ => {}
         }
         if let Some(run_id) = envelope.run_id
@@ -511,10 +534,48 @@ impl ProjectionFolds {
         {
             return Observed::NeedsRefold;
         }
+        if let Some(windowed) = crate::events::windowed_after(&envelope.payload) {
+            self.fold.windowed = windowed;
+        }
+        if matches!(
+            envelope.payload,
+            EventPayload::RunFinished { .. }
+                | EventPayload::ToolCallTerminated { .. }
+                | EventPayload::DelegationFinished { .. }
+                | EventPayload::ModelTurnCommitted { .. }
+        ) {
+            self.let_go_settled_runs();
+        }
         self.meta.status = self.status;
         Observed::Applied {
             durable_meta: durable_meta || self.status != status_before,
         }
+    }
+
+    /// Lets go of the runs nothing can still ask about here, while the log's window
+    /// is an ACP agent's: those that ended, with no call pending and no delegation
+    /// open, but for the latest [`ENDED_RUNS_KEPT`]. What is read of them as an
+    /// answer, a run's status and final text, [`SessionProjection::run_outcome`]
+    /// reads from the log (`docs/site/specs/forever-sessions.md` section 12).
+    fn let_go_settled_runs(&mut self) {
+        if !self.fold.windowed || self.runs.len() <= ENDED_RUNS_KEPT {
+            return;
+        }
+        let open = &self.fold.open_delegations;
+        let mut settled = self
+            .runs
+            .values()
+            .filter(|run| run.pending_calls.is_empty() && !open.values().any(|id| *id == run.id))
+            .filter_map(|run| Some((run.ended_seq?, run.id)))
+            .collect::<Vec<_>>();
+        if settled.len() <= ENDED_RUNS_KEPT {
+            return;
+        }
+        settled.sort_unstable_by_key(|(seq, _)| *seq);
+        for (_, run) in &settled[..settled.len() - ENDED_RUNS_KEPT] {
+            self.runs.remove(run);
+        }
+        self.fold.runs_let_go = true;
     }
 
     /// The run-owned part of [`Self::observe`]. `false` when the step needs a
@@ -553,6 +614,7 @@ impl ProjectionFolds {
                         status: SessionStatus::Running,
                         final_text: None,
                         pending_calls: HashMap::new(),
+                        ended_seq: None,
                     },
                 );
             }
@@ -568,6 +630,7 @@ impl ProjectionFolds {
                 if let Some(run) = self.runs.get_mut(&run_id) {
                     let status = outcome.status();
                     run.status = status;
+                    run.ended_seq = Some(envelope.seq);
                     if let cookie_agent_protocol::Open::Known(
                         cookie_agent_protocol::RunOutcome::Completed { final_text },
                     ) = outcome
@@ -702,7 +765,60 @@ impl ProjectionFolds {
     }
 }
 
+/// How a run ended, or stands: [`SessionProjection::run_outcome`].
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RunOutcome {
+    pub status: SessionStatus,
+    pub final_text: Option<String>,
+}
+
 impl SessionProjection {
+    /// How `run` of this log stands, wherever it is. A run this projection holds
+    /// answers at once. One it let go of ended long ago, and this reads the log
+    /// for it, as an answer about an old run is rare: `None` is a run the log does
+    /// not hold, and it costs a pass only once some run was let go.
+    pub fn run_outcome(&self, run: RunId) -> Result<Option<RunOutcome>, EventLogError> {
+        if let Some(held) = self.runs.get(&run) {
+            return Ok(Some(RunOutcome {
+                status: held.status,
+                final_text: held.final_text.clone(),
+            }));
+        }
+        if !self.fold.runs_let_go {
+            return Ok(None);
+        }
+        let mut outcome = None;
+        for event in self.log.history()? {
+            let event = event?;
+            if event.run_id != Some(run) {
+                continue;
+            }
+            match &event.payload {
+                EventPayload::RunStarted { .. } => {
+                    outcome = Some(RunOutcome {
+                        status: SessionStatus::Running,
+                        final_text: None,
+                    });
+                }
+                EventPayload::RunFinished {
+                    outcome: finished, ..
+                } => {
+                    if let Some(known) = &mut outcome {
+                        known.status = finished.status();
+                        if let cookie_agent_protocol::Open::Known(
+                            cookie_agent_protocol::RunOutcome::Completed { final_text },
+                        ) = finished
+                        {
+                            known.final_text.clone_from(final_text);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok(outcome)
+    }
+
     /// Folds an event just appended to this projection's log, tip included,
     /// refolding the log when the event cannot be applied in place.
     pub(super) fn observe_appended(&mut self, event: &StoredEvent) -> Result<(), SessionError> {
