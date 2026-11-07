@@ -27,8 +27,9 @@ For a root or delegated run, the engine composes the model request in this order
    system turn.
 8. Root runs may then add a durable [AGENTS.md context](#agentsmd-context-turn)
    user turn. The [memory snapshot](#memory-turn) follows when the session's
-   latest snapshot is not empty, then loaded skill bodies as user turns,
-   followed by normal session history.
+   latest snapshot is not empty, then the skills a refresh moved there (see
+   [the frozen context](#the-frozen-context)), followed by normal session
+   history, where other loaded skills sit as user turns.
 
 Appended blocks are joined by a markdown horizontal rule (`\n\n---\n\n`) so the
 boundaries between the authored body, the runtimes block, the attachments
@@ -249,13 +250,17 @@ composed afresh (see [the frozen context](#the-frozen-context)), each coding
 runtime the session is attached to discovers the applicable `AGENTS.md`
 files in its own workspace, and Cookie Agent stores their bounded content in
 one `agent_md_loaded` event per attachment that returned a file, naming the
-attachment. Any other root run records the previous run's turn again,
-without reading the files, so an edited `AGENTS.md` reaches the session at
-its next compaction or refresh. A runtime a client attached since the
+attachment. A native session's compaction reads them again too, as it
+starts, and records them just before its checkpoint commits, in the same run
+(see [the frozen context](#the-frozen-context)); an attachment whose runtime is
+away, or whose files cannot be read, keeps its previous record. Any other root
+run records the previous run's turn again, without reading the files, so an
+edited `AGENTS.md` reaches the session at its next compaction or refresh. A runtime a client attached since the
 previous run adds its own `AGENTS.md` once, at the next run's start, as an
 `agent_md_loaded` with `in_place`: a turn of its own where it was recorded. Files larger than 2 MiB are skipped and surfaced as
 `AgentMdSkipped` warning events. History replays the latest run's entries, the
-latest event per attachment, as one user turn, wrapped in a
+latest event per attachment, or, after a checkpoint in that run, those it
+recorded, as one user turn, wrapped in a
 `<system-reminder>` block with each file delimited as:
 
 ```text
@@ -284,9 +289,9 @@ workspace's, as `<contents from="project:<name>/AGENTS.md">` without a
 
 Making this context a turn rather than system text keeps the stable system
 cache key independent of normal repository edits, preserves per-file
-provenance, and lets compaction pin the turn alongside loaded skill bodies. The
-rolling non-system cache breakpoint can still move when AGENTS.md context
-changes, which is the intended invalidation.
+provenance, and lets a checkpoint compose it afresh without touching the system
+text. The rolling non-system cache breakpoint can still move when AGENTS.md
+context changes, which is the intended invalidation.
 
 ## Memory turn
 
@@ -299,8 +304,10 @@ at a refresh always, and otherwise, as a `memory_loaded` event, when
 something it depends on changed: the session has none yet, a compaction
 finished since the latest one, the session's machines, the session's project
 or its name, the run's agent, its `memory` rules, whether memory is
-available, or whether the run may write it. History renders the latest event
-only, and compaction pins the turn like the AGENTS.md turn. Writes during the
+available, or whether the run may write it. A native session's compaction
+takes one as it starts too, and records it just before its checkpoint, or the
+latest one again when it cannot be read. History renders the latest event
+only. Writes during the
 session, edits the user makes from a client, and those changes between
 refresh points change the files but not the turn, so the prompt cache
 survives them. When memory stops being available at such a point, an empty
@@ -470,7 +477,12 @@ point, on every model ([frozen context spec](../specs/frozen-context.md)).
 **It is composed afresh** at the session's first run, at the first run after
 a compaction, after a run whose prompt a plugin replaced, and at a
 **refresh**, which records `context_refreshed { reason, changed }` and starts
-a new tool round:
+a new tool round. **A native session's checkpoint** composes the AGENTS.md and
+memory turns afresh itself, in the run that compacts, and the next request
+starts a new tool round; the system prompt the run was admitted with stays
+until the next run, which composes it afresh
+([forever sessions](../specs/forever-sessions.md), section 5.2). An ACP
+agent's context stays as its session started it. The refresh points:
 
 - an eager tool's parameter schema changed since the round started
   (`engine_updated` when the engine build that started the round differs,
@@ -511,9 +523,14 @@ Each block replaces the part of the system prompt it names, and a removed block 
 A plugin's system-prompt hook changes take effect at the next point the
 context is composed afresh; its injected messages apply to every run.
 
-**Skills** loaded since the latest compaction or refresh render where they
-were loaded; at the next one they join the pinned skills after the memory
-turn.
+**Skills** render where they were loaded, as user turns, like any other
+turn: a checkpoint keeps one in its kept range in place and summarizes an
+older one, and nothing loads it again; the model loads it again when it needs
+it, and gets its current version. Loading it again with a body already loaded
+since the latest compaction is only noted. A refresh that is not a checkpoint moves
+skills loaded before it after the memory turn, as the conversation stays
+whole; a checkpoint written before client protocol 1.90.0 (without
+`context_fresh`) keeps every skill loaded before it there.
 
 ## Cache breakpoints
 
@@ -545,7 +562,7 @@ cached prefix rather than using an isolated cache namespace. See the
 
 | Agent type | System prompt | Additional context |
 |---|---|---|
-| Root | Selected authored agent body, or the concise built-in default coding prompt; runtimes block, attachments block, optional tool-provider sections, skill listing, and plugin composition | Root-only AGENTS.md context turn, the memory turn, loaded skill bodies, then session history |
+| Root | Selected authored agent body, or the concise built-in default coding prompt; runtimes block, attachments block, optional tool-provider sections, skill listing, and plugin composition | Root-only AGENTS.md context turn, the memory turn, then session history with loaded skill bodies where they were loaded |
 | Delegated | Frozen delegated agent body; runtimes block, attachments block, optional tool-provider sections, skill listing, and plugin composition | No filesystem AGENTS.md context load. A memory turn of the agent's own memory only (by default; its document's `memory` rules apply). Explicit inherited user/assistant text and ordinary child history remain separate turns. |
 | Internal | Authored reserved internal agent body when available, otherwise its built-in prompt | No AGENTS.md discovery, memory, skill listing, or plugin prompt interception. Invocation-specific input is supplied separately. |
 

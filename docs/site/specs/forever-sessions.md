@@ -57,9 +57,9 @@ a cap makes it worse, and it is left out.
 | Call | Gives | Audit's count | Where they landed (section 12) |
 |---|---|---|---|
 | `recent()` | The events since the log's window start | 36 | 1 |
-| `state()` | A small fold kept up to date on append (section 3.1) | 51 | 75 |
-| `history()` | An iterator over events read from disk, one at a time, unless the log holds them all | 30 | 42 |
-| `model_context_events()` | Pinned records and the window, for a native model's context | 8 | 9 |
+| `state()` | A small fold kept up to date on append (section 3.1) | 51 | 76 |
+| `history()` | An iterator over events read from disk, one at a time, unless the log holds them all | 30 | 43 |
+| `model_context_events()` | Pinned records and the window, for a native model's context | 8 | 7 |
 
 The compiler finds every use, so none is missed, and each states what it needs. Until
 a log is windowed, it holds every event and these cost nothing. ACP sessions are
@@ -272,14 +272,15 @@ Read at `b339c902e`, it needs:
 | Events from the summary's `recent_from_seq`, or after a provider window's `source_through_seq` | Both start before the checkpoint record | The window starts at the earlier of them, so a switch to a model that cannot use the window still has the summary's range |
 | Every `SkillLoaded` before the boundary | Of any age today, with its full body | **Not carried** (section 5.2): the skill tool reads fresh when called |
 | The latest `AGENTS.md` and memory records | Latest of their kind, from the run's start | **Read fresh at each checkpoint** (section 5.2) |
-| Producer admissions not yet consumed | Of any age | Pinned records, and the fold of section 3.1 |
+| Producer admissions not yet consumed | Of any age | Pinned records, chosen by the fold of section 3.1, with each one's acceptance, and the acceptance of a message admitted in the window (section 12) |
 | What `close_event_dependencies` pulls in: an applied input's submission, a started call's turn, a terminated call's start | "Late tool completions can refer to events before the retained range" | At a checkpoint, pin the closure. Afterwards, open calls' records and inputs not yet applied are pinned, so any later reference resolves |
-| Latest `NativeReplayCut`, `ToolCallLinked`, `ToolOutputElided`, whether any producer message exists | `assemble_history_with_replay`'s forward pass over everything | The latest cut is a fold. Links and elisions matter only for calls in view, which the window and pins hold |
+| Latest `NativeReplayCut`, `ToolCallLinked`, `ToolOutputElided`, whether any producer message exists | `assemble_history_with_replay`'s forward pass over everything | The cut that reaches furthest is pinned, and so is the latest `run_started` (section 12). Links and elisions matter only for calls in view, which the window and pins hold |
 | The loop guard's last 64 calls, the doom-loop count | Read back to a run's start, which can precede the window | Folds, as a ring of digests |
 
 So `model_context_events()` returns **pinned records and the window, in order**, and
-assembly keeps working on a slice. Its producer fold and replay cut come from `state()`.
-Only producer admissions and back-references are ever pinned.
+assembly keeps working on a slice. `state()` chooses what is pinned: open calls, inputs
+not yet applied, messages not yet consumed. Only producer admissions and back-references
+are ever pinned, with the few records assembly reads beside them (section 12).
 
 ### 5.2 Fresh at each checkpoint, and skills when called
 
@@ -288,7 +289,7 @@ user, 2026-11-06; ACP sessions are the opposite, section 3.4).
 
 | Part | When it is read | Today |
 |---|---|---|
-| System prompt, with its skill listing | At the checkpoint | The same |
+| System prompt, with its skill listing | At the next run, which composes it afresh (section 12) | The same |
 | Tool round | At the checkpoint | The same |
 | `AGENTS.md`, from every coding attachment | At the checkpoint | At the next run, so a compaction mid-run keeps the old one until then |
 | Memory snapshot | At the checkpoint | The same as `AGENTS.md` |
@@ -332,8 +333,9 @@ that is away does not lose its instructions, as a refresh already does for memor
 older records only under a commit without it, so existing logs read as they did, and hold those
 records until their next checkpoint. No format bump is needed.
 
-**In-stream compaction** (ChatGPT sign-ins) commits inside a request, so phase 6 confirms that it
-can read these first.
+**In-stream compaction** (ChatGPT sign-ins) commits no checkpoint, as built: the server's
+compaction items stay in their turn's native replay. Its backstop is an ordinary checkpoint,
+which reads these first like any other (section 12).
 
 ### 5.3 The check that matters most
 
@@ -349,7 +351,7 @@ cannot break either.
 The golden logs cover compaction with and without a provider window, replay, delegation,
 revert and fork. A new long scenario adds several compactions, skills loaded before them, a
 call finishing after a checkpoint, a producer message pending across one, and a model
-switch.
+switch (as built, section 12).
 
 ### 5.4 Switching agents
 
@@ -1104,3 +1106,135 @@ compared with a fold of the whole file exactly, as before. The producer fold is 
 - `run_outcome` is how to ask of an older run; `ProjectionFolds.runs` no longer holds them all.
 - Measure with `forever_measure generate <dir> <times> [delegations a run]`, `open <dir> [parts]`, and
   `check <dir>`, and keep `tests/forever_growth.rs` passing. `Mix` takes a rate of delegations.
+
+**Phase 6** (2026-11-07), read against the code at `a9c2aeb16`.
+
+- **What `model_context_events()` returns, as built** (`events/model_context.rs`): with no
+  checkpoint, the whole log; otherwise the records from the window's start, the earlier of
+  the latest checkpoint's kept range (`recent_from_seq`, or what follows its
+  `source_through_seq`) and what follows its provider window, and under a provider window
+  alone, which only builds before 1.29.0 wrote, the latest summary's range too, or the whole
+  log when there is none. Before the start it keeps:
+  - **back-references**, followed until nothing more is reached from the window and from what
+    is pinned: an applied input's submission, a started call's turn and its link to a child
+    session, an ended call's start;
+  - **what is open now, from `state()`**: every open call's start (and so its turn and link)
+    and every input submitted and not yet applied, so a record appended later names nothing
+    a trimmed log let go of;
+  - **producer messages not yet consumed or discarded**, per the store's own producer fold:
+    each one's acceptance and its latest admission, and the acceptance of any message whose
+    admission is in view, which holds the body assembly renders;
+  - **what assembly reads beside what it renders**, against section 5.1's "the latest cut is
+    a fold" and "its producer fold and replay cut come from `state()`": the latest
+    `run_started` (its run decides which unconsumed admissions render, and whose `AGENTS.md`
+    is current) and the `native_replay_cut` that reaches furthest. Pinning these records
+    lets assembly stay one function of a slice; the store's producer fold cannot serve it,
+    as it lets go of settled messages whose bodies a window still renders;
+  - **under a checkpoint without `context_fresh`**, every `skill_loaded` before the window,
+    and the current `AGENTS.md` records and latest `memory_loaded`, as that build pinned them.
+- **It is safe to apply at any moment, not only at a checkpoint**: the selection of what it
+  returned, with what was appended since, is the selection of the whole log. In tests every
+  call of `model_context_events()` checks that against a shadow that lets go each time
+  (`assert_model_context_holds`), and so do the long scenario and the golden test below.
+- **A kept tail starts in the window.** `compaction_tail_candidates` offered a group starting
+  at a pinned record, an input submitted or a message admitted before the window, and a
+  checkpoint keeping it would have reached back past what a trimmed log holds. Such a group
+  is no longer a candidate. This changes only which tail a new compaction may keep; existing
+  checkpoints read as before.
+- **`context_fresh`** is a `bool` written only when set, client protocol 1.90.0 and plugin
+  protocol 1.44.0 (plugins receive events); the frozen corpora and golden logs pass.
+- **The refresh at a checkpoint, as built.** `maybe_compact_context` reads, as compaction
+  starts, a root session's `AGENTS.md` (`checkpoint_agent_md`, the rule a run's admission
+  uses: native, root, `agent_md` on) and the memory snapshot (`checkpoint_memory_snapshot`,
+  a refresh's rule: taken while memory is available, an empty one when it went away from a
+  turn that showed some, nothing when nothing shows), passes their rendered turns to every
+  projection (`FreshTurns`), and records them, with any skip warnings, in the same actor call
+  as the commit, after the commit is validated. A compaction that fails or is cancelled
+  records nothing. An attachment whose runtime is away, or whose read fails, keeps its
+  current record, and a snapshot that cannot be read writes the latest record again.
+  "The current `AGENTS.md`" is the latest run's records, or, after a checkpoint with
+  `context_fresh` in that run, those after its `input_through_seq`.
+- **The system prompt is not composed again at a checkpoint in the middle of a run**, against
+  section 5.2's table, which said it already was. A run's prompt is frozen into its
+  `run_started` at admission (frozen context spec, phase 3), and a checkpoint mid-run leaves
+  it to the next run, which composes it afresh (`checkpoint_since_run`), skill listing
+  included. The tool round does start over at the checkpoint. Composing the prompt mid-run
+  would need a record of a new prompt inside a run, which `run_agent_prompt`, the prompt
+  blocks, and the prefix fingerprints all read: a protocol addition the spec did not
+  describe, so it was not done. **For a run that never ends, the system prompt and its skill
+  listing stay as the run started them.** The table is corrected; this is for the user to
+  decide.
+- **The next run takes `AGENTS.md` and memory once more,** as the first run after a checkpoint
+  always did. So a compaction between runs reads them twice, once for the checkpoint and once
+  for the run.
+- **Skills, as built.** A skill renders before the conversation only if it was loaded before
+  the latest checkpoint or refresh and after the latest checkpoint with `context_fresh`. So
+  after a fresh checkpoint a skill in the kept range stays in place and an older one is gone;
+  a refresh that is not a checkpoint still moves earlier skills after the memory turn, as
+  nothing tells a new session's refresh from an old log's, and the conversation stays whole
+  there. The duplicate check (`OnceFacts.skills`) starts over at a checkpoint with
+  `context_fresh`, as the user put it: a skill in the kept range loaded again shows its body
+  twice. Nothing cleared `skills_runtime` before, and nothing does now. The summarizer's rule
+  reads "Omit pinned context such as AGENTS.md; it stays available separately.", and its input
+  shows the skills it now covers. `checkpoint_retained_history` counts no skill.
+- **In-stream compaction commits no checkpoint.** The ChatGPT sign-in spec's phase 6 kept the
+  server's compaction items in their turn's native replay, with no window checkpoint and no
+  background summary, so nothing commits inside a request. The engine's own checkpoint, the
+  backstop, is `maybe_compact_context` like any other and reads the context afresh. Nothing
+  was needed. Phase 7 should know that such a session's log is windowed only when the
+  backstop fires.
+- **The approval reviewer renders from `history()`**, the whole log as a pass, against phase
+  2's choice of `model_context_events()`: its epochs and run numbers count from the log's
+  start, which the model context no longer reaches once a checkpoint commits, so phase 6
+  would have changed what it sees. This keeps it as it was until phase 8.
+- **The loop guard reads a fold**, `LogState::loop_calls`, as section 5.1's table says: the
+  latest run's calls since its latest input, with a digest of what each showed, a window of
+  64 up to each open call and at most 256, its scan the reference at every event.
+  Differences from the walk: a call checked while more than 256 others started after the
+  oldest open one is compared with what is left, and a run other than the latest is not
+  checked. `STATE_VERSION` rose from 6 to 7, with the digest. The skill fold's change needed
+  none: no log an earlier build wrote holds a checkpoint with `context_fresh`.
+- **Native compaction's durable elision now reads the model context**, so it no longer elides
+  calls before the window, which no request sends.
+- **Tests.** In every test, each request (`request_context`), each compaction, and each
+  assembled `get_history` also assembles from the whole log through the same record and
+  asserts that the request's context with and without provider windows, the summary view,
+  the tail candidates, what a checkpoint keeps, a projected checkpoint for three tails with
+  and without fresh turns, and the summarizer's input are the same
+  (`model_history::assert_assembles_as_whole`).
+  `a_long_native_session_assembles_from_its_model_context_as_from_the_whole_log` is the long
+  scenario, a log written record by record and checked at every record on the model with the
+  window and on another: an ACP agent's turns and then a native model's, an older checkpoint
+  pinning a skill, a skill and a background call before a checkpoint with a window, a
+  producer message accepted before it and admitted after, the call ending after it, the skill
+  loaded again, a switch to a model with no window and a summary-only checkpoint, a message
+  admitted to a cancelled run, a replay cut, a checkpoint with no kept tail in the middle of a
+  run with a call open across it, and one at the earliest tail. Turning off the
+  back-references, the open calls, the producer pins, the run's start, the replay cut, the
+  older checkpoint's pins, or the window start of tails each fails it.
+  `golden_logs_assemble_from_their_model_context_as_from_the_whole_log` does the same for every
+  golden log, of every history format, at every committed turn, checkpoint, and run's end, on
+  each model the log's runs bound and on another.
+  `a_checkpoint_reads_agents_md_afresh_and_a_skill_loads_again_after_it` goes through the
+  engine and the coding runtime.
+- **Not done.** No golden directory was recorded: the long scenario is the synthetic log above,
+  and through the engine only the smaller test. A real ACP agent switching to a native model
+  is the existing `a_switch_to_a_native_agent_and_back_reads_the_log_whole_and_windows_it_again`,
+  whose native request the check above now covers; the long scenario's ACP turns are records
+  naming `acp/<agent>`. Nothing was measured.
+
+**What phase 7 must know.**
+
+- Trimming is `held = model_context(&held, &state)` at a checkpoint's commit, with `state` the
+  log's fold at the tip; the shadow test shows any moment works. `model_context` passes over
+  what it is given each time, `References::of` included, which is the context's size once
+  trimmed.
+- The window's start never moves back past a held record once the tail rule holds, except
+  under a provider window alone (older logs), which reads the whole log on a model that cannot
+  use it.
+- `state.json` for a native log must carry the pinned records, as section 5.6 says; the folds
+  that choose them (`calls`, `inputs.submitted`, the producer fold) are already there.
+- Native validation must keep what a pinned or windowed record can name: an elision now names
+  only a call in view, a replay base an earlier attempt of its run, a late termination an open
+  call.
+- The reviewer then reads its session as a file pass per escalated approval, until phase 8.

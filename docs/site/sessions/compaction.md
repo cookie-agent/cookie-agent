@@ -230,21 +230,29 @@ retries.
    text summary, the native window beside it when the native call succeeded,
    source and recent-suffix boundaries, and the budget math, including the
    effective recent-history token budget. Retained messages come from saved
-   history, not new file reads.
+   history, not new file reads. Just before it, the checkpoint records the
+   `AGENTS.md` of every coding attachment and the memory snapshot it read as
+   compaction started (their size counts in the budgets), and marks itself
+   `context_fresh`: the context before the conversation is composed afresh, and
+   nothing older is pinned. What cannot be read, a machine that is away, is
+   recorded again as it was.
 
 ## Context after an internal checkpoint
 
 The next request assembles context in this order:
 
 1. System prompt and tool definitions.
-2. Pinned `AGENTS.md` context.
-3. Pinned loaded skill bodies.
-4. Summary of everything before the retained suffix.
-5. Recent original messages retained unchanged, followed by any new messages.
+2. The `AGENTS.md` and memory turns the checkpoint recorded.
+3. Summary of everything before the retained suffix.
+4. Recent original messages retained unchanged, followed by any new messages.
 
-Pinned context is preserved separately from the suffix. With retention disabled,
-or when the newest complete group cannot fit, the recent suffix is absent and
-only the summary remains alongside pinned context. The summary and the retained
+A loaded skill is a turn like any other: in the retained suffix it stays where
+it was loaded, and before it the summary covers it. The model loads it again
+when it needs it, and the body shows again. A checkpoint an earlier build wrote
+(without `context_fresh`) pins every skill loaded before it after the memory
+turn, as it did. With retention disabled, or when the newest complete group
+cannot fit, the recent suffix is absent and only the summary remains after the
+turns before the conversation. The summary and the retained
 suffix do not overlap. A request on the window's own model uses the window
 and the messages after it instead of this summary-and-tail layout.
 

@@ -491,15 +491,17 @@ points above ever change the snapshot.
 
 ### 7.3 Place in history
 
-History assembly renders the latest `memory_loaded` as one user turn and
-pins it through compaction like `AGENTS.md`. A run's history starts:
+History assembly renders the latest `memory_loaded` as one user turn. A
+checkpoint records `AGENTS.md` and a snapshot again just before it commits
+(since client protocol 1.90.0, [forever sessions](forever-sessions.md) section
+5.2); an older one pins the latest through compaction. A run's history starts:
 
 | Position | Role | Content | Changes when |
 |---|---|---|---|
 | 0 | system | Agent prompt, machines block ([section 3.4](#34-what-the-model-is-told)), tool instructions, skill listing | Every run recomposes it; it is stable while agent, attachments, and tools are |
 | 1 | user | `AGENTS.md` reminder, if any (root runs only) | A root run loads different files |
 | 2 | user | **Memory snapshot**, if the latest `memory_loaded` is not empty | Only at the points in [section 7.2](#72-when-a-snapshot-is-taken) |
-| 3… | user | Loaded skills, pinned | A skill is loaded |
+| 3… | user | Loaded skills, pinned, only after a refresh that is not a checkpoint, or under a checkpoint without `context_fresh`; otherwise a skill is a turn where it was loaded | A skill is loaded |
 | … | | Compaction summary, then the conversation | Every turn |
 
 The snapshot sits after `AGENTS.md` because memory is notes about the user,

@@ -487,9 +487,11 @@ gets one more, written first, whose optional `project` (`{ id, name }`, since
 client protocol 1.8.0) names the project; its `attachment` is `global`, where
 the file lives, and its entry's source is `project:<name>/AGENTS.md`.
 Missing or disabled context produces no event. History uses only the latest
-run's events, the latest per attachment and the project's, and replays their
-entries as one provenance-delimited user turn, the project's first. Compaction pins that turn
-alongside loaded skill bodies. See
+run's events, the latest per attachment and the project's, or after a
+checkpoint with `context_fresh` in that run the ones it recorded just before
+itself, and replays their entries as one provenance-delimited user turn, the
+project's first. A checkpoint without `context_fresh` pins that turn alongside
+loaded skill bodies. See
 [System Prompt Composition](system-prompt.md#agentsmd-context-turn).
 
 ### Memory snapshots

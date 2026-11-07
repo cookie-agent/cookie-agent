@@ -180,7 +180,16 @@ system prompt composed live, `AGENTS.md` loaded again from every coding
 attachment, and a new memory snapshot. The refresh points are:
 
 - **the session's first request;**
-- **a compaction,** as today;
+- **a compaction,** as today. Since
+  [forever sessions](forever-sessions.md) phase 6 (client protocol 1.90.0)
+  a native session's checkpoint composes its context afresh itself, in the
+  run that compacts: it reads `AGENTS.md` from every coding attachment and a
+  memory snapshot as compaction starts, counts them in its budgets, records
+  them just before it commits (`context_fresh`), and pins nothing older,
+  loaded skills included (section 6.4). What cannot be read is recorded
+  again as it was. The next request starts a new tool round, and the system
+  prompt, frozen into the run's `run_started`, is composed afresh at the next
+  run. An ACP agent's context stays frozen for the life of its ACP session;
 - **an eager tool change,** checked before each request:
   - the live parameter schema of an eager tool differs from the round's
     (an engine build or a runtime changed it). A changed description alone
@@ -252,8 +261,20 @@ already says the machine is gone.
 ### 6.4 Skills where they were loaded
 
 **A skill loaded between refresh points renders in place,** as a user turn
-right after the call or command that loaded it. At the next refresh point or
-compaction it joins the pinned skills after the memory turn, as today.
+right after the call or command that loaded it. At the next refresh point
+that is not a compaction it joins the skills after the memory turn, as the
+conversation stays whole.
+
+**A compaction carries no skill** (since [forever sessions](forever-sessions.md)
+phase 6, client protocol 1.90.0, the user's decision of 2026-11-06): a loaded
+skill is a turn like any other. One in the checkpoint's kept range stays where
+it was loaded; an older one is summarized, and the summarizer is no longer told
+to leave it out. Nothing injects it again: the skill listing says what is
+available, and a model that needs it loads it again, which reads its current
+version and shows its body, as the duplicate check looks only since the latest
+such checkpoint. What a load granted, its permission overlay and model, stays
+across the checkpoint. A checkpoint written before (without `context_fresh`)
+keeps every skill loaded before it after the memory turn, as it did.
 
 ## 7. In the transcript
 
@@ -349,7 +370,8 @@ Each phase is gated, committed, and pushed on its own:
 - Attaching a machine appends its `AGENTS.md` and memories in place; the
   bytes before them are unchanged.
 - A skill loaded mid-round renders in place, and moves to the pinned area at
-  the next compaction.
+  the next refresh point; a compaction since forever sessions phase 6 keeps it
+  in place or summarizes it (section 6.4).
 - An agent change is a refresh point; a project change is not, and keeps
   the earlier `AGENTS.md` and memory turns until the next compaction.
 - The refresh block: `engine_updated` when the round's `engine_build`
@@ -421,4 +443,10 @@ spec index.
   - **The refresh row** is a model-input row in both clients, its body
     listing the tools by name; the composed parts show on their own rows
     (the `AGENTS.md` and memory rows), so the row does not repeat them.
+- **Forever sessions phase 6** (2026-11-07) changed sections 6.1 and 6.4: a
+  native checkpoint composes `AGENTS.md` and memory afresh in the run that
+  compacts and pins nothing older, skills included. A mid-run checkpoint does
+  not compose the system prompt again: the run keeps the one frozen into its
+  `run_started`, as phase 3 above made a refresh a run's admission, and the
+  next run composes it afresh. See that spec's section 12.
 

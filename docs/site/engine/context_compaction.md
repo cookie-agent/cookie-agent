@@ -62,8 +62,10 @@ describes this layout; artifacts earlier builds stored keep their one line
 of serialized JSON. It emits no
 durable `tool_output_elided` events and preserves the original saved log and
 recent retained message contents even if the retry fails.
-After compaction, model context contains the summary and retained recent messages
-alongside pinned context.
+After compaction, model context contains the `AGENTS.md` and memory turns the
+checkpoint read afresh, the summary, and the retained recent messages; a loaded
+skill is one of those messages, or covered by the summary
+([Compaction](../sessions/compaction.md#context-after-an-internal-checkpoint)).
 
 | Key | Type | Default | Description |
 |---|---|---|---|
