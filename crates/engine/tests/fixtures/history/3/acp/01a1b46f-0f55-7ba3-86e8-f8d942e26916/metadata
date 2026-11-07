@@ -1,0 +1,44 @@
+{
+  "agent_revision": "sha256:2ea5bd900bddd68df80391b9bab37a223aad2f02cfd3a7661679f939cf12482b",
+  "attachments": [
+    {
+      "capability": "global",
+      "kind": "global",
+      "name": "global",
+      "runtime_id": "global"
+    },
+    {
+      "capability": "coding",
+      "kind": "coding",
+      "name": "local_project",
+      "runtime_id": "local",
+      "workspace": "/dev/shm/t.kS6r37/.tmpZTFYJd/workspace/project"
+    }
+  ],
+  "catalog_revision": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "creation_selection": {
+    "agent": "fixture",
+    "model": {
+      "model": "acp/fixture",
+      "variant": null
+    }
+  },
+  "cwd_identity": "/dev/shm/t.kS6r37/.tmpZTFYJd/workspace/project",
+  "last_activity": "2026-11-07T05:15:50.965260898Z",
+  "last_agent_activity": "2026-11-07T05:15:50.941055004Z",
+  "last_event_seq": 250,
+  "manifest_revision": "sha256:cf183c6115820da983700a42c52cb81000954657657226b04daeb05151f7ccf8",
+  "model_revision": "sha256:0f42e7b4a7a5a31440763fdd660622e9502471733f0177467f7172c68d2b12e6",
+  "origin": {
+    "type": "root"
+  },
+  "provider_state_revision": "sha256:3be0c2581babb8a1d49d3e91052fdfef6cf0b9e7f1d3777da45e3c69229bdd01",
+  "recipe_registry_revision": "sha256:132d96c484536348b2b6422b5788eb0bb2b0bdc99702acf609e95e27321f684a",
+  "runtime_revision": "sha256:67c786a849f293fdd4230d06bf1b7584033e221c79c747be2f00bc1846336a3c",
+  "session_id": "01a1b46f-0f55-7ba3-86e8-f8d942e26916",
+  "short_id": "fixture_df39e485",
+  "skipped_events": [],
+  "status": "completed",
+  "title": "Golden title",
+  "title_updated_seq": 39
+}

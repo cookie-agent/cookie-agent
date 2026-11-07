@@ -1,0 +1,78 @@
+{
+  "version": 1,
+  "children": [
+    {
+      "summary": {
+        "meta": {
+          "session_id": "01a1b46f-1fef-7713-852e-7d1231b05a18",
+          "origin": {
+            "type": "delegated",
+            "root_session_id": "01a1b46f-0f55-7ba3-86e8-f8d942e26916",
+            "parent_session_id": "01a1b46f-0f55-7ba3-86e8-f8d942e26916",
+            "parent_run_id": "01a1b46f-1fd2-77c3-a6c4-4fdbb8e960c9",
+            "parent_tool_call_id": "01a1b46f-1fe6-7543-a258-525c8633e55c",
+            "invocation_id": "9f083bec-3607-8dda-03a2-7ca8445cc814",
+            "depth": 1
+          },
+          "short_id": "fixture_9dd868ec",
+          "cwd_identity": "/dev/shm/t.kS6r37/.tmpZTFYJd/workspace/project",
+          "creation_selection": {
+            "agent": "fixture",
+            "model": {
+              "model": "acp/fixture",
+              "variant": null
+            }
+          },
+          "runtime_revision": "sha256:3b335e63a39938c3a5b78f73cb3789fb8d7bbba331a7d71ede3187b31efba9f3",
+          "catalog_revision": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+          "provider_state_revision": "sha256:3be0c2581babb8a1d49d3e91052fdfef6cf0b9e7f1d3777da45e3c69229bdd01",
+          "model_revision": "sha256:0f42e7b4a7a5a31440763fdd660622e9502471733f0177467f7172c68d2b12e6",
+          "agent_revision": "sha256:f32cba385375988cc342fe4cca58987e6f0df2710add150f78b2fe18fe8fc2be",
+          "recipe_registry_revision": "sha256:132d96c484536348b2b6422b5788eb0bb2b0bdc99702acf609e95e27321f684a",
+          "manifest_revision": "sha256:cf183c6115820da983700a42c52cb81000954657657226b04daeb05151f7ccf8",
+          "title": "Golden child",
+          "title_updated_seq": 4,
+          "last_event_seq": 17,
+          "last_activity": "2026-11-07T05:15:44.023971468Z",
+          "last_agent_activity": "2026-11-07T05:15:43.992056661Z",
+          "status": "completed",
+          "skipped_events": []
+        },
+        "usage": {
+          "input_tokens": null,
+          "input_tokens_no_cache": null,
+          "input_tokens_cache_read": null,
+          "input_tokens_cache_write": null,
+          "output_tokens": null,
+          "output_tokens_text": null,
+          "output_tokens_reasoning": null
+        },
+        "usage_rollup": {
+          "input_tokens": 10,
+          "output_tokens": 5,
+          "reasoning_tokens": 0,
+          "cache_read_tokens": 0,
+          "cache_write_tokens": 0,
+          "request_count": 1,
+          "cache_hit_rate": null,
+          "estimated_cost_usd": null,
+          "by_model": {
+            "acp/fixture": {
+              "input_tokens": 10,
+              "output_tokens": 5,
+              "reasoning_tokens": 0,
+              "cache_read_tokens": 0,
+              "cache_write_tokens": 0,
+              "request_count": 1,
+              "cache_hit_rate": null,
+              "estimated_cost_usd": null
+            }
+          }
+        }
+      },
+      "terminal_runs": {
+        "01a1b46f-1ff6-7223-8a6e-edbe9cd9c8a7": "completed"
+      }
+    }
+  ]
+}

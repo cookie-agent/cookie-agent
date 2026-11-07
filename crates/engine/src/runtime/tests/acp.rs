@@ -2678,7 +2678,7 @@ async fn a_turn_after_a_steered_one_still_cancels() {
 
 /// Dials runtime `runtime_id` in, declaring the scripted agent as `agent`,
 /// and waits until the engine registers it. Cancel the token to hang up.
-async fn dial_in(
+pub(super) async fn dial_in(
     acp: &AcpFixture,
     runtime_id: &str,
     agent: &str,

@@ -78,7 +78,7 @@ computes it once, an append updates it, and a revert computes it again.
 | The ACP settings: option values, starting options, commands, context, prompt context | `options.rs`, `acp/compaction.rs`, `stored_acp_context`, `recorded_prompt_context` |
 | Inputs not yet taken, with their bodies | `input_since`, `recall_input`, `drain_queued_input` |
 | Producer messages, with the bodies of unsettled ones only | `input_since`, `woke_since`, `producer_input_waiting`, `goal_tools_offered` |
-| Pending approvals, and each response's id | `approval/projection.rs`, `resolve_interrupted_direct`, `cancel_run` |
+| Pending approvals, each response's id, and each approval's latest user decision | `approval/projection.rs`, `resolve_interrupted_direct`, `cancel_run`, `user_answer` |
 | Latest values: `SessionModelState`, memory snapshot, published tools, permission overlay epoch | `start_run`, `acp_prompt_context`, `latest_model_tool_names` |
 | "Once" facts: a seed, a title, a skill body, a link, a delegation's completion | `admission.rs`, `install_prepared_skill`, `delegation.rs`, `producers.rs` |
 
@@ -104,8 +104,8 @@ back than one turn:
 
 | Fold | What reads it today |
 |---|---|
-| The current run's `run_started`, with its prompt | `run_agent_prompt`, `context_composition`, `acp_machines_note`, `acp/compaction.rs` |
-| Open tool calls: the started record of each | `tool_call_owner`, `signal_approval_needs_you`, `user_answer`. Up to 6 were open at once, and one stayed open across 28 turns |
+| The current run's `run_started`, with its prompt | `run_agent_prompt`, `acp_machines_note` |
+| Open tool calls: the started record of each | `tool_call_owner`, `signal_approval_needs_you`. Up to 6 were open at once, and one stayed open across 28 turns |
 | Inputs of the current run not yet applied | `pending_inputs`, `hold_inputs_to_steer`, `promote_steered_inputs`, `void_runless_pending_inputs` |
 | Whether this run was cancelled or failed, and its last attempt | `run_cancelled_recorded`, `run_failure_event` |
 | Attached context since the last run ended | `add_attached_context` |
@@ -494,3 +494,38 @@ From the user, 2026-11-06:
 10. A reviewer's refresh makes no model call to summarize: it renders from its own entries.
 11. The reviewer's log is a hidden child session.
 12. The order is ACP, then native, then the reviewer.
+
+## 12. Implementation notes
+
+**Phase 1** (2026-11-07), read against the code at `d7c8c15f2`:
+
+- **`user_answer` reads a user's decision**, not a tool call, so it moved to the approval row of
+  section 3.1. The decision can be older than one turn: an approval waits as long as the user does.
+- **`context_composition` returns before reading anything for an ACP run**, so it left section
+  3.2's table: phase 6 deals with it.
+- **`acp/compaction.rs` reads two things, neither of them the current run's start.** Its commands
+  are a section 3.1 fold. Its wait wants one run's outcome, which need not be the latest, as a
+  queued input can start another: it now waits on the projection's run status and reads the log
+  once that run has ended. Phase 2 makes that read `history()`.
+- **Open calls answer for open calls.** `tool_call_owner` and `signal_approval_needs_you` can also
+  ask about one that ended (a second termination, which then fails). The fold answers first and a
+  pass over the log answers the rest, which phase 2 makes `history()`. Likewise `run_agent_prompt`
+  for an older run, and an approval's record once it settled: only open ones are folded.
+- **Input since a boundary lets go of what a committed turn covered**, so it assumes
+  `input_through_seq` never falls. Nothing validates that. No real log breaks it (234 logs, with
+  `input_boundary_fell`), and only a test's hand-written commit did.
+- **Frozen context, confirmed:** a fork copies the `prompt_context` record, a revert that keeps the
+  agent's reply keeps it too, as the record precedes the reply, and the session branched off either
+  gets it unchanged, composing nothing
+  (`a_branch_after_a_fork_or_a_revert_keeps_the_recorded_context`).
+- **Not per agent today.** Section 3.4 has `state()` hold `prompt_context` per agent, and it does
+  (`AcpAgentState::prompt_context`), but a resume or a branch sends the latest of *any* agent
+  (`acp_prompt_context`, as `recorded_prompt_context` did): a session that goes from agent A to B
+  and back resumes A with B's context. Phase 1 changes no behaviour, so this stays until decided.
+- **More readers a per-turn window breaks**, all in phase 2's list: `last_assistant_message`,
+  `fork_support`, a delegation's `visible` check and its parent's termination
+  (`delegation/reports.rs`), a background job's start and acceptance (`background_tasks.rs`),
+  `after_runs`, and the parent's creation record in `acp/subagents.rs`.
+- **What the golden ACP scenario does not reach:** `delegated_context_seeded`, as `inherit_context`
+  fails on an ACP parent, and no golden log has one. The fold's tests and the live delegation tests
+  compare it.

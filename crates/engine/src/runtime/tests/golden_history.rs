@@ -45,7 +45,12 @@ use cookie_agent_protocol::{
 };
 use serde_json::{Value, json};
 
-use super::support::*;
+use super::{
+    acp::{
+        acp_fixture_with, dial_in, final_text, finished, fixture_script, selection, start, turn,
+    },
+    support::*,
+};
 use crate::{Engine, EngineHistoryView};
 
 const GOLDEN_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/history");
@@ -461,6 +466,149 @@ async fn golden_history_reads_as_recorded() {
     );
 }
 
+// --- the folds ----------------------------------------------------------------
+
+/// The logs of a scenario's trees, as a reader opens them.
+fn scenario_logs(scenario: &Path) -> Vec<Arc<crate::events::EventLog>> {
+    walkdir(scenario)
+        .into_iter()
+        .filter(|path| path.file_name().is_some_and(|name| name == "events.jsonl"))
+        .map(|path| {
+            let session = path
+                .parent()
+                .and_then(Path::file_name)
+                .and_then(|name| name.to_str())
+                .and_then(|name| name.parse::<SessionId>().ok())
+                .expect("a log's directory names its session");
+            crate::events::EventLog::open_read_only(path, session).expect("a golden log")
+        })
+        .collect()
+}
+
+/// Every fold of `EventLog::state` reads what the scan it replaced read, at
+/// every event of every golden log
+/// (`docs/site/specs/forever-sessions.md` section 7).
+#[test]
+fn golden_logs_fold_as_their_scans_read_them() {
+    let mut logs = 0;
+    for (_, scenario) in golden_scenarios() {
+        for log in scenario_logs(&scenario) {
+            logs += 1;
+            let found =
+                crate::events::state::reference::differences_at_every_event(&log.event_snapshot());
+            assert!(
+                found.is_empty(),
+                "{}: folds differ from their scans (fold, first record): {found:?}",
+                log.path().display()
+            );
+        }
+    }
+    assert!(logs > 0, "no golden logs in {GOLDEN_ROOT}");
+}
+
+/// The ACP scenario holds the records every fold reads, so a fold that went
+/// wrong has something to differ on.
+#[test]
+fn the_golden_acp_scenario_reaches_the_folds() {
+    let scenario = Path::new(GOLDEN_ROOT)
+        .join(HISTORY_FORMAT.to_string())
+        .join("acp");
+    let logs = scenario_logs(&scenario);
+    let mut seen = std::collections::BTreeSet::new();
+    let mut agents = std::collections::BTreeSet::new();
+    let mut reasons = Vec::new();
+    let mut starts = Vec::new();
+    let mut in_system_prompt = Vec::new();
+    let mut owners = std::collections::HashSet::new();
+    let mut update_parts = std::collections::BTreeSet::new();
+    let mut decided = false;
+    for log in &logs {
+        for event in log.event_snapshot().iter() {
+            seen.insert(cookie_agent_protocol::OpenTagged::tag(&event.payload).to_owned());
+            match &event.payload {
+                EventPayload::AcpSessionStarted { record } => {
+                    agents.insert(record.agent.to_string());
+                    starts.push(record.how);
+                }
+                EventPayload::AcpSessionUpdated { update } => {
+                    if let Some(marker) = &update.detached {
+                        reasons.push(marker.reason);
+                    }
+                    in_system_prompt.extend(update.prompt_context_system_prompt);
+                    for (name, present) in [
+                        ("options", update.options.is_some()),
+                        ("commands", update.commands.is_some()),
+                        ("starting_options", update.starting_options.is_some()),
+                        ("context", update.context.is_some()),
+                        ("prompt_context", update.prompt_context.is_some()),
+                        ("fork_point", update.fork_point.is_some()),
+                    ] {
+                        if present {
+                            update_parts.insert(name);
+                        }
+                    }
+                }
+                EventPayload::ProducerMessageAccepted { producer_owner, .. } => {
+                    owners.insert(std::mem::discriminant(producer_owner));
+                }
+                EventPayload::ApprovalStep {
+                    step: Open::Known(cookie_agent_protocol::ApprovalStep::UserDecision { .. }),
+                    ..
+                } => decided = true,
+                _ => {}
+            }
+        }
+    }
+    for tag in [
+        "acp_session_started",
+        "acp_session_updated",
+        "user_input_admitted",
+        "user_input_submitted",
+        "user_input_applied",
+        "user_input_recalled",
+        "user_input_queued",
+        "producer_message_accepted",
+        "producer_message_admitted",
+        "producer_messages_claimed",
+        "approval_requested",
+        "approval_finalized",
+        "tool_call_started",
+        "tool_call_terminated",
+        "tool_call_linked",
+        "runtime_attached",
+        "runtime_detached",
+        "skill_loaded",
+        "skill_invocation_noted",
+        "session_permission_overlay_set",
+        "session_title_committed",
+        "memory_loaded",
+        "model_attempt_started",
+        "model_turn_committed",
+        "run_started",
+        "run_finished",
+    ] {
+        assert!(
+            seen.contains(tag),
+            "the scenario records no {tag}: {seen:?}"
+        );
+    }
+    assert!(decided, "a user's decision");
+    assert!(
+        agents.contains("fixture") && agents.contains("second"),
+        "{agents:?}"
+    );
+    use cookie_agent_protocol::{AcpDetachReason, AcpSessionStart};
+    for reason in [AcpDetachReason::Forked, AcpDetachReason::Reverted] {
+        assert!(reasons.contains(&reason), "{reasons:?}");
+    }
+    for how in [AcpSessionStart::New, AcpSessionStart::Forked] {
+        assert!(starts.contains(&how), "{starts:?}");
+    }
+    assert!(in_system_prompt.contains(&true) && in_system_prompt.contains(&false));
+    assert!(owners.len() >= 2, "producer owners: {owners:?}");
+    assert_eq!(update_parts.len(), 6, "{update_parts:?}");
+}
+
 // --- recording ---------------------------------------------------------------
 
 /// What the scripted model answers at one step of a turn.
@@ -830,7 +978,7 @@ fn sessions_of(fixture_root: &Path) -> PathBuf {
         .join(crate::session::SESSIONS_ROOT_DIR)
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 #[ignore = "records the golden session logs; run explicitly with COOKIE_GOLDEN_HISTORY_OUT"]
 async fn record_golden_history() {
     let out = PathBuf::from(
@@ -867,6 +1015,9 @@ async fn record_golden_history() {
         if wanted(name) {
             record_native_compaction(&out.join(name), fail_native).await;
         }
+    }
+    if wanted("acp") {
+        record_acp(&out.join("acp")).await;
     }
     eprintln!("recorded the golden session logs in {}", out.display());
 }
@@ -1007,6 +1158,390 @@ async fn record_native_compaction(scenario: &Path, fail_native: bool) {
     quiesce(&fixture.engine, session).await;
     fixture.engine.shutdown().await;
     keep_scenario(&sessions_of(fixture._directory.path()), scenario).await;
+}
+
+// --- the ACP scenario --------------------------------------------------------
+
+/// The scripted agent `fixture` takes a system prompt; `second`, on the same
+/// script, gets its context ahead of its first prompt and declines steers.
+const ACP_DOCUMENT: &str = "---\ndescription: Golden ACP agent\nmode: all\nacp: {}\npermissions:\n  bash: allow\n  switch_mode: ask\n  delegate: { fixture: allow }\n---\nReview what you are given.\n";
+const ACP_ENV: &[(&str, &str)] = &[
+    ("ACP_FIXTURE_FORK", "1"),
+    ("ACP_FIXTURE_DELETE", "1"),
+    ("ACP_FIXTURE_SYSTEM_PROMPT", "1"),
+];
+
+fn second_agent() -> cookie_agent_protocol::AgentId {
+    cookie_agent_protocol::AgentId::new("second").unwrap()
+}
+
+fn second_selection() -> RunSelection {
+    RunSelection {
+        agent: second_agent(),
+        model: cookie_agent_protocol::acp_model_selection(&second_agent()),
+        preset: None,
+        acp_runtime: None,
+    }
+}
+
+/// Waits until the log of `session` records `found`.
+async fn logged(engine: &Engine, session: SessionId, found: impl Fn(&EventPayload) -> bool) {
+    with_watchdog("a record of the golden ACP scenario", async {
+        while !engine
+            .inner
+            .store
+            .log(session)
+            .expect("session log")
+            .event_snapshot()
+            .iter()
+            .any(|event| found(&event.payload))
+        {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+}
+
+/// The latest record of `session`'s log.
+fn log_tip(engine: &Engine, session: SessionId) -> u64 {
+    engine
+        .inner
+        .store
+        .log(session)
+        .expect("session log")
+        .last_event()
+        .expect("a log's creation")
+        .seq
+}
+
+/// Every fold's records in one tree (`docs/site/specs/forever-sessions.md`
+/// section 7): several ACP agents and their sessions, a detach by a fork and
+/// by a revert, options, a compaction, machines, queued, steered, and recalled
+/// input, producer messages, wakes, approvals, skills, delegations, and
+/// cancelled runs.
+async fn record_acp(scenario: &Path) {
+    let second = format!(
+        "[runtimes.local.acp.agents.second]\ncommand = [{}, {}]\nenv = {{ ACP_FIXTURE_FORK = \"1\", ACP_FIXTURE_DELETE = \"1\", ACP_FIXTURE_DECLINE_STEERS = \"1\" }}\ndescription = \"Second fixture agent\"\n",
+        serde_json::to_string(python_command()).unwrap(),
+        serde_json::to_string(&*fixture_script().to_string_lossy()).unwrap(),
+    );
+    let acp = acp_fixture_with(
+        ACP_ENV,
+        &[("fixture.md", ACP_DOCUMENT), ("second.md", ACP_DOCUMENT)],
+        &second,
+    )
+    .await;
+    let engine = acp.engine();
+    let project = acp.workspace().join("project");
+    let skills = project.join(".cookie-agent/skills/golden");
+    std::fs::create_dir_all(&skills).expect("skill directory");
+    write_private_test_file(
+        &skills.join("SKILL.md"),
+        "---\nname: golden\ndescription: The golden skill.\n---\nDo the golden thing.\n",
+    );
+    let (stop_labpc, labpc) = dial_in(&acp, "labpc", "fixture").await;
+    let elsewhere = private_tempdir();
+
+    // A session of `fixture` with starting options, then its first turns.
+    let session = engine
+        .create_session_with_agent_options(
+            selection(),
+            None,
+            Vec::new(),
+            crate::runtime::attachments::SessionRuntimes {
+                runtimes: Some(vec![crate::SessionRuntimeRequest {
+                    runtime_id: "local".to_owned(),
+                    capability: Some("coding".to_owned()),
+                    workspace: Some(project),
+                }]),
+                global: true,
+                cwd: None,
+            },
+            None,
+            vec![cookie_agent_protocol::AcpOptionChoice {
+                option_id: "reasoning_effort".to_owned(),
+                value: "high".to_owned(),
+            }],
+            None,
+        )
+        .await
+        .expect("session created")
+        .session_id;
+    turn(engine, session, "one", "say one").await;
+    logged(engine, session, |payload| {
+        matches!(payload, EventPayload::AcpSessionUpdated { update } if update.fork_point.is_some())
+    })
+    .await;
+    engine
+        .set_session_agent_option(cookie_agent_protocol::SessionAgentOptionSetParams {
+            session_id: session,
+            option_id: "mode".to_owned(),
+            value: "plan".to_owned(),
+        })
+        .await
+        .expect("option set");
+    turn(engine, session, "work", "work").await;
+    let first_end = log_tip(engine, session);
+    turn(engine, session, "title", "title Golden title").await;
+
+    // An approval the user answers, and a permission overlay.
+    let run_id = start(engine, session, "ask", "permission switch_mode plan").await;
+    let approval = wait_for_escalated_approval(engine, session).await;
+    approve_once(engine, &approval, "golden-approve").await;
+    finished(engine, session, run_id).await;
+    wait_for_session_not_running(engine, session).await;
+    engine
+        .append(
+            session,
+            None,
+            origin(),
+            EventPayload::SessionPermissionOverlaySet {
+                overlay: cookie_agent_protocol::SessionPermissionOverlay { rules: Vec::new() },
+            },
+        )
+        .await
+        .expect("a permission overlay");
+
+    // A machine that comes, and goes, between runs.
+    let attachment = engine
+        .attach_runtime(
+            session,
+            "labpc",
+            None,
+            Some(elsewhere.path().to_owned()),
+            origin(),
+        )
+        .await
+        .expect("labpc attaches");
+    turn(engine, session, "with-labpc", "say with labpc").await;
+    engine
+        .detach_runtime(session, attachment.name, origin())
+        .await
+        .expect("labpc detaches");
+    turn(engine, session, "without-labpc", "say without labpc").await;
+
+    // A skill loaded twice, and the agent's compaction.
+    let skill = "mcp call skill {\"name\":\"golden\"}";
+    for key in ["skill", "skill-again"] {
+        let answer = final_text(&turn(engine, session, key, skill).await);
+        assert!(answer.ends_with("error: False"), "{answer}");
+    }
+    assert!(
+        engine
+            .compact_session_result(session, Some("the review"), origin())
+            .await
+            .expect("forwarded")
+            .compacted
+    );
+    wait_for_session_not_running(engine, session).await;
+
+    // Input steered into a running turn, and input queued behind it.
+    let run_id = start(engine, session, "steer", "steer-wait 10").await;
+    logged(engine, session, |payload| {
+        matches!(payload, EventPayload::ModelAttemptStarted { .. })
+    })
+    .await;
+    for (key, text, delivery) in [
+        ("steered", "the steer", InputDelivery::Steer),
+        ("queued", "say queued", InputDelivery::Queue),
+    ] {
+        engine
+            .submit_input(
+                SessionSubmitInputParams {
+                    session_id: session,
+                    content: text.into(),
+                    delivery,
+                    selection: None,
+                    client_run_id: ClientRunId::new(key).unwrap(),
+                    reset_fallback: false,
+                },
+                origin(),
+            )
+            .await
+            .expect("input submitted");
+    }
+    finished(engine, session, run_id).await;
+    quiesce(engine, session).await;
+
+    // The agent's own wake, and a producer's message.
+    turn(engine, session, "wake", "wake-later 0.3 the build passed").await;
+    logged(engine, session, |payload| {
+        matches!(
+            payload,
+            EventPayload::ProducerMessageAccepted {
+                producer_owner: cookie_agent_protocol::ProducerOwner::AcpAgent { .. },
+                ..
+            }
+        )
+    })
+    .await;
+    quiesce(engine, session).await;
+    let authority = super::producers::producer_authority();
+    let cookie_agent_protocol::ProducerOwner::Delegation {
+        invocation_id: producer_invocation,
+    } = authority.owner
+    else {
+        panic!("the test producer is a delegation's");
+    };
+    let producer = engine
+        .register_producer(session, authority.clone())
+        .await
+        .expect("a producer");
+    engine
+        .send_producer_message(
+            session,
+            authority.clone(),
+            producer,
+            cookie_agent_protocol::ProducerDeliveryMode::Steer,
+            super::producers::producer_key("golden-message"),
+            cookie_agent_protocol::SafeDisplayText::new("Golden producer").unwrap(),
+            "say from a producer".into(),
+        )
+        .await
+        .expect("a producer message");
+    quiesce(engine, session).await;
+    engine
+        .unregister_producer(session, authority, producer)
+        .await
+        .expect("the producer goes");
+
+    // A delegation in the background, whose completion comes back.
+    let call = format!(
+        "mcp call delegate_subagent {}",
+        json!({
+            "description": "Golden child",
+            "prompt": "say from the child",
+            "agent_type": "fixture",
+            "background": true,
+        })
+    );
+    let answer = final_text(&turn(engine, session, "delegate", &call).await);
+    assert!(answer.ends_with("error: False"), "{answer}");
+    logged(engine, session, |payload| {
+        matches!(
+            payload,
+            EventPayload::ProducerMessageAccepted {
+                producer_owner: cookie_agent_protocol::ProducerOwner::Delegation { invocation_id },
+                ..
+            } if *invocation_id != producer_invocation
+        )
+    })
+    .await;
+    quiesce(engine, session).await;
+
+    // A second agent in the same session, a steer it declines and the user
+    // takes back, a cancel, and queued input the cancel voids.
+    run(
+        engine,
+        session,
+        &second_selection(),
+        "second-one",
+        "say from second".into(),
+    )
+    .await;
+    quiesce(engine, session).await;
+    logged(engine, session, |payload| {
+        matches!(payload, EventPayload::AcpSessionUpdated { update } if update.fork_point.is_some())
+    })
+    .await;
+    let run_id = run(
+        engine,
+        session,
+        &second_selection(),
+        "second-wait",
+        "decline-wait".into(),
+    )
+    .await;
+    logged(engine, session, |payload| {
+        matches!(payload, EventPayload::ModelAttemptStarted { resolved_model, .. }
+            if resolved_model.selection == second_selection().model)
+    })
+    .await;
+    let steered = engine
+        .steer(run_id, "say later".into(), origin())
+        .await
+        .expect("a steer")
+        .user_input_seq
+        .expect("admitted");
+    with_watchdog("the agent declined", async {
+        while engine.input_is_steering(session, steered) {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    engine
+        .recall_input(session, steered, origin())
+        .await
+        .expect("taken back");
+    let queued = engine
+        .submit_input(
+            SessionSubmitInputParams {
+                session_id: session,
+                content: "say never".into(),
+                delivery: InputDelivery::Queue,
+                selection: None,
+                client_run_id: ClientRunId::new("voided").unwrap(),
+                reset_fallback: false,
+            },
+            origin(),
+        )
+        .await;
+    queued.expect("input queued");
+    engine.cancel_run(run_id, origin()).await.expect("cancel");
+    finished(engine, session, run_id).await;
+    quiesce(engine, session).await;
+
+    // Back to `fixture`, then a fork of the session's early turns, which
+    // branches `fixture`'s session off where the cut leaves it.
+    turn(engine, session, "back", "recall").await;
+    let before_revert = log_tip(engine, session);
+    let fork = engine
+        .fork_session(session, first_end, origin(), None)
+        .await
+        .expect("forked")
+        .session_id;
+    turn(engine, fork, "fork-recall", "recall").await;
+    quiesce(engine, fork).await;
+    run(
+        engine,
+        fork,
+        &second_selection(),
+        "fork-second",
+        "say from second in the fork".into(),
+    )
+    .await;
+    quiesce(engine, fork).await;
+
+    // A revert, whose next turns branch both agents' sessions.
+    turn(engine, session, "more", "say more").await;
+    run(
+        engine,
+        session,
+        &second_selection(),
+        "second-more",
+        "say more of second".into(),
+    )
+    .await;
+    quiesce(engine, session).await;
+    engine
+        .revert_session(session, before_revert, origin(), None)
+        .await
+        .expect("reverted");
+    turn(engine, session, "after-revert", "recall").await;
+    run(
+        engine,
+        session,
+        &second_selection(),
+        "second-after-revert",
+        "recall".into(),
+    )
+    .await;
+    quiesce(engine, session).await;
+
+    stop_labpc.cancel();
+    let _ = labpc.await;
+    engine.shutdown().await;
+    keep_scenario(&sessions_of(acp.fixture._directory.path()), scenario).await;
 }
 
 // --- the coding fixture ------------------------------------------------------

@@ -2562,7 +2562,9 @@ corpora, and the compatibility policy.
   user input steered into a running run and queued behind it), `replay`
   (signed Anthropic thinking replayed natively), `native-compaction` and
   `native-compaction-fallback` (OpenAI's compaction window, and the summary
-  when it fails), and `revert-fork` (a fork, then a revert of the source).
+  when it fails), `revert-fork` (a fork, then a revert of the source), and
+  from history format 3 `acp` (several ACP agents in one session, with a detach
+  by a fork and by a revert, queued and steered input, and producer messages).
   Every display-block kind occurs in a stored result. Each scenario is the
   session store's root directories as written (artifacts, children, caches;
   no lock files) and `snapshot.json`: per session the metadata, usage, model

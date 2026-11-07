@@ -359,6 +359,67 @@ async fn a_revert_forks_the_agents_session_at_the_revert_point_and_deletes_the_o
     assert_eq!(final_text(&outcome), "remembers: say one, say two, recall");
 }
 
+/// What the agent was told is frozen for the life of its session, and goes
+/// on with a session branched off it: a fork or a revert keeps the record it
+/// composed, and composes nothing.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_branch_after_a_fork_or_a_revert_keeps_the_recorded_context() {
+    let document = "---\ndescription: Fixture with a body\nmode: all\nacp: {}\ntool_groups: { \"*\": off }\n---\nYou review changes.\n";
+    let env = [
+        ("ACP_FIXTURE_FORK", "1"),
+        ("ACP_FIXTURE_DELETE", "1"),
+        ("ACP_FIXTURE_SYSTEM_PROMPT", "1"),
+    ];
+    let acp = acp_fixture(&env, &[("fixture.md", document)]).await;
+    let engine = acp.engine();
+    let session = session_with(engine, &["say one", "say two", "say three"]).await;
+    assert!(probed(engine, session).await);
+    let sent = requests(&acp, "session/new")[0]["systemPrompt"].clone();
+    assert!(
+        sent["content"]
+            .as_array()
+            .is_some_and(|parts| !parts.is_empty())
+    );
+    let context_of = |id: SessionId| {
+        let log = engine.inner.store.get(id).unwrap().log.clone();
+        log.state().acp_prompt_context().to_vec()
+    };
+    let recorded = context_of(session);
+    assert!(!recorded.is_empty());
+    let records = |id: SessionId| {
+        events(engine, id)
+            .into_iter()
+            .filter(|event| {
+                matches!(&event.payload, EventPayload::AcpSessionUpdated { update }
+                    if update.prompt_context.is_some())
+            })
+            .count()
+    };
+
+    let child = fork(engine, session, run_end_seq(engine, session, 0)).await;
+    assert_eq!(context_of(child), recorded, "the fork copies the record");
+    turn(engine, child, "child", "say in the fork").await;
+    let branched = forks(&acp);
+    assert_eq!(branched.len(), 1);
+    assert_eq!(branched[0]["systemPrompt"], sent);
+    assert_eq!(context_of(child), recorded);
+    assert_eq!(records(child), 1, "the branch composed nothing");
+
+    revert(engine, session, run_end_seq(engine, session, 1)).await;
+    assert_eq!(context_of(session), recorded, "the revert keeps the record");
+    turn(engine, session, "after", "say after the revert").await;
+    let branched = forks(&acp);
+    assert_eq!(branched.len(), 2);
+    assert_eq!(branched[1]["systemPrompt"], sent);
+    assert_eq!(context_of(session), recorded);
+    assert_eq!(records(session), 1, "the branch composed nothing");
+    assert_eq!(
+        requests(&acp, "session/new").len(),
+        1,
+        "only the first session composed"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_revert_the_agent_cannot_fork_to_is_refused_and_changes_nothing() {
     for (env, expected) in [
