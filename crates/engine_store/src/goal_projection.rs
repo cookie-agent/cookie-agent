@@ -44,10 +44,7 @@ pub struct ProducerClaimRecord {
 /// start a goal itself (stable prefix spec, section 3), except an ACP
 /// agent's, which sees them only while the user's goal is active or paused.
 pub fn goal_tools_offered<E: Borrow<StoredEvent>>(root: bool, acp: bool, events: &[E]) -> bool {
-    root && (!acp
-        || GoalProducerProjection::from_events(events)
-            .goal
-            .is_some_and(|goal| matches!(goal.status, GoalStatus::Active | GoalStatus::Paused)))
+    root && (!acp || GoalProducerProjection::from_events(events).goal_is_open())
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -60,6 +57,14 @@ pub struct GoalProducerProjection {
 }
 
 impl GoalProducerProjection {
+    /// Whether the user's goal is active or paused.
+    #[must_use]
+    pub fn goal_is_open(&self) -> bool {
+        self.goal
+            .as_ref()
+            .is_some_and(|goal| matches!(goal.status, GoalStatus::Active | GoalStatus::Paused))
+    }
+
     pub fn next_reminder_kind(&self, goal_id: GoalId) -> GoalReminderKind {
         // Acceptance and claims are retractable; only committed input coverage introduces a goal.
         if self.messages.iter().any(|message| {
@@ -131,6 +136,8 @@ pub struct GoalProducerFold {
     message_indexes: HashMap<ProducerMessageId, usize>,
     dedup_indexes: HashMap<(ProducerOwner, ProducerIdempotencyKey), usize>,
     terminal_runs: HashSet<RunId>,
+    /// The messages accepted and neither admitted nor discarded yet.
+    unadmitted: HashSet<usize>,
 }
 
 impl GoalProducerFold {
@@ -138,6 +145,26 @@ impl GoalProducerFold {
     #[must_use]
     pub fn projection(&self) -> Arc<GoalProducerProjection> {
         Arc::clone(&self.projection)
+    }
+
+    /// The message `id`.
+    #[must_use]
+    pub fn message(&self, id: &ProducerMessageId) -> Option<&ProducerMessageRecord> {
+        self.message_indexes
+            .get(id)
+            .map(|index| &self.projection.messages[*index])
+    }
+
+    /// Whether the user's goal is active or paused.
+    #[must_use]
+    pub fn goal_is_open(&self) -> bool {
+        self.projection.goal_is_open()
+    }
+
+    /// Whether a message waits that no run admitted yet.
+    #[must_use]
+    pub fn has_unadmitted(&self) -> bool {
+        !self.unadmitted.is_empty()
     }
 
     fn projection_mut(&mut self) -> &mut GoalProducerProjection {
@@ -238,6 +265,7 @@ impl GoalProducerFold {
                 });
                 self.message_indexes.insert(*message_id, index);
                 self.dedup_indexes.insert(dedup_key, index);
+                self.unadmitted.insert(index);
             }
             EventPayload::ProducerMessageAdmitted { message_id } => {
                 let Some(run_id) = event.run_id else {
@@ -268,6 +296,7 @@ impl GoalProducerFold {
                     return;
                 }
                 self.projection_mut().messages[index].admission = Some((run_id, event.seq));
+                self.unadmitted.remove(&index);
             }
             EventPayload::ProducerMessagesClaimed { message_ids } => {
                 let Some(run_id) = event.run_id else {
@@ -409,6 +438,7 @@ impl GoalProducerFold {
                 if message.discarded_seq.is_none() {
                     self.projection_mut().messages[index].discarded = true;
                     self.projection_mut().messages[index].discarded_seq = Some(event.seq);
+                    self.unadmitted.remove(&index);
                 }
             }
             EventPayload::RunFinished { .. } => {

@@ -31,7 +31,9 @@ use crate::ownership::{WriteAuthority, WriteCapability};
 
 pub mod blobs;
 mod durability;
+pub mod state;
 pub use durability::Commit;
+pub use state::LogState;
 
 #[derive(Debug, Error)]
 pub enum EventLogError {
@@ -164,6 +166,9 @@ struct EventIndex {
     /// The latest `MemoryLoaded` record, and whether a checkpoint was
     /// committed after it.
     last_memory_loaded: Option<(Arc<StoredEvent>, bool)>,
+    /// What readers need of the whole log, shared with those handed it:
+    /// copied only when a record changes it while one holds it.
+    state: Arc<LogState>,
 }
 
 /// What a log records about prompt blocks (stable prefix spec, section 6):
@@ -372,6 +377,7 @@ impl DeferralFold {
 
 impl EventIndex {
     fn observe(&mut self, event: &Arc<StoredEvent>) {
+        Arc::make_mut(&mut self.state).observe(event);
         self.revisions.observe(&event.payload);
         if DeferralFold::observes(&event.payload) {
             Arc::make_mut(&mut self.deferral).observe(&event.payload);
@@ -1663,6 +1669,19 @@ impl EventLog {
         self.storage().snapshot()
     }
 
+    /// What readers need of the whole log, as of its latest record.
+    #[must_use]
+    pub fn state(&self) -> Arc<LogState> {
+        Arc::clone(&self.storage().index.state)
+    }
+
+    /// [`Self::event_snapshot`] and [`Self::state`] of the same moment.
+    #[must_use]
+    pub fn snapshot_and_state(&self) -> (EventSnapshot, Arc<LogState>) {
+        let storage = self.storage();
+        (storage.snapshot(), Arc::clone(&storage.index.state))
+    }
+
     fn storage(&self) -> std::sync::MutexGuard<'_, EventStorage> {
         self.events
             .lock()
@@ -1792,6 +1811,15 @@ impl EventLog {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .index
             .acp_subagent
+    }
+
+    /// The tools the latest recorded model request was offered.
+    pub fn last_model_tool_names(&self) -> Option<Vec<String>> {
+        self.storage()
+            .index
+            .last_model_tools
+            .as_ref()
+            .map(|(names, _)| names.clone())
     }
 
     /// The latest `MemoryLoaded` record, and whether a checkpoint was
@@ -2011,6 +2039,8 @@ impl EventLog {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         events.truncate(through_seq);
+        #[cfg(any(test, feature = "test-support"))]
+        state::reference::assert_matches_scans(&events.index.state, &events.all);
         let taint = {
             let mut taint = self
                 .initial_validation_taint

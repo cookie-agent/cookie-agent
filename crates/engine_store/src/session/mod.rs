@@ -2386,6 +2386,8 @@ impl SessionStore {
             let reference = projection_fold(log.clone()).expect("reference fold");
             let resident = self.get_resident(id).expect("resident after append");
             assert_projection_equivalent(&resident, &reference);
+            let (events, state) = log.snapshot_and_state();
+            crate::events::state::reference::assert_matches_scans(&state, &events);
         }
         let upserted = if index_changed && let Some(resident) = self.get_resident(id) {
             if resident.log.is_persisted() {
