@@ -16,7 +16,7 @@
 //! before it is used (the line at its offset must be the record it names,
 //! whole, which a revert or a rewritten log no longer has there).
 
-use cookie_agent_protocol::display_view;
+use cookie_agent_protocol::{EventsView, display_view};
 
 use super::*;
 
@@ -89,11 +89,13 @@ pub(super) fn write_view(
     if !log.is_persisted() || log.is_render_only() || log.is_converted() {
         return Ok(None);
     }
-    let events = log.event_snapshot();
-    let Some(start) = display_view::cache_start(&events, VIEW_BUDGET) else {
+    let mut reader = display_view::TailWindowReader::new(EventsView::Display, VIEW_BUDGET);
+    for event in log.history()? {
+        reader.observe(event?);
+    }
+    let Some((first, header)) = reader.cache_start() else {
         return Ok(None);
     };
-    let first = &events[start];
     if log
         .diagnostics()
         .iter()
@@ -116,7 +118,7 @@ pub(super) fn write_view(
         version: VIEW_VERSION,
         history_format: cookie_agent_protocol::HISTORY_FORMAT,
         start: view_start,
-        header: display_view::state_events(&events[..start]),
+        header,
     };
     let Some(dir) = log.path().parent() else {
         return Ok(None);
@@ -128,6 +130,19 @@ pub(super) fn write_view(
     })?;
     replace_cache_file(&path, &bytes, CacheSync::Atomic)?;
     Ok(Some(view_start))
+}
+
+/// The newest-first window of a pass over a whole log.
+fn read_tail_window(
+    events: crate::events::History,
+    view: EventsView,
+    budget: usize,
+) -> Result<display_view::Window, SessionError> {
+    let mut reader = display_view::TailWindowReader::new(view, budget);
+    for event in events {
+        reader.observe(event?);
+    }
+    Ok(reader.window())
 }
 
 /// The answer to `events.subscribe` with `from: "tail"` for `window`.
@@ -191,7 +206,7 @@ impl SessionStore {
     pub fn subscribe_tail(
         &self,
         id: SessionId,
-        view: cookie_agent_protocol::EventsView,
+        view: EventsView,
         budget: usize,
         owner: Option<TailOwner>,
     ) -> Result<
@@ -210,7 +225,7 @@ impl SessionStore {
     pub fn snapshot_tail(
         &self,
         id: SessionId,
-        view: cookie_agent_protocol::EventsView,
+        view: EventsView,
         budget: usize,
     ) -> Result<EventsSubscribeResult, SessionError> {
         Ok(self.newest_first(id, view, budget, None)?.0)
@@ -220,7 +235,7 @@ impl SessionStore {
     fn newest_first(
         &self,
         id: SessionId,
-        view: cookie_agent_protocol::EventsView,
+        view: EventsView,
         budget: usize,
         tail: Option<Option<TailOwner>>,
     ) -> Result<
@@ -267,15 +282,17 @@ impl SessionStore {
                     continue;
                 };
                 // Records still waiting for a sync are in it: their
-                // publication skips the tail.
-                let events = resident.log.event_snapshot();
+                // publication skips the tail. The slot holds appends off, so
+                // the pass ends where the tail starts, and it is read outside
+                // the slot.
+                let events = resident.log.history()?;
                 let receiver = tail.map(|owner| {
-                    let tip = events.last().map_or(0, |event| event.seq);
+                    let tip = resident.log.last_event().map_or(0, |event| event.seq);
                     self.register_tail(id, tip, owner, true)
                 });
                 (events, receiver)
             };
-            let window = display_view::tail_window(&events, view, budget);
+            let window = read_tail_window(events, view, budget)?;
             return Ok((newest_first(window), receiver));
         }
         Err(SessionError::TreeContended(id))
@@ -289,7 +306,7 @@ impl SessionStore {
         id: SessionId,
         session_dir: &Path,
         path: &Path,
-        view: cookie_agent_protocol::EventsView,
+        view: EventsView,
         budget: usize,
     ) -> Result<(display_view::Window, u64), SessionError> {
         if let Some(cached) = read_view(session_dir, path)
@@ -310,8 +327,7 @@ impl SessionStore {
                 .remove(&id);
             self.refresh_view(id, &log);
         }
-        let events = log.event_snapshot();
-        let tip = events.last().map_or(0, |event| event.seq);
-        Ok((display_view::tail_window(&events, view, budget), tip))
+        let tip = log.last_event().map_or(0, |event| event.seq);
+        Ok((read_tail_window(log.history()?, view, budget)?, tip))
     }
 }

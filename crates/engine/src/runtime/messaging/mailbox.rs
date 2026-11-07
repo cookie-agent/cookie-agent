@@ -284,22 +284,26 @@ impl Engine {
     ) -> Result<cookie_agent_protocol::EventsPageResult, EngineError> {
         let store = Arc::clone(&self.inner.store);
         off_worker(|| {
-            let events = store.recovery_event_snapshot(params.session_id)?;
-            let page = cookie_agent_protocol::display_view::older_page(
-                &events,
-                params.before,
+            let log = store.readable_log(params.session_id)?;
+            let mut reader = cookie_agent_protocol::display_view::OlderPageReader::new(
                 params.view,
                 cookie_agent_protocol::history_window_bytes(params.max_bytes),
             );
-            let header = match params.header {
-                cookie_agent_protocol::PageHeader::Full => page.header,
-                cookie_agent_protocol::PageHeader::None => Vec::new(),
-                // The client holds the header of what starts at `before`.
-                cookie_agent_protocol::PageHeader::Delta => {
-                    let held = cookie_agent_protocol::display_view::state_events(
-                        &events[..events.partition_point(|event| event.seq < params.before)],
-                    );
-                    cookie_agent_protocol::display_view::header_delta(&held, page.header)
+            for event in log.history_range(..params.before)? {
+                reader.observe(event?);
+            }
+            // The client holds the header of what starts at `before`.
+            let held = matches!(params.header, cookie_agent_protocol::PageHeader::Delta)
+                .then(|| reader.header_at_end());
+            let page = reader.finish();
+            let header = match (params.header, held) {
+                (cookie_agent_protocol::PageHeader::Full, _) => page.header,
+                (cookie_agent_protocol::PageHeader::None, _) => Vec::new(),
+                (cookie_agent_protocol::PageHeader::Delta, held) => {
+                    cookie_agent_protocol::display_view::header_delta(
+                        &held.unwrap_or_default(),
+                        page.header,
+                    )
                 }
             };
             Ok(cookie_agent_protocol::EventsPageResult {
@@ -321,10 +325,26 @@ impl Engine {
     ) -> Result<u64, EngineError> {
         let store = Arc::clone(&self.inner.store);
         off_worker(|| {
-            let events = store.recovery_event_snapshot(session)?;
-            let (events, _) =
-                cookie_agent_protocol::display_view::view_events(&events, view, false);
-            Ok(events.len() as u64)
+            let log = store.readable_log(session)?;
+            if view.is_full() {
+                let mut count = 0_u64;
+                for event in log.history()? {
+                    event?;
+                    count += 1;
+                }
+                return Ok(count);
+            }
+            // Two passes over the same records: what a later event replaces
+            // is known only once it has been read.
+            let tip = log.last_event().map_or(0, |event| event.seq);
+            let mut count = cookie_agent_protocol::display_view::DisplayCount::default();
+            for event in log.history_range(..=tip)? {
+                count.observe(&*event?);
+            }
+            for event in log.history_range(..=tip)? {
+                count.count(&*event?);
+            }
+            Ok(count.shown())
         })
     }
 
@@ -337,8 +357,8 @@ impl Engine {
     ) -> Result<Option<Arc<StoredEvent>>, EngineError> {
         let store = Arc::clone(&self.inner.store);
         off_worker(|| {
-            let events = store.recovery_event_snapshot(session)?;
-            Ok(cookie_agent_protocol::display_view::event_at(&events, seq).cloned())
+            let log = store.readable_log(session)?;
+            Ok(log.history_range(seq..=seq)?.next().transpose()?)
         })
     }
 
@@ -742,8 +762,8 @@ impl Engine {
             self.observe_push_event(session, &envelope.payload);
         }
         if !was_persisted && self.inner.store.is_persisted(session)? {
-            for durable in self.inner.store.log(session)?.event_snapshot().iter() {
-                let drops = self.inner.plugins.stream_session_event(durable);
+            for durable in self.inner.store.log(session)?.history()? {
+                let drops = self.inner.plugins.stream_session_event(&*durable?);
                 self.record_plugin_drops(session, drops);
             }
         } else if sync {

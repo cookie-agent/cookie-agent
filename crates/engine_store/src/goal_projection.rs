@@ -579,11 +579,9 @@ const fn valid_hop_owner(owner: &ProducerOwner, agent_hop: Option<u32>) -> bool 
     agent_hop.is_some() == matches!(owner, ProducerOwner::Agent { .. })
 }
 
-/// Whether a log carries goal-producer state that needs reconciliation after a
-/// restart: an active goal, an unread message, or a message consumed without its
+/// Whether a log's producer state needs reconciliation after a restart: an active goal, an unread message, or a message consumed without its
 /// consumption record.
-pub fn producer_state_pending(events: &[Arc<cookie_agent_protocol::StoredEvent>]) -> bool {
-    let projection = GoalProducerProjection::from_events(events);
+pub fn producer_state_pending(projection: &GoalProducerProjection) -> bool {
     projection.goal.is_some()
         || projection
             .messages

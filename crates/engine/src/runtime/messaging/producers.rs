@@ -288,8 +288,8 @@ impl Engine {
             if self
                 .inner
                 .store
-                .recovery_event_snapshot(session)
-                .is_ok_and(|events| producer_state_pending(&events))
+                .readable_log(session)
+                .is_ok_and(|log| producer_state_pending(&log.state().producers()))
             {
                 sessions.insert(session);
             }
@@ -364,7 +364,7 @@ impl Engine {
         {
             return Ok(());
         }
-        let events = self.inner.store.log(session)?.event_snapshot();
+        let streak = self.inner.store.log(session)?.state();
         let retry = self.inner.config.load().runtime.model_retry;
         // The ACP agent's own work is shown even while the session is held:
         // the agent is already working (`docs/site/specs/acp-v2.md`
@@ -379,7 +379,7 @@ impl Engine {
         let wake_delay = if acp_wake {
             None
         } else {
-            match after_runs(&events, retry.standard_retries) {
+            match after_runs(streak.run_streak(), retry.standard_retries) {
                 AfterRuns::Held => return Ok(()),
                 // A stop holds only what could start a run on its own; with
                 // nothing such, the user's next message is just a message.
@@ -1768,16 +1768,21 @@ impl Engine {
         let body = crate::runtime::delegation::render_background_completion(&teaser);
         let description = producer_description("Delegation completed: ", &teaser.preview);
         let parent = self.inner.store.get(session)?;
-        let visible = parent.log.event_snapshot().iter().any(|event| {
-            !parent.log.delegation_event_tainted(event)
-                && matches!(
-                    &event.payload,
-                    Event::DelegationReserved { reservation: candidate, .. }
-                        if event.run_id == Some(reservation.parent_run_id)
-                            && candidate == reservation
-                            && reservation.parent_session_id == session
-                )
-        });
+        let visible = parent
+            .log
+            .history()?
+            .find_map_ok(|event| {
+                (!parent.log.delegation_event_tainted(event)
+                    && matches!(
+                        &event.payload,
+                        Event::DelegationReserved { reservation: candidate, .. }
+                            if event.run_id == Some(reservation.parent_run_id)
+                                && candidate == reservation
+                                && reservation.parent_session_id == session
+                    ))
+                .then_some(())
+            })?
+            .is_some();
         if !visible {
             let authority = ProducerOwner::Delegation {
                 invocation_id: reservation.invocation_id,
@@ -2141,14 +2146,12 @@ impl Engine {
         &self,
         session: SessionId,
     ) -> Result<(), EngineError> {
-        let events = self.inner.store.log(session)?.event_snapshot();
-        let surviving: HashSet<_> = events
-            .iter()
-            .filter_map(|event| match &event.payload {
-                Event::DelegationReserved { reservation, .. } => Some(reservation.invocation_id),
-                _ => None,
-            })
-            .collect();
+        let mut surviving = HashSet::new();
+        for event in self.inner.store.log(session)?.history()? {
+            if let Event::DelegationReserved { reservation, .. } = &event?.payload {
+                surviving.insert(reservation.invocation_id);
+            }
+        }
         let removed_children = {
             let mut records = self
                 .inner
@@ -2218,33 +2221,14 @@ enum AfterRuns {
     Held,
 }
 
-fn after_runs(events: &[Arc<StoredEvent>], standard_retries: i64) -> AfterRuns {
-    let mut failures = 0_u32;
-    let mut last_error = None;
-    for event in events.iter().rev() {
-        match &event.payload {
-            EventPayload::AutomaticRunsHeld { .. } => return AfterRuns::Held,
-            EventPayload::AutomaticRunsResumed {} | EventPayload::UserInputSubmitted { .. } => {
-                break;
-            }
-            EventPayload::RunFinished { outcome } => match outcome {
-                Open::Known(RunOutcome::Cancelled { .. })
-                    if failures == 0 && event.origin.as_ref().is_some_and(stopped_by_user) =>
-                {
-                    return AfterRuns::Hold(HeldReason::Stopped {});
-                }
-                Open::Known(RunOutcome::Failed { error, .. }) => {
-                    failures += 1;
-                    last_error.get_or_insert_with(|| error.clone());
-                }
-                // A run a restart interrupted resumes; it neither counts
-                // nor clears.
-                Open::Known(RunOutcome::Interrupted { .. }) => {}
-                _ => break,
-            },
-            _ => {}
-        }
+fn after_runs(streak: &crate::events::state::RunStreak, standard_retries: i64) -> AfterRuns {
+    if streak.stopped {
+        return AfterRuns::Hold(HeldReason::Stopped {});
     }
+    if streak.held {
+        return AfterRuns::Held;
+    }
+    let (failures, last_error) = (streak.failures, streak.last_error.clone());
     match failures.checked_sub(1) {
         None => AfterRuns::Wake,
         Some(retries)
@@ -2354,10 +2338,6 @@ impl Engine {
 
 /// Whether a cancellation recorded under `origin` was the user's: a client's
 /// `run.cancel`.
-fn stopped_by_user(origin: &EventOrigin) -> bool {
-    origin.as_str() == "user" || origin.as_str().starts_with("client:")
-}
-
 /// Acceptance guards for one agent-mail send, evaluated against the recipient's
 /// projected inbox *after* the idempotency replay check.
 ///

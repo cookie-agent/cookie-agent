@@ -644,14 +644,14 @@ pub struct ForkHooks<'a> {
     /// tree of its own, so what it adds there (the fork's artifacts)
     /// publishes with the fork or not at all.
     pub prepare_tree: &'a dyn Fn(&Path) -> std::io::Result<()>,
-    /// The ACP sessions a fork through the given sequence of the source's
-    /// events leaves behind, which the fork records as detached.
+    /// The ACP sessions a fork through the given sequence of the source's log
+    /// leaves behind, which the fork records as detached.
     pub acp_detached: &'a AcpDetachedOnFork,
 }
 
 /// See [`ForkHooks::acp_detached`].
 pub type AcpDetachedOnFork =
-    dyn Fn(&[Arc<StoredEvent>], u64) -> Vec<cookie_agent_protocol::AcpDetached>;
+    dyn Fn(&EventLog, u64) -> Result<Vec<cookie_agent_protocol::AcpDetached>, EventLogError>;
 
 impl SessionStore {
     /// Every session's index changes as they happen: creation, status and
@@ -1355,16 +1355,14 @@ impl SessionStore {
             .cloned()
     }
 
-    /// Inspects recovery controls without paging an owned dormant session back in.
-    pub fn recovery_event_snapshot(
-        &self,
-        id: SessionId,
-    ) -> Result<crate::events::EventSnapshot, SessionError> {
+    /// `id`'s log to read, without paging an owned dormant session back in: the
+    /// resident one, or a parsed read-only copy.
+    pub fn readable_log(&self, id: SessionId) -> Result<Arc<EventLog>, SessionError> {
         if let Some(session) = self.get_resident(id) {
-            return Ok(session.log.event_snapshot());
+            return Ok(session.log.clone());
         }
         let path = self.resolve_dir(id)?.join(EVENTS_FILE);
-        Ok(self.read_only_log(id, path)?.event_snapshot())
+        self.read_only_log(id, path)
     }
 
     /// A parsed read-only copy of `id`'s log at `path`, kept while the file
@@ -2574,7 +2572,7 @@ impl SessionStore {
         if cursor_is_stale(&log, cursor, cursor_timestamp) {
             return Ok((EventsSubscribeResult::stale(), None));
         }
-        let result = log.events_after(cursor, limit);
+        let result = log.events_after(cursor, limit)?;
         if result.has_more {
             return Ok((result, None));
         }
@@ -2596,7 +2594,7 @@ impl SessionStore {
             if cursor_is_stale(&current, cursor, cursor_timestamp) {
                 return Ok((EventsSubscribeResult::stale(), None));
             }
-            let result = current.events_after(cursor, limit);
+            let result = current.events_after(cursor, limit)?;
             if result.has_more {
                 return Ok((result, None));
             }
@@ -2693,7 +2691,7 @@ impl SessionStore {
         if cursor_is_stale(&log, cursor, cursor_timestamp) {
             return Ok(Some(EventsSubscribeResult::stale()));
         }
-        let page = log.events_after(cursor, limit);
+        let page = log.events_after(cursor, limit)?;
         Ok(page.has_more.then_some(page))
     }
 
@@ -2723,7 +2721,7 @@ impl SessionStore {
         if cursor_is_stale(&log, cursor, cursor_timestamp) {
             return Ok(EventsSubscribeResult::stale());
         }
-        Ok(log.events_after(cursor, limit))
+        Ok(log.events_after(cursor, limit)?)
     }
 
     fn publish_stored_event(&self, envelope: &Arc<StoredEvent>) {
@@ -2866,7 +2864,7 @@ impl SessionStore {
             origin,
             ForkHooks {
                 prepare_tree: &|_| Ok(()),
-                acp_detached: &|_, _| Vec::new(),
+                acp_detached: &|_, _| Ok(Vec::new()),
             },
         )
     }
@@ -2900,7 +2898,6 @@ impl SessionStore {
             });
         }
         source.log.suspend_writer();
-        let source_events = source.log.event_snapshot();
         // The tip counts the lines the log read but left out, which a fork
         // copies as they were written.
         if through_seq == 0 || through_seq > source.log.physical_tip_seq() {
@@ -2984,7 +2981,7 @@ impl SessionStore {
             }
             // The source's ACP sessions stay its own: the fork's agent
             // branches off them at its first turn.
-            for detached in acp_detached(&source_events, through_seq) {
+            for detached in acp_detached(&source.log, through_seq)? {
                 let event = log.append_owned(
                     &capability,
                     None,

@@ -4730,3 +4730,53 @@ fn a_commit_point_syncs_the_blobs_its_records_name() {
     assert!(log.durability.state_blobs_for_test().is_empty());
     assert!(log.durability.synced_blob_for_test(&blob));
 }
+
+/// A pass reads the records it names, one at a time, as the log stood when it
+/// was asked for.
+#[test]
+fn a_pass_reads_the_records_it_names_as_the_log_stood() {
+    let directory = tempdir().unwrap();
+    let creation = stored_event();
+    let log = EventLog::create(
+        directory.path().join("events.jsonl"),
+        creation.session_id,
+        EventOrigin::new("engine:test").unwrap(),
+        creation.payload.clone(),
+    )
+    .unwrap();
+    let origin = || EventOrigin::new("engine:test").unwrap();
+    let resumed = || EventPayload::AutomaticRunsResumed {};
+    for _ in 0..3 {
+        log.append(None, origin(), resumed()).unwrap();
+    }
+    let seqs = |pass: History| pass.map(|event| event.unwrap().seq).collect::<Vec<_>>();
+    assert_eq!(seqs(log.history().unwrap()), [1, 2, 3, 4]);
+    assert_eq!(seqs(log.history_range(2..=3).unwrap()), [2, 3]);
+    assert_eq!(seqs(log.history_range(..2).unwrap()), [1]);
+    assert_eq!(seqs(log.history_range(4..).unwrap()), [4]);
+    assert_eq!(seqs(log.history_range(5..).unwrap()), Vec::<u64>::new());
+    assert_eq!(
+        seqs(
+            log.history_range((std::ops::Bound::Excluded(1), std::ops::Bound::Included(2)))
+                .unwrap()
+        ),
+        [2]
+    );
+
+    let before_append = log.history().unwrap();
+    log.append(None, origin(), resumed()).unwrap();
+    assert_eq!(seqs(before_append), [1, 2, 3, 4]);
+
+    let is_resume = |event: &StoredEvent| {
+        matches!(event.payload, EventPayload::AutomaticRunsResumed {}).then_some(event.seq)
+    };
+    assert_eq!(
+        log.history().unwrap().find_map_ok(is_resume).unwrap(),
+        Some(2)
+    );
+    assert_eq!(
+        log.history().unwrap().last_map_ok(is_resume).unwrap(),
+        Some(5)
+    );
+    assert_eq!(log.creation().unwrap().seq, 1);
+}

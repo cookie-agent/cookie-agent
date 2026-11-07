@@ -101,21 +101,11 @@ impl AutomaticTitleEligibility {
 
 /// When `events` last saw activity: its tip, or, when the tip is quiet
 /// ([`super::QUIET_ORIGIN`]), the latest event before that is not.
-fn last_activity(events: &[Arc<StoredEvent>], tip: &StoredEvent) -> jiff::Timestamp {
-    let quiet = |event: &StoredEvent| {
-        event
-            .origin
-            .as_ref()
-            .is_some_and(|origin| origin.as_str() == super::QUIET_ORIGIN)
-    };
-    if !quiet(tip) {
-        return tip.timestamp;
-    }
-    events
-        .iter()
-        .rev()
-        .find(|event| !quiet(event))
-        .map_or(tip.timestamp, |event| event.timestamp)
+fn quiet(event: &StoredEvent) -> bool {
+    event
+        .origin
+        .as_ref()
+        .is_some_and(|origin| origin.as_str() == super::QUIET_ORIGIN)
 }
 
 pub fn projection(log: Arc<EventLog>) -> Result<SessionProjection, SessionError> {
@@ -144,14 +134,10 @@ fn projection_fold_with(
     log: Arc<EventLog>,
     previous: Option<&SessionProjection>,
 ) -> Result<SessionProjection, SessionError> {
-    let events = log.event_snapshot();
     let physical_tip = log.last_event().expect("creation checked by EventLog");
+    let creation = log.creation().expect("creation checked by EventLog");
     let (origin, short_id, cwd_identity, creation_selection, creation_agent, revisions, cron) =
-        match &events
-            .first()
-            .expect("creation checked by EventLog")
-            .payload
-        {
+        match &creation.payload {
             EventPayload::SessionCreated {
                 history_format: _,
                 origin,
@@ -175,9 +161,23 @@ fn projection_fold_with(
             ),
             _ => unreachable!(),
         };
+    // A full fold sees every usage record up front, so a turn whose usage is
+    // recorded later never counts at its commit. This pass also finds the last
+    // record that counts as activity.
+    let mut recorded_usage_turns = HashSet::new();
+    let mut last_activity = physical_tip.timestamp;
+    for event in log.history()? {
+        let event = event?;
+        if let EventPayload::ModelUsageRecorded { model_turn_seq, .. } = event.payload {
+            recorded_usage_turns.insert(model_turn_seq);
+        }
+        if !quiet(&event) {
+            last_activity = event.timestamp;
+        }
+    }
     let meta = SessionMeta {
         cache_compaction: None,
-        session_id: events[0].session_id,
+        session_id: creation.session_id,
         origin,
         short_id,
         cwd_identity,
@@ -192,7 +192,7 @@ fn projection_fold_with(
         title: None,
         title_updated_seq: 0,
         last_event_seq: log.physical_tip_seq(),
-        last_activity: last_activity(&events, &physical_tip),
+        last_activity,
         last_agent_activity: None,
         status: SessionStatus::Idle,
         skipped_events: log
@@ -229,21 +229,12 @@ fn projection_fold_with(
         fold: ProjectionFoldState::default(),
         log: log.clone(),
     };
-    // A full fold sees every usage record up front, so a turn whose usage is
-    // recorded later never counts at its commit.
-    let recorded_usage_turns = events
-        .iter()
-        .filter_map(|event| match event.payload {
-            EventPayload::ModelUsageRecorded { model_turn_seq, .. } => Some(model_turn_seq),
-            _ => None,
-        })
-        .collect::<HashSet<_>>();
     let step = FoldStep::Full {
         recorded_usage_turns: &recorded_usage_turns,
         previous,
     };
-    for envelope in events.iter() {
-        let observed = projection.observe(envelope, step);
+    for envelope in log.history()? {
+        let observed = projection.observe(&*envelope?, step);
         debug_assert!(
             matches!(observed, Observed::Applied { .. }),
             "a full fold applies every event"

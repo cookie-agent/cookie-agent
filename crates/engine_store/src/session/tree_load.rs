@@ -90,61 +90,83 @@ pub struct ParentRunFacts {
 }
 
 impl ParentRunFacts {
-    /// Folds the facts out of one already-read projection. Never opens a log.
-    pub(super) fn from_projection(projection: &SessionProjection) -> Self {
+    /// Folds the facts out of one already-read projection's log, one pass. Never
+    /// opens a log.
+    pub(super) fn from_projection(projection: &SessionProjection) -> Result<Self, SessionError> {
+        let mut fold = ParentFactsFold::new(projection);
+        for envelope in projection.log.history()? {
+            fold.observe(&*envelope?);
+        }
+        Ok(fold.finish(projection))
+    }
+}
+
+/// [`ParentRunFacts`] being read from a log.
+struct ParentFactsFold {
+    facts: ParentRunFacts,
+    started: HashMap<cookie_agent_protocol::InvocationId, SessionId>,
+}
+
+impl ParentFactsFold {
+    fn new(projection: &SessionProjection) -> Self {
         let (root_session_id, delegated) = match projection.meta.origin {
             SessionOrigin::Delegated {
                 root_session_id, ..
             } => (root_session_id, true),
             _ => (projection.meta.session_id, false),
         };
-        let mut facts = Self {
-            root_session_id,
-            delegated,
-            queued: Vec::new(),
-            producer_accepted: Vec::new(),
-            interrupted_runs: Vec::new(),
-        };
-        let mut started = std::collections::HashMap::new();
-        for envelope in projection.log.event_snapshot().iter() {
-            match &envelope.payload {
-                EventPayload::DelegationProgressed {
-                    invocation_id,
-                    stage:
-                        cookie_agent_protocol::Open::Known(
-                            cookie_agent_protocol::DelegationStage::Started { child_session_id },
-                        ),
-                } => {
-                    started.insert(*invocation_id, *child_session_id);
-                }
-                EventPayload::DelegationProgressed {
-                    invocation_id,
-                    stage:
-                        cookie_agent_protocol::Open::Known(
-                            cookie_agent_protocol::DelegationStage::Queued { .. },
-                        ),
-                } => {
-                    if let (Some(run_id), Some(child)) =
-                        (envelope.run_id, started.get(invocation_id))
-                    {
-                        facts.queued.push((run_id, *child));
-                    }
-                }
-                EventPayload::ProducerMessageAccepted {
-                    producer_owner:
-                        cookie_agent_protocol::ProducerOwner::Delegation { invocation_id },
-                    ..
-                } => facts.producer_accepted.push(*invocation_id),
-                _ => {}
-            }
+        Self {
+            facts: ParentRunFacts {
+                root_session_id,
+                delegated,
+                queued: Vec::new(),
+                producer_accepted: Vec::new(),
+                interrupted_runs: Vec::new(),
+            },
+            started: HashMap::new(),
         }
-        facts.interrupted_runs = projection
+    }
+
+    fn observe(&mut self, envelope: &cookie_agent_protocol::StoredEvent) {
+        match &envelope.payload {
+            EventPayload::DelegationProgressed {
+                invocation_id,
+                stage:
+                    cookie_agent_protocol::Open::Known(
+                        cookie_agent_protocol::DelegationStage::Started { child_session_id },
+                    ),
+            } => {
+                self.started.insert(*invocation_id, *child_session_id);
+            }
+            EventPayload::DelegationProgressed {
+                invocation_id,
+                stage:
+                    cookie_agent_protocol::Open::Known(cookie_agent_protocol::DelegationStage::Queued {
+                        ..
+                    }),
+            } => {
+                if let (Some(run_id), Some(child)) =
+                    (envelope.run_id, self.started.get(invocation_id))
+                {
+                    self.facts.queued.push((run_id, *child));
+                }
+            }
+            EventPayload::ProducerMessageAccepted {
+                producer_owner: cookie_agent_protocol::ProducerOwner::Delegation { invocation_id },
+                ..
+            } => self.facts.producer_accepted.push(*invocation_id),
+            _ => {}
+        }
+    }
+
+    fn finish(mut self, projection: &SessionProjection) -> ParentRunFacts {
+        self.facts.interrupted_runs = projection
             .runs
             .iter()
             .filter(|(_, run)| run.status == SessionStatus::Interrupted)
             .map(|(run_id, _)| *run_id)
             .collect();
-        facts
+        self.facts
     }
 }
 
@@ -321,13 +343,12 @@ impl TreeFold {
     /// Records one folded log contributes to the engine, whoever holds it in the
     /// tree: grants, delegation records (each lives in its parent's log), and
     /// goal-producer state.
-    fn harvest_records(
-        &mut self,
-        projection: &SessionProjection,
-        events: &[Arc<cookie_agent_protocol::StoredEvent>],
-    ) {
+    fn harvest_records(&mut self, projection: &SessionProjection) -> Result<(), SessionError> {
         let mut revisions = cookie_agent_protocol::RevisionFold::default();
-        for envelope in events {
+        let mut facts = ParentFactsFold::new(projection);
+        for envelope in projection.log.history()? {
+            let envelope = envelope?;
+            facts.observe(&envelope);
             revisions.observe(&envelope.payload);
             match &envelope.payload {
                 EventPayload::TreeApprovalGrantCommitted { grant } => {
@@ -339,7 +360,7 @@ impl TreeFold {
                     self.tree_grants.push(grant.clone());
                 }
                 payload => {
-                    if !projection.log.delegation_event_tainted(envelope)
+                    if !projection.log.delegation_event_tainted(&envelope)
                         && crate::delegation_events::is_delegation_payload(payload)
                     {
                         self.products.delegations.push((
@@ -351,22 +372,22 @@ impl TreeFold {
                 }
             }
         }
-        if crate::goal_projection::producer_state_pending(events) {
+        let producers = projection.log.state().producers();
+        if crate::goal_projection::producer_state_pending(&producers) {
             self.products
                 .producer_sessions
                 .push(projection.meta.session_id);
-            self.products.producer_projections.push((
-                projection.meta.session_id,
-                crate::goal_projection::GoalProducerProjection::from_events(events),
-            ));
+            self.products
+                .producer_projections
+                .push((projection.meta.session_id, (*producers).clone()));
         }
         // The registry needs these facts about the session *as a parent*;
         // carrying them here is what keeps a rebuild from folding the same log
         // a second time (§4.1.3).
-        self.products.parent_facts.insert(
-            projection.meta.session_id,
-            ParentRunFacts::from_projection(projection),
-        );
+        self.products
+            .parent_facts
+            .insert(projection.meta.session_id, facts.finish(projection));
+        Ok(())
     }
 }
 
@@ -789,7 +810,7 @@ impl SessionStore {
             None => Some(self.open_snapshot(root, true)?),
         };
         if let Some(projection) = root_projection {
-            fold.harvest_records(&projection, &projection.log.event_snapshot());
+            fold.harvest_records(&projection)?;
             fold.root_summary = Some(summary_from_projection(&projection));
         }
         fold.children = self.child_dir_ids(root);
@@ -804,12 +825,11 @@ impl SessionStore {
                 Some(session) => session,
                 None => self.open_snapshot(child, false)?,
             };
-            let events = projection.log.event_snapshot();
             fold.products
                 .summaries
                 .push(summary_from_projection(&projection));
             fold.fingerprints.insert(child, fingerprint);
-            fold.harvest_records(&projection, &events);
+            fold.harvest_records(&projection)?;
             let parent = match projection.meta.origin {
                 SessionOrigin::Delegated {
                     parent_session_id, ..
@@ -1163,7 +1183,7 @@ impl SessionStore {
     /// the parent as unresolved — the log is *not* a legal read here (§3.3).
     pub fn parent_run_facts(&self, id: SessionId) -> Result<Option<ParentRunFacts>, SessionError> {
         if let Some(session) = self.get_resident(id) {
-            return Ok(Some(ParentRunFacts::from_projection(&session)));
+            return Ok(Some(ParentRunFacts::from_projection(&session)?));
         }
         if let Some(facts) = self.cached_parent_facts(id) {
             return Ok(Some(facts));
@@ -1182,7 +1202,7 @@ impl SessionStore {
             return Ok(None);
         }
         let projection = self.get_log_only(id)?;
-        Ok(Some(ParentRunFacts::from_projection(&projection)))
+        Ok(Some(ParentRunFacts::from_projection(&projection)?))
     }
 
     /// Facts the bulk pass harvested for `id`.

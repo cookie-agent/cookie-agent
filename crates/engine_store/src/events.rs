@@ -1771,44 +1771,41 @@ impl EventLog {
             .unwrap_or_default()
     }
 
-    /// Physical events after `cursor`, at most `limit` of them. The page
-    /// shares the log's events rather than copying them, and is cut from a
-    /// shared view without holding the log's lock.
+    /// Physical events after `cursor`, at most `limit` of them, read without
+    /// holding the log's lock.
     ///
     /// A limited page also stops before `REPLAY_PAGE_MAX_BYTES` (1 MiB) of
     /// serialized events, since it goes out as one WebSocket frame; it always
     /// holds at least one event, so paging makes progress.
-    #[must_use]
     pub fn events_after(
         &self,
         cursor: Option<u64>,
         limit: Option<std::num::NonZeroU32>,
-    ) -> cookie_agent_protocol::EventsSubscribeResult {
-        // A shared view: the page is cut and measured without the lock.
-        let events = self.event_snapshot();
+    ) -> Result<cookie_agent_protocol::EventsSubscribeResult, EventLogError> {
         let max_bytes = limit.map_or(usize::MAX, |_| REPLAY_PAGE_MAX_BYTES);
         let limit = limit.map_or(usize::MAX, |limit| limit.get() as usize);
-        let first = cursor.map_or(0, |cursor| {
-            events.partition_point(|event| event.seq <= cursor)
-        });
+        let after = cursor.map_or(std::ops::Bound::Unbounded, std::ops::Bound::Excluded);
         let mut page = Vec::new();
         let mut page_bytes = 0_usize;
         let mut has_more = false;
-        for event in &events[first..] {
+        for event in self.history_range((after, std::ops::Bound::Unbounded))? {
+            let event = event?;
             if page.len() == limit {
                 has_more = true;
                 break;
             }
             if max_bytes != usize::MAX {
-                page_bytes = page_bytes.saturating_add(serialized_len(event));
+                page_bytes = page_bytes.saturating_add(serialized_len(&event));
                 if page_bytes > max_bytes && !page.is_empty() {
                     has_more = true;
                     break;
                 }
             }
-            page.push(Arc::clone(event));
+            page.push(event);
         }
-        cookie_agent_protocol::EventsSubscribeResult::page(page, has_more)
+        Ok(cookie_agent_protocol::EventsSubscribeResult::page(
+            page, has_more,
+        ))
     }
 
     /// Whether the event at `seq` is the one a reader saw at `timestamp`. A
@@ -1816,11 +1813,12 @@ impl EventLog {
     /// cannot tell the replaced event from its replacement.
     #[must_use]
     pub fn event_matches(&self, seq: u64, timestamp: Timestamp) -> bool {
-        let storage = self.storage();
-        storage
-            .all
-            .binary_search_by_key(&seq, |event| event.seq)
-            .is_ok_and(|index| storage.all[index].timestamp == timestamp)
+        // A record that cannot be read is no match: the reader starts over.
+        self.history_range(seq..=seq)
+            .ok()
+            .and_then(|mut record| record.next())
+            .and_then(Result::ok)
+            .is_some_and(|event| event.timestamp == timestamp)
     }
 
     /// Where the line of the record at `seq` starts in the log's file, when

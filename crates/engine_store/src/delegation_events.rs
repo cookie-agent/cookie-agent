@@ -487,11 +487,12 @@ impl DelegationEventStore {
         let parent = self.sessions.get(parent_session_id)?;
         let mut rebuilt = DelegationState::default();
         let mut revisions = RevisionFold::default();
-        for envelope in parent.log.event_snapshot().iter() {
+        for envelope in parent.log.history().map_err(SessionError::from)? {
+            let envelope = envelope.map_err(SessionError::from)?;
             revisions.observe(&envelope.payload);
             // Only delegation records fold; the rest are not copied.
             if delegation_invocation_of(&envelope.payload).is_none()
-                || parent.log.delegation_event_tainted(envelope)
+                || parent.log.delegation_event_tainted(&envelope)
             {
                 continue;
             }

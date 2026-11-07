@@ -22,15 +22,21 @@
 //! asking once per process ([`super::super::Engine::probe_fork_point`]) and
 //! records on the session.
 //!
-//! The free functions read events; the engine's methods at the end fork,
+//! [`AcpSessions`] reads a log; the engine's methods at the end fork,
 //! probe, and end the agent's sessions.
 
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+    time::Duration,
+};
 
 use cookie_agent_protocol::{
     AcpDetachReason, AcpDetached, AcpSessionRecord, AcpSessionStart, AgentId,
-    EventPayload as Event, SessionId, StoredEvent,
+    EventPayload as Event, ModelKey, SessionId, StoredEvent,
 };
+
+use crate::events::{EventLog, EventLogError};
 
 use super::{
     process::{AgentProcess, agent_error_message},
@@ -83,215 +89,202 @@ pub(crate) fn plan(state: &crate::events::LogState, agent: &AgentId) -> Plan {
     }
 }
 
-/// The ACP sessions a fork through `through_seq` of `events` leaves behind:
-/// the latest recorded session of each agent, which stays the source's.
-pub(crate) fn fork_detached(events: &[Arc<StoredEvent>], through_seq: u64) -> Vec<AcpDetached> {
-    let kept = events
-        .iter()
-        .take_while(|event| event.seq <= through_seq)
-        .cloned()
-        .collect::<Vec<_>>();
-    latest_records(&kept)
-        .into_iter()
-        .map(|record| AcpDetached {
-            message_id: last_message_id(&kept, &record),
-            acp_session_id: record.acp_session_id,
-            reason: AcpDetachReason::Forked,
-        })
-        .collect()
+/// What a revert or a fork needs of a log's ACP sessions, read in one pass with
+/// `cut` the last sequence it keeps. It holds records and IDs, and nothing of
+/// the conversation. A log that records no ACP session is not read.
+#[derive(Debug, Default)]
+pub(crate) struct AcpSessions {
+    /// The latest record of each agent at or before the cut, in the order the
+    /// agents first appear.
+    kept: Vec<AcpSessionRecord>,
+    /// The sessions recorded at or before the cut.
+    kept_ids: HashSet<String>,
+    /// The ACP `messageId` of the last message of each agent's conversation at
+    /// or before the cut, by the agent's model: the committed turns after the
+    /// latest new session (a resumed, loaded, or forked one continues the
+    /// conversation before it).
+    last_messages: HashMap<ModelKey, String>,
+    /// The models that attempted or committed a turn after the cut.
+    models_after: HashSet<ModelKey>,
+    /// The agents with a session recorded after the cut.
+    agents_after: HashSet<AgentId>,
+    /// The first record of each session recorded after the cut.
+    records_after: Vec<AcpSessionRecord>,
+    /// The sessions a fork left behind.
+    inherited: HashSet<String>,
+    /// What the log says of each session's fork point: its record's word, else
+    /// a later `acp_session_updated.fork_point`.
+    fork_points: HashMap<String, Option<bool>>,
 }
 
-/// The ACP sessions a revert of `events` (the whole log before it) to
-/// `cut` leaves behind: for each agent, the latest session recorded at or
-/// before the cut whose conversation reaches past it. The reason is
-/// `forked` for a session a fork already left behind, which stays the
-/// source's, else `reverted`.
-pub(crate) fn revert_detached(events: &[Arc<StoredEvent>], cut: u64) -> Vec<AcpDetached> {
-    let kept = events
-        .iter()
-        .take_while(|event| event.seq <= cut)
-        .cloned()
-        .collect::<Vec<_>>();
-    let removed = &events[kept.len()..];
-    latest_records(&kept)
-        .into_iter()
-        .filter(|record| reaches(removed, record))
-        .map(|record| {
-            let forked = events.iter().any(|event| {
-                matches!(&event.payload, Event::AcpSessionUpdated { update }
-                if update.detached.as_ref().is_some_and(|marker| {
-                    marker.acp_session_id == record.acp_session_id
-                        && marker.reason != AcpDetachReason::Reverted
-                }))
-            });
-            AcpDetached {
-                message_id: last_message_id(&kept, &record),
-                acp_session_id: record.acp_session_id,
-                reason: if forked {
-                    AcpDetachReason::Forked
-                } else {
-                    AcpDetachReason::Reverted
-                },
-            }
-        })
-        .collect()
-}
-
-/// The agent sessions a revert of `events` to `cut` removes every record
-/// of, and that are the cookie session's own (no fork left them behind):
-/// gone with the turns the revert removes.
-pub(crate) fn revert_removed(events: &[Arc<StoredEvent>], cut: u64) -> Vec<AcpSessionRecord> {
-    let kept = events
-        .iter()
-        .take_while(|event| event.seq <= cut)
-        .filter_map(|event| match &event.payload {
-            Event::AcpSessionStarted { record } => Some(record.acp_session_id.as_str()),
-            _ => None,
-        })
-        .collect::<std::collections::HashSet<_>>();
-    let inherited = inherited_ids(events);
-    distinct_records(events.iter().filter(|event| event.seq > cut), |id| {
-        !kept.contains(id) && !inherited.contains(id)
-    })
-}
-
-/// The agent sessions `events` record that are the cookie session's own,
-/// each once: every one but those a fork left behind, which stay their
-/// source's. Deleting the cookie session deletes them.
-pub(crate) fn own_records(events: &[Arc<StoredEvent>]) -> Vec<AcpSessionRecord> {
-    let inherited = inherited_ids(events);
-    distinct_records(events.iter(), |id| !inherited.contains(id))
-}
-
-/// The IDs of the agent sessions a fork left behind in `events`.
-fn inherited_ids(events: &[Arc<StoredEvent>]) -> std::collections::HashSet<&str> {
-    events
-        .iter()
-        .filter_map(|event| match &event.payload {
-            Event::AcpSessionUpdated { update } => update
-                .detached
-                .as_ref()
-                .filter(|marker| marker.reason != AcpDetachReason::Reverted)
-                .map(|marker| marker.acp_session_id.as_str()),
-            _ => None,
-        })
-        .collect()
-}
-
-/// The first record of each agent session `events` record whose ID
-/// `keep` accepts.
-fn distinct_records<'a>(
-    events: impl Iterator<Item = &'a Arc<StoredEvent>>,
-    keep: impl Fn(&str) -> bool,
-) -> Vec<AcpSessionRecord> {
-    let mut records: Vec<AcpSessionRecord> = Vec::new();
-    for event in events {
-        if let Event::AcpSessionStarted { record } = &event.payload
-            && keep(&record.acp_session_id)
-            && !records
-                .iter()
-                .any(|known| known.acp_session_id == record.acp_session_id)
-        {
-            records.push(record.clone());
+impl AcpSessions {
+    pub(crate) fn read(log: &EventLog, cut: u64) -> Result<Self, EventLogError> {
+        let mut sessions = Self::default();
+        if !log.state().has_acp_sessions() {
+            return Ok(sessions);
         }
+        for event in log.history()? {
+            sessions.observe(&*event?, cut);
+        }
+        Ok(sessions)
     }
-    records
-}
 
-/// The latest record of each agent in `events`, in the order the agents
-/// first appear.
-fn latest_records(events: &[Arc<StoredEvent>]) -> Vec<AcpSessionRecord> {
-    let mut order = Vec::new();
-    let mut latest = HashMap::new();
-    for event in events {
-        if let Event::AcpSessionStarted { record } = &event.payload {
-            if !latest.contains_key(&record.agent) {
-                order.push(record.agent.clone());
-            }
-            latest.insert(record.agent.clone(), record.clone());
-        }
-    }
-    order
-        .into_iter()
-        .filter_map(|agent| latest.remove(&agent))
-        .collect()
-}
-
-/// Whether `removed`, the events a revert cuts, held turns of `record`'s
-/// agent or a later session of it: what the agent remembers and the cookie
-/// session no longer has.
-fn reaches(removed: &[Arc<StoredEvent>], record: &AcpSessionRecord) -> bool {
-    let model = cookie_agent_protocol::acp_model_selection(&record.agent).model;
-    removed.iter().any(|event| match &event.payload {
-        Event::ModelAttemptStarted { resolved_model, .. }
-        | Event::ModelTurnCommitted { resolved_model, .. } => {
-            resolved_model.selection.model == model
-        }
-        Event::AcpSessionStarted { record: later } => later.agent == record.agent,
-        _ => false,
-    })
-}
-
-/// The ACP `messageId` of the agent's last message in `events` within the
-/// conversation of `record`: the committed turns of its agent after the
-/// latest new session at or before it (a resumed, loaded, or forked one
-/// continues the conversation before it).
-fn last_message_id(events: &[Arc<StoredEvent>], record: &AcpSessionRecord) -> Option<String> {
-    let model = cookie_agent_protocol::acp_model_selection(&record.agent).model;
-    let mut last = None;
-    for event in events {
+    fn observe(&mut self, event: &StoredEvent, cut: u64) {
+        let kept = event.seq <= cut;
         match &event.payload {
-            Event::AcpSessionStarted { record: started }
-                if started.agent == record.agent && started.how == AcpSessionStart::New =>
-            {
-                last = None;
+            Event::AcpSessionStarted { record } => {
+                let fork_point = self
+                    .fork_points
+                    .entry(record.acp_session_id.clone())
+                    .or_default();
+                *fork_point = record.fork_point.or(*fork_point);
+                if kept {
+                    self.kept_ids.insert(record.acp_session_id.clone());
+                    match self
+                        .kept
+                        .iter_mut()
+                        .find(|known| known.agent == record.agent)
+                    {
+                        Some(known) => known.clone_from(record),
+                        None => self.kept.push(record.clone()),
+                    }
+                    if record.how == AcpSessionStart::New {
+                        self.last_messages.remove(&model_of(&record.agent));
+                    }
+                } else {
+                    self.agents_after.insert(record.agent.clone());
+                    if !self
+                        .records_after
+                        .iter()
+                        .any(|known| known.acp_session_id == record.acp_session_id)
+                    {
+                        self.records_after.push(record.clone());
+                    }
+                }
+            }
+            Event::AcpSessionUpdated { update } => {
+                if let Some(marker) = &update.detached
+                    && marker.reason != AcpDetachReason::Reverted
+                {
+                    self.inherited.insert(marker.acp_session_id.clone());
+                }
+                if update.fork_point.is_some() {
+                    for fork_point in self.fork_points.values_mut() {
+                        *fork_point = update.fork_point;
+                    }
+                }
+            }
+            Event::ModelAttemptStarted { resolved_model, .. } if !kept => {
+                self.models_after
+                    .insert(resolved_model.selection.model.clone());
             }
             Event::ModelTurnCommitted {
                 resolved_model,
                 turn,
                 ..
-            } if resolved_model.selection.model == model => {
-                if let Some(id) = turn
+            } => {
+                let model = &resolved_model.selection.model;
+                if !kept {
+                    self.models_after.insert(model.clone());
+                } else if let Some(id) = turn
                     .response_metadata
                     .get(MESSAGE_IDS)
                     .and_then(serde_json::Value::as_array)
                     .and_then(|ids| ids.last())
                     .and_then(serde_json::Value::as_str)
                 {
-                    last = Some(id.to_owned());
+                    self.last_messages.insert(model.clone(), id.to_owned());
                 }
             }
             _ => {}
         }
     }
-    last
+
+    /// The last message of `record`'s agent the cut keeps.
+    fn last_message_id(&self, record: &AcpSessionRecord) -> Option<String> {
+        self.last_messages.get(&model_of(&record.agent)).cloned()
+    }
+
+    /// Whether what the cut removes held turns of `record`'s agent or a later
+    /// session of it: what the agent remembers and the cookie session no longer
+    /// has.
+    fn reaches_past_cut(&self, record: &AcpSessionRecord) -> bool {
+        self.models_after.contains(&model_of(&record.agent))
+            || self.agents_after.contains(&record.agent)
+    }
+
+    /// The ACP sessions a fork through the cut leaves behind: the latest
+    /// recorded session of each agent, which stays the source's.
+    fn fork_detached(&self) -> Vec<AcpDetached> {
+        self.kept
+            .iter()
+            .map(|record| AcpDetached {
+                message_id: self.last_message_id(record),
+                acp_session_id: record.acp_session_id.clone(),
+                reason: AcpDetachReason::Forked,
+            })
+            .collect()
+    }
+
+    /// The ACP sessions a revert to the cut leaves behind: for each agent, the
+    /// latest session recorded at or before the cut whose conversation reaches
+    /// past it. The reason is `forked` for a session a fork already left
+    /// behind, which stays the source's, else `reverted`.
+    pub(crate) fn revert_detached(&self) -> Vec<AcpDetached> {
+        self.kept
+            .iter()
+            .filter(|record| self.reaches_past_cut(record))
+            .map(|record| AcpDetached {
+                message_id: self.last_message_id(record),
+                acp_session_id: record.acp_session_id.clone(),
+                reason: if self.inherited.contains(&record.acp_session_id) {
+                    AcpDetachReason::Forked
+                } else {
+                    AcpDetachReason::Reverted
+                },
+            })
+            .collect()
+    }
+
+    /// The agent sessions a revert to the cut removes every record of, and that
+    /// are the cookie session's own (no fork left them behind): gone with the
+    /// turns the revert removes.
+    pub(crate) fn revert_removed(&self) -> Vec<AcpSessionRecord> {
+        self.records_after
+            .iter()
+            .filter(|record| {
+                !self.kept_ids.contains(&record.acp_session_id)
+                    && !self.inherited.contains(&record.acp_session_id)
+            })
+            .cloned()
+            .collect()
+    }
+
+    /// What the log says about how the agent of `record` forks: whether it
+    /// offers `session/fork`, and whether that takes a fork point. `None` where
+    /// the log does not say.
+    fn fork_support(&self, record: &AcpSessionRecord) -> (Option<bool>, Option<bool>) {
+        (
+            record.fork,
+            self.fork_points
+                .get(&record.acp_session_id)
+                .copied()
+                .flatten(),
+        )
+    }
 }
 
-/// What the log says about how the agent of `record` forks: whether it
-/// offers `session/fork`, and whether that takes a fork point (the
-/// record's own word, else a later `acp_session_updated.fork_point`).
-/// `None` where the log does not say.
-pub(crate) fn fork_support(
-    events: &[Arc<StoredEvent>],
-    record: &AcpSessionRecord,
-) -> (Option<bool>, Option<bool>) {
-    let mut fork_point = None;
-    let mut started = false;
-    for event in events {
-        match &event.payload {
-            Event::AcpSessionStarted {
-                record: started_record,
-            } if started_record.acp_session_id == record.acp_session_id => {
-                started = true;
-                fork_point = started_record.fork_point.or(fork_point);
-            }
-            Event::AcpSessionUpdated { update } if started => {
-                fork_point = update.fork_point.or(fork_point);
-            }
-            _ => {}
-        }
-    }
-    (record.fork, fork_point)
+/// The model every turn of the ACP agent `agent` records.
+fn model_of(agent: &AgentId) -> ModelKey {
+    cookie_agent_protocol::acp_model_selection(agent).model
+}
+
+/// The ACP sessions a fork through `through_seq` of `log` leaves behind.
+pub(crate) fn fork_detached(
+    log: &EventLog,
+    through_seq: u64,
+) -> Result<Vec<AcpDetached>, EventLogError> {
+    Ok(AcpSessions::read(log, through_seq)?.fork_detached())
 }
 
 /// How the agent of a record forks, by the log and, where the log does not
@@ -304,29 +297,22 @@ fn agent_label(record: &AcpSessionRecord) -> String {
     format!("`{}` on `{}`", record.agent, record.runtime_id)
 }
 
-/// Why a revert of `events` to `cut` is refused, if it is: it cuts into
+/// Why a revert to the cut of `sessions` is refused, if it is: it cuts into
 /// the conversation of an agent whose `session/fork` does not take a fork
 /// point, or that the engine has not asked yet. A revert to before the
 /// agent's first reply is allowed: the next turn starts a new session.
-pub(crate) fn rewind_refusal(
-    events: &[Arc<StoredEvent>],
-    cut: u64,
-    known: ForkKnowledge<'_>,
-) -> Option<String> {
-    let kept = events
-        .iter()
-        .take_while(|event| event.seq <= cut)
-        .cloned()
-        .collect::<Vec<_>>();
-    revert_detached(events, cut)
+pub(crate) fn rewind_refusal(sessions: &AcpSessions, known: ForkKnowledge<'_>) -> Option<String> {
+    sessions
+        .revert_detached()
         .into_iter()
         .filter(|detached| detached.message_id.is_some())
         .find_map(|detached| {
-            let record = latest_records(&kept)
-                .into_iter()
+            let record = sessions
+                .kept
+                .iter()
                 .find(|record| record.acp_session_id == detached.acp_session_id)?;
-            let label = agent_label(&record);
-            match known(&record) {
+            let label = agent_label(record);
+            match known(record) {
                 (_, Some(true)) => None,
                 (Some(false), _) | (_, Some(false)) => Some(format!(
                     "{label} can't rewind its own conversation, so the session can't be \
@@ -341,50 +327,33 @@ pub(crate) fn rewind_refusal(
         })
 }
 
-/// The source's ACP sessions a fork of `events` through `through_seq`
-/// forks at once, as the cookie fork is made: those with an agent reply
-/// to keep whose fork takes no fork point (or that the engine has not
-/// asked yet). [`fork_refusal`] lets such a fork through only at the end
-/// of the agent's conversation, where the agent's whole-session fork is
-/// exact now but would take in whatever the source runs before the fork's
-/// first turn. A fork that takes a fork point waits for that turn.
-pub(crate) fn eager_forks(
-    events: &[Arc<StoredEvent>],
-    through_seq: u64,
-    known: ForkKnowledge<'_>,
-) -> Vec<AcpSessionRecord> {
-    let kept = events
+/// The source's ACP sessions a fork through the cut of `sessions` forks at
+/// once, as the cookie fork is made: those with an agent reply to keep whose
+/// fork takes no fork point (or that the engine has not asked yet).
+/// [`fork_refusal`] lets such a fork through only at the end of the agent's
+/// conversation, where the agent's whole-session fork is exact now but would
+/// take in whatever the source runs before the fork's first turn. A fork that
+/// takes a fork point waits for that turn.
+fn eager_forks(sessions: &AcpSessions, known: ForkKnowledge<'_>) -> Vec<AcpSessionRecord> {
+    sessions
+        .kept
         .iter()
-        .take_while(|event| event.seq <= through_seq)
-        .cloned()
-        .collect::<Vec<_>>();
-    latest_records(&kept)
-        .into_iter()
-        .filter(|record| last_message_id(&kept, record).is_some())
+        .filter(|record| sessions.last_message_id(record).is_some())
         .filter(|record| known(record).1 != Some(true))
+        .cloned()
         .collect()
 }
 
-/// Why a fork of `events` through `through_seq` is refused, if it is: the
-/// agent replied before the fork point but offers no `session/fork`, or
-/// the fork point cuts into its conversation and its fork does not take a
-/// fork point. A fork before the agent's first reply is allowed: the
-/// fork's first turn starts a new session.
-pub(crate) fn fork_refusal(
-    events: &[Arc<StoredEvent>],
-    through_seq: u64,
-    known: ForkKnowledge<'_>,
-) -> Option<String> {
-    let kept = events
-        .iter()
-        .take_while(|event| event.seq <= through_seq)
-        .cloned()
-        .collect::<Vec<_>>();
-    let after = &events[kept.len()..];
-    latest_records(&kept).into_iter().find_map(|record| {
-        last_message_id(&kept, &record)?;
-        let label = agent_label(&record);
-        let (fork, fork_point) = known(&record);
+/// Why a fork through the cut of `sessions` is refused, if it is: the agent
+/// replied before the fork point but offers no `session/fork`, or the fork
+/// point cuts into its conversation and its fork does not take a fork point.
+/// A fork before the agent's first reply is allowed: the fork's first turn
+/// starts a new session.
+pub(crate) fn fork_refusal(sessions: &AcpSessions, known: ForkKnowledge<'_>) -> Option<String> {
+    sessions.kept.iter().find_map(|record| {
+        sessions.last_message_id(record)?;
+        let label = agent_label(record);
+        let (fork, fork_point) = known(record);
         match fork {
             Some(true) => {}
             Some(false) => {
@@ -401,7 +370,7 @@ pub(crate) fn fork_refusal(
                 ));
             }
         }
-        (reaches(after, &record) && fork_point != Some(true)).then(|| {
+        (sessions.reaches_past_cut(record) && fork_point != Some(true)).then(|| {
             format!(
                 "{label} can't fork its own conversation at an earlier point, so the session can \
                  only be forked at the end of the agent's conversation or before its first reply"
@@ -536,12 +505,13 @@ impl super::super::Engine {
     /// when the agent cannot.
     pub(crate) async fn fork_acp_sessions_now(
         &self,
-        source_events: &[Arc<StoredEvent>],
+        source: &EventLog,
         through_seq: u64,
         forked: SessionId,
     ) -> Result<(), super::super::EngineError> {
-        let known = |record: &AcpSessionRecord| self.fork_knowledge(source_events, record);
-        for record in eager_forks(source_events, through_seq, &known) {
+        let sessions = AcpSessions::read(source, through_seq)?;
+        let known = |record: &AcpSessionRecord| self.fork_knowledge(&sessions, record);
+        for record in eager_forks(&sessions, &known) {
             if let Err(error) = self.fork_acp_session_now(forked, &record).await {
                 return Err(super::super::EngineError::AcpUnsupported(format!(
                     "{} could not fork its own conversation for the new session: {}",
@@ -596,14 +566,14 @@ impl super::super::Engine {
         }
     }
 
-    /// How the agent of `record` forks: by the log of `events`, and where
-    /// that does not say, by the agent's running process.
+    /// How the agent of `record` forks: by the log `sessions` was read from,
+    /// and where that does not say, by the agent's running process.
     pub(crate) fn fork_knowledge(
         &self,
-        events: &[Arc<StoredEvent>],
+        sessions: &AcpSessions,
         record: &AcpSessionRecord,
     ) -> (Option<bool>, Option<bool>) {
-        let (fork, fork_point) = fork_support(events, record);
+        let (fork, fork_point) = sessions.fork_support(record);
         let process = self
             .inner
             .acp

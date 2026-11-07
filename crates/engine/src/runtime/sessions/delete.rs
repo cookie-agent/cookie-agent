@@ -120,8 +120,12 @@ impl Engine {
             .iter()
             .filter_map(|member| {
                 let projection = self.inner.store.get(*member).ok()?;
-                let records =
-                    crate::runtime::acp::lifecycle::own_records(&projection.log.event_snapshot());
+                let records = projection
+                    .log
+                    .state()
+                    .acp_own_records()
+                    .cloned()
+                    .collect::<Vec<_>>();
                 (!records.is_empty()).then_some((*member, records))
             })
             .collect();

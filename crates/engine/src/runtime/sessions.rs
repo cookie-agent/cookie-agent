@@ -610,12 +610,13 @@ impl Engine {
     /// their descendants. A running one refuses the revert.
     fn reverted_children(
         &self,
-        events: &[Arc<cookie_agent_protocol::StoredEvent>],
+        log: &crate::events::EventLog,
         cut: u64,
     ) -> Result<HashSet<SessionId>, EngineError> {
         let mut kept = HashSet::new();
         let mut removed = Vec::new();
-        for event in events.iter() {
+        for event in log.history()? {
+            let event = event?;
             if let Event::DelegationReserved { reservation, .. } = &event.payload {
                 if event.seq <= cut {
                     kept.insert(reservation.child_session_id);
@@ -711,35 +712,29 @@ impl Engine {
         self.ensure_appendable(session_id)?;
         // An ACP agent must be able to fork its conversation at the revert
         // point, or the revert is refused before anything changes.
+        let log = self.inner.store.get(session_id)?.log.clone();
         {
-            let events = self.inner.store.get(session_id)?.log.event_snapshot();
+            let sessions = crate::runtime::acp::lifecycle::AcpSessions::read(
+                &log,
+                history_cut(&log, through_seq)?,
+            )?;
             let known = |record: &cookie_agent_protocol::AcpSessionRecord| {
-                self.fork_knowledge(&events, record)
+                self.fork_knowledge(&sessions, record)
             };
-            if let Some(reason) = crate::runtime::acp::lifecycle::rewind_refusal(
-                &events,
-                history_cut(&events, through_seq),
-                &known,
-            ) {
+            if let Some(reason) = crate::runtime::acp::lifecycle::rewind_refusal(&sessions, &known)
+            {
                 return Err(EngineError::AcpUnsupported(reason));
             }
         }
         let context_id = crate::plugin::plugin_context_id();
-        let mut instructions = self
-            .inner
-            .store
-            .get(session_id)?
-            .log
-            .event_snapshot()
-            .iter()
-            .find_map(|event| match &event.payload {
-                cookie_agent_protocol::EventPayload::UserInputSubmitted { content }
-                    if event.seq > through_seq =>
-                {
-                    Some(content.as_plain_text().into_owned())
-                }
-                _ => None,
-            });
+        let mut instructions =
+            log.history_range(through_seq + 1..)?
+                .find_map_ok(|event| match &event.payload {
+                    cookie_agent_protocol::EventPayload::UserInputSubmitted { content } => {
+                        Some(content.as_plain_text().into_owned())
+                    }
+                    _ => None,
+                })?;
         let mut instructions_override = None;
         for hooked in self.inner.plugins.interception_plugins(
             cookie_agent_protocol::ExtensionInterceptionHook::SessionBeforeRevert,
@@ -836,16 +831,16 @@ impl Engine {
                     }
                     // A revert removes the events after the cut: the log keeps no
                     // marker, and later appends reuse the freed sequences.
-                    let events = projection.log.event_snapshot();
-                    let cut = history_cut(&events, through_seq);
-                    let deleted = engine.reverted_children(&events, cut)?;
+                    let cut = history_cut(&projection.log, through_seq)?;
+                    let deleted = engine.reverted_children(&projection.log, cut)?;
                     // The ACP agent remembers what the cut removes: the
                     // session it talks in is left behind (its next turn
                     // branches off it at the revert point), and one whose
                     // every record is cut is deleted.
-                    let acp_detached =
-                        crate::runtime::acp::lifecycle::revert_detached(&events, cut);
-                    let acp_removed = crate::runtime::acp::lifecycle::revert_removed(&events, cut);
+                    let acp_sessions =
+                        crate::runtime::acp::lifecycle::AcpSessions::read(&projection.log, cut)?;
+                    let acp_detached = acp_sessions.revert_detached();
+                    let acp_removed = acp_sessions.revert_removed();
                     // What the cut events and deleted children referenced is all a
                     // revert can orphan; the sweep below keeps what is still used.
                     let mut dropped = HashSet::new();
@@ -1024,16 +1019,15 @@ impl Engine {
         // A fork to just before a message leaves out the run that message
         // starts, as a revert there does.
         let through_seq = {
-            let events = self.inner.store.get(session_id)?.log.event_snapshot();
-            let through_seq = history_cut(&events, through_seq);
+            let log = self.inner.store.get(session_id)?.log.clone();
+            let through_seq = history_cut(&log, through_seq)?;
             // An ACP agent must be able to fork its conversation there, or
             // the fork is refused before anything changes.
+            let sessions = crate::runtime::acp::lifecycle::AcpSessions::read(&log, through_seq)?;
             let known = |record: &cookie_agent_protocol::AcpSessionRecord| {
-                self.fork_knowledge(&events, record)
+                self.fork_knowledge(&sessions, record)
             };
-            if let Some(reason) =
-                crate::runtime::acp::lifecycle::fork_refusal(&events, through_seq, &known)
-            {
+            if let Some(reason) = crate::runtime::acp::lifecycle::fork_refusal(&sessions, &known) {
                 return Err(EngineError::AcpUnsupported(reason));
             }
             through_seq
@@ -1113,9 +1107,9 @@ impl Engine {
         // An ACP agent whose fork takes no fork point forks now, while its
         // conversation still ends at the fork point; when it cannot, the
         // fork is undone and refused.
-        let source_events = self.inner.store.get(session_id)?.log.event_snapshot();
+        let source = self.inner.store.get(session_id)?.log.clone();
         if let Err(error) = self
-            .fork_acp_sessions_now(&source_events, through_seq, forked)
+            .fork_acp_sessions_now(&source, through_seq, forked)
             .await
         {
             self.discard_fork(forked).await;
@@ -1158,7 +1152,12 @@ impl Engine {
             }
             Ok(_) => {
                 let records = self.inner.store.get(forked).ok().map(|projection| {
-                    crate::runtime::acp::lifecycle::own_records(&projection.log.event_snapshot())
+                    projection
+                        .log
+                        .state()
+                        .acp_own_records()
+                        .cloned()
+                        .collect::<Vec<_>>()
                 });
                 self.delete_acp_sessions(forked, records.unwrap_or_default())
                     .await;
@@ -1291,12 +1290,16 @@ impl Engine {
 /// cut would leave holding nothing but its start goes too: cutting to just
 /// before a message targets the event before it, which is usually that
 /// run's `RunStarted`.
-fn history_cut(events: &[Arc<cookie_agent_protocol::StoredEvent>], through_seq: u64) -> u64 {
+fn history_cut(
+    log: &crate::events::EventLog,
+    through_seq: u64,
+) -> Result<u64, crate::events::EventLogError> {
     let mut cut = through_seq;
     loop {
         let mut open = None;
         let mut started = false;
-        for event in events.iter().take_while(|event| event.seq <= cut) {
+        for event in log.history_range(..=cut)? {
+            let event = event?;
             match &event.payload {
                 Event::RunStarted { .. } => {
                     open = event.run_id.map(|run| (run, event.seq));
@@ -1320,7 +1323,7 @@ fn history_cut(events: &[Arc<cookie_agent_protocol::StoredEvent>], through_seq: 
         }
         match open {
             Some((_, start)) if !started && start > 1 => cut = start - 1,
-            _ => return cut,
+            _ => return Ok(cut),
         }
     }
 }
