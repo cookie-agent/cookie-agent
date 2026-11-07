@@ -506,6 +506,75 @@ fn golden_logs_fold_as_their_scans_read_them() {
     assert!(logs > 0, "no golden logs in {GOLDEN_ROOT}");
 }
 
+/// A window, a page, a count, and an event read as a pass over a golden log are
+/// what the whole list gives, at each run of each log: an open, an older page,
+/// and `event.read` no longer take the whole list
+/// (`docs/site/specs/forever-sessions.md` section 3.3).
+#[test]
+fn golden_logs_read_as_a_pass_give_what_the_whole_list_gives() {
+    use cookie_agent_protocol::{EventsView, display_view};
+    for (_, scenario) in golden_scenarios() {
+        for log in scenario_logs(&scenario) {
+            let events = log.event_snapshot();
+            let path = log.path().display();
+            for view in [EventsView::Display, EventsView::Full] {
+                for budget in [2 * 1024, 64 * 1024] {
+                    let mut window = display_view::TailWindowReader::new(view, budget);
+                    let mut page = display_view::OlderPageReader::new(view, budget);
+                    for (index, event) in log.history().unwrap().enumerate() {
+                        let event = event.unwrap();
+                        window.observe(Arc::clone(&event));
+                        page.observe(Arc::clone(&event));
+                        if !matches!(event.payload, EventPayload::RunFinished { .. }) {
+                            continue;
+                        }
+                        let through = &events[..=index];
+                        assert_eq!(
+                            window.clone().window(),
+                            display_view::tail_window(through, view, budget),
+                            "{path}: the window through {}",
+                            event.seq
+                        );
+                        assert_eq!(
+                            page.clone().finish(),
+                            display_view::older_page(through, event.seq + 1, view, budget),
+                            "{path}: the page before {}",
+                            event.seq + 1
+                        );
+                        assert_eq!(
+                            page.header_at_end(),
+                            display_view::state_events(through),
+                            "{path}: the header of what follows {}",
+                            event.seq
+                        );
+                    }
+                }
+            }
+            let mut count = display_view::DisplayCount::default();
+            for event in log.history().unwrap() {
+                count.observe(&*event.unwrap());
+            }
+            for event in log.history().unwrap() {
+                count.count(&*event.unwrap());
+            }
+            assert_eq!(
+                count.shown(),
+                display_view::display_events(&events, false).0.len() as u64,
+                "{path}: the count"
+            );
+            for event in events.iter() {
+                let read = log
+                    .history_range(event.seq..=event.seq)
+                    .unwrap()
+                    .next()
+                    .unwrap()
+                    .unwrap();
+                assert!(Arc::ptr_eq(&read, event), "{path}: event {}", event.seq);
+            }
+        }
+    }
+}
+
 /// The ACP scenario holds the records every fold reads, so a fold that went
 /// wrong has something to differ on.
 #[test]
@@ -846,6 +915,7 @@ async fn quiesce(engine: &Engine, root: SessionId) {
         let busy = running(&engine.tree(root).expect("golden tree"))
             || !engine
                 .list_approvals(root, Some(ApprovalStatus::Escalated))
+                .unwrap()
                 .approvals
                 .is_empty();
         if busy {

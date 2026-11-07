@@ -1,13 +1,10 @@
-use std::collections::HashMap;
-
 use cookie_agent_protocol::{
-    ApprovalReasonCode, ApprovalStatus, SafeToolError, SessionId, SessionStatus,
-    ToolCallTermination, ToolTerminationOutcome,
+    ApprovalReasonCode, SafeToolError, SessionId, SessionStatus, ToolCallTermination,
+    ToolTerminationOutcome,
 };
 
 use super::{
     Engine, EngineError, Event, ToolCallFailureCode, ToolFailure,
-    approval::projection::{approval_records, approval_run_id},
     delegation::{
         cancelled_delegate_result, cancelled_delegate_result_with_reason,
         completed_delegate_result, delegate_failure_result, is_delegation_event_append_failure,
@@ -33,7 +30,7 @@ impl Engine {
         self.reconcile_consumed_producers(session_id, true, None)?;
         self.repair_goal_completion(session_id, true, None)?;
         let session = self.inner.store.get(session_id)?;
-        let events = session.log.event_snapshot();
+        let state = session.log.state();
         let interrupted_runs = session
             .runs
             .values()
@@ -41,36 +38,15 @@ impl Engine {
             .map(|run| run.id)
             .collect::<Vec<_>>();
         {
-            let mut internal = HashMap::new();
-            for event in events.iter() {
-                match &event.payload {
-                    Event::InternalAgentStarted {
-                        invocation_id,
-                        internal_run_id,
-                        kind,
-                        ..
-                    } => {
-                        internal.insert((*invocation_id, *internal_run_id), (*kind, event.run_id));
-                    }
-                    Event::InternalAgentFinished {
-                        invocation_id,
-                        internal_run_id,
-                        ..
-                    } => {
-                        internal.remove(&(*invocation_id, *internal_run_id));
-                    }
-                    _ => {}
-                }
-            }
-            for ((invocation_id, internal_run_id), (kind, parent_run)) in internal {
+            for ((invocation_id, internal_run_id), open) in state.open_internal_agents() {
                 self.append_recovery_direct(
                     session.meta.session_id,
-                    parent_run,
+                    open.run,
                     super::event_origin("engine:recovery"),
                     Event::internal_agent_finished(
-                        invocation_id,
-                        internal_run_id,
-                        kind,
+                        *invocation_id,
+                        *internal_run_id,
+                        open.kind,
                         cookie_agent_protocol::InternalAgentOutcome::Interrupted {
                             reason: Some(safe_error(reason)),
                         },
@@ -127,23 +103,14 @@ impl Engine {
                     )?;
                 }
             }
-            for record in approval_records(session.meta.session_id, &events)
-                .into_values()
-                .filter(|record| {
-                    matches!(
-                        record.status,
-                        ApprovalStatus::Pending | ApprovalStatus::Escalated
-                    )
-                })
-            {
-                let approval_run = approval_run_id(&events, record.request.approval_id())
-                    .ok_or(EngineError::ApprovalConflict)?;
+            for open in state.open_approvals() {
+                let approval_run = open.run.ok_or(EngineError::ApprovalConflict)?;
                 self.append_recovery_direct(
                     session.meta.session_id,
                     Some(approval_run),
                     super::event_origin("engine:recovery"),
                     Event::approval_finalized(
-                        record.request.approval_id(),
+                        open.record.request.approval_id(),
                         cookie_agent_protocol::ApprovalFinalization::Cancelled {
                             reason_code: ApprovalReasonCode::PreparedCapabilityLost,
                         },

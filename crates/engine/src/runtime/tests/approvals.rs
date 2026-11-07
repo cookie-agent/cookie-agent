@@ -100,6 +100,7 @@ async fn approval_batch_blocks_auto_allowed_tools_and_serializes_asks() {
         fixture
             .engine
             .list_approvals(session.session_id, Some(ApprovalStatus::Escalated))
+            .unwrap()
             .approvals
             .len(),
         1
@@ -367,6 +368,7 @@ async fn internal_agent_ask_transaction_persists_escalation_and_pending_approval
         fixture
             .engine
             .list_approvals(session.session_id, Some(ApprovalStatus::Escalated))
+            .unwrap()
             .approvals
             .len(),
         1
@@ -1535,6 +1537,7 @@ async fn permission_mode_change_applies_to_the_next_operation_only() {
         fixture
             .engine
             .list_approvals(session.session_id, Some(ApprovalStatus::Escalated))
+            .unwrap()
             .approvals
             .len(),
         1
@@ -1770,6 +1773,7 @@ async fn session_resume_does_not_sweep_approvals_of_a_live_running_run() {
         fixture
             .engine
             .list_approvals(session.session_id, Some(ApprovalStatus::Pending))
+            .unwrap()
             .approvals
             .len(),
         1,
@@ -1802,6 +1806,7 @@ async fn session_resume_does_not_sweep_approvals_of_a_live_running_run() {
         fixture
             .engine
             .list_approvals(session.session_id, Some(ApprovalStatus::Escalated))
+            .unwrap()
             .approvals
             .len(),
         1,
@@ -1900,7 +1905,10 @@ async fn resume_sweep_finalizes_interrupted_run_approvals_and_preserves_live_one
         .await
         .expect("resume after interruption");
 
-    let records = fixture.engine.list_approvals(session.session_id, None);
+    let records = fixture
+        .engine
+        .list_approvals(session.session_id, None)
+        .unwrap();
     let status = |approval_id: ApprovalId| {
         records
             .approvals
@@ -2004,6 +2012,7 @@ async fn finalized_approval_during_internal_evaluation_yields_clean_denial() {
     let approval = fixture
         .engine
         .list_approvals(session.session_id, Some(ApprovalStatus::Pending))
+        .unwrap()
         .approvals
         .pop()
         .expect("pending approval during evaluation");

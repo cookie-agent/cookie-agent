@@ -847,18 +847,67 @@ fn agents_md_before(loaded: &[(u64, Option<RunId>, String)], cut: u64) -> Option
     Some(escape_untrusted(&cap_tokens(&text, AGENTS_MD_TOKEN_CAP)).into_owned())
 }
 
-/// The `AGENTS.md` texts of the newest run that loaded any at or before
-/// `until`: what a delegated session inherits from its root.
-pub(in crate::runtime) fn agents_md_until(
-    events: &[Arc<StoredEvent>],
+/// What a delegated session inherits of its root (section 4.3), read from the
+/// root's log one record at a time: the user messages at or before `until`,
+/// rendered, and the `AGENTS.md` texts of the newest run that loaded any by then.
+pub(in crate::runtime) struct RootOpening {
     until: jiff::Timestamp,
-) -> Option<String> {
-    let loaded = events
-        .iter()
-        .filter(|event| event.timestamp <= until)
-        .filter_map(|event| agents_md_text(event).map(|text| (event.seq, event.run_id, text)))
-        .collect::<Vec<_>>();
-    agents_md_before(&loaded, u64::MAX)
+    /// The records up to the first one after `until` that its messages read:
+    /// each run's first, for its ordinal, and those a message comes from.
+    messages: Vec<Arc<StoredEvent>>,
+    /// A record came after `until`.
+    past: bool,
+    runs: HashSet<RunId>,
+    loaded: Vec<(u64, Option<RunId>, String)>,
+}
+
+impl RootOpening {
+    pub(in crate::runtime) fn new(until: jiff::Timestamp) -> Self {
+        Self {
+            until,
+            messages: Vec::new(),
+            past: false,
+            runs: HashSet::new(),
+            loaded: Vec::new(),
+        }
+    }
+
+    pub(in crate::runtime) fn observe(&mut self, event: Arc<StoredEvent>) {
+        if event.timestamp > self.until {
+            self.past = true;
+            return;
+        }
+        if let Some(text) = agents_md_text(&event) {
+            self.loaded.push((event.seq, event.run_id, text));
+        }
+        if self.past {
+            return;
+        }
+        let first_of_run = event.run_id.is_some_and(|run| self.runs.insert(run));
+        if first_of_run
+            || matches!(
+                event.payload,
+                Event::UserInputSubmitted { .. }
+                    | Event::ProducerMessageAccepted { .. }
+                    | Event::ProducerMessageConsumed { .. }
+            )
+        {
+            self.messages.push(event);
+        }
+    }
+
+    pub(in crate::runtime) fn finish(self) -> (Vec<String>, Option<String>) {
+        let facts = gather(&self.messages, ApprovalId::new_v7());
+        (
+            facts
+                .entries
+                .into_iter()
+                .filter(|entry| entry.message)
+                .map(|entry| entry.text)
+                .collect(),
+            agents_md_before(&self.loaded, u64::MAX),
+        )
+    }
 }
 
 fn agents_md_text(event: &StoredEvent) -> Option<String> {
@@ -874,30 +923,10 @@ fn agents_md_text(event: &StoredEvent) -> Option<String> {
     )
 }
 
-/// The user messages of a root's log at or before `until`, rendered: the
-/// opening of a delegated session's conversation (section 4.3).
-pub(in crate::runtime) fn root_messages_until(
-    events: &[Arc<StoredEvent>],
-    until: jiff::Timestamp,
-) -> Vec<String> {
-    let facts = gather(events, ApprovalId::new_v7());
-    let cut = events
-        .iter()
-        .take_while(|event| event.timestamp <= until)
-        .last()
-        .map_or(0, |event| event.seq);
-    facts
-        .entries
-        .into_iter()
-        .filter(|entry| entry.message && entry.seq <= cut)
-        .map(|entry| entry.text)
-        .collect()
-}
-
-/// The first instructions a delegated session got from its parent: what a
-/// descendant inherits of it (section 4.3).
-pub(in crate::runtime) fn delegation_prompt(events: &[Arc<StoredEvent>]) -> Option<String> {
-    events.iter().find_map(|event| match &event.payload {
+/// The instructions a delegated session got from its parent in `event`: the
+/// first of them is what a descendant inherits of it (section 4.3).
+pub(in crate::runtime) fn delegation_prompt(event: &StoredEvent) -> Option<String> {
+    match &event.payload {
         Event::UserInputSubmitted { content }
             if event
                 .origin
@@ -911,7 +940,7 @@ pub(in crate::runtime) fn delegation_prompt(events: &[Arc<StoredEvent>]) -> Opti
             ))
         }
         _ => None,
-    })
+    }
 }
 
 fn timestamp_label(timestamp: jiff::Timestamp) -> String {

@@ -754,7 +754,8 @@ impl ServerProtocol for Server {
     async fn list_approvals(&self, params: ApprovalListParams) -> Result<ApprovalListResult> {
         Ok(self
             .engine
-            .list_approvals(params.root_session_id, params.status))
+            .list_approvals(params.root_session_id, params.status)
+            .map_err(protocol_fault)?)
     }
 
     async fn respond_elicitation(

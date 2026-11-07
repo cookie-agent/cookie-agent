@@ -1140,7 +1140,7 @@ async fn reject_escalated(
     root_session_id: SessionId,
     state: &mut DriverState,
 ) -> anyhow::Result<bool> {
-    let approvals = engine.list_approvals(root_session_id, Some(ApprovalStatus::Escalated));
+    let approvals = engine.list_approvals(root_session_id, Some(ApprovalStatus::Escalated))?;
     let mut rejected_any = false;
     for approval in approvals.approvals {
         let approval_id = approval.request.approval_id();

@@ -70,13 +70,12 @@ impl Engine {
         .await
     }
 
-    #[must_use]
     pub fn list_approvals(
         &self,
         root_session_id: SessionId,
         status: Option<ApprovalStatus>,
-    ) -> ApprovalListResult {
-        let approvals = self
+    ) -> Result<ApprovalListResult, EngineError> {
+        let sessions = self
             .inner
             .store
             .all()
@@ -84,26 +83,26 @@ impl Engine {
             .filter(|session| {
                 root_id(&session.meta.origin, session.meta.session_id) == root_session_id
             })
-            .flat_map(|session| {
-                // What is open is folded; anything else takes a pass over
-                // the log.
-                match status {
-                    Some(ApprovalStatus::Pending | ApprovalStatus::Escalated) => session
+            .collect::<Vec<_>>();
+        let mut approvals = Vec::new();
+        for session in sessions {
+            // What is open is folded; anything else takes a pass over the log.
+            match status {
+                Some(ApprovalStatus::Pending | ApprovalStatus::Escalated) => approvals.extend(
+                    session
                         .log
                         .state()
                         .open_approvals()
-                        .map(|open| open.record.clone())
-                        .collect::<Vec<_>>(),
-                    _ => approval_records(session.meta.session_id, &session.log.event_snapshot())
-                        .into_values()
-                        .collect(),
-                }
-            })
-            .filter(|record| status.is_none_or(|status| record.status == status))
-            .collect();
-        ApprovalListResult {
+                        .map(|open| open.record.clone()),
+                ),
+                _ => approvals
+                    .extend(approval_records(session.meta.session_id, &session.log)?.into_values()),
+            }
+        }
+        approvals.retain(|record| status.is_none_or(|status| record.status == status));
+        Ok(ApprovalListResult {
             approvals,
             tree_grants: self.inner.approvals.store.for_root(root_session_id),
-        }
+        })
     }
 }

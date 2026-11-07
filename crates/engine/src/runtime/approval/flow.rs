@@ -14,7 +14,6 @@ use crate::runtime::{
     ActiveRun, Engine, EngineError, Event, FrozenInternalAgentPolicy, InternalAgentExecution,
     InternalAgentHistoryInput,
     approval::context as approval_context,
-    approval::projection::doom_loop_repetitions,
     helpers::root_id,
     internal_agents::{expand_internal_prompt, internal_agent_output_limit},
 };
@@ -192,11 +191,13 @@ impl Engine {
         )
         .await?;
 
-        let repetitions = doom_loop_repetitions(
-            &self.inner.store.log(active.session)?.event_snapshot(),
-            run,
-            request.operation_fingerprint(),
-        );
+        // Every approval of a session, an ACP agent's too.
+        let repetitions = self
+            .inner
+            .store
+            .log(active.session)?
+            .state()
+            .doom_loop_repetitions(run, request.operation_fingerprint());
         if repetitions >= 4 {
             self.append(
                 active.session,
@@ -487,8 +488,14 @@ impl Engine {
         let Ok(log) = self.inner.store.log(active.session) else {
             return ReviewOutcome::Failed;
         };
-        let events = log.event_snapshot();
-        let inherited = self.reviewer_inheritance(session);
+        // The reviewer applies only to a native session (approval reviewer
+        // spec), so this is the model's context until its own log (phase 8).
+        let Ok(events) = log.model_context_events() else {
+            return ReviewOutcome::Failed;
+        };
+        let Ok(inherited) = self.reviewer_inheritance(session) else {
+            return ReviewOutcome::Failed;
+        };
         // The official `approval` document's body is the whole prompt; the
         // output contract stays in the request block
         // (`approval_context::REQUEST_CONTRACT`).
@@ -549,35 +556,48 @@ impl Engine {
     fn reviewer_inheritance(
         &self,
         session: &crate::session::SessionProjection,
-    ) -> Option<approval_context::Inherited> {
+    ) -> Result<Option<approval_context::Inherited>, EngineError> {
         let mut origin = session.meta.origin.clone();
         let mut ancestors = Vec::new();
         while let SessionOrigin::Delegated {
             parent_session_id, ..
         } = origin
         {
-            let parent = self.inner.store.get(parent_session_id).ok()?;
+            let Ok(parent) = self.inner.store.get(parent_session_id) else {
+                return Ok(None);
+            };
             origin = parent.meta.origin.clone();
             ancestors.push(parent);
         }
-        let root = ancestors.pop()?;
+        let Some(root) = ancestors.pop() else {
+            return Ok(None);
+        };
         // The root's child on the way down: the delegation that started
         // this branch.
-        let delegated_at = ancestors
+        let Some(delegated_at) = ancestors
             .last()
             .map_or(&session.log, |child| &child.log)
-            .event_snapshot()
-            .first()
-            .map(|created| created.timestamp)?;
-        let root_events = root.log.event_snapshot();
-        let mut entries = approval_context::root_messages_until(&root_events, delegated_at);
-        entries.extend(ancestors.iter().rev().filter_map(|ancestor| {
-            approval_context::delegation_prompt(&ancestor.log.event_snapshot())
-        }));
-        Some(approval_context::Inherited {
-            entries,
-            agents_md: approval_context::agents_md_until(&root_events, delegated_at),
-        })
+            .creation()
+            .map(|created| created.timestamp)
+        else {
+            return Ok(None);
+        };
+        // An ancestor can be an ACP agent's session, whose log is windowed: a
+        // pass over each, not its model's context.
+        let mut opening = approval_context::RootOpening::new(delegated_at);
+        for event in root.log.history()? {
+            opening.observe(event?);
+        }
+        let (mut entries, agents_md) = opening.finish();
+        for ancestor in ancestors.iter().rev() {
+            entries.extend(
+                ancestor
+                    .log
+                    .history()?
+                    .find_map_ok(approval_context::delegation_prompt)?,
+            );
+        }
+        Ok(Some(approval_context::Inherited { entries, agents_md }))
     }
 }
 

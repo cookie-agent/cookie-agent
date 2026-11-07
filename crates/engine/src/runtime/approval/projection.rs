@@ -1,12 +1,11 @@
-use std::{collections::HashMap, sync::Arc};
+use std::collections::HashMap;
 
 use cookie_agent_protocol::{
     ApprovalDecisionSource, ApprovalFeedback, ApprovalFinalDecision, ApprovalFinalOutcome,
     ApprovalId, ApprovalInternalDecision, ApprovalInternalDecisionKind, ApprovalReasonCode,
     ApprovalRecord, ApprovalRequest, ApprovalRespondErrorCode, ApprovalRespondParams,
-    ApprovalRespondResult, ApprovalStatus, ApprovalUserDecision, OperationFingerprint,
-    PermissionMode, RunId, SafeErrorMessage, SessionId, StoredEvent, ToolCallId,
-    ToolTerminationOutcome, TreeApprovalGrant,
+    ApprovalRespondResult, ApprovalStatus, ApprovalUserDecision, PermissionMode, RunId,
+    SafeErrorMessage, SessionId, TreeApprovalGrant,
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
@@ -39,7 +38,7 @@ impl Engine {
         let approval_id = request.approval_id();
         let log = self.inner.store.log(session)?;
         let overlay_epoch = log.state().permission_overlay_epoch();
-        let Some((record, record_run)) = approval_with_run(&log, session, approval_id) else {
+        let Some((record, record_run)) = approval_with_run(&log, session, approval_id)? else {
             return Err(EngineError::ApprovalNotPending {
                 session_id: session,
                 approval_id,
@@ -272,7 +271,7 @@ impl Engine {
             let (recorded_approval_id, recorded_decision, recorded_feedback) =
                 (recorded.approval_id, recorded.decision, &recorded.feedback);
             let Some((request, _)) =
-                approval_with_run(&projection.log, params.session_id, recorded_approval_id)
+                approval_with_run(&projection.log, params.session_id, recorded_approval_id)?
             else {
                 return Err(approval_response_failure(
                     &params,
@@ -299,7 +298,7 @@ impl Engine {
         }
 
         let Some((record, record_run)) =
-            approval_with_run(&projection.log, params.session_id, params.approval_id)
+            approval_with_run(&projection.log, params.session_id, params.approval_id)?
         else {
             return Err(approval_response_failure(
                 &params,
@@ -325,16 +324,12 @@ impl Engine {
                 params.approval_id,
                 ApprovalTerminal::Expired,
             )?;
-            let current = approval_record(
+            let current = approval_with_run(
+                &self.inner.store.get(params.session_id)?.log,
                 params.session_id,
-                &self
-                    .inner
-                    .store
-                    .get(params.session_id)?
-                    .log
-                    .event_snapshot(),
                 params.approval_id,
-            );
+            )?
+            .map(|(record, _)| record);
             return Err(approval_response_failure(
                 &params,
                 ApprovalRespondErrorCode::ApprovalNotPending,
@@ -510,14 +505,12 @@ impl Engine {
                 reviewer_denial: None,
             });
         }
-        let events = self
-            .inner
-            .store
-            .get(params.session_id)?
-            .log
-            .event_snapshot();
-        let approval = approval_record(params.session_id, &events, params.approval_id)
-            .ok_or(EngineError::ApprovalConflict)?;
+        let (approval, _) = approval_with_run(
+            &self.inner.store.get(params.session_id)?.log,
+            params.session_id,
+            params.approval_id,
+        )?
+        .ok_or(EngineError::ApprovalConflict)?;
         Ok(ApprovalRespondResult {
             client_response_id: params.client_response_id,
             approval,
@@ -539,7 +532,7 @@ impl Engine {
             return self.approval_respond_direct(params);
         }
         let Some((record, record_run)) =
-            approval_with_run(&projection.log, params.session_id, params.approval_id)
+            approval_with_run(&projection.log, params.session_id, params.approval_id)?
         else {
             return Err(approval_response_failure(
                 &params,
@@ -605,16 +598,12 @@ impl Engine {
                 reviewer_denial: None,
             });
         }
-        let current = approval_record(
+        let current = approval_with_run(
+            &self.inner.store.get(params.session_id)?.log,
             params.session_id,
-            &self
-                .inner
-                .store
-                .get(params.session_id)?
-                .log
-                .event_snapshot(),
             params.approval_id,
-        );
+        )?
+        .map(|(record, _)| record);
         Err(approval_response_failure(
             &params,
             ApprovalRespondErrorCode::OperationChanged,
@@ -630,7 +619,7 @@ impl Engine {
         terminal: ApprovalTerminal,
     ) -> Result<bool, EngineError> {
         let log = self.inner.store.log(session)?;
-        let Some((record, record_run)) = approval_with_run(&log, session, approval_id) else {
+        let Some((record, record_run)) = approval_with_run(&log, session, approval_id)? else {
             return Ok(false);
         };
         if !matches!(
@@ -738,10 +727,11 @@ pub(in crate::runtime) fn approval_request_revision(request: &ApprovalRequest) -
 
 pub(crate) fn approval_records(
     session_id: SessionId,
-    events: &[Arc<StoredEvent>],
-) -> HashMap<ApprovalId, ApprovalRecord> {
+    log: &crate::events::EventLog,
+) -> Result<HashMap<ApprovalId, ApprovalRecord>, crate::events::EventLogError> {
     let mut records = HashMap::<ApprovalId, ApprovalRecord>::new();
-    for envelope in events {
+    for envelope in log.history()? {
+        let envelope = envelope?;
         if let Event::ApprovalRequested { request } = &envelope.payload {
             records.insert(request.approval_id(), pending_record(session_id, request));
         } else if let Some(approval_id) = approval_event_id(&envelope.payload)
@@ -750,38 +740,34 @@ pub(crate) fn approval_records(
             apply_approval_event(record, &envelope.payload);
         }
     }
-    records
+    Ok(records)
 }
 
-/// The record of `approval_id` and the run that asked: folded while it is
-/// open, and a pass over the log once it settled.
+/// The record of `approval_id` and the run that asked: folded while it is open
+/// and as it settles, and a pass over the log for one that settled earlier.
 pub(crate) fn approval_with_run(
     log: &crate::events::EventLog,
     session_id: SessionId,
     approval_id: ApprovalId,
-) -> Option<(ApprovalRecord, Option<RunId>)> {
-    if let Some(open) = log.state().open_approval(approval_id) {
-        return Some((open.record.clone(), open.run));
+) -> Result<Option<(ApprovalRecord, Option<RunId>)>, crate::events::EventLogError> {
+    let state = log.state();
+    if let Some(known) = state
+        .open_approval(approval_id)
+        .or_else(|| state.settled_approval(approval_id))
+    {
+        return Ok(Some((known.record.clone(), known.run)));
     }
-    let events = log.event_snapshot();
-    let record = approval_record(session_id, &events, approval_id)?;
-    Some((record, approval_run_id(&events, approval_id)))
-}
-
-/// The one record `approval_id` folds to, without materializing the others.
-pub(crate) fn approval_record(
-    session_id: SessionId,
-    events: &[Arc<StoredEvent>],
-    approval_id: ApprovalId,
-) -> Option<ApprovalRecord> {
-    let mut record = None::<ApprovalRecord>;
-    for envelope in events {
+    let mut found = None::<(ApprovalRecord, Option<RunId>)>;
+    for envelope in log.history()? {
+        let envelope = envelope?;
         match &envelope.payload {
             Event::ApprovalRequested { request } if request.approval_id() == approval_id => {
-                record = Some(pending_record(session_id, request));
+                // The run of the first request, as a repeat keeps it.
+                let run = found.as_ref().map_or(envelope.run_id, |(_, run)| *run);
+                found = Some((pending_record(session_id, request), run));
             }
             payload => {
-                if let Some(record) = record.as_mut()
+                if let Some((record, _)) = found.as_mut()
                     && approval_event_id(payload) == Some(approval_id)
                 {
                     apply_approval_event(record, payload);
@@ -789,81 +775,7 @@ pub(crate) fn approval_record(
             }
         }
     }
-    record
-}
-
-pub(in crate::runtime) fn approval_run_id(
-    events: &[Arc<StoredEvent>],
-    approval_id: ApprovalId,
-) -> Option<RunId> {
-    events.iter().find_map(|event| match &event.payload {
-        Event::ApprovalRequested { request } if request.approval_id() == approval_id => {
-            event.run_id
-        }
-        _ => None,
-    })
-}
-
-/// Approval requests for `fingerprint` in `run_id` since the last reset: user
-/// input, or a different operation completing. Scans back from the tip and
-/// stops at the latest reset instead of folding the whole run.
-pub(crate) fn doom_loop_repetitions(
-    events: &[Arc<StoredEvent>],
-    run_id: RunId,
-    fingerprint: &OperationFingerprint,
-) -> u32 {
-    let mut repetitions = 0_u32;
-    // A termination precedes nothing it depends on in reverse: its start, met
-    // later, decides whether it was a reset. Each candidate keeps the count of
-    // requests that followed it.
-    let mut candidates = HashMap::<ToolCallId, u32>::new();
-    let mut reset_at = None::<u32>;
-    for event in events
-        .iter()
-        .rev()
-        .filter(|event| event.run_id == Some(run_id))
-    {
-        match &event.payload {
-            Event::UserInputSubmitted { .. }
-            | Event::UserInputApplied { .. }
-            | Event::RunStarted { .. } => {
-                if matches!(
-                    event.payload,
-                    Event::UserInputSubmitted { .. } | Event::UserInputApplied { .. }
-                ) {
-                    reset_at = Some(reset_at.map_or(repetitions, |at| at.min(repetitions)));
-                }
-                break;
-            }
-            Event::ApprovalRequested { request }
-                if request.operation_fingerprint() == fingerprint =>
-            {
-                repetitions = repetitions.saturating_add(1);
-            }
-            Event::ToolCallTerminated { termination }
-                if termination.outcome == ToolTerminationOutcome::Completed =>
-            {
-                candidates
-                    .entry(termination.tool_call_id)
-                    .or_insert(repetitions);
-            }
-            Event::ToolCallStarted { start } => {
-                if let Some(at) = candidates.remove(&start.tool_call_id)
-                    && &start.operation_fingerprint != fingerprint
-                {
-                    reset_at = Some(reset_at.map_or(at, |reset| reset.min(at)));
-                }
-            }
-            _ => {}
-        }
-        // Older resets can only count more requests than the latest one.
-        if let Some(at) = reset_at
-            && candidates.values().all(|candidate| *candidate >= at)
-        {
-            break;
-        }
-    }
-    reset_at.unwrap_or(repetitions)
+    Ok(found)
 }
 
 /// The model-facing text of a denied tool call. `source` names who refused
@@ -894,9 +806,12 @@ pub(in crate::runtime) fn denied_tool_failure(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use cookie_agent_protocol::{
         ApprovalBoundary, ApprovalEvaluation, ApprovalResourceSource, ApprovalTrigger,
-        DecisionTrace, PreparedApprovalResource,
+        DecisionTrace, OperationFingerprint, PreparedApprovalResource, StoredEvent, ToolCallId,
+        ToolTerminationOutcome,
     };
 
     use super::*;
@@ -1035,40 +950,6 @@ mod tests {
         );
     }
 
-    fn forward_doom_loop_repetitions(
-        events: &[Arc<StoredEvent>],
-        run_id: RunId,
-        fingerprint: &OperationFingerprint,
-    ) -> u32 {
-        let mut starts = HashMap::<ToolCallId, OperationFingerprint>::new();
-        let mut repetitions = 0_u32;
-        for event in events.iter().filter(|event| event.run_id == Some(run_id)) {
-            match &event.payload {
-                Event::UserInputSubmitted { .. } | Event::UserInputApplied { .. } => {
-                    repetitions = 0;
-                }
-                Event::ApprovalRequested { request }
-                    if request.operation_fingerprint() == fingerprint =>
-                {
-                    repetitions = repetitions.saturating_add(1);
-                }
-                Event::ToolCallStarted { start } => {
-                    starts.insert(start.tool_call_id, start.operation_fingerprint.clone());
-                }
-                Event::ToolCallTerminated { termination }
-                    if termination.outcome == ToolTerminationOutcome::Completed
-                        && starts
-                            .get(&termination.tool_call_id)
-                            .is_some_and(|completed| completed != fingerprint) =>
-                {
-                    repetitions = 0;
-                }
-                _ => {}
-            }
-        }
-        repetitions
-    }
-
     #[test]
     fn reverse_doom_loop_count_matches_the_forward_fold() {
         let run = RunId::new_v7();
@@ -1097,6 +978,8 @@ mod tests {
             "RSoSlRTxRTyR",
             "XXRXR",
             "RSoRRUSoTRR",
+            // A call started before the input and ended after it resets nothing.
+            "SoRURTxR",
             "",
             "SoT",
         ];
@@ -1115,6 +998,20 @@ mod tests {
                     payload,
                 }));
             };
+            push(
+                run,
+                Event::RunStarted {
+                    client_run_id: cookie_agent_protocol::ClientRunId::new("script").unwrap(),
+                    selection: crate::test_support::run_selection("test"),
+                    revisions: None,
+                    internal_agents: crate::test_support::internal_agent_definitions(),
+                    agent: Box::new(crate::test_support::agent_snapshot(
+                        "test",
+                        cookie_agent_protocol::AgentMode::Primary,
+                    )),
+                    input_through_seq: 1,
+                },
+            );
             let mut chars = script.chars().peekable();
             while let Some(step) = chars.next() {
                 match step {
@@ -1186,9 +1083,13 @@ mod tests {
                     _ => unreachable!("unknown step {step}"),
                 }
             }
+            let mut state = crate::events::LogState::default();
+            for event in &events {
+                state.observe(event);
+            }
             assert_eq!(
-                doom_loop_repetitions(&events, run, &fingerprint),
-                forward_doom_loop_repetitions(&events, run, &fingerprint),
+                state.doom_loop_repetitions(run, &fingerprint),
+                crate::events::state::reference::doom_loop_repetitions(&events, run, &fingerprint),
                 "script {script}"
             );
         }

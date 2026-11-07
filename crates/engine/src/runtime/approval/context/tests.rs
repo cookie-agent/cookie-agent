@@ -15,8 +15,8 @@ use cookie_agent_protocol::{
 use serde_json::{Value, json};
 
 use super::{
-    Bounds, Conversation, Inherited, MAX_REASON_CHARS, Verdict, agents_md_until, cap_tokens,
-    delegation_prompt, parse_verdict, render, root_messages_until,
+    Bounds, Conversation, Inherited, MAX_REASON_CHARS, RootOpening, Verdict, cap_tokens,
+    delegation_prompt, parse_verdict, render,
 };
 use crate::runtime::Event;
 
@@ -652,11 +652,18 @@ fn a_grandchild_inherits_the_root_task_and_each_delegation() {
     let mut child = Log::new();
     child.user(RunId::new_v7(), "engine:delegation", "Port src/args.rs.");
 
-    let mut inherited = Inherited {
-        entries: root_messages_until(&root.events, delegated_at),
-        agents_md: agents_md_until(&root.events, delegated_at),
-    };
-    inherited.entries.extend(delegation_prompt(&child.events));
+    let mut opening = RootOpening::new(delegated_at);
+    for event in &root.events {
+        opening.observe(Arc::clone(event));
+    }
+    let (entries, agents_md) = opening.finish();
+    let mut inherited = Inherited { entries, agents_md };
+    inherited.entries.extend(
+        child
+            .events
+            .iter()
+            .find_map(|event| delegation_prompt(event)),
+    );
 
     let mut grandchild = Log::new();
     let run = RunId::new_v7();

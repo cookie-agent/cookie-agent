@@ -1552,6 +1552,7 @@ pub(crate) async fn wait_for_escalated_approval(
         || {
             let mut approvals = engine
                 .list_approvals(session_id, Some(ApprovalStatus::Escalated))
+                .unwrap()
                 .approvals;
             approvals.pop()
         },
@@ -1602,6 +1603,7 @@ pub(crate) async fn wait_for_tree_escalated_approval(
     .await;
     let approval = engine
         .list_approvals(root_session_id, Some(ApprovalStatus::Escalated))
+        .unwrap()
         .approvals
         .into_iter()
         .find(|approval| approval.session_id == child_session_id)
