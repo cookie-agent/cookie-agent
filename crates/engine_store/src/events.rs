@@ -1655,6 +1655,7 @@ impl EventLog {
     }
 
     /// Owned copies of every event, for a test.
+    #[cfg(any(test, feature = "test-support"))]
     #[must_use]
     pub fn events(&self) -> Vec<StoredEvent> {
         self.event_snapshot()
@@ -1665,6 +1666,7 @@ impl EventLog {
 
     /// Every event at once, for a test: production code says what it needs
     /// (`docs/site/specs/forever-sessions.md` section 2).
+    #[cfg(any(test, feature = "test-support"))]
     #[must_use]
     pub fn event_snapshot(&self) -> EventSnapshot {
         self.storage().snapshot()
@@ -1688,6 +1690,7 @@ impl EventLog {
     }
 
     /// [`Self::event_snapshot`] and [`Self::state`] of the same moment, for a test.
+    #[cfg(any(test, feature = "test-support"))]
     #[must_use]
     pub fn snapshot_and_state(&self) -> (EventSnapshot, Arc<LogState>) {
         let storage = self.storage();

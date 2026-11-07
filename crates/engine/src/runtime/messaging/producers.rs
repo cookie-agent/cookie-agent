@@ -364,7 +364,7 @@ impl Engine {
         {
             return Ok(());
         }
-        let streak = self.inner.store.log(session)?.state();
+        let state = self.inner.store.log(session)?.state();
         let retry = self.inner.config.load().runtime.model_retry;
         // The ACP agent's own work is shown even while the session is held:
         // the agent is already working (`docs/site/specs/acp-v2.md`
@@ -379,7 +379,7 @@ impl Engine {
         let wake_delay = if acp_wake {
             None
         } else {
-            match after_runs(streak.run_streak(), retry.standard_retries) {
+            match after_runs(state.run_streak(), retry.standard_retries) {
                 AfterRuns::Held => return Ok(()),
                 // A stop holds only what could start a run on its own; with
                 // nothing such, the user's next message is just a message.

@@ -54,12 +54,12 @@ a cap makes it worse, and it is left out.
 
 `EventLog::event_snapshot()` goes. Its 125 production uses each move to one of:
 
-| Call | Gives | Audit's count |
-|---|---|---|
-| `recent()` | The events since the log's window start | 36 |
-| `state()` | A small fold kept up to date on append (section 3.1) | 51 |
-| `history()` | An iterator over events read from disk, one at a time, unless the log holds them all | 30 |
-| `model_context_events()` | Pinned records and the window, for a native model's context | 8 |
+| Call | Gives | Audit's count | Where they landed (section 12) |
+|---|---|---|---|
+| `recent()` | The events since the log's window start | 36 | 1 |
+| `state()` | A small fold kept up to date on append (section 3.1) | 51 | 75 |
+| `history()` | An iterator over events read from disk, one at a time, unless the log holds them all | 30 | 42 |
+| `model_context_events()` | Pinned records and the window, for a native model's context | 8 | 9 |
 
 The compiler finds every use, so none is missed, and each states what it needs. Until
 a log is windowed, it holds every event and these cost nothing. ACP sessions are
@@ -110,8 +110,9 @@ back than one turn:
 | Whether this run was cancelled or failed, and its last attempt | `run_cancelled_recorded`, `run_failure_event` |
 | Attached context since the last run ended | `add_attached_context` |
 
-The loop guard and the doom-loop check read a run's last calls, but only for native
-sessions (section 5.1). Phase 1 confirms each of these against the code,
+The loop guard reads a run's last calls, but only for native sessions (section 5.1). The
+doom-loop check reads them for ACP sessions too, so it is a fold (section 12). Phase 1 confirms
+each of these against the code,
 and any other that a turn-long window breaks shows in section 7's tests as a fold that
 differs.
 
@@ -534,3 +535,58 @@ From the user, 2026-11-06:
 - **What the golden ACP scenario does not reach:** `delegated_context_seeded`, as `inherit_context`
   fails on an ACP parent, and no golden log has one. The fold's tests and the live delegation tests
   compare it.
+
+**Phase 2** (2026-11-07), read against the code at `d7e313fb1`. `event_snapshot()`, `events()`, and
+`snapshot_and_state()` exist only under `test-support`, so the compiler proves no production use.
+The counts in section 2 are of the lines that call each, in the engine, the store, and permissions.
+
+- **`recent()` has one caller, far from the 36 the audit expected.** Nearly every reader turned out
+  to look further back than a turn, or to be answerable by a fold. The one is an ACP claim, which
+  reads the log's tip. A claim serving a native model takes `model_context_events()`, and the claim
+  says which by the run's policy, as the two must be taken at the claim's moment.
+- **The doom-loop check and the cache-expiry rule are not native-only**, against section 3.2 and
+  section 5.1's table. `await_user_approval` is the ACP permission path and the bridge's too, so the
+  check runs on every approval of an ACP session, and `stamp_acp_cache_ttl` puts a cache TTL on ACP
+  usage, which `cache_expiry` then plans from. Each read back further than a turn, and at a cost on
+  an ordinary turn, so each is now a fold (`doom_loop_repetitions`, `latest_request`) with its scan as
+  its reference. `latest_request`'s scan stopped looking for when a request went out 4,096 events back
+  from the tip and fell back on the usage event's time; the fold has no such bound. That is the one
+  difference in what a reader gets, and only for a session with that many events after its last
+  request.
+- **More folds than section 3.1 lists,** each with its scan as its reference, as a pass on an ordinary
+  turn or on every open would defeat the window: the run streak (`after_runs`, on every wake), the open
+  internal agents and the open approvals (`reconcile_session_with`, on every adoption), the approval
+  that settled last (a response reads back what it just settled), a session's own ACP sessions
+  (`own_records`, as a delete holds the tree's lock), the latest turn, and the latest fallback.
+- **A pass is `history()` or `history_range()`**, which yield `Result<Arc<StoredEvent>, _>` and hold no
+  lock. A scan from the tip becomes a pass keeping the latest answer (`last_map_ok`), as a file reads
+  forward. **Phase 3 must read the file inside `History::next`, off the worker (`off_worker`), bounded
+  at the tip it saw when asked, and cope with a revert cutting the file under a pass in flight.**
+- **`creation()`** answers for a log's first record. Phase 3 keeps that record whatever the window.
+- **`model_context_events()` is fallible** because phase 3 must read a windowed log whole for it, for
+  the ACP-to-native switch of section 5.4. `get_history`'s assembled view, compaction, the loop guard,
+  `context_composition`, and the reviewer's own session take it; `get_history`'s full view takes
+  `history()`, as its answer holds everything anyway.
+- **The reviewer reads its own session as `model_context_events()`, which phase 7 narrows** before
+  phase 8 gives it its own log. Its render reads the whole log today, so phase 7 changes what it sees
+  unless phase 8 comes first. Its ancestors take `history()`, as a native child's root can be an ACP
+  session (`RootOpening`, `delegation_prompt`).
+- **A window holds the newest run while it is worked out.** `TailWindowReader` keeps the events from the
+  last run boundary whose events on do not fit the budget, as `tail_window_after` needs them, and
+  `read_view` holds the same today. So opening a session costs a run's events for a moment, and a run
+  that never ends is the one case a window is not bounded by its budget. An older page keeps what fits
+  its budget, in whole events: a cut result is held whole until the page is cut.
+- **`write_view` is a pass at every run's end.** The cache needs the header before its start and the
+  sizes of what follows. In memory this measures every event at each run's end where it used to stop
+  at the budget, which costs more on a long log, and phase 3's "no `history()` on a normal ACP turn"
+  fails on it. **Phase 3 must make it incremental,** from what the last write held.
+- **Other passes on the way to a normal ACP turn that phase 3 should look at:** the first title
+  (`maybe_generate_session_title`, until a title commits), and `view_event_count` (two passes, for a
+  reader's first forward page when more follow).
+- **Passes under a lock.** A fork reads its source under the store's `mutation` lock
+  (`fork_buffered`, `acp_detached`), and holds the copy in memory to write it whole. A revert reads under
+  the session's actor. A final forward page that lost a race reads under the session's slot. A refold
+  on `NeedsRefold` reads under the slot too. None holds the log's `events` mutex. Phase 3 should move the
+  fork's reads before the lock. A delete takes no pass, as `acp_own_records` is a fold.
+- **What else reads the whole list inside the log, for phase 3:** `visit_json`, `truncate`, and the
+  validation and index rebuilds, by `storage.all` or `raw.lines`.
