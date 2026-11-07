@@ -2590,12 +2590,18 @@ impl EventLog {
 
     #[must_use]
     pub fn delegation_event_tainted(&self, event: &StoredEvent) -> bool {
-        delegation_invocation_from_event(&event.payload).is_some_and(|invocation_id| {
+        self.delegation_record_tainted(&event.payload, event.seq)
+    }
+
+    /// [`Self::delegation_event_tainted`] of the record at `seq` holding `payload`.
+    #[must_use]
+    pub fn delegation_record_tainted(&self, payload: &EventPayload, seq: u64) -> bool {
+        delegation_invocation_from_event(payload).is_some_and(|invocation_id| {
             self.validation
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .taint
-                .delegation_before(invocation_id, event.seq)
+                .delegation_before(invocation_id, seq)
         })
     }
 

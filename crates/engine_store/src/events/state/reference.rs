@@ -15,16 +15,17 @@ use std::{
 use cookie_agent_protocol::{
     AcpCommand, AcpContextUsage, AcpDetached, AcpOptionChoice, AcpSessionRecord, AgentId,
     ApprovalId, ApprovalRecord, ApprovalStatus, ApprovalStep, AttachmentName, ClientResponseId,
-    EventPayload as Event, InternalAgentInvocationId, InternalAgentRunId, InvocationId, Open,
-    OperationFingerprint, ProducerOwner, QueuedInputs, ResolvedModelRef, RunId, RunOutcome,
-    SessionId, SessionModelState, SessionTitle, SessionTitleChange, Sha256Digest, StoredEvent,
-    ToolCallId, ToolTerminationOutcome, UserContent,
+    DelegationStage, EventPayload as Event, InternalAgentInvocationId, InternalAgentRunId,
+    InvocationId, Open, OperationFingerprint, ProducerOwner, QueuedInputs, ResolvedModelRef, RunId,
+    RunOutcome, SessionId, SessionModelState, SessionTitle, SessionTitleChange, Sha256Digest,
+    StoredEvent, ToolCallId, ToolTerminationOutcome, TreeApprovalGrant, UserContent,
 };
 use jiff::Timestamp;
 
 use super::{
-    DelegatedTitle, LatestRequest, LogState, OpenApproval, OpenInternalAgent, RunStreak,
-    TakenInput, UserDecision, apply_approval_event, approval_event_id, pending_record, seed_digest,
+    DelegatedTitle, HarvestedDelegation, LatestRequest, LogState, OpenApproval, OpenInternalAgent,
+    RunStreak, TakenInput, UserDecision, apply_approval_event, approval_event_id, pending_record,
+    seed_digest,
 };
 use crate::goal_projection::{GoalProducerProjection, goal_tools_offered};
 
@@ -1238,7 +1239,76 @@ pub fn differences(state: &LogState, events: &Events) -> Vec<&'static str> {
         );
     }
 
+    let (grants, delegations, queued, accepted) = harvest(events);
+    let harvested = state.harvest();
+    check("the harvest's grants", harvested.grants() == grants);
+    check(
+        "the harvest's delegation records",
+        harvested.delegations() == delegations,
+    );
+    check(
+        "the harvest's queued delegations",
+        harvested.queued() == queued,
+    );
+    check(
+        "the harvest's accepted delegations",
+        harvested.producer_accepted() == accepted,
+    );
+
     found
+}
+
+/// `TreeFold::harvest_records` and `ParentFactsFold`: the grants, the delegation
+/// records, the queued delegations, and those a producer message accepted.
+#[must_use]
+pub fn harvest(
+    events: &Events,
+) -> (
+    Vec<TreeApprovalGrant>,
+    Vec<HarvestedDelegation>,
+    Vec<(RunId, SessionId)>,
+    Vec<InvocationId>,
+) {
+    let mut revisions = cookie_agent_protocol::RevisionFold::default();
+    let (mut grants, mut delegations, mut queued, mut accepted) =
+        (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    let mut started = HashMap::new();
+    for event in events {
+        revisions.observe(&event.payload);
+        match &event.payload {
+            Event::DelegationProgressed {
+                invocation_id,
+                stage: Open::Known(DelegationStage::Started { child_session_id }),
+            } => {
+                started.insert(*invocation_id, *child_session_id);
+            }
+            Event::DelegationProgressed {
+                invocation_id,
+                stage: Open::Known(DelegationStage::Queued { .. }),
+            } => {
+                if let (Some(run), Some(child)) = (event.run_id, started.get(invocation_id)) {
+                    queued.push((run, *child));
+                }
+            }
+            Event::ProducerMessageAccepted {
+                producer_owner: ProducerOwner::Delegation { invocation_id },
+                ..
+            } => accepted.push(*invocation_id),
+            _ => {}
+        }
+        match &event.payload {
+            Event::TreeApprovalGrantCommitted { grant } => grants.push(grant.clone()),
+            payload if crate::delegation_events::is_delegation_payload(payload) => {
+                delegations.push(HarvestedDelegation {
+                    seq: event.seq,
+                    run: event.run_id,
+                    payload: crate::delegation_events::harvested(payload, &revisions),
+                });
+            }
+            _ => {}
+        }
+    }
+    (grants, delegations, queued, accepted)
 }
 
 /// Panics, naming the folds and the record, when `state` differs from what

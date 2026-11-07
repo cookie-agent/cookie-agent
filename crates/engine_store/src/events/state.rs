@@ -16,11 +16,12 @@ use cookie_agent_protocol::{
     AcpCommand, AcpContextUsage, AcpDetachReason, AcpDetached, AcpOptionChoice, AcpSessionRecord,
     AcpSessionStart, AgentId, ApprovalFinalOutcome, ApprovalId, ApprovalRecord, ApprovalRequest,
     ApprovalStatus, ApprovalStep, ApprovalUserDecision, AttachmentName, AttemptId, CacheTtlStamp,
-    ClientResponseId, DelegatedContextTurn, EventOrigin, EventPayload, InternalAgentInvocationId,
-    InternalAgentKind, InternalAgentRunId, InvocationId, Open, OperationFingerprint,
-    ProducerMessageId, ProducerOwner, QueuedInputs, ResolvedModelRef, RunId, RunOutcome,
-    SafeErrorMessage, SessionId, SessionModelState, SessionTitle, SessionTitleChange, Sha256Digest,
-    StoredEvent, ToolCallId, ToolTerminationOutcome, UserContent,
+    ClientResponseId, DelegatedContextTurn, DelegationStage, EventOrigin, EventPayload,
+    InternalAgentInvocationId, InternalAgentKind, InternalAgentRunId, InvocationId, Open,
+    OperationFingerprint, ProducerMessageId, ProducerOwner, QueuedInputs, ResolvedModelRef,
+    RevisionFold, RunId, RunOutcome, SafeErrorMessage, SessionId, SessionModelState, SessionTitle,
+    SessionTitleChange, Sha256Digest, StoredEvent, ToolCallId, ToolTerminationOutcome,
+    TreeApprovalGrant, UserContent,
 };
 use jiff::Timestamp;
 
@@ -54,11 +55,13 @@ pub struct LogState {
     request: RequestFold,
     opening_inputs: Vec<Arc<StoredEvent>>,
     latest_run_input: Option<Arc<StoredEvent>>,
+    harvest: HarvestFold,
 }
 
 impl LogState {
     /// Folds the next event of the log.
     pub fn observe(&mut self, event: &Arc<StoredEvent>) {
+        self.harvest.observe(event);
         self.acp.observe(&event.payload);
         self.model.apply(event.run_id, &event.payload);
         self.queue.apply(event);
@@ -285,6 +288,12 @@ impl LogState {
             .values()
             .filter(move |event| event.run_id == Some(run))
             .map(|event| event.seq)
+    }
+
+    /// What a tree load takes from the log.
+    #[must_use]
+    pub fn harvest(&self) -> &HarvestFold {
+        &self.harvest
     }
 
     /// The log's first `user_input_submitted` records, up to [`OPENING_INPUTS`]
@@ -1216,6 +1225,94 @@ fn remember<T>(list: &mut VecDeque<T>, item: T) {
 
 /// Facts a log records once: a set of keys, which grows with the log but
 /// stays small (section 3.1).
+/// A delegation record a tree load hands over, with the revisions it was frozen
+/// against.
+#[derive(Clone, Debug, PartialEq)]
+pub struct HarvestedDelegation {
+    pub seq: u64,
+    pub run: Option<RunId>,
+    pub payload: EventPayload,
+}
+
+/// What a tree load takes from a log, whoever holds it in the tree: its grants,
+/// its delegation records, and what the registry needs of it as a delegation's
+/// parent (`docs/site/specs/forever-sessions.md` section 4.1). So neither a load
+/// nor a registry rebuild reads the log for them.
+#[derive(Clone, Debug, Default)]
+pub struct HarvestFold {
+    /// Every grant, restart-stable or not.
+    grants: Vec<TreeApprovalGrant>,
+    /// Whether one of them is tainted is asked of the log when it is handed over,
+    /// as damage found later can excuse or condemn an earlier record.
+    delegations: Vec<HarvestedDelegation>,
+    revisions: RevisionFold,
+    /// The child each invocation started.
+    started: HashMap<InvocationId, SessionId>,
+    /// `(parent run, child)` of each queued delegation.
+    queued: Vec<(RunId, SessionId)>,
+    /// Delegations whose delivery a producer message accepted.
+    producer_accepted: Vec<InvocationId>,
+}
+
+impl HarvestFold {
+    fn observe(&mut self, event: &StoredEvent) {
+        self.revisions.observe(&event.payload);
+        match &event.payload {
+            EventPayload::TreeApprovalGrantCommitted { grant } => self.grants.push(grant.clone()),
+            EventPayload::DelegationProgressed {
+                invocation_id,
+                stage: Open::Known(DelegationStage::Started { child_session_id }),
+            } => {
+                self.started.insert(*invocation_id, *child_session_id);
+            }
+            EventPayload::DelegationProgressed {
+                invocation_id,
+                stage: Open::Known(DelegationStage::Queued { .. }),
+            } => {
+                if let (Some(run), Some(child)) = (event.run_id, self.started.get(invocation_id)) {
+                    self.queued.push((run, *child));
+                }
+            }
+            EventPayload::ProducerMessageAccepted {
+                producer_owner: ProducerOwner::Delegation { invocation_id },
+                ..
+            } => self.producer_accepted.push(*invocation_id),
+            _ => {}
+        }
+        if crate::delegation_events::is_delegation_payload(&event.payload) {
+            self.delegations.push(HarvestedDelegation {
+                seq: event.seq,
+                run: event.run_id,
+                payload: crate::delegation_events::harvested(&event.payload, &self.revisions),
+            });
+        }
+    }
+
+    /// Every grant of the log, in order.
+    #[must_use]
+    pub fn grants(&self) -> &[TreeApprovalGrant] {
+        &self.grants
+    }
+
+    /// Every delegation record of the log, in order.
+    #[must_use]
+    pub fn delegations(&self) -> &[HarvestedDelegation] {
+        &self.delegations
+    }
+
+    /// `(parent run, child)` of each queued delegation, in order.
+    #[must_use]
+    pub fn queued(&self) -> &[(RunId, SessionId)] {
+        &self.queued
+    }
+
+    /// The delegations whose delivery a producer message accepted, in order.
+    #[must_use]
+    pub fn producer_accepted(&self) -> &[InvocationId] {
+        &self.producer_accepted
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 struct OnceFacts {
     seeds: HashMap<InvocationId, Vec<Sha256Digest>>,
