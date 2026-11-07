@@ -504,15 +504,13 @@ impl Engine {
             }
         };
         let owner = cron_owner(&job.id);
-        let message = self
-            .goal_producer_projection(session)
-            .ok()?
-            .messages
-            .iter()
-            .find(|message| {
-                message.producer_owner == owner && message.idempotency_key.as_str() == key
-            })
-            .map(|message| message.message_id);
+        let message = ProducerIdempotencyKey::new(key.to_owned())
+            .ok()
+            .and_then(|key| {
+                self.goal_producer_projection(session)
+                    .ok()?
+                    .accepted(&owner, &key)
+            });
         match (message, &job.target) {
             (Some(message), _) => Some(Delivery {
                 session,

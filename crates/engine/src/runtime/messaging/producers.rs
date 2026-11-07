@@ -1433,14 +1433,10 @@ impl Engine {
                 "description must not be blank".into(),
             ));
         }
-        if let Some(existing) = self
-            .goal_producer_projection(session)?
-            .messages
-            .iter()
-            .find(|message| {
-                message.producer_owner == authority.owner && message.idempotency_key == key
-            })
-        {
+        let projection = self.goal_producer_projection(session)?;
+        if let Some(existing) = projection.messages.iter().find(|message| {
+            message.producer_owner == authority.owner && message.idempotency_key == key
+        }) {
             if existing.mode != mode
                 || existing.description != description
                 || existing.body != body
@@ -1452,6 +1448,12 @@ impl Engine {
             }
             self.inner.store.persist_buffered_session(session)?;
             return Ok(existing.message_id);
+        }
+        // A retry of a message that settled long ago, which the log keeps only
+        // the key of: its payload can no longer be compared, and it was delivered.
+        if let Some(settled) = projection.accepted(&authority.owner, &key) {
+            self.inner.store.persist_buffered_session(session)?;
+            return Ok(settled);
         }
         // A held session takes nothing new from plugins, runtimes, or cron
         // until it is resumed; the engine's own reports wait in it
@@ -1693,6 +1695,10 @@ impl Engine {
             }
             self.inner.store.persist_buffered_session(session)?;
             return Ok(existing.message_id);
+        }
+        if let Some(settled) = projection.accepted(&authority.owner, &key) {
+            self.inner.store.persist_buffered_session(session)?;
+            return Ok(settled);
         }
         // Guards follow the replay check: a retried send keeps its original
         // receipt no matter how much chain depth or inbox pressure appeared

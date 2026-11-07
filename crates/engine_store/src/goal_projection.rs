@@ -2,7 +2,7 @@
 
 use std::{
     borrow::Borrow,
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
     sync::Arc,
 };
 
@@ -56,6 +56,37 @@ pub struct GoalProducerProjection {
     #[serde(with = "crate::events::sorted::map")]
     pub claims: HashMap<u64, ProducerClaimRecord>,
     pub invalid: Vec<(u64, String)>,
+    /// What is left of the messages a log's own fold let go of.
+    pub settled: SettledMessages,
+}
+
+/// What a log's producer fold keeps of a message that settled, once it lets go of
+/// the message (`docs/site/specs/forever-sessions.md` section 12): a message
+/// consumed and recorded, or discarded, whose run ended, with no claim on it.
+/// Nothing names such a message again but a producer's retry of its key, so this
+/// keeps that, and whether a goal's reminder was consumed. Both are kept for as
+/// long as the log, each 8 bytes and an ID.
+#[derive(Clone, Debug, Default, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+pub struct SettledMessages {
+    /// By the digest of each message's owner and idempotency key, its ID.
+    #[serde(with = "crate::events::sorted::map")]
+    keys: HashMap<String, ProducerMessageId>,
+    /// The goals a consumed reminder of continued.
+    #[serde(with = "crate::events::sorted::set")]
+    continued_goals: HashSet<GoalId>,
+}
+
+/// The digest [`SettledMessages`] keeps a message's key as.
+fn key_digest(owner: &ProducerOwner, key: &ProducerIdempotencyKey) -> String {
+    use sha2::Digest as _;
+    let mut digest = sha2::Sha256::new();
+    digest.update(serde_json::to_vec(owner).unwrap_or_default());
+    digest.update([0]);
+    digest.update(key.as_str().as_bytes());
+    digest.finalize()[..8]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 impl GoalProducerProjection {
@@ -69,16 +100,33 @@ impl GoalProducerProjection {
 
     pub fn next_reminder_kind(&self, goal_id: GoalId) -> GoalReminderKind {
         // Acceptance and claims are retractable; only committed input coverage introduces a goal.
-        if self.messages.iter().any(|message| {
-            message.consumed
-                && message
-                    .reminder
-                    .is_some_and(|reminder| reminder.goal_id == goal_id)
-        }) {
+        if self.settled.continued_goals.contains(&goal_id)
+            || self.messages.iter().any(|message| {
+                message.consumed
+                    && message
+                        .reminder
+                        .is_some_and(|reminder| reminder.goal_id == goal_id)
+            })
+        {
             GoalReminderKind::Continuation
         } else {
             GoalReminderKind::Started
         }
+    }
+
+    /// The message accepted from `owner` under `key`, whether this holds it or let
+    /// go of it as settled: a producer's retry of the key is answered with it.
+    #[must_use]
+    pub fn accepted(
+        &self,
+        owner: &ProducerOwner,
+        key: &ProducerIdempotencyKey,
+    ) -> Option<ProducerMessageId> {
+        self.messages
+            .iter()
+            .find(|message| &message.producer_owner == owner && &message.idempotency_key == key)
+            .map(|message| message.message_id)
+            .or_else(|| self.settled.keys.get(&key_digest(owner, key)).copied())
     }
 
     /// Hop depth a `send_message` from `run` must carry: one more than the
@@ -122,6 +170,47 @@ impl GoalProducerProjection {
         Arc::unwrap_or_clone(fold.projection)
     }
 
+    /// Test-only: whether this, a log's own fold, which let go of messages that
+    /// settled, agrees with `whole`, the same log folded keeping every message:
+    /// what it holds is `whole`'s, in order; what it let go of had settled, and
+    /// its key answers with its ID; and the rest is the same.
+    #[cfg(any(test, feature = "test-support"))]
+    #[must_use]
+    pub fn agrees_with_whole(&self, whole: &Self) -> bool {
+        let held = self
+            .messages
+            .iter()
+            .map(|message| message.message_id)
+            .collect::<HashSet<_>>();
+        let let_go_settled = whole
+            .messages
+            .iter()
+            .filter(|message| !held.contains(&message.message_id))
+            .all(|message| {
+                message.claims.is_empty()
+                    && ((message.consumed && message.consumption_recorded) || message.discarded)
+                    && self.accepted(&message.producer_owner, &message.idempotency_key)
+                        == Some(message.message_id)
+            });
+        let continued = whole
+            .messages
+            .iter()
+            .filter(|message| message.consumed)
+            .filter_map(|message| message.reminder.map(|reminder| reminder.goal_id))
+            .collect::<HashSet<_>>();
+        self.goal == whole.goal
+            && self.selection == whole.selection
+            && self.claims == whole.claims
+            && self.invalid == whole.invalid
+            && whole
+                .messages
+                .iter()
+                .filter(|message| held.contains(&message.message_id))
+                .eq(self.messages.iter())
+            && let_go_settled
+            && self.settled.continued_goals == continued
+    }
+
     fn reject(&mut self, seq: u64, reason: &str) {
         self.invalid.push((seq, reason.to_owned()));
     }
@@ -144,7 +233,15 @@ pub struct GoalProducerFold {
     /// The messages accepted and neither admitted nor discarded yet.
     #[serde(with = "crate::events::sorted::set")]
     unadmitted: HashSet<usize>,
+    /// The runs that ended, oldest first, of those `terminal_runs` keeps: the
+    /// newest [`SETTLED_KEPT`], and any a message it holds names.
+    terminal_order: VecDeque<RunId>,
 }
+
+/// How many settled messages, and ended runs, a log's own fold keeps beyond what
+/// it must: what settles is read back for a moment, as a cron job reads where its
+/// message landed once that run ended.
+const SETTLED_KEPT: usize = 16;
 
 impl GoalProducerFold {
     /// The projection through the events observed so far.
@@ -225,6 +322,17 @@ impl GoalProducerFold {
                 if !valid_hop_owner(producer_owner, *agent_hop) {
                     self.projection_mut()
                         .reject(event.seq, "invalid producer hop ownership");
+                    return;
+                }
+                // A retry of a key whose message settled and went: as an exact
+                // retry of one held, it changes nothing.
+                if !self.projection.settled.keys.is_empty()
+                    && self
+                        .projection
+                        .settled
+                        .keys
+                        .contains_key(&key_digest(producer_owner, idempotency_key))
+                {
                     return;
                 }
                 let dedup_key = (producer_owner.clone(), idempotency_key.clone());
@@ -394,12 +502,16 @@ impl GoalProducerFold {
                 if !self.projection.messages.iter().any(covered) {
                     return;
                 }
-                for message in &mut self.projection_mut().messages {
+                let projection = self.projection_mut();
+                for message in &mut projection.messages {
                     if covered(message) {
                         message.discarded = false;
                         message.discarded_seq = None;
                         message.consumed = true;
                         message.consumed_run = Some(run_id);
+                        if let Some(reminder) = message.reminder {
+                            projection.settled.continued_goals.insert(reminder.goal_id);
+                        }
                     }
                 }
             }
@@ -448,11 +560,116 @@ impl GoalProducerFold {
                 }
             }
             EventPayload::RunFinished { .. } => {
-                if let Some(run_id) = event.run_id {
-                    self.terminal_runs.insert(run_id);
+                if let Some(run_id) = event.run_id
+                    && self.terminal_runs.insert(run_id)
+                {
+                    self.terminal_order.push_back(run_id);
                 }
             }
             _ => {}
+        }
+    }
+
+    /// [`Self::observe`] for a log's own fold, which lets go of what settled, at
+    /// each committed turn and run's end, so it holds what is open and not what
+    /// the log grew to (`docs/site/specs/forever-sessions.md` section 6). A fold
+    /// for a model's history ([`GoalProducerProjection::from_events`]) keeps every
+    /// message, whose bodies are the history.
+    pub fn observe_letting_go(&mut self, event: &StoredEvent) {
+        self.observe(event);
+        if matches!(
+            event.payload,
+            EventPayload::RunFinished { .. } | EventPayload::ModelTurnCommitted { .. }
+        ) {
+            self.let_go_settled();
+        }
+    }
+
+    /// Lets go of the messages that settled, but for the newest [`SETTLED_KEPT`]:
+    /// those consumed and recorded, or discarded, with no claim, whose run ended,
+    /// so no record can change them. Their keys stay, as a digest, and so does
+    /// whether one was a goal's consumed reminder. Then of the ended runs, those
+    /// no message held names, but for the newest [`SETTLED_KEPT`]: a message is
+    /// admitted to the run that starts, so only a held message asks of an older one.
+    fn let_go_settled(&mut self) {
+        let ended = |run: &RunId| self.terminal_runs.contains(run);
+        let mut settled = self
+            .projection
+            .messages
+            .iter()
+            .enumerate()
+            .filter(|(_, message)| {
+                message.claims.is_empty()
+                    && ((message.consumed
+                        && message.consumption_recorded
+                        && message.consumed_run.as_ref().is_none_or(ended))
+                        || (message.discarded
+                            && message.admission.as_ref().is_none_or(|(run, _)| ended(run))))
+            })
+            .map(|(index, message)| (message.accepted_seq, index))
+            .collect::<Vec<_>>();
+        if settled.len() > SETTLED_KEPT {
+            settled.sort_unstable();
+            settled.truncate(settled.len() - SETTLED_KEPT);
+            let gone = settled
+                .into_iter()
+                .map(|(_, index)| index)
+                .collect::<HashSet<_>>();
+            let projection = self.projection_mut();
+            let mut index = 0;
+            let mut keys = Vec::new();
+            projection.messages.retain(|message| {
+                let kept = !gone.contains(&index);
+                if !kept {
+                    keys.push((
+                        key_digest(&message.producer_owner, &message.idempotency_key),
+                        message.message_id,
+                    ));
+                }
+                index += 1;
+                kept
+            });
+            projection.settled.keys.extend(keys);
+            self.message_indexes.clear();
+            self.dedup_indexes.clear();
+            self.unadmitted.clear();
+            for (index, message) in self.projection.messages.iter().enumerate() {
+                self.message_indexes.insert(message.message_id, index);
+                self.dedup_indexes.insert(
+                    (
+                        message.producer_owner.clone(),
+                        message.idempotency_key.clone(),
+                    ),
+                    index,
+                );
+                if message.admission.is_none() && message.discarded_seq.is_none() {
+                    self.unadmitted.insert(index);
+                }
+            }
+        }
+        if self.terminal_order.len() > SETTLED_KEPT {
+            let named = self
+                .projection
+                .messages
+                .iter()
+                .flat_map(|message| {
+                    message
+                        .admission
+                        .map(|(run, _)| run)
+                        .into_iter()
+                        .chain(message.consumed_run)
+                })
+                .collect::<HashSet<_>>();
+            let beyond = self.terminal_order.len() - SETTLED_KEPT;
+            let mut kept = VecDeque::with_capacity(self.terminal_order.len());
+            for (position, run) in self.terminal_order.drain(..).enumerate() {
+                if position >= beyond || named.contains(&run) {
+                    kept.push_back(run);
+                } else {
+                    self.terminal_runs.remove(&run);
+                }
+            }
+            self.terminal_order = kept;
         }
     }
 }

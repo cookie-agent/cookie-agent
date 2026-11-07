@@ -68,7 +68,7 @@ impl LogState {
         self.model.apply(event.run_id, &event.payload);
         self.queue.apply(event);
         self.run.observe(event, &self.producers);
-        self.producers.observe(event);
+        self.producers.observe_letting_go(event);
         self.inputs.observe(event);
         self.approvals.observe(event);
         self.once.observe(event);

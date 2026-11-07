@@ -1001,7 +1001,7 @@ pub fn differences(state: &LogState, events: &Events) -> Vec<&'static str> {
     );
     check("queue", *state.queue() == QueuedInputs::from_events(events));
     let producers = GoalProducerProjection::from_events(events);
-    check("producers", *state.producers() == producers);
+    check("producers", state.producers().agrees_with_whole(&producers));
     check(
         "unadmitted producer message",
         state.producer_message_unadmitted() == producer_message_unadmitted(&producers),

@@ -146,11 +146,8 @@ impl Engine {
             .on_actor(parent_session_id, move |engine| {
                 let already = engine
                     .goal_producer_projection(parent_session_id)?
-                    .messages
-                    .iter()
-                    .any(|message| {
-                        message.producer_owner == authority.owner && message.idempotency_key == key
-                    });
+                    .accepted(&authority.owner, &key)
+                    .is_some();
                 if already {
                     return Ok(());
                 }
