@@ -8,17 +8,19 @@
 //! replaced, and tests compare the two at every event.
 
 use std::{
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet, VecDeque},
     sync::Arc,
 };
 
 use cookie_agent_protocol::{
-    AcpCommand, AcpContextUsage, AcpDetached, AcpOptionChoice, AcpSessionRecord, AcpSessionStart,
-    AgentId, ApprovalFinalOutcome, ApprovalId, ApprovalRecord, ApprovalRequest, ApprovalStatus,
-    ApprovalStep, ApprovalUserDecision, AttachmentName, ClientResponseId, DelegatedContextTurn,
-    EventPayload, InvocationId, Open, ProducerMessageId, ProducerOwner, QueuedInputs,
-    ResolvedModelRef, RunId, RunOutcome, SessionId, SessionModelState, SessionTitle,
-    SessionTitleChange, Sha256Digest, StoredEvent, ToolCallId, UserContent,
+    AcpCommand, AcpContextUsage, AcpDetachReason, AcpDetached, AcpOptionChoice, AcpSessionRecord,
+    AcpSessionStart, AgentId, ApprovalFinalOutcome, ApprovalId, ApprovalRecord, ApprovalRequest,
+    ApprovalStatus, ApprovalStep, ApprovalUserDecision, AttachmentName, AttemptId, CacheTtlStamp,
+    ClientResponseId, DelegatedContextTurn, EventOrigin, EventPayload, InternalAgentInvocationId,
+    InternalAgentKind, InternalAgentRunId, InvocationId, Open, OperationFingerprint,
+    ProducerMessageId, ProducerOwner, QueuedInputs, ResolvedModelRef, RunId, RunOutcome,
+    SafeErrorMessage, SessionId, SessionModelState, SessionTitle, SessionTitleChange, Sha256Digest,
+    StoredEvent, ToolCallId, ToolTerminationOutcome, UserContent,
 };
 use jiff::Timestamp;
 
@@ -41,6 +43,12 @@ pub struct LogState {
     approvals: ApprovalFold,
     once: OnceFacts,
     overlay_epoch: u64,
+    internal_agents: HashMap<(InternalAgentInvocationId, InternalAgentRunId), OpenInternalAgent>,
+    doom: DoomFold,
+    streak: RunStreak,
+    latest_turn: Option<(RunId, u64)>,
+    fallback: Option<(RunId, usize)>,
+    request: RequestFold,
 }
 
 impl LogState {
@@ -54,6 +62,9 @@ impl LogState {
         self.inputs.observe(event);
         self.approvals.observe(event);
         self.once.observe(event);
+        self.doom.observe(event);
+        self.streak.observe(event);
+        self.request.observe(event);
         match &event.payload {
             EventPayload::ToolCallStarted { start } => {
                 self.calls.insert(start.tool_call_id, Arc::clone(event));
@@ -62,6 +73,47 @@ impl LogState {
                 self.calls.remove(&termination.tool_call_id);
             }
             EventPayload::SessionPermissionOverlaySet { .. } => self.overlay_epoch = event.seq,
+            EventPayload::InternalAgentStarted {
+                invocation_id,
+                internal_run_id,
+                kind,
+                ..
+            } => {
+                self.internal_agents.insert(
+                    (*invocation_id, *internal_run_id),
+                    OpenInternalAgent {
+                        kind: *kind,
+                        run: event.run_id,
+                    },
+                );
+            }
+            EventPayload::InternalAgentFinished {
+                invocation_id,
+                internal_run_id,
+                ..
+            } => {
+                self.internal_agents
+                    .remove(&(*invocation_id, *internal_run_id));
+            }
+            EventPayload::ModelTurnCommitted {
+                input_through_seq, ..
+            } => {
+                if let Some(run) = event.run_id {
+                    self.latest_turn = Some((run, *input_through_seq));
+                }
+            }
+            EventPayload::ModelAttemptStarted { fallback_index, .. } => {
+                if let Some(run) = event.run_id {
+                    self.fallback = Some((run, *fallback_index as usize));
+                }
+            }
+            EventPayload::ModelFallback {
+                to_fallback_index, ..
+            } => {
+                if let Some(run) = event.run_id {
+                    self.fallback = Some((run, *to_fallback_index as usize));
+                }
+            }
             _ => {}
         }
     }
@@ -122,6 +174,22 @@ impl LogState {
         self.acp_agent(agent)
             .and_then(|known| known.prompt_context.as_deref())
             .map_or(&[], Vec::as_slice)
+    }
+
+    /// The ACP sessions the log records that are the cookie session's own, each
+    /// once, as first recorded: every one but those a fork left behind, which
+    /// stay their source's.
+    pub fn acp_own_records(&self) -> impl Iterator<Item = &AcpSessionRecord> {
+        self.acp
+            .records
+            .iter()
+            .filter(|record| !self.acp.inherited.contains(&record.acp_session_id))
+    }
+
+    /// Whether the log records an ACP session at all.
+    #[must_use]
+    pub fn has_acp_sessions(&self) -> bool {
+        !self.acp.records.is_empty()
     }
 
     /// The session's accepted model selection, as committed turns advanced it.
@@ -299,6 +367,16 @@ impl LogState {
         self.approvals.open.values()
     }
 
+    /// The approval that settled last, with the run that asked: a response
+    /// reads back what it just settled.
+    #[must_use]
+    pub fn settled_approval(&self, id: ApprovalId) -> Option<&OpenApproval> {
+        self.approvals
+            .settled
+            .as_ref()
+            .filter(|settled| settled.record.request.approval_id() == id)
+    }
+
     /// The first user decision recorded under `response`.
     #[must_use]
     pub fn response(&self, response: &ClientResponseId) -> Option<&Arc<UserDecision>> {
@@ -309,6 +387,54 @@ impl LogState {
     #[must_use]
     pub fn user_decision(&self, id: ApprovalId) -> Option<&Arc<UserDecision>> {
         self.approvals.decisions.get(&id)
+    }
+
+    /// How many times `run`, the log's latest, asked to approve `fingerprint`
+    /// since the last reset: user input, or a different operation completing.
+    #[must_use]
+    pub fn doom_loop_repetitions(&self, run: RunId, fingerprint: &OperationFingerprint) -> u32 {
+        if self.doom.run == Some(run) {
+            self.doom.requests.get(fingerprint).copied().unwrap_or(0)
+        } else {
+            0
+        }
+    }
+
+    /// How the latest runs ended, as far back as anything cleared them.
+    #[must_use]
+    pub fn run_streak(&self) -> &RunStreak {
+        &self.streak
+    }
+
+    /// The internal agents that started and did not finish.
+    pub fn open_internal_agents(
+        &self,
+    ) -> impl Iterator<
+        Item = (
+            &(InternalAgentInvocationId, InternalAgentRunId),
+            &OpenInternalAgent,
+        ),
+    > {
+        self.internal_agents.iter()
+    }
+
+    /// The run of the latest committed turn and its `input_through_seq`.
+    #[must_use]
+    pub fn latest_turn(&self) -> Option<(RunId, u64)> {
+        self.latest_turn
+    }
+
+    /// The latest run to try a model, and the fallback it is on.
+    #[must_use]
+    pub fn latest_fallback(&self) -> Option<(RunId, usize)> {
+        self.fallback
+    }
+
+    /// The session's latest request; `None` when it has none with a cache TTL,
+    /// or a checkpoint came after it.
+    #[must_use]
+    pub fn latest_request(&self) -> Option<&LatestRequest> {
+        self.request.latest.as_ref()
     }
 
     /// The seq of the latest `session_permission_overlay_set`; 0 without one.
@@ -435,6 +561,10 @@ struct AcpState {
     starting_options: Option<Vec<AcpOptionChoice>>,
     commands: Option<Vec<AcpCommand>>,
     context: Option<AcpContextUsage>,
+    /// Every ACP session, each once, as first recorded.
+    records: Vec<AcpSessionRecord>,
+    /// The ACP sessions a fork left behind.
+    inherited: HashSet<String>,
 }
 
 /// The chain of option values [`LogState::recorded_option_values`] reads.
@@ -452,6 +582,13 @@ impl AcpState {
     fn observe(&mut self, payload: &EventPayload) {
         match payload {
             EventPayload::AcpSessionStarted { record } => {
+                if !self
+                    .records
+                    .iter()
+                    .any(|known| known.acp_session_id == record.acp_session_id)
+                {
+                    self.records.push(record.clone());
+                }
                 let key = (record.agent.clone(), record.runtime_agent.clone());
                 self.options.before_latest = match self.options.since_latest.take() {
                     Some(options) => options,
@@ -482,6 +619,9 @@ impl AcpState {
             }
             EventPayload::AcpSessionUpdated { update } => {
                 if let Some(marker) = &update.detached {
+                    if marker.reason != AcpDetachReason::Reverted {
+                        self.inherited.insert(marker.acp_session_id.clone());
+                    }
                     for known in &mut self.agents {
                         if marker.acp_session_id == known.record.acp_session_id {
                             known.detached.push(marker.clone());
@@ -709,11 +849,18 @@ struct ApprovalFold {
     responses: HashMap<ClientResponseId, Arc<UserDecision>>,
     /// By approval, the latest of each.
     decisions: HashMap<ApprovalId, Arc<UserDecision>>,
+    /// The approval that settled last.
+    settled: Option<OpenApproval>,
 }
 
 impl ApprovalFold {
     fn observe(&mut self, event: &Arc<StoredEvent>) {
         if let EventPayload::ApprovalRequested { request } = &event.payload {
+            if self.settled.as_ref().is_some_and(|settled| {
+                settled.record.request.approval_id() == request.approval_id()
+            }) {
+                self.settled = None;
+            }
             self.open.insert(
                 request.approval_id(),
                 OpenApproval {
@@ -746,16 +893,23 @@ impl ApprovalFold {
                 .or_insert_with(|| Arc::clone(&recorded));
             self.decisions.insert(*approval_id, recorded);
         }
-        if let Some(approval_id) = approval_event_id(&event.payload)
-            && let Some(open) = self.open.get_mut(&approval_id)
-        {
+        let Some(approval_id) = approval_event_id(&event.payload) else {
+            return;
+        };
+        if let Some(open) = self.open.get_mut(&approval_id) {
             apply_approval_event(&mut open.record, &event.payload);
             if !matches!(
                 open.record.status,
                 ApprovalStatus::Pending | ApprovalStatus::Escalated
             ) {
-                self.open.remove(&approval_id);
+                self.settled = self.open.remove(&approval_id);
             }
+        } else if let Some(settled) = self
+            .settled
+            .as_mut()
+            .filter(|settled| settled.record.request.approval_id() == approval_id)
+        {
+            apply_approval_event(&mut settled.record, &event.payload);
         }
     }
 }
@@ -821,6 +975,210 @@ pub fn apply_approval_event(record: &mut ApprovalRecord, payload: &EventPayload)
         },
         _ => {}
     }
+}
+
+/// An internal agent that started and did not finish.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct OpenInternalAgent {
+    pub kind: InternalAgentKind,
+    pub run: Option<RunId>,
+}
+
+/// What the doom-loop guard counts, for the latest run. It applies to every
+/// approval of a session: an ACP agent's go through it too.
+#[derive(Clone, Debug, Default)]
+struct DoomFold {
+    run: Option<RunId>,
+    /// The approvals asked for since the last reset, by operation.
+    requests: HashMap<OperationFingerprint, u32>,
+    /// The operation of each call started since the latest input and not ended.
+    starts: HashMap<ToolCallId, OperationFingerprint>,
+}
+
+impl DoomFold {
+    fn observe(&mut self, event: &StoredEvent) {
+        if let EventPayload::RunStarted { .. } = &event.payload {
+            if event.run_id.is_some() {
+                *self = Self {
+                    run: event.run_id,
+                    ..Self::default()
+                };
+            }
+            return;
+        }
+        if event.run_id.is_none() || event.run_id != self.run {
+            return;
+        }
+        match &event.payload {
+            EventPayload::UserInputSubmitted { .. } | EventPayload::UserInputApplied { .. } => {
+                self.requests.clear();
+                self.starts.clear();
+            }
+            EventPayload::ApprovalRequested { request } => {
+                let count = self
+                    .requests
+                    .entry(request.operation_fingerprint().clone())
+                    .or_default();
+                *count = count.saturating_add(1);
+            }
+            EventPayload::ToolCallStarted { start } => {
+                self.starts
+                    .insert(start.tool_call_id, start.operation_fingerprint.clone());
+            }
+            EventPayload::ToolCallTerminated { termination } => {
+                if let Some(operation) = self.starts.remove(&termination.tool_call_id)
+                    && termination.outcome == ToolTerminationOutcome::Completed
+                {
+                    // A different operation completing resets the others.
+                    self.requests.retain(|requested, _| *requested == operation);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// How the latest runs ended, as far back as input, a resume, or a run's
+/// success cleared them: what decides whether a producer's message may wake the
+/// session.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct RunStreak {
+    /// The session's automatic runs were held, and nothing cleared that.
+    pub held: bool,
+    /// The user stopped the latest run that did not fail.
+    pub stopped: bool,
+    /// The runs that failed since.
+    pub failures: u32,
+    /// The latest of their errors.
+    pub last_error: Option<SafeErrorMessage>,
+}
+
+impl RunStreak {
+    fn observe(&mut self, event: &StoredEvent) {
+        match &event.payload {
+            EventPayload::AutomaticRunsHeld { .. } => {
+                *self = Self {
+                    held: true,
+                    ..Self::default()
+                };
+            }
+            EventPayload::AutomaticRunsResumed {} | EventPayload::UserInputSubmitted { .. } => {
+                *self = Self::default();
+            }
+            EventPayload::RunFinished { outcome } => match outcome {
+                Open::Known(RunOutcome::Cancelled { .. })
+                    if event.origin.as_ref().is_some_and(stopped_by_user) =>
+                {
+                    *self = Self {
+                        stopped: true,
+                        ..Self::default()
+                    };
+                }
+                Open::Known(RunOutcome::Failed { error, .. }) => {
+                    self.stopped = false;
+                    self.failures += 1;
+                    self.last_error = Some(error.clone());
+                }
+                // A run a restart interrupted resumes; it neither counts nor
+                // clears.
+                Open::Known(RunOutcome::Interrupted { .. }) => {}
+                _ => *self = Self::default(),
+            },
+            _ => {}
+        }
+    }
+}
+
+/// Whether `origin` is the user's: a stop by the user holds a session.
+fn stopped_by_user(origin: &EventOrigin) -> bool {
+    origin.as_str() == "user" || origin.as_str().starts_with("client:")
+}
+
+/// What the rule of a compaction before cache expiry reads of a session's latest
+/// request. An ACP agent's usage carries a cache TTL too, so this serves ACP
+/// sessions.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LatestRequest {
+    /// The sequence of its usage event.
+    pub usage_seq: u64,
+    /// When it was sent: its prepared request, else its usage event.
+    pub sent_at: Timestamp,
+    pub stamp: CacheTtlStamp,
+    /// Its reported input plus output tokens.
+    pub tokens: u64,
+    pub model: ResolvedModelRef,
+}
+
+/// [`LatestRequest`], with the few recent attempts and turns that finding when it
+/// was sent reads.
+#[derive(Clone, Debug, Default)]
+struct RequestFold {
+    latest: Option<LatestRequest>,
+    /// When each recent attempt's request went out.
+    attempts: VecDeque<(AttemptId, Timestamp)>,
+    /// When each recently committed turn's request went out, by `model_turn_seq`.
+    turns: VecDeque<(u64, Option<Timestamp>)>,
+}
+
+impl RequestFold {
+    /// How many attempts and turns it remembers: a usage event follows its
+    /// turn's commit closely, and a commit its attempt.
+    const REMEMBERS: usize = 16;
+
+    fn observe(&mut self, event: &StoredEvent) {
+        match &event.payload {
+            EventPayload::ContextCheckpointCommitted { .. } => self.latest = None,
+            EventPayload::ModelRequestPrepared { attempt_id, .. }
+            | EventPayload::ModelAttemptStarted { attempt_id, .. } => {
+                remember(&mut self.attempts, (*attempt_id, event.timestamp));
+            }
+            EventPayload::ModelTurnCommitted {
+                model_turn_seq,
+                attempt_id,
+                ..
+            } => {
+                let sent = self
+                    .attempts
+                    .iter()
+                    .rev()
+                    .find(|(attempt, _)| attempt == attempt_id)
+                    .map(|(_, sent)| *sent);
+                remember(&mut self.turns, (*model_turn_seq, sent));
+            }
+            EventPayload::ModelUsageRecorded {
+                model_turn_seq,
+                resolved_model,
+                usage,
+                cache_ttl,
+                ..
+            } => {
+                self.latest = cache_ttl.map(|stamp| LatestRequest {
+                    usage_seq: event.seq,
+                    sent_at: self
+                        .turns
+                        .iter()
+                        .rev()
+                        .find(|(turn, _)| turn == model_turn_seq)
+                        .and_then(|(_, sent)| *sent)
+                        .unwrap_or(event.timestamp),
+                    stamp,
+                    tokens: usage
+                        .input_tokens
+                        .unwrap_or(0)
+                        .saturating_add(usage.output_tokens.unwrap_or(0)),
+                    model: resolved_model.clone(),
+                });
+            }
+            _ => {}
+        }
+    }
+}
+
+fn remember<T>(list: &mut VecDeque<T>, item: T) {
+    if list.len() == RequestFold::REMEMBERS {
+        list.pop_front();
+    }
+    list.push_back(item);
 }
 
 /// Facts a log records once: a set of keys, which grows with the log but

@@ -31,8 +31,10 @@ use crate::ownership::{WriteAuthority, WriteCapability};
 
 pub mod blobs;
 mod durability;
+mod history;
 pub mod state;
 pub use durability::Commit;
+pub use history::History;
 pub use state::LogState;
 
 #[derive(Debug, Error)]
@@ -1221,10 +1223,9 @@ impl EventLog {
     ) -> Result<Arc<Self>, EventLogError> {
         let mut omitted = Vec::new();
         let records = source
-            .event_snapshot()
-            .iter()
-            .filter(|event| event.seq <= through_seq)
+            .history_range(..=through_seq)?
             .map(|event| {
+                let event = event?;
                 let mut copied = if left_behind_by_fork(&event.payload) {
                     omitted.push(event.seq);
                     StoredEvent {
@@ -1245,9 +1246,9 @@ impl EventLog {
                     event.as_ref().clone()
                 };
                 copied.session_id = session_id;
-                Arc::new(copied)
+                Ok(Arc::new(copied))
             })
-            .collect::<Vec<_>>();
+            .collect::<Result<Vec<_>, EventLogError>>()?;
         if !matches!(
             records.first().map(|record| &record.payload),
             Some(EventPayload::SessionCreated { .. })
@@ -1653,8 +1654,7 @@ impl EventLog {
         }
     }
 
-    /// Owned copies of the events. Deep-copies every payload; hot paths use
-    /// [`Self::event_snapshot`].
+    /// Owned copies of every event, for a test.
     #[must_use]
     pub fn events(&self) -> Vec<StoredEvent> {
         self.event_snapshot()
@@ -1663,9 +1663,21 @@ impl EventLog {
             .collect()
     }
 
-    /// The events. O(1): a shared view, not a copy.
+    /// Every event at once, for a test: production code says what it needs
+    /// (`docs/site/specs/forever-sessions.md` section 2).
     #[must_use]
     pub fn event_snapshot(&self) -> EventSnapshot {
+        self.storage().snapshot()
+    }
+
+    /// The events since the log's window start. O(1): a shared view, not a
+    /// copy. A log holds every event until it is windowed. A window starts at
+    /// or after the latest committed turn's boundary at the latest
+    /// (`docs/site/specs/forever-sessions.md` section 3.2), so a reader takes
+    /// this only for what it knows lies after that: anything older is
+    /// [`Self::state`] or [`Self::history`].
+    #[must_use]
+    pub fn recent(&self) -> EventSnapshot {
         self.storage().snapshot()
     }
 
@@ -1675,11 +1687,65 @@ impl EventLog {
         Arc::clone(&self.storage().index.state)
     }
 
-    /// [`Self::event_snapshot`] and [`Self::state`] of the same moment.
+    /// [`Self::event_snapshot`] and [`Self::state`] of the same moment, for a test.
     #[must_use]
     pub fn snapshot_and_state(&self) -> (EventSnapshot, Arc<LogState>) {
         let storage = self.storage();
         (storage.snapshot(), Arc::clone(&storage.index.state))
+    }
+
+    /// [`Self::recent`] and [`Self::state`] of the same moment.
+    #[must_use]
+    pub fn recent_and_state(&self) -> (EventSnapshot, Arc<LogState>) {
+        let storage = self.storage();
+        (storage.snapshot(), Arc::clone(&storage.index.state))
+    }
+
+    /// The events a native model's context is assembled from: pinned records
+    /// and the window, in order (`docs/site/specs/forever-sessions.md` section
+    /// 5.1). A native log stays whole until phase 7, and a log an ACP agent's
+    /// window narrowed is read whole, which is why this is fallible. So only
+    /// what serves a native model takes it.
+    pub fn model_context_events(&self) -> Result<EventSnapshot, EventLogError> {
+        Ok(self.storage().snapshot())
+    }
+
+    /// [`Self::model_context_events`] and [`Self::state`] of the same moment.
+    pub fn model_context_and_state(&self) -> Result<(EventSnapshot, Arc<LogState>), EventLogError> {
+        let storage = self.storage();
+        Ok((storage.snapshot(), Arc::clone(&storage.index.state)))
+    }
+
+    /// A pass over the whole log, as it stands now, one record at a time.
+    pub fn history(&self) -> Result<History, EventLogError> {
+        self.history_range(..)
+    }
+
+    /// A pass over the log's records whose sequences are in `seqs`, which
+    /// starts at the first of them rather than at the log's start.
+    pub fn history_range(
+        &self,
+        seqs: impl std::ops::RangeBounds<u64>,
+    ) -> Result<History, EventLogError> {
+        let events = self.storage().snapshot();
+        let start = events.partition_point(|event| match seqs.start_bound() {
+            std::ops::Bound::Included(start) => event.seq < *start,
+            std::ops::Bound::Excluded(start) => event.seq <= *start,
+            std::ops::Bound::Unbounded => false,
+        });
+        let end = events.partition_point(|event| match seqs.end_bound() {
+            std::ops::Bound::Included(end) => event.seq <= *end,
+            std::ops::Bound::Excluded(end) => event.seq < *end,
+            std::ops::Bound::Unbounded => true,
+        });
+        Ok(History::new(events, start, end))
+    }
+
+    /// The log's first record, its creation, which it keeps whatever its
+    /// window: `None` only for a log built empty.
+    #[must_use]
+    pub fn creation(&self) -> Option<Arc<StoredEvent>> {
+        self.storage().all.first().cloned()
     }
 
     fn storage(&self) -> std::sync::MutexGuard<'_, EventStorage> {

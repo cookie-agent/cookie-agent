@@ -15,15 +15,16 @@ use std::{
 use cookie_agent_protocol::{
     AcpCommand, AcpContextUsage, AcpDetached, AcpOptionChoice, AcpSessionRecord, AgentId,
     ApprovalId, ApprovalRecord, ApprovalStatus, ApprovalStep, AttachmentName, ClientResponseId,
-    EventPayload as Event, InvocationId, Open, ProducerOwner, QueuedInputs, ResolvedModelRef,
-    RunId, RunOutcome, SessionId, SessionModelState, SessionTitle, SessionTitleChange,
-    Sha256Digest, StoredEvent, ToolCallId, UserContent,
+    EventPayload as Event, InternalAgentInvocationId, InternalAgentRunId, InvocationId, Open,
+    OperationFingerprint, ProducerOwner, QueuedInputs, ResolvedModelRef, RunId, RunOutcome,
+    SessionId, SessionModelState, SessionTitle, SessionTitleChange, Sha256Digest, StoredEvent,
+    ToolCallId, ToolTerminationOutcome, UserContent,
 };
 use jiff::Timestamp;
 
 use super::{
-    DelegatedTitle, LogState, OpenApproval, TakenInput, UserDecision, apply_approval_event,
-    approval_event_id, pending_record, seed_digest,
+    DelegatedTitle, LatestRequest, LogState, OpenApproval, OpenInternalAgent, RunStreak,
+    TakenInput, UserDecision, apply_approval_event, approval_event_id, pending_record, seed_digest,
 };
 use crate::goal_projection::{GoalProducerProjection, goal_tools_offered};
 
@@ -145,6 +146,255 @@ pub fn agent_prompt_context(events: &Events, agent: &AgentId) -> Option<Vec<Stri
         }
     }
     context
+}
+
+/// The ACP sessions `events` record, each once as first recorded, but those a
+/// fork left behind: `lifecycle::own_records`.
+#[must_use]
+pub fn own_records(events: &Events) -> Vec<AcpSessionRecord> {
+    let inherited = events
+        .iter()
+        .filter_map(|event| match &event.payload {
+            Event::AcpSessionUpdated { update } => update
+                .detached
+                .as_ref()
+                .filter(|marker| marker.reason != cookie_agent_protocol::AcpDetachReason::Reverted)
+                .map(|marker| marker.acp_session_id.as_str()),
+            _ => None,
+        })
+        .collect::<HashSet<_>>();
+    let mut records: Vec<AcpSessionRecord> = Vec::new();
+    for event in events {
+        if let Event::AcpSessionStarted { record } = &event.payload
+            && !inherited.contains(record.acp_session_id.as_str())
+            && !records
+                .iter()
+                .any(|known| known.acp_session_id == record.acp_session_id)
+        {
+            records.push(record.clone());
+        }
+    }
+    records
+}
+
+/// The internal agents that started and did not finish, as
+/// `reconcile_session_with` found them.
+#[must_use]
+pub fn open_internal_agents(
+    events: &Events,
+) -> HashMap<(InternalAgentInvocationId, InternalAgentRunId), OpenInternalAgent> {
+    let mut internal = HashMap::new();
+    for event in events {
+        match &event.payload {
+            Event::InternalAgentStarted {
+                invocation_id,
+                internal_run_id,
+                kind,
+                ..
+            } => {
+                internal.insert(
+                    (*invocation_id, *internal_run_id),
+                    OpenInternalAgent {
+                        kind: *kind,
+                        run: event.run_id,
+                    },
+                );
+            }
+            Event::InternalAgentFinished {
+                invocation_id,
+                internal_run_id,
+                ..
+            } => {
+                internal.remove(&(*invocation_id, *internal_run_id));
+            }
+            _ => {}
+        }
+    }
+    internal
+}
+
+/// `approval_projection::doom_loop_repetitions`: approval requests for
+/// `fingerprint` in `run_id` since the last reset, user input or a different
+/// operation completing, scanning back from the tip.
+#[must_use]
+pub fn doom_loop_repetitions(
+    events: &Events,
+    run_id: RunId,
+    fingerprint: &OperationFingerprint,
+) -> u32 {
+    let mut repetitions = 0_u32;
+    // A termination precedes nothing it depends on in reverse: its start, met
+    // later, decides whether it was a reset. Each candidate keeps the count of
+    // requests that followed it.
+    let mut candidates = HashMap::<ToolCallId, u32>::new();
+    let mut reset_at = None::<u32>;
+    for event in events
+        .iter()
+        .rev()
+        .filter(|event| event.run_id == Some(run_id))
+    {
+        match &event.payload {
+            Event::UserInputSubmitted { .. }
+            | Event::UserInputApplied { .. }
+            | Event::RunStarted { .. } => {
+                if matches!(
+                    event.payload,
+                    Event::UserInputSubmitted { .. } | Event::UserInputApplied { .. }
+                ) {
+                    reset_at = Some(reset_at.map_or(repetitions, |at| at.min(repetitions)));
+                }
+                break;
+            }
+            Event::ApprovalRequested { request }
+                if request.operation_fingerprint() == fingerprint =>
+            {
+                repetitions = repetitions.saturating_add(1);
+            }
+            Event::ToolCallTerminated { termination }
+                if termination.outcome == ToolTerminationOutcome::Completed =>
+            {
+                candidates
+                    .entry(termination.tool_call_id)
+                    .or_insert(repetitions);
+            }
+            Event::ToolCallStarted { start } => {
+                if let Some(at) = candidates.remove(&start.tool_call_id)
+                    && &start.operation_fingerprint != fingerprint
+                {
+                    reset_at = Some(reset_at.map_or(at, |reset| reset.min(at)));
+                }
+            }
+            _ => {}
+        }
+        // Older resets can only count more requests than the latest one.
+        if let Some(at) = reset_at
+            && candidates.values().all(|candidate| *candidate >= at)
+        {
+            break;
+        }
+    }
+    reset_at.unwrap_or(repetitions)
+}
+
+/// How `after_runs` read the latest runs, scanning back from the tip.
+#[must_use]
+pub fn run_streak(events: &Events) -> RunStreak {
+    let mut streak = RunStreak::default();
+    for event in events.iter().rev() {
+        match &event.payload {
+            Event::AutomaticRunsHeld { .. } => {
+                streak.held = true;
+                break;
+            }
+            Event::AutomaticRunsResumed {} | Event::UserInputSubmitted { .. } => break,
+            Event::RunFinished { outcome } => match outcome {
+                Open::Known(RunOutcome::Cancelled { .. })
+                    if streak.failures == 0
+                        && event.origin.as_ref().is_some_and(super::stopped_by_user) =>
+                {
+                    streak.stopped = true;
+                    break;
+                }
+                Open::Known(RunOutcome::Failed { error, .. }) => {
+                    streak.failures += 1;
+                    streak.last_error.get_or_insert_with(|| error.clone());
+                }
+                Open::Known(RunOutcome::Interrupted { .. }) => {}
+                _ => break,
+            },
+            _ => {}
+        }
+    }
+    streak
+}
+
+/// `title_regeneration_target`.
+#[must_use]
+pub fn latest_turn(events: &Events) -> Option<(RunId, u64)> {
+    events.iter().rev().find_map(|event| match &event.payload {
+        Event::ModelTurnCommitted {
+            input_through_seq, ..
+        } => event.run_id.map(|run| (run, *input_through_seq)),
+        _ => None,
+    })
+}
+
+/// `active_fallback_index`, of whichever run tried a model last.
+#[must_use]
+pub fn latest_fallback(events: &Events) -> Option<(RunId, usize)> {
+    events.iter().rev().find_map(|event| {
+        let run = event.run_id?;
+        match &event.payload {
+            Event::ModelAttemptStarted { fallback_index, .. } => {
+                Some((run, *fallback_index as usize))
+            }
+            Event::ModelFallback {
+                to_fallback_index, ..
+            } => Some((run, *to_fallback_index as usize)),
+            _ => None,
+        }
+    })
+}
+
+/// `cache_expiry::latest_request`, without the bound on how far back it looked
+/// for when the request went out.
+#[must_use]
+pub fn latest_request(events: &Events) -> Option<LatestRequest> {
+    let mut checkpoint_after = false;
+    let mut found = None;
+    let mut attempt = None;
+    for event in events.iter().rev() {
+        match (&event.payload, &found) {
+            (Event::ContextCheckpointCommitted { .. }, None) => checkpoint_after = true,
+            (
+                Event::ModelUsageRecorded {
+                    model_turn_seq,
+                    resolved_model,
+                    usage,
+                    cache_ttl,
+                    ..
+                },
+                None,
+            ) => {
+                if checkpoint_after {
+                    return None;
+                }
+                let stamp = (*cache_ttl)?;
+                let tokens = usage
+                    .input_tokens
+                    .unwrap_or(0)
+                    .saturating_add(usage.output_tokens.unwrap_or(0));
+                found = Some((
+                    *model_turn_seq,
+                    LatestRequest {
+                        usage_seq: event.seq,
+                        sent_at: event.timestamp,
+                        stamp,
+                        tokens,
+                        model: resolved_model.clone(),
+                    },
+                ));
+            }
+            (
+                Event::ModelTurnCommitted {
+                    model_turn_seq,
+                    attempt_id,
+                    ..
+                },
+                Some((turn, _)),
+            ) if model_turn_seq == turn && attempt.is_none() => attempt = Some(*attempt_id),
+            (Event::ModelRequestPrepared { attempt_id, .. }, Some(_))
+            | (Event::ModelAttemptStarted { attempt_id, .. }, Some(_))
+                if Some(*attempt_id) == attempt =>
+            {
+                let (_, mut request) = found.take()?;
+                request.sent_at = event.timestamp;
+                return Some(request);
+            }
+            _ => {}
+        }
+    }
+    found.map(|(_, request)| request)
 }
 
 /// `Engine::input_since`, before the prompt blocks: the input the session took
@@ -730,6 +980,10 @@ pub fn differences(state: &LogState, events: &Events) -> Vec<&'static str> {
         }
     }
     check(
+        "own ACP sessions",
+        state.acp_own_records().cloned().collect::<Vec<_>>() == own_records(events),
+    );
+    check(
         "starting options",
         state.acp_starting_options() == recorded_starting_options(events),
     );
@@ -855,6 +1109,37 @@ pub fn differences(state: &LogState, events: &Events) -> Vec<&'static str> {
                 .all(|(call, seq)| state.open_call(*call).map(|event| event.seq) == Some(*seq)),
     );
 
+    // What the latest run's approvals and the runs before it come to.
+    check("run streak", *state.run_streak() == run_streak(events));
+    check(
+        "open internal agents",
+        state.internal_agents == open_internal_agents(events),
+    );
+    check("latest turn", state.latest_turn() == latest_turn(events));
+    check(
+        "latest fallback",
+        state.latest_fallback() == latest_fallback(events),
+    );
+    check(
+        "latest request",
+        state.latest_request().cloned() == latest_request(events),
+    );
+    if let Some(run) = state
+        .latest_run_started()
+        .and_then(|started| started.run_id)
+    {
+        for event in events {
+            if let Event::ApprovalRequested { request } = &event.payload {
+                let fingerprint = request.operation_fingerprint();
+                check(
+                    "doom loop repetitions",
+                    state.doom_loop_repetitions(run, fingerprint)
+                        == doom_loop_repetitions(events, run, fingerprint),
+                );
+            }
+        }
+    }
+
     // Approvals.
     let session = events[0].session_id;
     let open = approval_records(session, events)
@@ -871,6 +1156,14 @@ pub fn differences(state: &LogState, events: &Events) -> Vec<&'static str> {
         })
         .collect::<HashMap<_, _>>();
     check("open approvals", state.approvals.open == open);
+    if let Some(settled) = &state.approvals.settled {
+        let id = settled.record.request.approval_id();
+        check(
+            "the approval settled last",
+            approval_records(session, events).get(&id) == Some(&settled.record)
+                && approval_run_id(events, id) == settled.run,
+        );
+    }
     let mut responses = HashSet::new();
     let mut approvals = HashSet::new();
     for event in events {
