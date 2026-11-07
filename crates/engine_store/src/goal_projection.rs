@@ -12,7 +12,7 @@ use cookie_agent_protocol::{
     RunSelection, SafeDisplayText, StoredEvent,
 };
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct ProducerMessageRecord {
     pub message_id: ProducerMessageId,
     pub producer_owner: ProducerOwner,
@@ -26,6 +26,7 @@ pub struct ProducerMessageRecord {
     pub agent_hop: Option<u32>,
     pub accepted_seq: u64,
     pub admission: Option<(RunId, u64)>,
+    #[serde(with = "crate::events::sorted::set")]
     pub claims: HashSet<u64>,
     pub consumed: bool,
     pub discarded: bool,
@@ -34,7 +35,7 @@ pub struct ProducerMessageRecord {
     pub consumed_run: Option<RunId>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct ProducerClaimRecord {
     pub run_id: RunId,
     pub message_ids: Vec<ProducerMessageId>,
@@ -47,11 +48,12 @@ pub fn goal_tools_offered<E: Borrow<StoredEvent>>(root: bool, acp: bool, events:
     root && (!acp || GoalProducerProjection::from_events(events).goal_is_open())
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct GoalProducerProjection {
     pub goal: Option<GoalState>,
     pub selection: Option<RunSelection>,
     pub messages: Vec<ProducerMessageRecord>,
+    #[serde(with = "crate::events::sorted::map")]
     pub claims: HashMap<u64, ProducerClaimRecord>,
     pub invalid: Vec<(u64, String)>,
 }
@@ -127,16 +129,20 @@ impl GoalProducerProjection {
 
 /// [`GoalProducerProjection`] folded one event at a time, so a log that
 /// grew is folded only through what it gained.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Deserialize, serde::Serialize)]
 pub struct GoalProducerFold {
     /// Shared with the readers handed it; copied only when an event changes
     /// it while one still holds it.
     projection: Arc<GoalProducerProjection>,
     goals: GoalFold,
+    #[serde(with = "crate::events::sorted::map")]
     message_indexes: HashMap<ProducerMessageId, usize>,
+    #[serde(with = "crate::events::sorted::map")]
     dedup_indexes: HashMap<(ProducerOwner, ProducerIdempotencyKey), usize>,
+    #[serde(with = "crate::events::sorted::set")]
     terminal_runs: HashSet<RunId>,
     /// The messages accepted and neither admitted nor discarded yet.
+    #[serde(with = "crate::events::sorted::set")]
     unadmitted: HashSet<usize>,
 }
 
@@ -455,10 +461,11 @@ impl GoalProducerFold {
 /// activations, checklist revisions, and lifecycle changes that were valid
 /// where they stand. Shared by the producer projection and the session
 /// projection, which reports an active goal in `SessionMeta::waiting_on`.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct GoalFold {
     pub goal: Option<GoalState>,
     /// The latest revision of every goal the log activated.
+    #[serde(with = "crate::events::sorted::map")]
     revisions: HashMap<GoalId, u64>,
 }
 

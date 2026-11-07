@@ -13,6 +13,7 @@ mod publication;
 mod tree_load;
 mod view;
 
+pub use crate::events::state_file::STATE_FILE;
 pub use activity::{ListWindow, RootList};
 pub use cache::meta_path;
 #[cfg(windows)]
@@ -31,6 +32,8 @@ pub use fold::same_place;
 #[cfg(any(test, feature = "test-support"))]
 pub use fold::skip_reference_fold;
 use fold::*;
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) use fold::{assert_opened_folds_as_parsed, reference_fold_skipped};
 pub use layout::{
     ACTIVITY_DIR, LAYOUT_VERSION, Month, PendingTree, RUNTIME_REVISIONS_FILE, StoreLayout,
     read_layout, root_dir_in,
@@ -224,7 +227,7 @@ pub enum SessionError {
     },
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct RunProjection {
     pub id: RunId,
     pub client_run_id: ClientRunId,
@@ -235,19 +238,23 @@ pub struct RunProjection {
     pub agent: Arc<AgentSnapshot>,
     pub status: SessionStatus,
     pub final_text: Option<String>,
+    #[serde(with = "crate::events::sorted::map")]
     pub pending_calls: HashMap<ToolCallId, String>,
 }
 
 /// What a log's records fold to for a session: a [`SessionProjection`] without
 /// its log, as a log that opened from its `state.json` holds it until asked.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 pub struct ProjectionFolds {
     pub meta: SessionMeta,
     pub creation_agent: Arc<AgentSnapshot>,
     pub status: SessionStatus,
     pub usage: Option<Usage>,
+    #[serde(with = "fold::rollup_whole")]
     pub usage_rollup: UsageRollup,
+    #[serde(with = "crate::events::sorted::map")]
     pub runs: HashMap<RunId, RunProjection>,
+    #[serde(with = "crate::events::sorted::map")]
     pub rename_records: HashMap<cookie_agent_protocol::ClientRenameId, SessionRenameRecord>,
     pub permission_overlay: SessionPermissionOverlay,
     /// The session's tool exposure choices: the newest
@@ -2066,9 +2073,12 @@ impl SessionStore {
     }
 
     pub fn evict(&self, id: SessionId) -> Result<bool, SessionError> {
-        // The next open is a cold one: it reads the view cache, brought up
-        // to the log before any lock.
+        // The next open is a cold one: it reads the view cache and the state
+        // file, brought up to the log before any lock.
         self.refresh_resident_view(id);
+        self.refresh_state(id, |log| {
+            log.state_behind().is_some_and(|behind| behind > 0)
+        });
         let _mutation = self.lock_mutation();
         // The evicted summary is served from memory, but other processes and
         // the next tree load read `metadata`: bring a deferred tip up to date,
@@ -2258,6 +2268,10 @@ impl SessionStore {
         if matches!(envelope.payload, EventPayload::RunFinished { .. }) {
             self.refresh_resident_view(id);
         }
+        // A committed turn is where the state file may be due.
+        if matches!(envelope.payload, EventPayload::ModelTurnCommitted { .. }) {
+            self.refresh_state(id, EventLog::state_due_after_turn);
+        }
         Ok(envelope)
     }
 
@@ -2411,13 +2425,25 @@ impl SessionStore {
             // A window that moved answers as a reopening of the file does.
             if matches!(envelope.payload, EventPayload::ModelTurnCommitted { .. }) {
                 log.assert_window_reads_as_reopened();
-                let reopened = EventLog::open_read_only(log.path().to_owned(), id)
+                let reopened = EventLog::parsed_read_only(log.path().to_owned(), id)
                     .map(|reopened| projection_fold(reopened).expect("reference fold"));
                 if log.window_for_test().is_some() {
                     assert_projection_equivalent(
                         &resident,
                         &reopened.expect("a windowed log reopens"),
                     );
+                    // And a state file of this moment opens as the file parses:
+                    // every committed turn of every test goes through it.
+                    if let Some(state) = log.state_file(&resident) {
+                        view::write_state(&log, &state).expect("state.json is written");
+                        let opened = EventLog::open_read_only(log.path().to_owned(), id)
+                            .expect("a log opens from its state file");
+                        assert!(
+                            opened.opened_from_state_for_test(),
+                            "a state file this log just wrote matches its log"
+                        );
+                        let _ = fs::remove_file(log.path().with_file_name(STATE_FILE));
+                    }
                 }
             }
         }

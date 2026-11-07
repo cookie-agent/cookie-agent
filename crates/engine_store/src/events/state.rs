@@ -35,7 +35,7 @@ pub const OPENING_INPUTS: usize = 16;
 
 /// The folds of a log's events. Shared with the readers handed it; an append
 /// copies it only when one still holds it.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Deserialize, serde::Serialize)]
 pub struct LogState {
     acp: AcpState,
     model: SessionModelState,
@@ -43,10 +43,12 @@ pub struct LogState {
     producers: GoalProducerFold,
     inputs: InputFold,
     run: RunFold,
+    #[serde(with = "crate::events::sorted::map")]
     calls: HashMap<ToolCallId, Arc<StoredEvent>>,
     approvals: ApprovalFold,
     once: OnceFacts,
     overlay_epoch: u64,
+    #[serde(with = "crate::events::sorted::map")]
     internal_agents: HashMap<(InternalAgentInvocationId, InternalAgentRunId), OpenInternalAgent>,
     doom: DoomFold,
     streak: RunStreak,
@@ -582,7 +584,7 @@ pub enum DelegatedTitle {
 }
 
 /// One agent's ACP session as the log last recorded it.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct AcpAgentState {
     pub record: AcpSessionRecord,
     /// What left that session behind since it started, in log order.
@@ -595,7 +597,7 @@ pub struct AcpAgentState {
 }
 
 /// Latest values of `acp_session_started` and `acp_session_updated`.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Deserialize, serde::Serialize)]
 struct AcpState {
     /// In the order the agents first appear.
     agents: Vec<AcpAgentState>,
@@ -606,11 +608,12 @@ struct AcpState {
     /// Every ACP session, each once, as first recorded.
     records: Vec<AcpSessionRecord>,
     /// The ACP sessions a fork left behind.
+    #[serde(with = "crate::events::sorted::set")]
     inherited: HashSet<String>,
 }
 
 /// The chain of option values [`LogState::recorded_option_values`] reads.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Deserialize, serde::Serialize)]
 struct RecordedOptions {
     /// The agent and declaration of the log's latest ACP session.
     latest: Option<(AgentId, AgentId)>,
@@ -713,7 +716,7 @@ fn continues_a_session(how: AcpSessionStart) -> bool {
 
 /// The input after the latest committed turn's `input_through_seq`, which is
 /// as far back as a prompt reads, with the body of each.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Deserialize, serde::Serialize)]
 struct InputFold {
     boundary: u64,
     /// `user_input_submitted` records no `user_input_applied` answered, until
@@ -722,7 +725,7 @@ struct InputFold {
     taken: Vec<Taken>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 enum Taken {
     User {
         applied_seq: u64,
@@ -776,7 +779,7 @@ impl InputFold {
 }
 
 /// The latest run, and what stands around it.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Deserialize, serde::Serialize)]
 struct RunFold {
     started: Option<Arc<StoredEvent>>,
     goal_open_at_start: bool,
@@ -785,12 +788,14 @@ struct RunFold {
     last_end: Option<Timestamp>,
     machines_changed_since_end: bool,
     machines_changed_before_start: Option<bool>,
+    #[serde(with = "crate::events::sorted::set")]
     attached_since_end: HashSet<AttachmentName>,
     /// The latest run's admitted inputs not yet submitted.
     pending: Vec<Arc<StoredEvent>>,
     /// Whether the latest run's first input went in.
     initial_input_submitted: bool,
     runless: Vec<Arc<StoredEvent>>,
+    #[serde(with = "crate::events::sorted::set")]
     cancelled: HashSet<RunId>,
     last_attempt: Option<(RunId, ResolvedModelRef)>,
 }
@@ -869,14 +874,14 @@ impl RunFold {
 }
 
 /// An approval still pending or escalated, with the run that asked.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct OpenApproval {
     pub record: ApprovalRecord,
     pub run: Option<RunId>,
 }
 
 /// A user's decision on an approval, as an `approval_step` records it.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct UserDecision {
     pub approval_id: ApprovalId,
     pub decision: ApprovalUserDecision,
@@ -884,12 +889,15 @@ pub struct UserDecision {
     pub agent_option: Option<String>,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Deserialize, serde::Serialize)]
 struct ApprovalFold {
+    #[serde(with = "crate::events::sorted::map")]
     open: HashMap<ApprovalId, OpenApproval>,
     /// By `client_response_id`, the first of each.
+    #[serde(with = "crate::events::sorted::map")]
     responses: HashMap<ClientResponseId, Arc<UserDecision>>,
     /// By approval, the latest of each.
+    #[serde(with = "crate::events::sorted::map")]
     decisions: HashMap<ApprovalId, Arc<UserDecision>>,
     /// The approval that settled last.
     settled: Option<OpenApproval>,
@@ -1020,7 +1028,7 @@ pub fn apply_approval_event(record: &mut ApprovalRecord, payload: &EventPayload)
 }
 
 /// An internal agent that started and did not finish.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct OpenInternalAgent {
     pub kind: InternalAgentKind,
     pub run: Option<RunId>,
@@ -1028,12 +1036,14 @@ pub struct OpenInternalAgent {
 
 /// What the doom-loop guard counts, for the latest run. It applies to every
 /// approval of a session: an ACP agent's go through it too.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Deserialize, serde::Serialize)]
 struct DoomFold {
     run: Option<RunId>,
     /// The approvals asked for since the last reset, by operation.
+    #[serde(with = "crate::events::sorted::map")]
     requests: HashMap<OperationFingerprint, u32>,
     /// The operation of each call started since the latest input and not ended.
+    #[serde(with = "crate::events::sorted::map")]
     starts: HashMap<ToolCallId, OperationFingerprint>,
 }
 
@@ -1083,7 +1093,7 @@ impl DoomFold {
 /// How the latest runs ended, as far back as input, a resume, or a run's
 /// success cleared them: what decides whether a producer's message may wake the
 /// session.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct RunStreak {
     /// The session's automatic runs were held, and nothing cleared that.
     pub held: bool,
@@ -1139,7 +1149,7 @@ fn stopped_by_user(origin: &EventOrigin) -> bool {
 /// What the rule of a compaction before cache expiry reads of a session's latest
 /// request. An ACP agent's usage carries a cache TTL too, so this serves ACP
 /// sessions.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct LatestRequest {
     /// The sequence of its usage event.
     pub usage_seq: u64,
@@ -1153,7 +1163,7 @@ pub struct LatestRequest {
 
 /// [`LatestRequest`], with the few recent attempts and turns that finding when it
 /// was sent reads.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Deserialize, serde::Serialize)]
 struct RequestFold {
     latest: Option<LatestRequest>,
     /// When each recent attempt's request went out.
@@ -1227,7 +1237,7 @@ fn remember<T>(list: &mut VecDeque<T>, item: T) {
 /// stays small (section 3.1).
 /// A delegation record a tree load hands over, with the revisions it was frozen
 /// against.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct HarvestedDelegation {
     pub seq: u64,
     pub run: Option<RunId>,
@@ -1238,7 +1248,7 @@ pub struct HarvestedDelegation {
 /// its delegation records, and what the registry needs of it as a delegation's
 /// parent (`docs/site/specs/forever-sessions.md` section 4.1). So neither a load
 /// nor a registry rebuild reads the log for them.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Deserialize, serde::Serialize)]
 pub struct HarvestFold {
     /// Every grant, restart-stable or not.
     grants: Vec<TreeApprovalGrant>,
@@ -1247,6 +1257,7 @@ pub struct HarvestFold {
     delegations: Vec<HarvestedDelegation>,
     revisions: RevisionFold,
     /// The child each invocation started.
+    #[serde(with = "crate::events::sorted::map")]
     started: HashMap<InvocationId, SessionId>,
     /// `(parent run, child)` of each queued delegation.
     queued: Vec<(RunId, SessionId)>,
@@ -1313,15 +1324,19 @@ impl HarvestFold {
     }
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Deserialize, serde::Serialize)]
 struct OnceFacts {
+    #[serde(with = "crate::events::sorted::map")]
     seeds: HashMap<InvocationId, Vec<Sha256Digest>>,
     /// The delegated titles up to the first title anything else set, which
     /// [`LogState::delegated_title`] reads no further than.
     delegated_titles: Vec<(InvocationId, SessionTitle)>,
     other_title: bool,
+    #[serde(with = "crate::events::sorted::set")]
     skills: HashSet<(String, Sha256Digest)>,
+    #[serde(with = "crate::events::sorted::set")]
     links: HashSet<(ToolCallId, SessionId)>,
+    #[serde(with = "crate::events::sorted::set")]
     delegations_accepted: HashSet<InvocationId>,
 }
 

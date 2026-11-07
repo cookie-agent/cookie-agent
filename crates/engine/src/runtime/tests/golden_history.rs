@@ -638,7 +638,7 @@ fn golden_logs_read_as_a_pass_give_what_the_whole_list_gives() {
                     .next()
                     .unwrap()
                     .unwrap();
-                assert!(Arc::ptr_eq(&read, event), "{path}: event {}", event.seq);
+                assert!(read == *event, "{path}: event {}", event.seq);
             }
         }
     }

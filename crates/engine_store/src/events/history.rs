@@ -74,6 +74,44 @@ pub(super) struct FileRange {
     /// The log's count of the cuts to its file, and what it was when asked.
     pub(super) cuts: Arc<AtomicU64>,
     pub(super) seen_cuts: u64,
+    /// The load noted no damage in the file: one it did not read, as a log that
+    /// opened from its `state.json` did not, is found here (section 11, decision
+    /// 1). A log that knows of damage skips it as its load did.
+    pub(super) undamaged: bool,
+    /// A read-only log's first held record: its owner can cut the file with no
+    /// word to this process, so a pass checks the line is still there at its end.
+    pub(super) held_from: Option<HeldFrom>,
+}
+
+/// Where a read-only log's window starts in its file, and the record there.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct HeldFrom {
+    pub(super) offset: u64,
+    pub(super) seq: u64,
+    pub(super) timestamp: jiff::Timestamp,
+}
+
+impl HeldFrom {
+    /// Whether the file at `path` still holds the record, whole, where it was.
+    fn still_there(&self, path: &std::path::Path) -> bool {
+        #[derive(serde::Deserialize)]
+        struct Line {
+            seq: u64,
+            timestamp: jiff::Timestamp,
+        }
+        let read = || -> std::io::Result<Vec<u8>> {
+            let mut file = File::open(path)?;
+            file.seek(SeekFrom::Start(self.offset))?;
+            let mut line = Vec::new();
+            BufReader::new(file).read_until(b'\n', &mut line)?;
+            Ok(line)
+        };
+        read().is_ok_and(|line| {
+            line.ends_with(b"\n")
+                && serde_json::from_slice::<Line>(&line)
+                    .is_ok_and(|line| line.seq == self.seq && line.timestamp == self.timestamp)
+        })
+    }
 }
 
 /// A [`FileRange`] being read.
@@ -138,6 +176,13 @@ impl FilePass {
         while bytes < READ_AHEAD_BYTES && !self.done {
             if self.range.end == Some(self.position) {
                 self.done = true;
+                if self
+                    .range
+                    .held_from
+                    .is_some_and(|held_from| !held_from.still_there(&path))
+                {
+                    return Err(EventLogError::HistoryCut { path });
+                }
                 break;
             }
             self.line.clear();
@@ -163,7 +208,21 @@ impl FilePass {
             }
             // Never the log's first line by position: its creation is held,
             // and a pass starting there reads it only to skip it.
+            let noted = lines.diagnostics.len();
             let read = lines.read(1, line, &mut fetch)?;
+            if self.range.undamaged
+                && lines.diagnostics[noted..]
+                    .iter()
+                    .any(|diagnostic| diagnostic.skipped)
+            {
+                return Err(EventLogError::Corrupt {
+                    path,
+                    message: format!(
+                        "the line at byte {} cannot be read",
+                        self.position - length as u64
+                    ),
+                });
+            }
             let until = self.range.until_seq;
             if read.stop || read.sequenced.is_some_and(|(seq, _)| seq >= until) {
                 self.done = true;

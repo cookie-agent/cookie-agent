@@ -22,7 +22,7 @@ cookie_agent_models = { version = "=0.4.0", path = "../models" }
 cookie_agent_protocol = { version = "=0.4.0", path = "../protocol" }
 jiff.workspace = true
 serde.workspace = true
-serde_json.workspace = true
+serde_json = { workspace = true, features = ["float_roundtrip"] }
 sha2.workspace = true
 thiserror.workspace = true
 tokio.workspace = true

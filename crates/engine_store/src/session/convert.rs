@@ -363,7 +363,9 @@ fn stage(id: SessionId, dir: &Path) -> Result<Stage, SessionError> {
     };
     let result = (|| {
         write_staged(&staged.log, &converted)?;
-        let meta = projection(EventLog::open_read_only(staged.log.clone(), id)?)?.meta.clone();
+        let meta = projection(EventLog::open_read_only(staged.log.clone(), id)?)?
+            .meta
+            .clone();
         let meta = serde_json::to_vec_pretty(&meta).map_err(|source| SessionError::Json {
             path: staged.metadata.clone(),
             source,
@@ -435,6 +437,7 @@ fn commit(staged: &Staged) -> Result<(), SessionError> {
     // The view cache names lines of the old log. One left behind (a reader
     // held it open) names an older history format, so it is not used.
     let _ = fs::remove_file(staged.dir.join(super::VIEW_FILE));
+    let _ = fs::remove_file(staged.dir.join(super::STATE_FILE));
     replace(&staged.log, &log)?;
     replace(&staged.metadata, &meta_path(&staged.dir))?;
     fsync_directory(&staged.dir)?;

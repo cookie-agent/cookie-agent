@@ -33,7 +33,9 @@ use crate::ownership::{WriteAuthority, WriteCapability};
 pub mod blobs;
 mod durability;
 mod history;
+pub(crate) mod sorted;
 pub mod state;
+pub mod state_file;
 pub use durability::Commit;
 pub use history::{History, NewestPass, OlderPage, ViewCacheStart};
 pub use state::LogState;
@@ -84,7 +86,7 @@ pub enum EventLogError {
 
 /// Why a log that opened takes no appends: it can be read and followed, but
 /// nothing changes it.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 enum RenderOnly {
     /// The first state event of a type this build does not know: a newer
     /// build wrote it.
@@ -130,10 +132,18 @@ pub struct EventLog {
     /// How many cuts of the file began: a pass that reads the file sees it
     /// change under it.
     cuts: Arc<AtomicU64>,
+    /// What the log's records folded to as it opened, at the tip it opened with,
+    /// when it did not read itself whole: its first projection takes this.
+    opened: Mutex<Option<(u64, crate::session::ProjectionFolds)>>,
+    /// How much of the file `state.json` covered when it was last written or read.
+    state_written: AtomicU64,
     /// Test-only: what asked for a pass over the log, and what took one that
     /// reads the file, each where it did so.
     #[cfg(any(test, feature = "test-support"))]
     history_calls: Mutex<Vec<String>>,
+    /// Test-only: the log opened from its `state.json`.
+    #[cfg(any(test, feature = "test-support"))]
+    opened_from_state: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -160,7 +170,7 @@ struct AppendAuthorizationHook {
     release: std::sync::mpsc::Receiver<()>,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Deserialize, serde::Serialize)]
 struct EventIndex {
     last_run_started: Option<(u64, RunId, cookie_agent_protocol::ModelSelection)>,
     last_checkpoint_seq: u64,
@@ -168,6 +178,7 @@ struct EventIndex {
     last_recorded_usage: Option<(u64, u64)>,
     last_turn_usage: Option<(u64, u64)>,
     /// Visible `ModelAttemptStarted` records per run.
+    #[serde(with = "crate::events::sorted::map")]
     run_attempts: HashMap<RunId, u32>,
     /// Tool names of the latest visible `ModelToolsPublished` record.
     last_model_tools: Option<(Vec<String>, Vec<String>)>,
@@ -195,7 +206,7 @@ struct EventIndex {
 /// What a log records about prompt blocks (stable prefix spec, section 6):
 /// the blocks the latest run's system prompt carries, and the blocks the
 /// model knows, those folded with the announcements since.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct PromptBlockFold {
     /// The latest run's composed prompt, until its blocks are recorded.
     prompt: Option<String>,
@@ -270,7 +281,7 @@ impl PromptBlockFold {
 /// (deferred tools in cookie, sections 6 to 8): the current tool round, the
 /// tools results loaded, and what announcements add up to. A checkpoint
 /// starts all three over, keeping the tools it folded.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct DeferralFold {
     /// The latest `tool_round_started` record.
     pub round: Option<ToolRound>,
@@ -289,7 +300,7 @@ pub struct DeferralFold {
 
 /// The eager tools of a tool round and the groups whose prompt sections the
 /// system prompt carries.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct ToolRound {
     pub tools: Vec<cookie_agent_protocol::RoundToolDefinition>,
     pub prompt_groups: Vec<String>,
@@ -297,7 +308,7 @@ pub struct ToolRound {
     pub engine_build: Option<String>,
 }
 
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct AnnouncedGroupState {
     pub tools: std::collections::BTreeSet<String>,
     /// The summary the latest announcement of the group carried.
@@ -513,7 +524,7 @@ struct EventStorage {
 }
 
 /// Byte offsets of the sequenced lines of an event file, in file order.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct LineIndex {
     /// `(seq, start offset)` of every line that carries a sequence, records
     /// and skipped lines alike. Sequences strictly increase down the file.
@@ -1097,7 +1108,7 @@ pub fn syncs_on_append(payload: &EventPayload) -> bool {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct EventLoadDiagnostic {
     pub seq: u64,
     pub reason: String,
@@ -1165,8 +1176,12 @@ impl EventLog {
             writer: Mutex::new(None),
             durability,
             cuts: Arc::default(),
+            opened: Mutex::default(),
+            state_written: AtomicU64::new(0),
             #[cfg(any(test, feature = "test-support"))]
             history_calls: Mutex::default(),
+            #[cfg(any(test, feature = "test-support"))]
+            opened_from_state: false,
         });
         if !matches!(creation, EventPayload::SessionCreated { .. }) {
             return Err(EventLogError::MissingCreation(log.path.clone()));
@@ -1249,6 +1264,80 @@ impl EventLog {
         write_capability: Option<WriteCapability>,
         _test_authority: Option<WriteAuthority>,
     ) -> Result<Arc<Self>, EventLogError> {
+        let torn_tail = if read_only {
+            TornTail::Ignore
+        } else {
+            TornTail::Truncate
+        };
+        let opened = crate::blocking::off_worker(|| {
+            cookie_agent_protocol::read_stored_history(|| {
+                state_file::open_from_state(&path, session_id, torn_tail)
+                    .or_else(|| state_file::fold_file(&path, session_id, torn_tail))
+            })
+        });
+        let Some(opened) = opened else {
+            return Self::open_parsed(
+                path,
+                session_id,
+                read_only,
+                write_capability,
+                _test_authority,
+            );
+        };
+        let state_file::OpenedLog {
+            storage,
+            validation,
+            initial_taint,
+            diagnostics,
+            next_seq,
+            torn_tail,
+            projection,
+            state_covers,
+        } = opened;
+        let durability = Arc::new(durability::Durability::new(&path));
+        let log = Arc::new(Self {
+            path,
+            session_id,
+            append: Mutex::new(()),
+            events: Mutex::new(storage),
+            diagnostics,
+            initial_validation_taint: Mutex::new(initial_taint),
+            validation: Mutex::new(validation),
+            next_seq: AtomicU64::new(next_seq),
+            persisted: AtomicBool::new(true),
+            read_only,
+            torn_tail_ignored: torn_tail && read_only,
+            converted: false,
+            render_only: None,
+            write_capability,
+            #[cfg(any(test, feature = "test-support"))]
+            _test_authority,
+            #[cfg(any(test, feature = "test-support"))]
+            append_authorization_hook: Mutex::new(None),
+            writer: Mutex::new(None),
+            durability,
+            cuts: Arc::default(),
+            opened: Mutex::new(projection.map(|folds| (next_seq - 1, folds))),
+            state_written: AtomicU64::new(state_covers.unwrap_or(0)),
+            #[cfg(any(test, feature = "test-support"))]
+            history_calls: Mutex::default(),
+            #[cfg(any(test, feature = "test-support"))]
+            opened_from_state: state_covers.is_some(),
+        });
+        #[cfg(any(test, feature = "test-support"))]
+        log.assert_opened_as_parsed();
+        Ok(log)
+    }
+
+    /// Opens the log by reading it whole, as a damaged one or one of an older
+    /// history format has to be.
+    fn open_parsed(
+        path: PathBuf,
+        session_id: SessionId,
+        read_only: bool,
+        write_capability: Option<WriteCapability>,
+        _test_authority: Option<WriteAuthority>,
+    ) -> Result<Arc<Self>, EventLogError> {
         let loaded = load_event_jsonl(
             &path,
             if read_only {
@@ -1316,9 +1405,32 @@ impl EventLog {
             writer: Mutex::new(None),
             durability,
             cuts: Arc::default(),
+            opened: Mutex::default(),
+            state_written: AtomicU64::new(0),
             #[cfg(any(test, feature = "test-support"))]
             history_calls: Mutex::default(),
+            #[cfg(any(test, feature = "test-support"))]
+            opened_from_state: false,
         }))
+    }
+
+    /// What a log's records folded to as it opened, while that is still of its
+    /// tip: an owned log's first projection takes it, and a read-only log, which
+    /// the parsed-log cache hands out again, keeps it.
+    pub(crate) fn opened_folds(&self) -> Option<crate::session::ProjectionFolds> {
+        let mut opened = self
+            .opened
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let tip = self.physical_tip_seq();
+        if opened.as_ref().is_none_or(|(at, _)| *at != tip) {
+            *opened = None;
+            return None;
+        }
+        if self.read_only {
+            return opened.as_ref().map(|(_, folds)| folds.clone());
+        }
+        opened.take().map(|(_, folds)| folds)
     }
 
     /// What a fork of this log through `through_seq` under `session_id` copies,
@@ -1434,8 +1546,12 @@ impl EventLog {
             writer: Mutex::new(None),
             durability,
             cuts: Arc::default(),
+            opened: Mutex::default(),
+            state_written: AtomicU64::new(0),
             #[cfg(any(test, feature = "test-support"))]
             history_calls: Mutex::default(),
+            #[cfg(any(test, feature = "test-support"))]
+            opened_from_state: false,
         })
     }
 
@@ -1477,8 +1593,17 @@ impl EventLog {
             writer: Mutex::new(None),
             durability: Arc::new(durability::Durability::new(&self.path)),
             cuts: Arc::default(),
+            opened: Mutex::new(
+                self.opened
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .clone(),
+            ),
+            state_written: AtomicU64::new(self.state_written.load(Ordering::Acquire)),
             #[cfg(any(test, feature = "test-support"))]
             history_calls: Mutex::default(),
+            #[cfg(any(test, feature = "test-support"))]
+            opened_from_state: self.opened_from_state,
         }))
     }
 
@@ -1748,6 +1873,24 @@ impl EventLog {
             }
             None => (0, None),
         };
+        // A read-only log's window is read by offset too, and only its owner
+        // knows when the file is cut.
+        let held_from = storage
+            .all
+            .first()
+            .filter(|_| self.read_only && storage.window.is_some())
+            .and_then(|first| {
+                let lines = storage.lines.as_ref()?;
+                let index = lines
+                    .starts
+                    .binary_search_by_key(&first.seq, |(seq, _)| *seq)
+                    .ok()?;
+                Some(history::HeldFrom {
+                    offset: lines.starts[index].1,
+                    seq: first.seq,
+                    timestamp: first.timestamp,
+                })
+            });
         (from < until && end != Some(offset)).then(|| history::FileRange {
             path: self.path.clone(),
             offset,
@@ -1757,6 +1900,8 @@ impl EventLog {
             refused: Arc::clone(&storage.refused),
             cuts: Arc::clone(&self.cuts),
             seen_cuts: self.cuts.load(Ordering::Acquire),
+            undamaged: !self.diagnostics.iter().any(|diagnostic| diagnostic.skipped),
+            held_from,
         })
     }
 
@@ -2030,7 +2175,7 @@ impl EventLog {
         if self.storage().window.is_none() {
             return;
         }
-        let reopened = Self::open_read_only(self.path.clone(), self.session_id)
+        let reopened = Self::parsed_read_only(self.path.clone(), self.session_id)
             .expect("a windowed log reopens");
         let (whole, reopened_validation) = {
             let storage = reopened.storage();
@@ -2708,6 +2853,25 @@ impl EventLog {
             None
         };
         if self.persisted.load(Ordering::Acquire) {
+            // Before the cut, so a crash leaves no file naming what it cut. One
+            // that a write in flight puts back no longer matches the log.
+            if let Some(directory) = self.path.parent() {
+                match fs::remove_file(directory.join(state_file::STATE_FILE)) {
+                    Ok(()) => {}
+                    Err(source) if source.kind() == io::ErrorKind::NotFound => {}
+                    Err(source) => {
+                        return Err(EventLogError::Io {
+                            path: directory.join(state_file::STATE_FILE),
+                            source,
+                        });
+                    }
+                }
+            }
+            self.state_written.store(0, Ordering::Release);
+            *self
+                .opened
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
             // A pass reading the file finds this after the read that could
             // see the cut, or finds the file ends early; and one asked for
             // between here and the new state takes the second count below.
@@ -2927,7 +3091,7 @@ impl EventLog {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
 struct RunAttribution {
     start_seq: u64,
     agent_id: cookie_agent_protocol::AgentId,
@@ -2945,7 +3109,7 @@ struct RunAttribution {
     ordering_tainted: bool,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
 struct AttemptAttribution {
     run_id: RunId,
     resolved_model: cookie_agent_protocol::ResolvedModelRef,
@@ -2956,7 +3120,7 @@ struct AttemptAttribution {
     abandoned: bool,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
 struct InternalRunAttribution {
     start_seq: u64,
     invocation_id: cookie_agent_protocol::InternalAgentInvocationId,
@@ -2968,7 +3132,7 @@ struct InternalRunAttribution {
     usage_phase_taint_seen: u64,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
 struct DelegationAttribution {
     parent_run_id: RunId,
     child_session_id: SessionId,
@@ -2978,24 +3142,38 @@ struct DelegationAttribution {
     finished: bool,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
 struct ValidationState {
     taint: ValidationTaint,
+    #[serde(with = "crate::events::sorted::map")]
     runs: HashMap<RunId, RunAttribution>,
+    #[serde(with = "crate::events::sorted::map")]
     approval_owners: HashMap<cookie_agent_protocol::ApprovalId, RunId>,
+    #[serde(with = "crate::events::sorted::map")]
     attempts: HashMap<AttemptId, AttemptAttribution>,
+    #[serde(with = "crate::events::sorted::map")]
     turns: HashMap<u64, CommittedTurn>,
+    #[serde(with = "crate::events::sorted::map")]
     turn_models: HashMap<u64, cookie_agent_protocol::ResolvedModelRef>,
+    #[serde(with = "crate::events::sorted::set")]
     usage_turns: HashSet<u64>,
+    #[serde(with = "crate::events::sorted::map")]
     internal_runs: HashMap<cookie_agent_protocol::InternalAgentRunId, InternalRunAttribution>,
+    #[serde(with = "crate::events::sorted::map")]
     delegations: HashMap<cookie_agent_protocol::InvocationId, DelegationAttribution>,
+    #[serde(with = "crate::events::sorted::map")]
     model_call_owners: HashMap<(RunId, ModelCallId), AssistantToolCallRef>,
+    #[serde(with = "crate::events::sorted::map")]
     provider_item_owners: HashMap<(RunId, ProviderItemId), AssistantToolCallRef>,
+    #[serde(with = "crate::events::sorted::map")]
     tool_starts: HashMap<ToolCallId, (RunId, AssistantToolCallRef)>,
+    #[serde(with = "crate::events::sorted::set")]
     terminated_tools: HashSet<ToolCallId>,
+    #[serde(with = "crate::events::sorted::set")]
     elided_tools: HashSet<ToolCallId>,
     /// Admitted inputs by sequence with their run (`None` for a runless
     /// admission), kept as a digest of the text.
+    #[serde(with = "crate::events::sorted::map")]
     admissions: HashMap<u64, (Option<RunId>, InputDigest)>,
     next_model_turn_seq: u64,
     previous_seq: Option<u64>,
@@ -3006,18 +3184,36 @@ struct ValidationState {
 
 /// What validation keeps of a committed model turn: its run, and the call
 /// identity of each tool-call part by content index.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
 struct CommittedTurn {
     run_id: RunId,
     tool_calls: Vec<Option<(ModelCallId, Option<ProviderItemId>)>>,
 }
 
 /// SHA-256 of an admitted input, which a later submission must match.
-type InputDigest = [u8; 32];
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct InputDigest([u8; 32]);
+
+impl Serialize for InputDigest {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&STANDARD.encode(self.0))
+    }
+}
+
+impl<'de> Deserialize<'de> for InputDigest {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let bytes = STANDARD
+            .decode(String::deserialize(deserializer)?)
+            .map_err(serde::de::Error::custom)?;
+        <[u8; 32]>::try_from(bytes)
+            .map(Self)
+            .map_err(|_| serde::de::Error::custom("a digest is 32 bytes"))
+    }
+}
 
 fn input_digest(content: &cookie_agent_protocol::UserContent) -> InputDigest {
     use sha2::Digest as _;
-    sha2::Sha256::digest(serde_json::to_vec(content).unwrap_or_default()).into()
+    InputDigest(sha2::Sha256::digest(serde_json::to_vec(content).unwrap_or_default()).into())
 }
 
 impl ValidationState {
@@ -3059,22 +3255,36 @@ impl Default for ValidationState {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, serde::Deserialize, serde::Serialize)]
 struct ValidationTaint {
     broad: Vec<(u64, u64)>,
+    #[serde(with = "crate::events::sorted::map")]
     runs: HashMap<RunId, u64>,
+    #[serde(with = "crate::events::sorted::map")]
     attempts: HashMap<AttemptId, u64>,
+    #[serde(with = "crate::events::sorted::map")]
     attempt_runs: HashMap<RunId, u64>,
+    #[serde(with = "crate::events::sorted::map")]
     turns: HashMap<u64, u64>,
+    #[serde(with = "crate::events::sorted::map")]
     tools: HashMap<ToolCallId, u64>,
+    #[serde(with = "crate::events::sorted::map")]
     approvals: HashMap<cookie_agent_protocol::ApprovalId, u64>,
+    #[serde(with = "crate::events::sorted::map")]
     internal_runs: HashMap<cookie_agent_protocol::InternalAgentRunId, u64>,
+    #[serde(with = "crate::events::sorted::map")]
     internal_model_phases: HashMap<cookie_agent_protocol::InternalAgentRunId, Vec<u64>>,
+    #[serde(with = "crate::events::sorted::map")]
     internal_usage_phases: HashMap<cookie_agent_protocol::InternalAgentRunId, Vec<u64>>,
+    #[serde(with = "crate::events::sorted::map")]
     tool_terminals: HashMap<ToolCallId, u64>,
+    #[serde(with = "crate::events::sorted::map")]
     admissions: HashMap<u64, u64>,
+    #[serde(with = "crate::events::sorted::map")]
     delegations: HashMap<cookie_agent_protocol::InvocationId, u64>,
+    #[serde(with = "crate::events::sorted::map")]
     delegation_repairs: HashMap<cookie_agent_protocol::InvocationId, u64>,
+    #[serde(with = "crate::events::sorted::map")]
     run_ordering: HashMap<RunId, u64>,
     turn_ordering: Option<u64>,
     active_run_ordering: Option<u64>,

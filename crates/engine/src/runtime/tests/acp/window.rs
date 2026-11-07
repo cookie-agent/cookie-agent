@@ -689,22 +689,19 @@ fn golden_acp_root() -> std::path::PathBuf {
         .join("events.jsonl")
 }
 
-/// A read-only log, whose owner can cut or rewrite the file with no word to
-/// this process, and a native log, whose model reads it, stay whole.
+/// An open of an ACP agent's log holds its window from the start, whoever opens
+/// it, as what it lets go of is in the file.
 #[test]
-fn only_a_log_this_process_owns_of_an_acp_agent_is_windowed() {
+fn an_open_of_a_log_of_an_acp_agent_holds_its_window() {
     let read_only =
         EventLog::open_read_only(golden_acp_root(), golden_acp_session()).expect("the golden log");
-    crate::session::projection(Arc::clone(&read_only)).unwrap();
-    read_only.narrow_window();
-    assert_eq!(read_only.window_for_test(), None);
+    assert!(read_only.window_for_test().is_some());
+    assert!(!read_only.opened_from_state_for_test());
 
     let directory = private_tempdir();
     let (owned, _) = windowed_log(directory.path());
     assert!(owned.window_for_test().is_some());
     let reopened = EventLog::open(owned.path().to_owned(), golden_acp_session()).unwrap();
-    assert_eq!(reopened.window_for_test(), None, "until its fold is done");
-    crate::session::projection(Arc::clone(&reopened)).unwrap();
     assert_eq!(reopened.window_for_test(), owned.window_for_test());
     assert_eq!(reopened.creation().unwrap().seq, 1);
 }

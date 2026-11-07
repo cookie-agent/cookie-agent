@@ -16,7 +16,7 @@ pub fn skip_reference_fold() {
 }
 
 #[cfg(any(test, feature = "test-support"))]
-pub(super) fn reference_fold_skipped() -> bool {
+pub(crate) fn reference_fold_skipped() -> bool {
     SKIP_REFERENCE_FOLD.load(std::sync::atomic::Ordering::Relaxed)
 }
 
@@ -68,7 +68,7 @@ pub(super) fn assert_projection_equivalent(
 
 /// Whether an automatic title may still be generated, folded from the
 /// visible `SessionTitleCommitted` records in log order.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 pub(super) struct AutomaticTitleEligibility {
     latest_automatic: Option<u64>,
     /// Latest user or delegated change, and whether it was a reset.
@@ -122,11 +122,38 @@ pub(super) fn refold(
     #[cfg(any(test, feature = "test-support"))]
     PROJECTION_FOLDS.with(|count| count.set(count.get() + 1));
     let previous = previous.filter(|previous| Arc::ptr_eq(&previous.log, &log));
+    // A log that opened without reading itself whole folded this as it read.
+    if previous.is_none()
+        && let Some(folds) = log.opened_folds()
+    {
+        return Ok(SessionProjection { folds, log });
+    }
     let folded = projection_fold_with(Arc::clone(&log), previous)?;
-    // A log that opened read its whole file for this fold, and this is where it
-    // lets go of what its window does not hold.
+    // A log that read its whole file for this fold lets go here of what its
+    // window does not hold.
     log.narrow_window();
     Ok(folded)
+}
+
+/// Test-only: panics unless `folds`, what `log` folded as it opened, are what
+/// `parsed`, the same file read whole, folds to.
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) fn assert_opened_folds_as_parsed(
+    log: &Arc<EventLog>,
+    folds: ProjectionFolds,
+    parsed: &Arc<EventLog>,
+) {
+    let whole = projection_fold(Arc::clone(parsed)).expect("reference fold");
+    let opened = SessionProjection {
+        folds,
+        log: Arc::clone(log),
+    };
+    assert_projection_equivalent(&opened, &whole);
+    assert_eq!(
+        serde_json::to_vec(&opened.folds).expect("folds serialize"),
+        serde_json::to_vec(&whole.folds).expect("folds serialize"),
+        "what a log opened without reading it whole folds to differs from a parse's"
+    );
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -140,31 +167,6 @@ fn projection_fold_with(
 ) -> Result<SessionProjection, SessionError> {
     let physical_tip = log.last_event().expect("creation checked by EventLog");
     let creation = log.creation().expect("creation checked by EventLog");
-    let (origin, short_id, cwd_identity, creation_selection, creation_agent, revisions, cron) =
-        match &creation.payload {
-            EventPayload::SessionCreated {
-                history_format: _,
-                origin,
-                short_id,
-                cwd_identity,
-                creation_selection,
-                creation_agent,
-                revisions,
-                cron,
-            } => (
-                origin.clone(),
-                Some(short_id.clone()),
-                cwd_identity.clone(),
-                creation_selection.clone(),
-                previous.map_or_else(
-                    || Arc::new(creation_agent.as_ref().clone()),
-                    |previous| previous.creation_agent.clone(),
-                ),
-                revisions.clone(),
-                cron.clone(),
-            ),
-            _ => unreachable!(),
-        };
     // A full fold sees every usage record up front, so a turn whose usage is
     // recorded later never counts at its commit. This pass also finds the last
     // record that counts as activity.
@@ -179,60 +181,15 @@ fn projection_fold_with(
             last_activity = event.timestamp;
         }
     }
-    let meta = SessionMeta {
-        cache_compaction: None,
-        session_id: creation.session_id,
-        origin,
-        short_id,
-        cwd_identity,
-        creation_selection,
-        runtime_revision: revisions.runtime_revision,
-        catalog_revision: revisions.catalog_revision,
-        provider_state_revision: revisions.provider_state_revision,
-        model_revision: revisions.model_revision,
-        agent_revision: revisions.agent_revision,
-        recipe_registry_revision: revisions.recipe_registry_revision,
-        manifest_revision: revisions.manifest_revision,
-        title: None,
-        title_updated_seq: 0,
-        last_event_seq: log.physical_tip_seq(),
-        last_activity,
-        last_agent_activity: None,
-        status: SessionStatus::Idle,
-        skipped_events: log
-            .diagnostics()
-            .iter()
-            .filter(|diagnostic| diagnostic.skipped)
-            .map(|diagnostic| cookie_agent_protocol::SkippedEvent {
-                seq: diagnostic.seq,
-                reason: diagnostic.reason.clone(),
-            })
-            .collect(),
-        attachments: Vec::new(),
-        project: None,
-        waiting_on: Vec::new(),
-        delegated_attachments: Vec::new(),
-        cron,
-        held: None,
-        unread: false,
-        pinned: false,
-    };
+    let mut folds = ProjectionFolds::of_creation(
+        &creation,
+        previous.map(|previous| previous.creation_agent.clone()),
+    )
+    .expect("creation checked by EventLog");
+    folds.meta.last_activity = last_activity;
+    folds.finish_read(log.physical_tip_seq(), log.diagnostics());
     let mut projection = SessionProjection {
-        folds: ProjectionFolds {
-            meta,
-            creation_agent,
-            status: SessionStatus::Idle,
-            usage: None,
-            usage_rollup: UsageRollup::default(),
-            runs: HashMap::new(),
-            rename_records: HashMap::new(),
-            permission_overlay: SessionPermissionOverlay::default(),
-            tool_exposure: cookie_agent_protocol::ToolExposure::default(),
-            permission_mode: None,
-            runtime_attachments: cookie_agent_protocol::RuntimeAttachmentFold::default(),
-            automatic_title_eligible: AutomaticTitleEligibility::default().eligible(),
-            fold: ProjectionFoldState::default(),
-        },
+        folds,
         log: log.clone(),
     };
     let step = FoldStep::Full {
@@ -278,7 +235,7 @@ pub(super) enum Observed {
 
 /// Fold state a projection keeps beyond its public fields, so an appended
 /// event can be applied in place instead of refolding the log.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Deserialize, serde::Serialize)]
 pub struct ProjectionFoldState {
     user_title: Option<Option<SessionTitle>>,
     delegated_title: Option<SessionTitle>,
@@ -287,9 +244,11 @@ pub struct ProjectionFoldState {
     /// Tool name of each committed tool-call part, by
     /// `(model_turn_seq, content_index)`. A later committed turn with the
     /// same sequence replaces the names it carries.
+    #[serde(with = "crate::events::sorted::map")]
     tool_names: HashMap<(u64, u32), String>,
     /// Committed turns whose usage counted at their commit because no
     /// `ModelUsageRecorded` for them was known, by `model_turn_seq`.
+    #[serde(with = "crate::events::sorted::map")]
     provisional_usage: HashMap<u64, ProvisionalUsage>,
     /// The session's goal, which `meta.waiting_on` reports while active.
     goals: crate::goal_projection::GoalFold,
@@ -304,7 +263,7 @@ impl ProjectionFoldState {
 }
 
 /// Where a committed turn's provisionally counted usage sits in the rollup.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 struct ProvisionalUsage {
     model: cookie_agent_protocol::ModelKey,
     /// Index of the turn's observation in its model rollup.
@@ -312,6 +271,103 @@ struct ProvisionalUsage {
 }
 
 impl ProjectionFolds {
+    /// What a log holding only `creation` folds to; `None` when that is no
+    /// session's creation. `creation_agent` shares an earlier fold's snapshot.
+    pub(crate) fn of_creation(
+        creation: &StoredEvent,
+        creation_agent: Option<Arc<AgentSnapshot>>,
+    ) -> Option<Self> {
+        let EventPayload::SessionCreated {
+            history_format: _,
+            origin,
+            short_id,
+            cwd_identity,
+            creation_selection,
+            creation_agent: created_with,
+            revisions,
+            cron,
+        } = &creation.payload
+        else {
+            return None;
+        };
+        Some(Self {
+            meta: SessionMeta {
+                cache_compaction: None,
+                session_id: creation.session_id,
+                origin: origin.clone(),
+                short_id: Some(short_id.clone()),
+                cwd_identity: cwd_identity.clone(),
+                creation_selection: creation_selection.clone(),
+                runtime_revision: revisions.runtime_revision.clone(),
+                catalog_revision: revisions.catalog_revision.clone(),
+                provider_state_revision: revisions.provider_state_revision.clone(),
+                model_revision: revisions.model_revision.clone(),
+                agent_revision: revisions.agent_revision.clone(),
+                recipe_registry_revision: revisions.recipe_registry_revision.clone(),
+                manifest_revision: revisions.manifest_revision.clone(),
+                title: None,
+                title_updated_seq: 0,
+                last_event_seq: creation.seq,
+                last_activity: creation.timestamp,
+                last_agent_activity: None,
+                status: SessionStatus::Idle,
+                skipped_events: Vec::new(),
+                attachments: Vec::new(),
+                project: None,
+                waiting_on: Vec::new(),
+                delegated_attachments: Vec::new(),
+                cron: cron.clone(),
+                held: None,
+                unread: false,
+                pinned: false,
+            },
+            creation_agent: creation_agent
+                .unwrap_or_else(|| Arc::new(created_with.as_ref().clone())),
+            status: SessionStatus::Idle,
+            usage: None,
+            usage_rollup: UsageRollup::default(),
+            runs: HashMap::new(),
+            rename_records: HashMap::new(),
+            permission_overlay: SessionPermissionOverlay::default(),
+            tool_exposure: cookie_agent_protocol::ToolExposure::default(),
+            permission_mode: None,
+            runtime_attachments: cookie_agent_protocol::RuntimeAttachmentFold::default(),
+            automatic_title_eligible: AutomaticTitleEligibility::default().eligible(),
+            fold: ProjectionFoldState::default(),
+        })
+    }
+
+    /// Folds the next record of a log being read as a live append folds it.
+    /// `false` when it needs a full fold of the log, which leaves this unusable.
+    pub(crate) fn observe_read(&mut self, event: &StoredEvent) -> bool {
+        if matches!(self.observe(event, FoldStep::Append), Observed::NeedsRefold) {
+            return false;
+        }
+        self.meta.last_event_seq = event.seq;
+        if !quiet(event) {
+            self.meta.last_activity = event.timestamp;
+        }
+        true
+    }
+
+    /// What a read of a whole log says beyond its records: where it ends, and the
+    /// lines it could not read.
+    pub(crate) fn finish_read(
+        &mut self,
+        tip: u64,
+        diagnostics: &[crate::events::EventLoadDiagnostic],
+    ) {
+        self.meta.last_event_seq = tip;
+        self.meta.skipped_events = diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.skipped)
+            .map(|diagnostic| cookie_agent_protocol::SkippedEvent {
+                seq: diagnostic.seq,
+                reason: diagnostic.reason.clone(),
+            })
+            .collect();
+    }
+
     /// Folds one visible event into the projection. The metadata tip is the
     /// caller's: a full fold takes it from the log, an append from the event.
     ///
@@ -658,6 +714,68 @@ impl SessionProjection {
             Observed::NeedsRefold => *self = refold(self.log.clone(), Some(self))?,
         }
         Ok(())
+    }
+}
+
+/// A usage rollup with what the wire leaves out of it and an appended turn needs:
+/// each model's observations and their costs, and whether a sum overflowed.
+pub(super) mod rollup_whole {
+    use super::*;
+    use serde::{Deserialize as _, Serialize as _};
+
+    #[derive(serde::Deserialize, serde::Serialize)]
+    struct Whole<R, M> {
+        rollup: R,
+        overflowed: bool,
+        models: M,
+    }
+
+    type Model = (
+        cookie_agent_protocol::ModelKey,
+        Vec<Usage>,
+        Vec<cookie_agent_protocol::UsageCostProvenance>,
+        bool,
+    );
+
+    pub(in super::super) fn serialize<S: serde::Serializer>(
+        rollup: &UsageRollup,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        Whole {
+            rollup,
+            overflowed: rollup.arithmetic_overflow,
+            models: rollup
+                .by_model
+                .iter()
+                .map(|(key, model)| {
+                    (
+                        key,
+                        &model.observations,
+                        &model.cost_provenance,
+                        model.arithmetic_overflow,
+                    )
+                })
+                .collect::<Vec<_>>(),
+        }
+        .serialize(serializer)
+    }
+
+    pub(in super::super) fn deserialize<'de, D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<UsageRollup, D::Error> {
+        let whole = Whole::<UsageRollup, Vec<Model>>::deserialize(deserializer)?;
+        let mut rollup = whole.rollup;
+        rollup.arithmetic_overflow = whole.overflowed;
+        for (key, observations, cost_provenance, overflowed) in whole.models {
+            let model = rollup
+                .by_model
+                .get_mut(&key)
+                .ok_or_else(|| serde::de::Error::custom("a model the rollup does not name"))?;
+            model.observations = observations;
+            model.cost_provenance = cost_provenance;
+            model.arithmetic_overflow = overflowed;
+        }
+        Ok(rollup)
     }
 }
 

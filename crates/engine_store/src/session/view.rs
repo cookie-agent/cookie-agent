@@ -20,6 +20,7 @@ use cookie_agent_protocol::{EventsView, display_view};
 
 use super::*;
 use crate::events::VIEW_BUDGET;
+use crate::events::state_file::{STATE_FILE, StateFile};
 
 /// The cache's file in a session's directory.
 pub const VIEW_FILE: &str = "view.json";
@@ -145,6 +146,20 @@ pub(super) fn write_view(
     Ok(Some(view_start))
 }
 
+/// Replaces the `state.json` beside `log` with `state`, a temporary renamed over
+/// the old one and never synced: a crash loses nothing but the time to fold.
+pub(super) fn write_state(log: &EventLog, state: &StateFile) -> Result<(), SessionError> {
+    let Some(dir) = log.path().parent() else {
+        return Ok(());
+    };
+    let path = dir.join(STATE_FILE);
+    let bytes = state.to_bytes().map_err(|source| SessionError::Json {
+        path: path.clone(),
+        source,
+    })?;
+    replace_cache_file(&path, &bytes, CacheSync::Atomic)
+}
+
 /// The answer to `events.subscribe` with `from: "tail"` for `window`.
 pub(super) fn newest_first(window: display_view::Window) -> EventsSubscribeResult {
     EventsSubscribeResult {
@@ -164,6 +179,39 @@ pub(super) fn newest_first(window: display_view::Window) -> EventsSubscribeResul
 }
 
 impl SessionStore {
+    /// Writes `id`'s `state.json` from its resident log when `due` says so of how
+    /// much of the log came since the last write (`docs/site/specs/forever-sessions.md`
+    /// section 4.2). Only the owner writes it, a log that should have none is left
+    /// alone, and appends are held off only while what it holds is copied: the
+    /// file is written outside every lock. A failure is only logged: the file is
+    /// not needed.
+    pub(super) fn refresh_state(&self, id: SessionId, due: impl FnOnce(&EventLog) -> bool) {
+        if !self.is_owned(id) {
+            return;
+        }
+        let Some(resident) = self.get_resident(id) else {
+            return;
+        };
+        if !due(&resident.log) {
+            return;
+        }
+        let log = Arc::clone(&resident.log);
+        drop(resident);
+        let state = {
+            let _slot = self.lock_session(id);
+            self.get_resident(id)
+                .filter(|session| Arc::ptr_eq(&session.log, &log))
+                .and_then(|session| log.state_file(&session))
+        };
+        let Some(state) = state else {
+            return;
+        };
+        match write_state(&log, &state) {
+            Ok(()) => log.note_state_written(&state),
+            Err(error) => eprintln!("session {id}: state.json was not written: {error}"),
+        }
+    }
+
     /// Brings `id`'s view cache up to `log`, its whole log, when the cache
     /// would start elsewhere than the last one this process wrote. A failure
     /// is only logged: the cache is not needed.
@@ -327,6 +375,6 @@ impl SessionStore {
             self.refresh_view(id, &log);
         }
         let tip = log.last_event().map_or(0, |event| event.seq);
-        Ok((log.history()?.tail_window(view, budget)?, tip))
+        Ok((log.newest_pass()?.tail_window(view, budget)?, tip))
     }
 }
