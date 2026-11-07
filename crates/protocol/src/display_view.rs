@@ -212,6 +212,7 @@ enum Slim {
 
 /// The settings in a run of events that a later event of the same run
 /// replaces.
+#[derive(Default)]
 struct Superseded {
     /// The last `model_tools_published`.
     tools: Option<usize>,
@@ -224,17 +225,8 @@ struct Superseded {
 }
 
 impl Superseded {
-    fn new() -> Self {
-        Self {
-            tools: None,
-            commands: None,
-            starting_options: None,
-            presentations: HashMap::new(),
-        }
-    }
-
     fn of(events: &[Arc<StoredEvent>]) -> Self {
-        let mut superseded = Self::new();
+        let mut superseded = Self::default();
         for (index, event) in events.iter().enumerate() {
             superseded.observe(index, event);
         }
@@ -879,6 +871,135 @@ impl TailWindowReader {
     }
 }
 
+/// Where [`cache_start`] puts a cache of a log's newest-first view, and the
+/// header of what precedes it, kept up to date one event at a time for a log
+/// that no longer holds its events
+/// (`docs/site/specs/forever-sessions.md` section 12).
+///
+/// It holds the settled header, the run boundaries the cache can still move to,
+/// and of the events since the cache's start only those [`state_events`] reads:
+/// never the rest, so a run's output costs it nothing.
+#[derive(Clone, Debug)]
+pub struct CacheStartFold {
+    budget: usize,
+    /// The bytes of the events it measured.
+    total: usize,
+    /// The run boundaries whose events on still fit, in order: each with the
+    /// bytes of what it measured before it.
+    boundaries: std::collections::VecDeque<(CacheBoundary, usize)>,
+    /// The last boundary whose events on do not fit, once there is one.
+    start: Option<CacheBoundary>,
+    /// [`state_events`] of everything before `start`.
+    before: StateEventsFold,
+    /// What [`state_events`] reads of the events from `start` on.
+    since_start: std::collections::VecDeque<Arc<StoredEvent>>,
+}
+
+/// A run boundary of a log: where a cache of its view can start.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CacheBoundary {
+    pub seq: u64,
+    pub timestamp: jiff::Timestamp,
+}
+
+impl CacheBoundary {
+    fn of(event: &StoredEvent) -> Self {
+        Self {
+            seq: event.seq,
+            timestamp: event.timestamp,
+        }
+    }
+}
+
+impl CacheStartFold {
+    #[must_use]
+    pub fn new(budget: usize) -> Self {
+        Self {
+            budget,
+            total: 0,
+            boundaries: std::collections::VecDeque::new(),
+            start: None,
+            before: StateEventsFold::default(),
+            since_start: std::collections::VecDeque::new(),
+        }
+    }
+
+    /// The fold of `events`, a log's events from its start, held in memory: it
+    /// measures only what fits, walking back from the end.
+    #[must_use]
+    pub fn of(events: &[Arc<StoredEvent>], budget: usize) -> Self {
+        let sizes = Sizes::new(events, EventsView::Display);
+        let fit = sizes.fit_before(events.len(), budget);
+        let start = (0..fit)
+            .rev()
+            .find(|&index| is_run_boundary(&events[index]));
+        let mut fold = Self::new(budget);
+        let first = start.unwrap_or(0);
+        fold.start = start.map(|start| CacheBoundary::of(&events[start]));
+        for event in &events[..first] {
+            fold.before.observe(event);
+        }
+        fold.since_start = events[first..]
+            .iter()
+            .filter(|event| concerns_state(&event.payload))
+            .cloned()
+            .collect();
+        for (index, event) in events.iter().enumerate().skip(fit) {
+            if is_run_boundary(event) {
+                fold.boundaries
+                    .push_back((CacheBoundary::of(event), fold.total));
+            }
+            fold.total = fold.total.saturating_add(sizes.of(index));
+        }
+        fold
+    }
+
+    /// Reads the next event of the log.
+    pub fn observe(&mut self, event: &Arc<StoredEvent>) {
+        if is_run_boundary(event) {
+            self.boundaries
+                .push_back((CacheBoundary::of(event), self.total));
+        }
+        self.total = self
+            .total
+            .saturating_add(view_size(event, EventsView::Display));
+        if concerns_state(&event.payload) {
+            self.since_start.push_back(Arc::clone(event));
+        }
+        let mut start = None;
+        while let Some(&(boundary, before)) = self.boundaries.front()
+            && self.total - before > self.budget
+        {
+            start = Some(boundary);
+            self.boundaries.pop_front();
+        }
+        if let Some(start) = start {
+            self.start = Some(start);
+            while self
+                .since_start
+                .front()
+                .is_some_and(|held| held.seq < start.seq)
+            {
+                let held = self.since_start.pop_front().expect("just looked at it");
+                self.before.observe(&held);
+            }
+        }
+    }
+
+    /// The boundary the cache starts at: [`cache_start`] of the events it read.
+    /// `None` when they all fit.
+    #[must_use]
+    pub fn start(&self) -> Option<CacheBoundary> {
+        self.start
+    }
+
+    /// [`state_events`] of every event before [`Self::start`].
+    #[must_use]
+    pub fn header(&self) -> Vec<Arc<StoredEvent>> {
+        self.before.clone().finish()
+    }
+}
+
 /// [`older_page`] of a log's events before the page, read one event at a time.
 /// It holds what fits the budget, and folds what no longer does.
 #[derive(Clone, Debug)]
@@ -965,49 +1086,60 @@ impl OlderPageReader {
     }
 }
 
-/// How many events [`display_events`] shows of a log, read in two passes:
-/// [`Self::observe`] finds what later events replace, and [`Self::count`] counts
-/// what stays. It holds what the first pass finds, and not the events.
+/// How many events [`display_events`] shows of a log, read once, one event at a
+/// time. It holds what later events can still replace, and not the events.
+#[derive(Default)]
 pub struct DisplayCount {
-    superseded: Superseded,
     read: usize,
-    counted: usize,
-    shown: u64,
-}
-
-impl Default for DisplayCount {
-    fn default() -> Self {
-        Self {
-            superseded: Superseded::new(),
-            read: 0,
-            counted: 0,
-            shown: 0,
-        }
-    }
+    /// Events shown whatever follows them.
+    settled: u64,
+    superseded: Superseded,
+    /// The events shown only while a setting of theirs is the latest: nothing
+    /// else of them would be left once a later event replaces it.
+    while_latest: HashSet<usize>,
 }
 
 impl DisplayCount {
-    /// Reads the next event of the first pass.
+    /// Reads the next event of the log.
     pub fn observe(&mut self, event: &StoredEvent) {
-        self.superseded.observe(self.read, event);
+        let index = self.read;
         self.read += 1;
-    }
-
-    /// Reads the next event of the second pass, the same events in order.
-    pub fn count(&mut self, event: &StoredEvent) {
-        let shown = match self.superseded.apply(self.counted, event) {
-            Slim::Whole => !leaves_out(&event.payload),
-            Slim::Changed(event) => !leaves_out(&event.payload),
-            Slim::Dropped => false,
+        self.superseded.observe(index, event);
+        if leaves_out(&event.payload) {
+            return;
+        }
+        let replaceable = match &event.payload {
+            EventPayload::ModelToolsPublished { .. } => true,
+            EventPayload::AcpSessionUpdated { update } => {
+                let mut rest = update.clone();
+                rest.commands = None;
+                rest.starting_options = None;
+                rest.tool_presentation = None;
+                rest.is_empty()
+            }
+            _ => false,
         };
-        self.counted += 1;
-        self.shown += u64::from(shown);
+        if replaceable {
+            self.while_latest.insert(index);
+        } else {
+            self.settled += 1;
+        }
     }
 
-    /// How many it counted.
+    /// How many the display view shows of the events it read.
     #[must_use]
     pub fn shown(&self) -> u64 {
-        self.shown
+        let superseded = &self.superseded;
+        let held = superseded
+            .tools
+            .iter()
+            .chain(&superseded.commands)
+            .chain(&superseded.starting_options)
+            .chain(superseded.presentations.values())
+            .copied()
+            .filter(|index| self.while_latest.contains(index))
+            .collect::<HashSet<_>>();
+        self.settled + held.len() as u64
     }
 }
 

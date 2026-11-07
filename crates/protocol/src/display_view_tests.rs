@@ -868,12 +868,14 @@ fn assert_readers_match(events: &[Arc<StoredEvent>]) {
             let mut tail = TailWindowReader::new(view, budget);
             let mut page = OlderPageReader::new(view, budget);
             let mut fold = StateEventsFold::default();
+            let mut placed = CacheStartFold::new(budget);
             for (read, event) in events.iter().enumerate() {
                 let through = &events[..=read];
                 tail.observe(Arc::clone(event));
                 page.observe(Arc::clone(event));
                 fold.observe(event);
-                if read % 5 != 0 && read + 1 != events.len() {
+                placed.observe(event);
+                if read % 16 != 0 && read + 1 != events.len() {
                     continue;
                 }
                 let context = format!("{view:?} budget {budget} through {read}");
@@ -900,15 +902,37 @@ fn assert_readers_match(events: &[Arc<StoredEvent>]) {
                         )),
                         "{context}"
                     );
+                    // Read one event at a time, or started from the list at
+                    // any point and read on from there.
+                    let seeded = CacheStartFold::of(through, budget);
+                    let mut read_on = CacheStartFold::of(&through[..read / 2], budget);
+                    through[read / 2..]
+                        .iter()
+                        .for_each(|event| read_on.observe(event));
+                    for fold in [&placed, &seeded, &read_on] {
+                        assert_eq!(
+                            fold.start().map(|boundary| boundary.seq),
+                            start.map(|start| through[start].seq),
+                            "{context}"
+                        );
+                        assert_eq!(
+                            fold.header(),
+                            state_events(&through[..start.unwrap_or(0)]),
+                            "{context}"
+                        );
+                    }
                 }
             }
-            if view == EventsView::Display {
-                let mut count = DisplayCount::default();
-                events.iter().for_each(|event| count.observe(event));
-                events.iter().for_each(|event| count.count(event));
-                assert_eq!(count.shown(), display_events(events, false).0.len() as u64);
-            }
         }
+    }
+    let mut count = DisplayCount::default();
+    for (read, event) in events.iter().enumerate() {
+        count.observe(event);
+        assert_eq!(
+            count.shown(),
+            display_events(&events[..=read], false).0.len() as u64,
+            "through {read}"
+        );
     }
 }
 

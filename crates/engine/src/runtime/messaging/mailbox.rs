@@ -326,22 +326,13 @@ impl Engine {
         off_worker(|| {
             let log = store.readable_log(session)?;
             if view.is_full() {
-                let mut count = 0_u64;
-                for event in log.history()? {
-                    event?;
-                    count += 1;
-                }
-                return Ok(count);
+                return Ok(log.record_count());
             }
-            // Two passes over the same records: what a later event replaces
-            // is known only once it has been read.
-            let tip = log.last_event().map_or(0, |event| event.seq);
+            // The reader asking is about to pass over the log itself; this is
+            // one more pass, once per such reader, keeping no events.
             let mut count = cookie_agent_protocol::display_view::DisplayCount::default();
-            for event in log.history_range(..=tip)? {
+            for event in log.history()? {
                 count.observe(&*event?);
-            }
-            for event in log.history_range(..=tip)? {
-                count.count(&*event?);
             }
             Ok(count.shown())
         })

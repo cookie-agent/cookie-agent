@@ -554,13 +554,15 @@ fn golden_logs_read_as_a_pass_give_what_the_whole_list_gives() {
             for event in log.history().unwrap() {
                 count.observe(&event.unwrap());
             }
-            for event in log.history().unwrap() {
-                count.count(&event.unwrap());
-            }
             assert_eq!(
                 count.shown(),
                 display_view::display_events(&events, false).0.len() as u64,
                 "{path}: the count"
+            );
+            assert_eq!(
+                log.record_count(),
+                events.len() as u64,
+                "{path}: the records"
             );
             for event in events.iter() {
                 let read = log

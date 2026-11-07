@@ -1757,6 +1757,15 @@ impl EventLog {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
+    /// How many records the log holds, wherever it holds them.
+    #[must_use]
+    pub fn record_count(&self) -> u64 {
+        self.validation
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .record_count as u64
+    }
+
     /// Physical `ModelTurnCommitted` records, including reverted ones.
     #[must_use]
     pub fn physical_model_turns(&self) -> u64 {
