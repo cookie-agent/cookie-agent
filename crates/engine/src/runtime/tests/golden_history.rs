@@ -506,6 +506,73 @@ fn golden_logs_fold_as_their_scans_read_them() {
     assert!(logs > 0, "no golden logs in {GOLDEN_ROOT}");
 }
 
+/// The records of a golden log appended as the store appends them, its window
+/// moved by each turn its agent committed: at each, the window answers as a
+/// reopening of the file does, and an owned reopening holds the same window.
+/// A log of a native agent's has none (`docs/site/specs/forever-sessions.md`
+/// section 7).
+#[test]
+fn a_golden_log_appended_again_answers_as_reopened_at_each_committed_turn() {
+    let mut windows = 0;
+    let scenarios = Path::new(GOLDEN_ROOT).join(HISTORY_FORMAT.to_string());
+    for scenario in ["acp", "coding", "revert-fork"] {
+        for golden in scenario_logs(&scenarios.join(scenario)) {
+            let records = golden.event_snapshot();
+            let directory = private_tempdir();
+            let tree = directory.path().join(records[0].session_id.to_string());
+            create_private_test_dir(&tree);
+            let log = crate::events::EventLog::create(
+                tree.join("events.jsonl"),
+                records[0].session_id,
+                records[0].origin.clone().expect("an origin"),
+                records[0].payload.clone(),
+            )
+            .expect("the log");
+            for record in &records[1..] {
+                // A run's records rely on no record a fork left out.
+                let Ok(appended) = log.append(
+                    record.run_id,
+                    record.origin.clone().expect("an origin"),
+                    record.payload.clone(),
+                ) else {
+                    break;
+                };
+                let EventPayload::ModelTurnCommitted { resolved_model, .. } = &record.payload
+                else {
+                    continue;
+                };
+                if resolved_model.provider_id.as_str() != cookie_agent_protocol::ACP_MODEL_PROVIDER
+                {
+                    assert_eq!(log.window_for_test(), None, "{scenario}");
+                    continue;
+                }
+                windows += 1;
+                let context = format!("{scenario} at {}", appended.seq);
+                assert_eq!(log.window_for_test(), Some(appended.seq), "{context}");
+                super::acp::window::assert_answers_as_reopened(&log, &context);
+                let copy = private_tempdir();
+                let copied = copy.path().join(records[0].session_id.to_string());
+                create_private_test_dir(&copied);
+                std::fs::copy(log.path(), copied.join("events.jsonl")).expect("a copy");
+                let owned = crate::events::EventLog::open(
+                    copied.join("events.jsonl"),
+                    records[0].session_id,
+                )
+                .expect("reopens owned");
+                crate::session::projection(Arc::clone(&owned)).expect("folds");
+                assert_eq!(owned.window_for_test(), log.window_for_test(), "{context}");
+                assert_eq!(
+                    owned.recent().len(),
+                    log.recent().len(),
+                    "{context}: what it holds"
+                );
+                super::acp::window::assert_answers_as_reopened(&owned, &context);
+            }
+        }
+    }
+    assert!(windows >= 5, "{windows} committed turns of an ACP agent");
+}
+
 /// A window, a page, a count, and an event read as a pass over a golden log are
 /// what the whole list gives, at each run of each log: an open, an older page,
 /// and `event.read` no longer take the whole list

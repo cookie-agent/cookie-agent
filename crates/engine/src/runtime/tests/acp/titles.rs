@@ -31,7 +31,9 @@ fn title(engine: &Engine, session: SessionId) -> Option<String> {
 }
 
 /// A title model on a scripted server that answers `answers`.
-async fn title_model(answers: &[&str]) -> (String, tokio::task::JoinHandle<Vec<String>>) {
+pub(super) async fn title_model(
+    answers: &[&str],
+) -> (String, tokio::task::JoinHandle<Vec<String>>) {
     let (endpoint, captured, _, _) = super::super::support::scripted_server_with_delayed_response(
         answers
             .iter()

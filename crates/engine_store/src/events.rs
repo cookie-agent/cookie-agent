@@ -2223,6 +2223,22 @@ impl EventLog {
         )
     }
 
+    /// Test-only: the latest record whose committed turn starts the window.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn state_latest_turn_seq_for_test(&self) -> Option<u64> {
+        self.storage().index.window_start
+    }
+
+    /// Test-only: [`Self::truncate_after`] under the log's own capability.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn truncate_after_for_test(&self, through_seq: u64) -> Result<(), EventLogError> {
+        let capability = self
+            .write_capability
+            .as_ref()
+            .ok_or_else(|| EventLogError::ReadOnly(self.path.clone()))?;
+        self.truncate_after(capability, through_seq)
+    }
+
     /// Test-only: the sequence the log holds its records from, when it does not
     /// hold them all.
     #[cfg(any(test, feature = "test-support"))]

@@ -25,7 +25,7 @@ mod rounds;
 mod subagents;
 mod titles;
 mod wakes;
-mod window;
+pub(super) mod window;
 use crate::{Engine, EngineOptions};
 
 fn origin() -> EventOrigin {
