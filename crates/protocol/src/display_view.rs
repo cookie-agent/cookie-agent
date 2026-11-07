@@ -224,33 +224,39 @@ struct Superseded {
 }
 
 impl Superseded {
-    fn of(events: &[Arc<StoredEvent>]) -> Self {
-        let mut superseded = Self {
+    fn new() -> Self {
+        Self {
             tools: None,
             commands: None,
             starting_options: None,
             presentations: HashMap::new(),
-        };
+        }
+    }
+
+    fn of(events: &[Arc<StoredEvent>]) -> Self {
+        let mut superseded = Self::new();
         for (index, event) in events.iter().enumerate() {
-            match &event.payload {
-                EventPayload::ModelToolsPublished { .. } => superseded.tools = Some(index),
-                EventPayload::AcpSessionUpdated { update } => {
-                    if update.commands.is_some() {
-                        superseded.commands = Some(index);
-                    }
-                    if update.starting_options.is_some() {
-                        superseded.starting_options = Some(index);
-                    }
-                    if let Some(presented) = &update.tool_presentation {
-                        superseded
-                            .presentations
-                            .insert(presented.tool_call_id, index);
-                    }
-                }
-                _ => {}
-            }
+            superseded.observe(index, event);
         }
         superseded
+    }
+
+    fn observe(&mut self, index: usize, event: &StoredEvent) {
+        match &event.payload {
+            EventPayload::ModelToolsPublished { .. } => self.tools = Some(index),
+            EventPayload::AcpSessionUpdated { update } => {
+                if update.commands.is_some() {
+                    self.commands = Some(index);
+                }
+                if update.starting_options.is_some() {
+                    self.starting_options = Some(index);
+                }
+                if let Some(presented) = &update.tool_presentation {
+                    self.presentations.insert(presented.tool_call_id, index);
+                }
+            }
+            _ => {}
+        }
     }
 
     fn apply(&self, index: usize, event: &StoredEvent) -> Slim {
@@ -413,6 +419,80 @@ pub fn state_events(prefix: &[Arc<StoredEvent>]) -> Vec<Arc<StoredEvent>> {
     picked
 }
 
+/// Whether [`state_events`] reads an event of this payload. The rest need not
+/// be held to fold it.
+fn concerns_state(payload: &EventPayload) -> bool {
+    match payload {
+        EventPayload::AcpSessionUpdated { update } => {
+            update.commands.is_some()
+                || update.options.is_some()
+                || update.starting_options.is_some()
+                || update.context.is_some()
+        }
+        EventPayload::SessionCreated { .. }
+        | EventPayload::RunStarted { .. }
+        | EventPayload::RunFinished { .. }
+        | EventPayload::MemoryLoaded { .. }
+        | EventPayload::ModelToolsPublished { .. }
+        | EventPayload::AcpSessionStarted { .. }
+        | EventPayload::SessionModelSelected { .. }
+        | EventPayload::GoalActivated { .. }
+        | EventPayload::GoalChecklistRevised { .. }
+        | EventPayload::GoalLifecycleChanged { .. }
+        | EventPayload::RuntimeAttached { .. }
+        | EventPayload::RuntimeDetached { .. }
+        | EventPayload::AutomaticRunsHeld { .. }
+        | EventPayload::AutomaticRunsResumed {}
+        | EventPayload::UserInputSubmitted { .. }
+        | EventPayload::UserInputQueued { .. }
+        | EventPayload::UserInputQueueRecalled { .. }
+        | EventPayload::UserInputQueueVoided {}
+        | EventPayload::ContextCheckpointCommitted { .. }
+        | EventPayload::DeferredToolsAnnounced { .. } => true,
+        _ => false,
+    }
+}
+
+/// [`state_events`] of a log read one event at a time, holding the header so
+/// far and the few events since it was last worked out: [`state_events`] of
+/// that header followed by later events is [`state_events`] of the log through
+/// them.
+#[derive(Clone, Debug, Default)]
+pub struct StateEventsFold {
+    held: Vec<Arc<StoredEvent>>,
+    unsettled: usize,
+}
+
+impl StateEventsFold {
+    /// How many events it reads, and so holds, before it works the header out.
+    const SETTLES_EVERY: usize = 256;
+
+    /// Folds the next event of the log.
+    pub fn observe(&mut self, event: &Arc<StoredEvent>) {
+        if concerns_state(&event.payload) {
+            self.held.push(Arc::clone(event));
+            self.unsettled += 1;
+            if self.unsettled >= Self::SETTLES_EVERY {
+                self.settle();
+            }
+        }
+    }
+
+    fn settle(&mut self) {
+        if self.unsettled > 0 {
+            self.held = state_events(&self.held);
+            self.unsettled = 0;
+        }
+    }
+
+    /// [`state_events`] of the events it read.
+    #[must_use]
+    pub fn finish(mut self) -> Vec<Arc<StoredEvent>> {
+        self.settle();
+        self.held
+    }
+}
+
 /// The events of `skipped` a reader that holds what comes before and after
 /// it still needs: the settings ([`state_events`]) and what is still
 /// waiting when the log ends with `rest`: an approval or a question not
@@ -493,6 +573,8 @@ pub struct Window {
 /// start (through its first input), the settings and waiting events of
 /// what it leaves out, a gap, and the run's newest model attempts that fit.
 /// The log's last event is always sent, as a forward page sends it.
+///
+/// [`TailWindowReader`] gives the same reading a log one event at a time.
 #[must_use]
 pub fn tail_window(events: &[Arc<StoredEvent>], view: EventsView, budget: usize) -> Window {
     newest(events, None, view, budget).unwrap_or_default()
@@ -671,6 +753,8 @@ fn newest(
 /// within `budget` bytes: starting at the earliest run or model attempt
 /// that fits, else at the earliest event that does, and at least one event
 /// while any precede `before`.
+///
+/// [`OlderPageReader`] gives the same reading a log one event at a time.
 #[must_use]
 pub fn older_page(
     events: &[Arc<StoredEvent>],
@@ -702,6 +786,225 @@ pub fn older_page(
         state_events(&events[..start]),
         (start > 0).then(|| events[start].seq),
     )
+}
+
+/// [`tail_window`] of a log read one event at a time. It holds the events from
+/// the last run boundary whose events on do not fit the budget, which the
+/// window can reach back to, and folds what came before: so at least the newest
+/// run, whatever its size, while the window is worked out.
+#[derive(Clone, Debug)]
+pub struct TailWindowReader {
+    view: EventsView,
+    budget: usize,
+    events: std::collections::VecDeque<Arc<StoredEvent>>,
+    /// The position in the log of the first event held.
+    first: usize,
+    /// How many events it read.
+    read: usize,
+    /// The bytes of the events it read.
+    total: usize,
+    /// The run boundaries held whose events on still fit: each one's position,
+    /// and the bytes of the events before it.
+    boundaries: std::collections::VecDeque<(usize, usize)>,
+    before: StateEventsFold,
+}
+
+impl TailWindowReader {
+    #[must_use]
+    pub fn new(view: EventsView, budget: usize) -> Self {
+        Self {
+            view,
+            budget,
+            events: std::collections::VecDeque::new(),
+            first: 0,
+            read: 0,
+            total: 0,
+            boundaries: std::collections::VecDeque::new(),
+            before: StateEventsFold::default(),
+        }
+    }
+
+    /// Reads the next event of the log.
+    pub fn observe(&mut self, event: Arc<StoredEvent>) {
+        if is_run_boundary(&event) {
+            self.boundaries.push_back((self.read, self.total));
+        }
+        self.total = self.total.saturating_add(view_size(&event, self.view));
+        self.read += 1;
+        self.events.push_back(event);
+        let mut last_over = None;
+        while let Some(&(at, before)) = self.boundaries.front()
+            && self.total - before > self.budget
+        {
+            last_over = Some(at);
+            self.boundaries.pop_front();
+        }
+        if let Some(at) = last_over {
+            for event in self.events.drain(..at - self.first) {
+                self.before.observe(&event);
+            }
+            self.first = at;
+        }
+    }
+
+    /// The window of the events it read.
+    #[must_use]
+    pub fn window(self) -> Window {
+        let events = Vec::from(self.events);
+        if self.first == 0 {
+            return newest(&events, None, self.view, self.budget).unwrap_or_default();
+        }
+        // It lets go of events only from a boundary whose events on do not
+        // fit, and those are the ones it still holds.
+        let header = self.before.finish();
+        newest(&events, Some(&header), self.view, self.budget)
+            .expect("the events held do not fit the budget")
+    }
+
+    /// [`cache_start`] of the events it read in the display view: the event a
+    /// cache starts at, with [`state_events`] of everything before it. `None`
+    /// when the whole log fits.
+    #[must_use]
+    pub fn cache_start(mut self) -> Option<(Arc<StoredEvent>, Vec<Arc<StoredEvent>>)> {
+        let events = Vec::from(self.events);
+        let start = cache_start(&events, self.budget)?;
+        for event in &events[..start] {
+            self.before.observe(event);
+        }
+        Some((Arc::clone(&events[start]), self.before.finish()))
+    }
+}
+
+/// [`older_page`] of a log's events before the page, read one event at a time.
+/// It holds what fits the budget, and folds what no longer does.
+#[derive(Clone, Debug)]
+pub struct OlderPageReader {
+    view: EventsView,
+    budget: usize,
+    /// The newest events that fit, each with its size.
+    fits: std::collections::VecDeque<(Arc<StoredEvent>, usize)>,
+    /// The bytes of `fits`.
+    used: usize,
+    /// Whether anything no longer fits.
+    dropped: bool,
+    before: StateEventsFold,
+}
+
+impl OlderPageReader {
+    #[must_use]
+    pub fn new(view: EventsView, budget: usize) -> Self {
+        Self {
+            view,
+            budget,
+            fits: std::collections::VecDeque::new(),
+            used: 0,
+            dropped: false,
+            before: StateEventsFold::default(),
+        }
+    }
+
+    /// Reads the next event before the page's end.
+    pub fn observe(&mut self, event: Arc<StoredEvent>) {
+        let size = view_size(&event, self.view);
+        self.used = self.used.saturating_add(size);
+        self.fits.push_back((event, size));
+        // At least one event, however large.
+        while self.used > self.budget && self.fits.len() > 1 {
+            let (event, size) = self.fits.pop_front().expect("more than one event");
+            self.used -= size;
+            self.dropped = true;
+            self.before.observe(&event);
+        }
+    }
+
+    /// [`state_events`] of every event it read: the header of what starts at
+    /// the page's end.
+    #[must_use]
+    pub fn header_at_end(&self) -> Vec<Arc<StoredEvent>> {
+        let mut fold = self.before.clone();
+        for (event, _) in &self.fits {
+            fold.observe(event);
+        }
+        fold.finish()
+    }
+
+    /// The page.
+    #[must_use]
+    pub fn finish(mut self) -> Window {
+        let events = self
+            .fits
+            .into_iter()
+            .map(|(event, _)| event)
+            .collect::<Vec<_>>();
+        if events.is_empty() {
+            return Window::default();
+        }
+        let start = events
+            .iter()
+            .position(|event| {
+                is_run_boundary(event)
+                    || matches!(event.payload, EventPayload::ModelAttemptStarted { .. })
+            })
+            .unwrap_or(0);
+        for event in &events[..start] {
+            self.before.observe(event);
+        }
+        whole(
+            &events,
+            self.view,
+            start,
+            events.len(),
+            false,
+            self.before.finish(),
+            (self.dropped || start > 0).then(|| events[start].seq),
+        )
+    }
+}
+
+/// How many events [`display_events`] shows of a log, read in two passes:
+/// [`Self::observe`] finds what later events replace, and [`Self::count`] counts
+/// what stays. It holds what the first pass finds, and not the events.
+pub struct DisplayCount {
+    superseded: Superseded,
+    read: usize,
+    counted: usize,
+    shown: u64,
+}
+
+impl Default for DisplayCount {
+    fn default() -> Self {
+        Self {
+            superseded: Superseded::new(),
+            read: 0,
+            counted: 0,
+            shown: 0,
+        }
+    }
+}
+
+impl DisplayCount {
+    /// Reads the next event of the first pass.
+    pub fn observe(&mut self, event: &StoredEvent) {
+        self.superseded.observe(self.read, event);
+        self.read += 1;
+    }
+
+    /// Reads the next event of the second pass, the same events in order.
+    pub fn count(&mut self, event: &StoredEvent) {
+        let shown = match self.superseded.apply(self.counted, event) {
+            Slim::Whole => !leaves_out(&event.payload),
+            Slim::Changed(event) => !leaves_out(&event.payload),
+            Slim::Dropped => false,
+        };
+        self.counted += 1;
+        self.shown += u64::from(shown);
+    }
+
+    /// How many it counted.
+    #[must_use]
+    pub fn shown(&self) -> u64 {
+        self.shown
+    }
 }
 
 /// What a client that holds `held`, the header of a window or page, lacks
@@ -918,6 +1221,15 @@ fn is_run_boundary(event: &StoredEvent) -> bool {
     )
 }
 
+/// An upper bound of `event`'s size in `view`: what [`display_events`] leaves
+/// out of a superseded setting is counted.
+fn view_size(event: &Arc<StoredEvent>, view: EventsView) -> usize {
+    match view {
+        EventsView::Full => serialized_len(&**event) + 1,
+        EventsView::Display => shown(event).map_or(0, |(event, _)| serialized_len(&*event) + 1),
+    }
+}
+
 /// The size of each event as the display view sends it, measured when a
 /// window first needs it.
 struct Sizes<'a> {
@@ -935,17 +1247,11 @@ impl<'a> Sizes<'a> {
         }
     }
 
-    /// An upper bound of event `index`'s size in the display view: what
-    /// [`display_events`] leaves out of a superseded setting is counted.
     fn of(&self, index: usize) -> usize {
         if let Some(size) = self.measured[index].get() {
             return size;
         }
-        let event = &self.events[index];
-        let size = match self.view {
-            EventsView::Full => serialized_len(&**event) + 1,
-            EventsView::Display => shown(event).map_or(0, |(event, _)| serialized_len(&*event) + 1),
-        };
+        let size = view_size(&self.events[index], self.view);
         self.measured[index].set(Some(size));
         size
     }

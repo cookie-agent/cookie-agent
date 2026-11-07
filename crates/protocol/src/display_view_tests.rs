@@ -859,3 +859,80 @@ fn a_span_outside_the_output_fails() {
     };
     assert!(restore_output_spans(&mut value, &[span]).is_err());
 }
+
+/// Reads `events` through the readers, each compared with the whole-list answer
+/// it replaces.
+fn assert_readers_match(events: &[Arc<StoredEvent>]) {
+    for budget in [1, 16 * 1024, usize::MAX / 2] {
+        for view in [EventsView::Display, EventsView::Full] {
+            let mut tail = TailWindowReader::new(view, budget);
+            let mut page = OlderPageReader::new(view, budget);
+            let mut fold = StateEventsFold::default();
+            for (read, event) in events.iter().enumerate() {
+                let through = &events[..=read];
+                tail.observe(Arc::clone(event));
+                page.observe(Arc::clone(event));
+                fold.observe(event);
+                if read % 5 != 0 && read + 1 != events.len() {
+                    continue;
+                }
+                let context = format!("{view:?} budget {budget} through {read}");
+                assert_eq!(
+                    tail.clone().window(),
+                    tail_window(through, view, budget),
+                    "{context}"
+                );
+                let before = event.seq + 1;
+                assert_eq!(
+                    page.clone().finish(),
+                    older_page(through, before, view, budget),
+                    "{context}"
+                );
+                assert_eq!(page.header_at_end(), state_events(through), "{context}");
+                assert_eq!(fold.clone().finish(), state_events(through), "{context}");
+                if view == EventsView::Display {
+                    let start = cache_start(through, budget);
+                    assert_eq!(
+                        tail.clone().cache_start(),
+                        start.map(|start| (
+                            Arc::clone(&through[start]),
+                            state_events(&through[..start])
+                        )),
+                        "{context}"
+                    );
+                }
+            }
+            if view == EventsView::Display {
+                let mut count = DisplayCount::default();
+                events.iter().for_each(|event| count.observe(event));
+                events.iter().for_each(|event| count.count(event));
+                assert_eq!(count.shown(), display_events(events, false).0.len() as u64);
+            }
+        }
+    }
+}
+
+#[test]
+fn reading_a_log_one_event_at_a_time_gives_what_the_whole_list_gives() {
+    assert_readers_match(&coding());
+}
+
+#[test]
+fn the_state_fold_settles_as_it_reads_and_holds_only_the_header() {
+    let created = coding().remove(0);
+    let mut events = vec![created];
+    for seq in 0..3 * StateEventsFold::SETTLES_EVERY as u64 {
+        let mut held = (*events[0]).clone();
+        held.seq = seq + 2;
+        held.payload = EventPayload::AutomaticRunsResumed {};
+        events.push(Arc::new(held));
+    }
+    let mut fold = StateEventsFold::default();
+    let mut most = 0;
+    for event in &events {
+        fold.observe(event);
+        most = most.max(fold.held.len());
+    }
+    assert!(most <= StateEventsFold::SETTLES_EVERY + 1, "{most}");
+    assert_eq!(fold.finish(), state_events(&events));
+}
