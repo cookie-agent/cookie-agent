@@ -122,7 +122,11 @@ pub(super) fn refold(
     #[cfg(any(test, feature = "test-support"))]
     PROJECTION_FOLDS.with(|count| count.set(count.get() + 1));
     let previous = previous.filter(|previous| Arc::ptr_eq(&previous.log, &log));
-    projection_fold_with(log, previous)
+    let folded = projection_fold_with(Arc::clone(&log), previous)?;
+    // A log that opened read its whole file for this fold, and this is where it
+    // lets go of what its window does not hold.
+    log.narrow_window();
+    Ok(folded)
 }
 
 #[cfg(any(test, feature = "test-support"))]

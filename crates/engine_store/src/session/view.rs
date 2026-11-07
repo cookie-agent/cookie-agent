@@ -19,14 +19,12 @@
 use cookie_agent_protocol::{EventsView, display_view};
 
 use super::*;
+use crate::events::VIEW_BUDGET;
 
 /// The cache's file in a session's directory.
 pub const VIEW_FILE: &str = "view.json";
 /// The version of [`VIEW_FILE`]'s shape this build reads and writes.
 const VIEW_VERSION: u32 = 1;
-/// The largest window a cache answers: every request's budget.
-const VIEW_BUDGET: usize = cookie_agent_protocol::HISTORY_WINDOW_MAX_BYTES as usize;
-
 #[derive(serde::Deserialize, serde::Serialize)]
 struct ViewCache {
     version: u32,
@@ -89,27 +87,45 @@ pub(super) fn write_view(
     if !log.is_persisted() || log.is_render_only() || log.is_converted() {
         return Ok(None);
     }
-    let Some((first, header)) = log.history()?.view_cache_start(VIEW_BUDGET)? else {
-        return Ok(None);
+    // A windowed log kept up with where the cache starts as it grew, and a log
+    // that holds its events walks back from their end.
+    let fold = log.view_start_fold();
+    let (seq, timestamp, mut header) = match &fold {
+        Some(fold) => {
+            let Some(start) = fold.start() else {
+                return Ok(None);
+            };
+            (start.seq, start.timestamp, None)
+        }
+        None => {
+            let Some((first, header)) = log.history()?.view_cache_start(VIEW_BUDGET)? else {
+                return Ok(None);
+            };
+            (first.seq, first.timestamp, Some(header))
+        }
     };
     if log
         .diagnostics()
         .iter()
-        .any(|diagnostic| diagnostic.seq >= first.seq)
+        .any(|diagnostic| diagnostic.seq >= seq)
     {
         return Ok(None);
     }
-    let Some(offset) = log.line_start(first.seq) else {
+    let Some(offset) = log.line_start(seq) else {
         return Ok(None);
     };
     let view_start = ViewStart {
-        seq: first.seq,
-        timestamp: first.timestamp,
+        seq,
+        timestamp,
         offset,
     };
     if written == Some(view_start) {
         return Ok(Some(view_start));
     }
+    let header = header
+        .take()
+        .or_else(|| fold.as_ref().map(display_view::CacheStartFold::header))
+        .unwrap_or_default();
     let cache = ViewCache {
         version: VIEW_VERSION,
         history_format: cookie_agent_protocol::HISTORY_FORMAT,
@@ -268,7 +284,7 @@ impl SessionStore {
                 // publication skips the tail. The slot holds appends off, so
                 // the pass ends where the tail starts, and it is read outside
                 // the slot.
-                let events = resident.log.history()?;
+                let events = resident.log.newest_pass()?;
                 let receiver = tail.map(|owner| {
                     let tip = resident.log.last_event().map_or(0, |event| event.seq);
                     self.register_tail(id, tip, owner, true)

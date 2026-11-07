@@ -20,6 +20,7 @@ use cookie_agent_protocol::{
     AssistantToolCallRef, AttemptId, DelegationStage, EventOrigin, EventPayload, ModelCallId, Open,
     OutputDelta, OutputGap, OutputSnapshot, OutputStream, ProviderItemId, RunId, SessionId,
     StoredEvent, StoredEventEnvelope, ToolCallId, deserialize_event_payload_best_effort,
+    display_view::CacheStartFold,
 };
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
@@ -34,7 +35,7 @@ mod durability;
 mod history;
 pub mod state;
 pub use durability::Commit;
-pub use history::{History, OlderPage, ViewCacheStart};
+pub use history::{History, NewestPass, OlderPage, ViewCacheStart};
 pub use state::LogState;
 
 #[derive(Debug, Error)]
@@ -57,6 +58,10 @@ pub enum EventLogError {
     Corrupt { path: PathBuf, message: String },
     #[error("event log {0} is read-only")]
     ReadOnly(PathBuf),
+    /// A revert cut the file under a pass that had yet to read that far. The
+    /// records it asked for are gone: a reader that still wants them asks again.
+    #[error("a revert cut {} during a read of it", path.display())]
+    HistoryCut { path: PathBuf },
     /// A newer build wrote this log: it holds the state event `event` this
     /// build does not know, so the session is render-only, or it has the
     /// newer `history_format`, so it does not open.
@@ -89,6 +94,9 @@ enum RenderOnly {
     SequenceBroken(u64),
 }
 
+/// The largest window a view cache answers: every request's budget.
+pub(crate) const VIEW_BUDGET: usize = cookie_agent_protocol::HISTORY_WINDOW_MAX_BYTES as usize;
+
 #[derive(Debug)]
 pub struct EventLog {
     path: PathBuf,
@@ -119,6 +127,12 @@ pub struct EventLog {
     writer: Mutex<Option<EventLogWriter>>,
     /// What of the file is synced; shared with the writer.
     durability: Arc<durability::Durability>,
+    /// How many cuts of the file began: a pass that reads the file sees it
+    /// change under it.
+    cuts: Arc<AtomicU64>,
+    /// Test-only: how many passes were asked for, with what asked and from where.
+    #[cfg(any(test, feature = "test-support"))]
+    history_calls: Mutex<Vec<String>>,
 }
 
 #[derive(Clone, Copy)]
@@ -171,6 +185,10 @@ struct EventIndex {
     /// What readers need of the whole log, shared with those handed it:
     /// copied only when a record changes it while one holds it.
     state: Arc<LogState>,
+    /// Where the log's window starts, the latest committed turn of an ACP agent,
+    /// while the session's agent is one (`docs/site/specs/forever-sessions.md`
+    /// section 3.2). A native run ends that: its model reads the log.
+    window_start: Option<u64>,
 }
 
 /// What a log records about prompt blocks (stable prefix spec, section 6):
@@ -377,6 +395,11 @@ impl DeferralFold {
     }
 }
 
+/// Whether `model` is an ACP agent's synthetic model.
+fn is_acp_model(model: &cookie_agent_protocol::ModelSelection) -> bool {
+    model.model.provider_id().as_str() == cookie_agent_protocol::ACP_MODEL_PROVIDER
+}
+
 impl EventIndex {
     fn observe(&mut self, event: &Arc<StoredEvent>) {
         Arc::make_mut(&mut self.state).observe(event);
@@ -405,6 +428,9 @@ impl EventIndex {
                 if let Some(run) = event.run_id {
                     self.last_run_started = Some((event.seq, run, selection.model.clone()));
                 }
+                if !is_acp_model(&selection.model) {
+                    self.window_start = None;
+                }
             }
             EventPayload::ContextCheckpointCommitted { commit } => {
                 if let Some((_, compacted)) = &mut self.last_memory_loaded {
@@ -418,10 +444,15 @@ impl EventIndex {
                     self.last_recorded_usage = Some(usage);
                 }
             }
-            EventPayload::ModelTurnCommitted { turn, .. } => {
+            EventPayload::ModelTurnCommitted {
+                turn,
+                resolved_model,
+                ..
+            } => {
                 if let Some(usage) = usage_total(event.seq, &turn.usage) {
                     self.last_turn_usage = Some(usage);
                 }
+                self.window_start = is_acp_model(&resolved_model.selection).then_some(event.seq);
             }
             EventPayload::ModelAttemptStarted { .. } => {
                 if let Some(run) = event.run_id {
@@ -451,8 +482,22 @@ pub type EventSnapshot = Arc<Vec<Arc<StoredEvent>>>;
 
 #[derive(Clone, Debug)]
 struct EventStorage {
-    /// Every record, in log order.
+    /// The records the log holds, in log order: every one, or from `window` on.
+    /// The list is rebuilt when the window moves, so a reader's view of it stays
+    /// as it was, and only for as long as the reader holds it.
     all: EventSnapshot,
+    /// The log's first record, whatever the window.
+    creation: Option<Arc<StoredEvent>>,
+    /// The sequence the log holds its records from, when it does not hold them
+    /// all: the rest are in the file, for a pass to read
+    /// (`docs/site/specs/forever-sessions.md` sections 3.2 and 3.3).
+    window: Option<u64>,
+    /// Where a view cache of a windowed log starts, which it cannot walk back
+    /// from its end to find.
+    view_start: Option<Box<CacheStartFold>>,
+    /// The sequences, ascending, of the records in the file that validation left
+    /// out at load: a pass leaves them out too.
+    refused: Arc<Vec<u64>>,
     index: EventIndex,
     /// `ModelTurnCommitted` records.
     physical_model_turns: u64,
@@ -739,6 +784,25 @@ impl ReadRawLines<'_> {
     }
 }
 
+/// What a revert of a windowed log keeps, folded from the file before it is cut.
+struct FoldedPrefix {
+    index: EventIndex,
+    physical_model_turns: u64,
+    validation: ValidationState,
+    view_start: CacheStartFold,
+    window: Option<u64>,
+    held: Vec<Arc<StoredEvent>>,
+}
+
+/// What a fork copies of its source: [`EventLog::read_fork_prefix`].
+pub struct ForkPrefix {
+    session_id: SessionId,
+    storage: EventStorage,
+    taint: ValidationTaint,
+    validation: ValidationState,
+    next_seq: u64,
+}
+
 /// Whether a fork leaves the record behind: the delegation records name the
 /// session that delegated, and the subagents they reserve, start, and finish
 /// stay that session's.
@@ -760,7 +824,11 @@ impl EventStorage {
     fn new(all: Vec<Arc<StoredEvent>>) -> Self {
         let physical_model_turns = all.iter().filter(|event| is_model_turn(event)).count() as u64;
         let mut storage = Self {
+            creation: all.first().cloned(),
             all: Arc::new(all),
+            window: None,
+            view_start: None,
+            refused: Arc::default(),
             index: EventIndex::default(),
             physical_model_turns,
             lines: None,
@@ -781,15 +849,44 @@ impl EventStorage {
         let event = event.into();
         self.physical_model_turns += u64::from(is_model_turn(&event));
         self.index.observe(&event);
+        if let Some(view_start) = &mut self.view_start {
+            view_start.observe(&event);
+        }
+        self.creation.get_or_insert_with(|| Arc::clone(&event));
         Arc::make_mut(&mut self.all).push(event);
     }
 
-    /// Drops every physical event after `through_seq`.
-    fn truncate(&mut self, through_seq: u64) {
+    /// Lets go of what precedes the window's start, the latest committed turn of
+    /// an ACP agent, when there is one and the log's file holds what it lets go
+    /// of. The first time, the log still holds what a view cache needs.
+    fn narrow(&mut self) {
+        let Some(start) = self.index.window_start else {
+            return;
+        };
+        if self.lines.is_none() || self.window.is_some_and(|window| window >= start) {
+            return;
+        }
+        if self.window.is_none() {
+            self.view_start = Some(Box::new(CacheStartFold::of(&self.all, VIEW_BUDGET)));
+        }
+        let kept = self.all.partition_point(|event| event.seq < start);
+        self.all = Arc::new(self.all[kept..].to_vec());
+        self.window = Some(start);
+    }
+
+    /// Drops every physical event after `through_seq` from what it holds of the
+    /// file's lines.
+    fn truncate_lines(&mut self, through_seq: u64) {
         if let Some(lines) = &mut self.lines {
             lines.truncate(through_seq);
         }
         Arc::make_mut(&mut self.raw).truncate(through_seq);
+        Arc::make_mut(&mut self.refused).retain(|seq| *seq <= through_seq);
+    }
+
+    /// Drops every physical event after `through_seq`.
+    fn truncate(&mut self, through_seq: u64) {
+        self.truncate_lines(through_seq);
         Arc::make_mut(&mut self.all).retain(|event| event.seq <= through_seq);
         self.physical_model_turns =
             self.all.iter().filter(|event| is_model_turn(event)).count() as u64;
@@ -1066,6 +1163,9 @@ impl EventLog {
             append_authorization_hook: Mutex::new(None),
             writer: Mutex::new(None),
             durability,
+            cuts: Arc::default(),
+            #[cfg(any(test, feature = "test-support"))]
+            history_calls: Mutex::default(),
         });
         if !matches!(creation, EventPayload::SessionCreated { .. }) {
             return Err(EventLogError::MissingCreation(log.path.clone()));
@@ -1173,17 +1273,31 @@ impl EventLog {
         }
         let mut diagnostics = loaded.diagnostics;
         let mut taint = loaded.validation_taint;
+        let read = records.iter().map(|record| record.seq).collect::<Vec<_>>();
         let (records, validation) =
             validate_loaded(&path, session_id, records, &mut taint, &mut diagnostics)?;
         // The read's buffer goes here: only the lines no record reproduces
         // stay in memory.
         let raw = RawLines::from_loaded(loaded.raw, &records, &path);
         let durability = Arc::new(durability::Durability::new(&path));
+        let mut storage = EventStorage::with_lines(records, loaded.lines, raw);
+        if read.len() != storage.all.len() {
+            storage.refused = Arc::new(
+                read.into_iter()
+                    .filter(|seq| {
+                        storage
+                            .all
+                            .binary_search_by_key(seq, |record| record.seq)
+                            .is_err()
+                    })
+                    .collect(),
+            );
+        }
         Ok(Arc::new(Self {
             path,
             session_id,
             append: Mutex::new(()),
-            events: Mutex::new(EventStorage::with_lines(records, loaded.lines, raw)),
+            events: Mutex::new(storage),
             diagnostics,
             initial_validation_taint: Mutex::new(taint),
             validation: Mutex::new(validation),
@@ -1200,29 +1314,30 @@ impl EventLog {
             append_authorization_hook: Mutex::new(None),
             writer: Mutex::new(None),
             durability,
+            cuts: Arc::default(),
+            #[cfg(any(test, feature = "test-support"))]
+            history_calls: Mutex::default(),
         }))
     }
 
-    /// A buffered log holding `source`'s records through `through_seq` under
-    /// `session_id`, validated in memory, for a fork whose file is written
-    /// whole once it is assembled. It writes nothing until
-    /// [`Self::mark_written`]. The damage the source's load found in that
-    /// prefix comes along, so records it excused stay excused.
+    /// What a fork of this log through `through_seq` under `session_id` copies,
+    /// assembled and validated in memory. It reads the log, so it runs before
+    /// any store lock, and [`Self::fork_buffered`] takes the result. The damage
+    /// the load found in that prefix comes along, so records it excused stay
+    /// excused.
     ///
     /// The fork leaves its source's subagents behind: each delegation record
     /// becomes a `record_omitted` at its sequence, run, and time, so the
     /// sequence stays contiguous. The conversation stays as it was: the
     /// delegate calls and their results, the links to the children, and
     /// the producer messages that brought their reports.
-    pub fn fork_buffered(
-        path: PathBuf,
+    pub fn read_fork_prefix(
+        &self,
         session_id: SessionId,
-        source: &Self,
         through_seq: u64,
-        capability: WriteCapability,
-    ) -> Result<Arc<Self>, EventLogError> {
+    ) -> Result<ForkPrefix, EventLogError> {
         let mut omitted = Vec::new();
-        let records = source
+        let records = self
             .history_range(..=through_seq)?
             .map(|event| {
                 let event = event?;
@@ -1253,16 +1368,16 @@ impl EventLog {
             records.first().map(|record| &record.payload),
             Some(EventPayload::SessionCreated { .. })
         ) {
-            return Err(EventLogError::MissingCreation(path));
+            return Err(EventLogError::MissingCreation(self.path.clone()));
         }
-        let mut taint = source.initial_taint();
+        let mut taint = self.initial_taint();
         taint.truncate(through_seq);
         // A prefix of a log that validated, so its records hold no
         // duplicates and pass again under the same damage.
-        let validation = rebuild_validation(&path, session_id, &records, &taint)?;
+        let validation = rebuild_validation(&self.path, session_id, &records, &taint)?;
         // The lines the source read come along as bytes, except those of
         // the records left behind, which are written as their replacements.
-        let mut raw = source.storage().raw.through(through_seq);
+        let mut raw = self.storage().raw.through(through_seq);
         raw.remove(&omitted);
         let next_seq = records
             .last()
@@ -1271,8 +1386,32 @@ impl EventLog {
             .map_or(1, |seq| seq + 1);
         let mut storage = EventStorage::new(records);
         storage.raw = Arc::new(raw);
+        Ok(ForkPrefix {
+            session_id,
+            storage,
+            taint,
+            validation,
+            next_seq,
+        })
+    }
+
+    /// A buffered log holding what [`Self::read_fork_prefix`] read, for a fork
+    /// whose file is written whole once it is assembled. It writes nothing until
+    /// [`Self::mark_written`].
+    pub fn fork_buffered(
+        path: PathBuf,
+        prefix: ForkPrefix,
+        capability: WriteCapability,
+    ) -> Arc<Self> {
+        let ForkPrefix {
+            session_id,
+            storage,
+            taint,
+            validation,
+            next_seq,
+        } = prefix;
         let durability = Arc::new(durability::Durability::new(&path));
-        Ok(Arc::new(Self {
+        Arc::new(Self {
             path,
             session_id,
             append: Mutex::new(()),
@@ -1293,7 +1432,10 @@ impl EventLog {
             append_authorization_hook: Mutex::new(None),
             writer: Mutex::new(None),
             durability,
-        }))
+            cuts: Arc::default(),
+            #[cfg(any(test, feature = "test-support"))]
+            history_calls: Mutex::default(),
+        })
     }
 
     /// An owned log over the records this read-only log parsed, without
@@ -1333,6 +1475,9 @@ impl EventLog {
             append_authorization_hook: Mutex::new(None),
             writer: Mutex::new(None),
             durability: Arc::new(durability::Durability::new(&self.path)),
+            cuts: Arc::default(),
+            #[cfg(any(test, feature = "test-support"))]
+            history_calls: Mutex::default(),
         }))
     }
 
@@ -1467,12 +1612,13 @@ impl EventLog {
         if let Err(error) =
             validate_record_incremental(&self.path, self.session_id, &event, &mut validation, true)
         {
-            *validation = rebuild_validation(
-                &self.path,
-                self.session_id,
-                &events.all,
-                &self.initial_taint(),
-            )?;
+            drop(validation);
+            drop(events);
+            let rebuilt = self.rebuilt_validation()?;
+            *self
+                .validation
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = rebuilt;
             return Err(error);
         }
         drop(validation);
@@ -1493,16 +1639,12 @@ impl EventLog {
                     .unwrap_or_else(|poisoned| poisoned.into_inner());
                 // Part of the record may have reached the file.
                 events.lines = None;
-                let mut validation = self
+                drop(events);
+                let rebuilt = self.rebuilt_validation()?;
+                *self
                     .validation
                     .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner());
-                *validation = rebuild_validation(
-                    &self.path,
-                    self.session_id,
-                    &events.all,
-                    &self.initial_taint(),
-                )?;
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()) = rebuilt;
                 return Err(error);
             }
         };
@@ -1516,7 +1658,117 @@ impl EventLog {
         }
         events.push(event.clone());
         self.next_seq.store(event.seq + 1, Ordering::Release);
+        if written && is_model_turn(&event) {
+            self.narrow(&mut events);
+        }
         Ok((event, commit))
+    }
+
+    /// Moves the window to where the log's records say it starts, if this log
+    /// can have one (`docs/site/specs/forever-sessions.md` section 3.2): a file
+    /// this process owns holds what it lets go of, so a read-only log, which
+    /// its owner can cut or rewrite with no word to this process, a log still
+    /// buffered, and one whose records are not the file's stay whole.
+    fn narrow(&self, storage: &mut EventStorage) {
+        if self.read_only
+            || self.converted
+            || self.render_only.is_some()
+            || !self.persisted.load(Ordering::Acquire)
+        {
+            return;
+        }
+        #[cfg(any(test, feature = "test-support"))]
+        let held = storage.snapshot();
+        let before = storage.window;
+        storage.narrow();
+        #[cfg(any(test, feature = "test-support"))]
+        if storage.window != before {
+            self.assert_file_reads_as(storage, &held);
+        }
+        #[cfg(not(any(test, feature = "test-support")))]
+        let _ = before;
+    }
+
+    /// Test-only: the records the window just let go of read from the file as
+    /// they were held, as every later pass over them expects.
+    #[cfg(any(test, feature = "test-support"))]
+    fn assert_file_reads_as(&self, storage: &EventStorage, held: &[Arc<StoredEvent>]) {
+        let Some(window) = storage.window else {
+            return;
+        };
+        let Some(first) = held.first().map(|event| event.seq) else {
+            return;
+        };
+        let range = self.file_range(storage, first, window);
+        let read = History::with_file(None, range, Arc::default(), 0, 0)
+            .collect::<Result<Vec<_>, _>>()
+            .expect("what the window lets go of reads from the file");
+        let let_go = held
+            .iter()
+            .filter(|event| event.seq < window)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            read.len(),
+            let_go.len(),
+            "the records the window lets go of"
+        );
+        for (read, held) in read.iter().zip(let_go) {
+            assert!(
+                read == held,
+                "record {} reads from the file otherwise than it was held",
+                held.seq
+            );
+        }
+    }
+
+    /// The log's window, moved up to its latest committed turn once what opened
+    /// the log has done with the whole list.
+    pub fn narrow_window(&self) {
+        let _append = self
+            .append
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        self.narrow(&mut self.storage());
+    }
+
+    /// Where the file holds the records of sequences `from..until`, before the
+    /// window; `None` when it holds none.
+    fn file_range(
+        &self,
+        storage: &EventStorage,
+        from: u64,
+        until: u64,
+    ) -> Option<history::FileRange> {
+        let (offset, end) = match &storage.lines {
+            Some(lines) => {
+                let start_of = |seq: u64| {
+                    let index = lines.starts.partition_point(|(line, _)| *line < seq);
+                    lines.starts.get(index).map_or(lines.len, |(_, at)| *at)
+                };
+                (start_of(from), Some(start_of(until)))
+            }
+            None => (0, None),
+        };
+        (from < until && end != Some(offset)).then(|| history::FileRange {
+            path: self.path.clone(),
+            offset,
+            end,
+            from_seq: from,
+            until_seq: until,
+            refused: Arc::clone(&storage.refused),
+            cuts: Arc::clone(&self.cuts),
+            seen_cuts: self.cuts.load(Ordering::Acquire),
+        })
+    }
+
+    /// The validation state of what the log holds, wherever it holds it: the
+    /// caller holds `append`, and an append that failed left it wrong.
+    fn rebuilt_validation(&self) -> Result<ValidationState, EventLogError> {
+        let mut state = ValidationState::new(self.initial_taint());
+        for record in self.pass(..)? {
+            validate_record_incremental(&self.path, self.session_id, &*record?, &mut state, false)?;
+        }
+        Ok(state)
     }
 
     /// Returns once a sync covers `commit`: one sync covers every record
@@ -1569,10 +1821,14 @@ impl EventLog {
         seqs: impl std::ops::RangeBounds<u64>,
         mut visit: impl FnMut(&Value),
     ) -> Result<(), EventLogError> {
-        let (events, raw) = {
+        let (events, raw, windowed) = {
             let storage = self.storage();
-            (storage.snapshot(), Arc::clone(&storage.raw))
+            let windowed = storage.window.is_some();
+            (storage.snapshot(), Arc::clone(&storage.raw), windowed)
         };
+        if windowed {
+            return self.visit_file_json(seqs, visit);
+        }
         let json_error = |source| EventLogError::Json {
             path: self.path.clone(),
             source,
@@ -1612,6 +1868,65 @@ impl EventLog {
             visit(&value);
         }
         Ok(())
+    }
+
+    /// [`Self::visit_json`] of a log that no longer holds its records: every
+    /// line it wrote is in the file, one at a time and keeping nothing, bounded
+    /// at the file's complete lines as they were when asked.
+    fn visit_file_json(
+        &self,
+        seqs: impl std::ops::RangeBounds<u64>,
+        mut visit: impl FnMut(&Value),
+    ) -> Result<(), EventLogError> {
+        use std::io::{BufRead as _, Read as _, Seek as _};
+        let first = match seqs.start_bound() {
+            std::ops::Bound::Included(start) => *start,
+            std::ops::Bound::Excluded(start) => start.saturating_add(1),
+            std::ops::Bound::Unbounded => 0,
+        };
+        let (offset, end, seen_cuts) = {
+            let storage = self.storage();
+            let (offset, end) = storage.lines.as_ref().map_or((0, None), |lines| {
+                let index = lines.starts.partition_point(|(line, _)| *line < first);
+                let offset = lines.starts.get(index).map_or(lines.len, |(_, at)| *at);
+                (offset, Some(lines.len))
+            });
+            (offset, end, self.cuts.load(Ordering::Acquire))
+        };
+        let io_error = |source| EventLogError::Io {
+            path: self.path.clone(),
+            source,
+        };
+        crate::blocking::off_worker(|| {
+            let mut file = fs::File::open(&self.path).map_err(io_error)?;
+            file.seek(io::SeekFrom::Start(offset)).map_err(io_error)?;
+            let length = end.map_or(u64::MAX, |end| end - offset);
+            let mut reader = io::BufReader::new(file.take(length));
+            let mut line = Vec::new();
+            loop {
+                line.clear();
+                let read = reader.read_until(b'\n', &mut line).map_err(io_error)?;
+                if self.cuts.load(Ordering::Acquire) != seen_cuts {
+                    return Err(EventLogError::HistoryCut {
+                        path: self.path.clone(),
+                    });
+                }
+                // A failed write can leave part of a line at the end.
+                if read == 0 || !line.ends_with(b"\n") {
+                    return Ok(());
+                }
+                // A line the load found no sequence in is no line of the log's.
+                let Ok(value) = serde_json::from_slice::<Value>(&line) else {
+                    continue;
+                };
+                let Some(seq) = value.get("seq").and_then(Value::as_u64) else {
+                    continue;
+                };
+                if seqs.contains(&seq) {
+                    visit(&value);
+                }
+            }
+        })
     }
 
     /// The first state event of a type this build does not know, if the log
@@ -1669,15 +1984,14 @@ impl EventLog {
     #[cfg(any(test, feature = "test-support"))]
     #[must_use]
     pub fn event_snapshot(&self) -> EventSnapshot {
-        self.storage().snapshot()
+        self.snapshot_and_state().0
     }
 
     /// The events since the log's window start. O(1): a shared view, not a
     /// copy. A log holds every event until it is windowed. A window starts at
-    /// or after the latest committed turn's boundary at the latest
-    /// (`docs/site/specs/forever-sessions.md` section 3.2), so a reader takes
-    /// this only for what it knows lies after that: anything older is
-    /// [`Self::state`] or [`Self::history`].
+    /// the latest committed turn (`docs/site/specs/forever-sessions.md` section
+    /// 3.2), so a reader takes this only for what it knows lies after that:
+    /// anything older is [`Self::state`] or [`Self::history`].
     #[must_use]
     pub fn recent(&self) -> EventSnapshot {
         self.storage().snapshot()
@@ -1693,8 +2007,27 @@ impl EventLog {
     #[cfg(any(test, feature = "test-support"))]
     #[must_use]
     pub fn snapshot_and_state(&self) -> (EventSnapshot, Arc<LogState>) {
-        let storage = self.storage();
-        (storage.snapshot(), Arc::clone(&storage.index.state))
+        {
+            let storage = self.storage();
+            if storage.window.is_none() {
+                return (storage.snapshot(), Arc::clone(&storage.index.state));
+            }
+        }
+        let _append = self
+            .append
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        self.snapshot_under_append()
+    }
+
+    /// [`Self::snapshot_and_state`], for a caller that holds `append`.
+    #[cfg(any(test, feature = "test-support"))]
+    fn snapshot_under_append(&self) -> (EventSnapshot, Arc<LogState>) {
+        let events = self
+            .pass(..)
+            .and_then(Iterator::collect)
+            .expect("a test's log reads whole");
+        (Arc::new(events), self.state())
     }
 
     /// [`Self::recent`] and [`Self::state`] of the same moment.
@@ -1710,27 +2043,83 @@ impl EventLog {
     /// window narrowed is read whole, which is why this is fallible. So only
     /// what serves a native model takes it.
     pub fn model_context_events(&self) -> Result<EventSnapshot, EventLogError> {
-        Ok(self.storage().snapshot())
+        Ok(self.model_context_and_state()?.0)
     }
 
     /// [`Self::model_context_events`] and [`Self::state`] of the same moment.
     pub fn model_context_and_state(&self) -> Result<(EventSnapshot, Arc<LogState>), EventLogError> {
-        let storage = self.storage();
-        Ok((storage.snapshot(), Arc::clone(&storage.index.state)))
+        {
+            let storage = self.storage();
+            if storage.window.is_none() {
+                return Ok((storage.snapshot(), Arc::clone(&storage.index.state)));
+            }
+        }
+        self.read_whole()
+    }
+
+    /// Reads a windowed log whole, holding appends off (section 5.4). A log whose
+    /// agent is no longer an ACP agent then stops being windowed and holds it
+    /// all, until an ACP agent's next committed turn; a reader asking of one
+    /// whose agent still is, as `get_history` can, gets its answer and the log
+    /// lets it go.
+    fn read_whole(&self) -> Result<(EventSnapshot, Arc<LogState>), EventLogError> {
+        let _append = self
+            .append
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let whole = Arc::new(self.pass(..)?.collect::<Result<Vec<_>, _>>()?);
+        let mut storage = self.storage();
+        if storage.index.window_start.is_none() {
+            storage.all = Arc::clone(&whole);
+            storage.window = None;
+            storage.view_start = None;
+        }
+        Ok((whole, Arc::clone(&storage.index.state)))
     }
 
     /// A pass over the whole log, as it stands now, one record at a time.
+    #[cfg_attr(any(test, feature = "test-support"), track_caller)]
     pub fn history(&self) -> Result<History, EventLogError> {
         self.history_range(..)
     }
 
     /// A pass over the log's records whose sequences are in `seqs`, which
     /// starts at the first of them rather than at the log's start.
+    #[cfg_attr(any(test, feature = "test-support"), track_caller)]
     pub fn history_range(
         &self,
         seqs: impl std::ops::RangeBounds<u64>,
     ) -> Result<History, EventLogError> {
-        let events = self.storage().snapshot();
+        #[cfg(any(test, feature = "test-support"))]
+        self.history_calls
+            .lock()
+            .expect("history calls lock poisoned")
+            .push(std::panic::Location::caller().to_string());
+        self.pass(seqs)
+    }
+
+    /// Test-only: where the passes asked of this log since the last time this
+    /// was called came from.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn take_history_calls_for_test(&self) -> Vec<String> {
+        std::mem::take(
+            &mut self
+                .history_calls
+                .lock()
+                .expect("history calls lock poisoned"),
+        )
+    }
+
+    /// Test-only: the sequence the log holds its records from, when it does not
+    /// hold them all.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn window_for_test(&self) -> Option<u64> {
+        self.storage().window
+    }
+
+    fn pass(&self, seqs: impl std::ops::RangeBounds<u64>) -> Result<History, EventLogError> {
+        let storage = self.storage();
+        let events = storage.snapshot();
         let start = events.partition_point(|event| match seqs.start_bound() {
             std::ops::Bound::Included(start) => event.seq < *start,
             std::ops::Bound::Excluded(start) => event.seq <= *start,
@@ -1741,14 +2130,71 @@ impl EventLog {
             std::ops::Bound::Excluded(end) => event.seq < *end,
             std::ops::Bound::Unbounded => true,
         });
-        Ok(History::new(events, start, end))
+        let Some(window) = storage.window else {
+            return Ok(History::new(events, start, end));
+        };
+        // What precedes the window: the creation, held, and then the file.
+        let creation = storage
+            .creation
+            .clone()
+            .filter(|creation| seqs.contains(&creation.seq));
+        let after_creation = storage
+            .creation
+            .as_ref()
+            .map_or(0, |creation| creation.seq + 1);
+        let from = match seqs.start_bound() {
+            std::ops::Bound::Included(start) => *start,
+            std::ops::Bound::Excluded(start) => start.saturating_add(1),
+            std::ops::Bound::Unbounded => 0,
+        }
+        .max(after_creation);
+        let until = match seqs.end_bound() {
+            std::ops::Bound::Included(end) => end.saturating_add(1),
+            std::ops::Bound::Excluded(end) => *end,
+            std::ops::Bound::Unbounded => u64::MAX,
+        }
+        .min(window);
+        let file = self.file_range(&storage, from, until);
+        Ok(History::with_file(creation, file, events, start, end))
+    }
+
+    /// A pass for the newest-first window of the whole log, as it stands now,
+    /// which reads the log only from where its view cache starts when it knows
+    /// that.
+    #[cfg_attr(any(test, feature = "test-support"), track_caller)]
+    pub fn newest_pass(&self) -> Result<NewestPass, EventLogError> {
+        #[cfg(any(test, feature = "test-support"))]
+        self.history_calls
+            .lock()
+            .expect("history calls lock poisoned")
+            .push(std::panic::Location::caller().to_string());
+        let start = self
+            .storage()
+            .view_start
+            .as_ref()
+            .and_then(|view_start| Some((view_start.start()?, view_start.header())));
+        let from_cache_start = match start {
+            Some((start, header)) => Some((start, header, self.pass(start.seq..)?)),
+            None => None,
+        };
+        Ok(NewestPass {
+            from_cache_start,
+            whole: self.pass(..)?,
+        })
+    }
+
+    /// Where a view cache of this log starts and what precedes it, for a log
+    /// that cannot walk back from its end to find that.
+    #[must_use]
+    pub fn view_start_fold(&self) -> Option<CacheStartFold> {
+        self.storage().view_start.as_deref().cloned()
     }
 
     /// The log's first record, its creation, which it keeps whatever its
     /// window: `None` only for a log built empty.
     #[must_use]
     pub fn creation(&self) -> Option<Arc<StoredEvent>> {
-        self.storage().all.first().cloned()
+        self.storage().creation.clone()
     }
 
     fn storage(&self) -> std::sync::MutexGuard<'_, EventStorage> {
@@ -1764,6 +2210,13 @@ impl EventLog {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .record_count as u64
+    }
+
+    /// How many times a revert cut the log, for a reader that read it before
+    /// taking a lock to tell whether what it read still stands.
+    #[must_use]
+    pub fn cut_count(&self) -> u64 {
+        self.cuts.load(Ordering::Acquire)
     }
 
     /// Physical `ModelTurnCommitted` records, including reverted ones.
@@ -2028,8 +2481,8 @@ impl EventLog {
         let mut storage = self.storage();
         Arc::make_mut(&mut storage.raw).rebase(&self.path, &lines);
         storage.lines = Some(lines);
-        drop(storage);
         self.mark_persisted();
+        self.narrow(&mut storage);
     }
 
     /// Test-only: the sequences of the lines the log keeps in memory.
@@ -2093,7 +2546,19 @@ impl EventLog {
         if through_seq >= self.physical_tip_seq() {
             return Ok(());
         }
+        // A windowed log folds what stays from the file, before it cuts anything.
+        let mut kept_taint = self.initial_taint();
+        kept_taint.truncate(through_seq);
+        let folded = if self.storage().window.is_some() {
+            Some(self.fold_prefix(through_seq, kept_taint.clone())?)
+        } else {
+            None
+        };
         if self.persisted.load(Ordering::Acquire) {
+            // A pass reading the file finds this after the read that could
+            // see the cut, or finds the file ends early; and one asked for
+            // between here and the new state takes the second count below.
+            self.cuts.fetch_add(1, Ordering::AcqRel);
             // Close the append handle first so nothing writes past the cut.
             self.writer
                 .lock()
@@ -2114,24 +2579,91 @@ impl EventLog {
             .events
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        events.truncate(through_seq);
-        #[cfg(any(test, feature = "test-support"))]
-        state::reference::assert_matches_scans(&events.index.state, &events.all);
-        let taint = {
-            let mut taint = self
-                .initial_validation_taint
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            taint.truncate(through_seq);
-            taint.clone()
+        let validation = match folded {
+            Some(folded) => {
+                events.truncate_lines(through_seq);
+                events.index = folded.index;
+                events.physical_model_turns = folded.physical_model_turns;
+                events.view_start = folded.window.map(|_| Box::new(folded.view_start));
+                events.window = folded.window;
+                events.all = Arc::new(folded.held);
+                folded.validation
+            }
+            None => {
+                events.truncate(through_seq);
+                #[cfg(any(test, feature = "test-support"))]
+                state::reference::assert_matches_scans(&events.index.state, &events.all);
+                rebuild_validation(&self.path, self.session_id, &events.all, &kept_taint)?
+            }
         };
+        *self
+            .initial_validation_taint
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = kept_taint;
         *self
             .validation
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) =
-            rebuild_validation(&self.path, self.session_id, &events.all, &taint)?;
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = validation;
         self.next_seq.store(through_seq + 1, Ordering::Release);
+        // Under the storage's lock, as a pass reads this with its window: what
+        // was asked for under the old window sees it, and what is asked for
+        // from now on starts from here.
+        self.cuts.fetch_add(1, Ordering::AcqRel);
+        drop(events);
+        #[cfg(any(test, feature = "test-support"))]
+        {
+            let (events, state) = self.snapshot_under_append();
+            state::reference::assert_matches_scans(&state, &events);
+        }
         Ok(())
+    }
+
+    /// Folds a windowed log's records through `through_seq` from a pass over it,
+    /// holding what the window it ends with holds (section 3.5). The caller holds
+    /// `append`.
+    fn fold_prefix(
+        &self,
+        through_seq: u64,
+        taint: ValidationTaint,
+    ) -> Result<FoldedPrefix, EventLogError> {
+        let mut index = EventIndex::default();
+        let mut validation = ValidationState::new(taint);
+        let mut physical_model_turns = 0;
+        let mut view_start = CacheStartFold::new(VIEW_BUDGET);
+        let mut held = Vec::new();
+        // The events held cover the whole prefix until a turn lets go of some.
+        let mut let_go = false;
+        for record in self.pass(..=through_seq)? {
+            let record = record?;
+            validate_record_incremental(
+                &self.path,
+                self.session_id,
+                &record,
+                &mut validation,
+                false,
+            )?;
+            physical_model_turns += u64::from(is_model_turn(&record));
+            index.observe(&record);
+            view_start.observe(&record);
+            if index.window_start == Some(record.seq) {
+                held.clear();
+                let_go = true;
+            }
+            held.push(record);
+        }
+        // Back before the window's first turn, or at a native run: whole.
+        let window = index.window_start;
+        if window.is_none() && let_go {
+            held = self.pass(..=through_seq)?.collect::<Result<Vec<_>, _>>()?;
+        }
+        Ok(FoldedPrefix {
+            index,
+            physical_model_turns,
+            validation,
+            view_start,
+            window,
+            held,
+        })
     }
 
     /// Stores the blobs a record about to be written names, unsynced: the

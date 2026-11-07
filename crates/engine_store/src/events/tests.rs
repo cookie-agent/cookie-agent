@@ -4286,12 +4286,9 @@ fn a_rewrite_copies_every_line_it_read_as_it_was_read() {
     let fork_path = directory.path().join("fork.jsonl");
     let fork = EventLog::fork_buffered(
         fork_path.clone(),
-        fork_id,
-        &source,
-        7,
+        source.read_fork_prefix(fork_id, 7).expect("fork"),
         authority.capability(),
-    )
-    .expect("fork");
+    );
     assert_eq!(fork.physical_tip_seq(), 7);
     fork.write_whole(&fork_path).expect("write the fork");
     let written = fs::read_to_string(&fork_path)
@@ -4363,12 +4360,9 @@ fn a_log_keeps_only_unreproducible_lines_and_reads_the_rest_again() {
         let fork_path = directory.path().join(format!("fork-{id}.jsonl"));
         let fork = EventLog::fork_buffered(
             fork_path.clone(),
-            fork_id,
-            &source,
-            6,
+            source.read_fork_prefix(fork_id, 6).expect("fork"),
             authority.capability(),
-        )
-        .expect("fork");
+        );
         let layout = fork.write_whole(&fork_path).expect("write the fork");
         fork.mark_written(layout);
         let written = fs::read_to_string(&fork_path)

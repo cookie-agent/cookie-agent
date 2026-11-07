@@ -2888,6 +2888,24 @@ impl SessionStore {
         if self.tree_load_pending_for(source_id) {
             self.ensure_tree_for(source_id)?;
         }
+        let session_id = SessionId::new_v7();
+        // What a fork copies of its source, which may mean reading the source's
+        // file, is read before `mutation`, which every session's write waits on.
+        // A source that cannot be forked is refused under the lock.
+        let read_ahead = {
+            let source = self.get(source_id)?;
+            if source.log.is_persisted()
+                && through_seq != 0
+                && through_seq <= source.log.physical_tip_seq()
+            {
+                let cuts = source.log.cut_count();
+                let prefix = source.log.read_fork_prefix(session_id, through_seq)?;
+                let detached = acp_detached(&source.log, through_seq)?;
+                Some((Arc::clone(&source.log), cuts, prefix, detached))
+            } else {
+                None
+            }
+        };
         let _mutation = self.lock_mutation();
         self.ensure_open()?;
         let source = self.get(source_id)?;
@@ -2907,7 +2925,19 @@ impl SessionStore {
             });
         }
 
-        let session_id = SessionId::new_v7();
+        // A revert since it was read, or a log opened anew, is read again here,
+        // where nothing can move.
+        let (prefix, detached) = match read_ahead {
+            Some((log, cuts, prefix, detached))
+                if Arc::ptr_eq(&log, &source.log) && cuts == source.log.cut_count() =>
+            {
+                (prefix, detached)
+            }
+            _ => (
+                source.log.read_fork_prefix(session_id, through_seq)?,
+                acp_detached(&source.log, through_seq)?,
+            ),
+        };
         // A forked origin is copied verbatim from the source's `SessionCreated`
         // event, so a fork of a child stays inside the same tree.
         let location = self.placement_for(&source.meta.origin);
@@ -2951,13 +2981,8 @@ impl SessionStore {
             // The fork is assembled in memory as a buffered log at its final
             // path, then written whole: one buffered write and one sync
             // instead of a reopened, reparsed file and a sync per record.
-            let log = EventLog::fork_buffered(
-                final_dir.join(EVENTS_FILE),
-                session_id,
-                &source.log,
-                through_seq,
-                capability.clone(),
-            )?;
+            let log =
+                EventLog::fork_buffered(final_dir.join(EVENTS_FILE), prefix, capability.clone());
             let mut fork_projection = projection(log.clone())?;
             // A prefix cut inside a run leaves it open; the fork closes it.
             let open_runs = fork_projection
@@ -2981,7 +3006,7 @@ impl SessionStore {
             }
             // The source's ACP sessions stay its own: the fork's agent
             // branches off them at its first turn.
-            for detached in acp_detached(&source.log, through_seq)? {
+            for detached in detached {
                 let event = log.append_owned(
                     &capability,
                     None,

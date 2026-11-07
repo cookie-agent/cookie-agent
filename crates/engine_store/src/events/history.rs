@@ -6,14 +6,28 @@
 //! events. So a reader keeps only what it needs, and a question asked every turn
 //! belongs in a fold ([`super::LogState`]).
 
-use std::sync::Arc;
+use std::{
+    collections::VecDeque,
+    fs::File,
+    io::{BufRead as _, BufReader, Read as _, Seek as _, SeekFrom, Take},
+    path::PathBuf,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+};
 
 use cookie_agent_protocol::{
     EventsView, StoredEvent,
-    display_view::{self, OlderPageReader, TailWindowReader, Window},
+    display_view::{self, CacheBoundary, OlderPageReader, TailWindowReader, Window},
 };
 
-use super::{EventLogError, EventSnapshot};
+use super::{EventLogError, EventSnapshot, LineReader, blobs};
+
+/// How much of the file a pass reads ahead on each visit off the async worker,
+/// so a pass over small records does not leave the worker once per record. A
+/// larger line is read whole, alone.
+const READ_AHEAD_BYTES: usize = 64 * 1024;
 
 /// The records of a log as it stood when the pass was asked for, in order. It
 /// holds no lock of the log, and may be read for as long as it takes.
@@ -22,11 +36,180 @@ use super::{EventLogError, EventSnapshot};
 /// records is found here (section 11, decision 1). Nothing else may be assumed
 /// of where the records come from: while a log holds all its events this reads
 /// them from there, and it is the only way to read past a log's window.
+///
+/// What precedes the window is read from the file, which the pass is bounded in
+/// at the window it saw, so what the log appends later does not reach it. A
+/// revert that cuts the file meanwhile ends the pass with
+/// [`EventLogError::HistoryCut`]: the records it asked for are gone, and the
+/// sequences they had may name others by then. What it already gave stays true
+/// of the log as it stood.
 #[derive(Debug)]
 pub struct History {
+    /// The log's first record, while the pass has yet to give it and it is not
+    /// among `events`.
+    creation: Option<Arc<StoredEvent>>,
+    /// What the pass has left to read from the file.
+    file: Option<FilePass>,
+    /// What it read of the file and has not given yet.
+    read_ahead: VecDeque<Result<Arc<StoredEvent>, EventLogError>>,
     events: EventSnapshot,
     next: usize,
     end: usize,
+}
+
+/// Where in a log's file a pass reads, as a log worked it out from its window.
+#[derive(Clone, Debug)]
+pub(super) struct FileRange {
+    pub(super) path: PathBuf,
+    /// Where the first line of the range starts, or an earlier one.
+    pub(super) offset: u64,
+    /// Where the range's lines end, when the log knows its file's layout.
+    pub(super) end: Option<u64>,
+    /// The sequences of the records it gives: from one, up to and not including
+    /// the other.
+    pub(super) from_seq: u64,
+    pub(super) until_seq: u64,
+    /// Records of the file the log left out, which a pass leaves out too.
+    pub(super) refused: Arc<Vec<u64>>,
+    /// The log's count of the cuts to its file, and what it was when asked.
+    pub(super) cuts: Arc<AtomicU64>,
+    pub(super) seen_cuts: u64,
+}
+
+/// A [`FileRange`] being read.
+#[derive(Debug)]
+struct FilePass {
+    range: FileRange,
+    reader: Option<BufReader<Take<File>>>,
+    /// Where the next line starts.
+    position: u64,
+    line: Vec<u8>,
+    done: bool,
+}
+
+impl FilePass {
+    fn new(range: FileRange) -> Self {
+        let position = range.offset;
+        Self {
+            range,
+            reader: None,
+            position,
+            line: Vec::new(),
+            done: false,
+        }
+    }
+
+    /// Reads on, off the async worker, into `read_ahead`.
+    fn fill(&mut self, read_ahead: &mut VecDeque<Result<Arc<StoredEvent>, EventLogError>>) {
+        crate::blocking::off_worker(|| {
+            cookie_agent_protocol::read_stored_history(|| {
+                if let Err(error) = self.read_ahead_into(read_ahead) {
+                    self.done = true;
+                    read_ahead.push_back(Err(error));
+                }
+            });
+        });
+    }
+
+    fn read_ahead_into(
+        &mut self,
+        read_ahead: &mut VecDeque<Result<Arc<StoredEvent>, EventLogError>>,
+    ) -> Result<(), EventLogError> {
+        let path = self.range.path.clone();
+        let io_error = |source| EventLogError::Io {
+            path: path.clone(),
+            source,
+        };
+        if self.reader.is_none() {
+            let mut file = File::open(&path).map_err(&io_error)?;
+            file.seek(SeekFrom::Start(self.position))
+                .map_err(&io_error)?;
+            let length = self.range.end.map_or(u64::MAX, |end| end - self.position);
+            self.reader = Some(BufReader::with_capacity(
+                READ_AHEAD_BYTES,
+                file.take(length),
+            ));
+        }
+        let blob_dir = blobs::tree_blob_dir(&path);
+        let mut fetch = |digest: &str| blobs::read(&blob_dir, digest);
+        // It keeps what it notes of damage for one visit: the load reported it.
+        let mut lines = LineReader::new(&path);
+        let mut bytes = 0_usize;
+        while bytes < READ_AHEAD_BYTES && !self.done {
+            if self.range.end == Some(self.position) {
+                self.done = true;
+                break;
+            }
+            self.line.clear();
+            let reader = self.reader.as_mut().expect("opened above");
+            let read = reader.read_until(b'\n', &mut self.line);
+            // Checked after the read, so what passes was read before a cut:
+            // the log counts one before it cuts the file.
+            if self.range.cuts.load(Ordering::Acquire) != self.range.seen_cuts {
+                return Err(EventLogError::HistoryCut { path });
+            }
+            let length = read.map_err(&io_error)?;
+            // The range's end lies within the file's complete lines, and a log
+            // without its layout ends the range at a record, so a file that
+            // ends first was cut.
+            if !self.line.ends_with(b"\n") {
+                return Err(EventLogError::HistoryCut { path });
+            }
+            self.position += length as u64;
+            bytes += length;
+            let line = &self.line[..length - 1];
+            if line.is_empty() {
+                continue;
+            }
+            // Never the log's first line by position: its creation is held,
+            // and a pass starting there reads it only to skip it.
+            let read = lines.read(1, line, &mut fetch)?;
+            let until = self.range.until_seq;
+            if read.stop || read.sequenced.is_some_and(|(seq, _)| seq >= until) {
+                self.done = true;
+                break;
+            }
+            let Some(record) = read.record else {
+                continue;
+            };
+            if record.seq >= self.range.from_seq
+                && self.range.refused.binary_search(&record.seq).is_err()
+            {
+                read_ahead.push_back(Ok(Arc::new(record)));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// The newest-first window of a log, read from where its view cache starts when
+/// the log knows that (`docs/site/specs/forever-sessions.md` section 12).
+#[derive(Debug)]
+pub struct NewestPass {
+    pub(super) from_cache_start: Option<(CacheBoundary, Vec<Arc<StoredEvent>>, History)>,
+    pub(super) whole: History,
+}
+
+impl NewestPass {
+    /// The newest-first window of the log.
+    pub fn tail_window(self, view: EventsView, budget: usize) -> Result<Window, EventLogError> {
+        let Some((start, header, suffix)) = self.from_cache_start else {
+            return self.whole.tail_window(view, budget);
+        };
+        let suffix = suffix.collect::<Result<Vec<_>, _>>()?;
+        debug_assert_eq!(suffix.first().map(|first| first.seq), Some(start.seq));
+        let Some(window) = display_view::tail_window_after(&header, &suffix, view, budget) else {
+            // A budget larger than the cache's own.
+            return self.whole.tail_window(view, budget);
+        };
+        #[cfg(any(test, feature = "test-support"))]
+        assert_eq!(
+            self.whole.read_tail_window(view, budget)?,
+            window,
+            "a window read from the cache's start differs"
+        );
+        Ok(window)
+    }
 }
 
 /// Where a view cache starts: [`History::view_cache_start`].
@@ -45,17 +228,39 @@ impl History {
     /// The records of `events`, in order, from position `start` to `end`.
     pub(super) fn new(events: EventSnapshot, start: usize, end: usize) -> Self {
         Self {
+            creation: None,
+            file: None,
+            read_ahead: VecDeque::new(),
             events,
             next: start,
             end,
         }
     }
 
+    /// The records of `events` from position `start` to `end`, after `creation`
+    /// and what `file` names of what precedes them in the log.
+    pub(super) fn with_file(
+        creation: Option<Arc<StoredEvent>>,
+        file: Option<FileRange>,
+        events: EventSnapshot,
+        start: usize,
+        end: usize,
+    ) -> Self {
+        Self {
+            creation,
+            file: file.map(FilePass::new),
+            ..Self::new(events, start, end)
+        }
+    }
+
     /// The records of this pass, when the log holds them all: a window need
     /// measure only what fits, walking back from the end, and a pass must
     /// measure every record to know that (section 2: a log not yet windowed
-    /// costs nothing).
+    /// costs nothing). `None` for what comes from the file.
     fn held(&self) -> Option<&[Arc<StoredEvent>]> {
+        if self.creation.is_some() || self.file.is_some() {
+            return None;
+        }
         Some(&self.events[self.next..self.end])
     }
 
@@ -199,6 +404,22 @@ impl Iterator for History {
     type Item = Result<Arc<StoredEvent>, EventLogError>;
 
     fn next(&mut self) -> Option<Self::Item> {
+        if let Some(creation) = self.creation.take() {
+            return Some(Ok(creation));
+        }
+        while let Some(file) = &mut self.file {
+            match self.read_ahead.pop_front() {
+                Some(Ok(event)) => return Some(Ok(event)),
+                Some(Err(error)) => {
+                    // Nothing follows a pass that failed.
+                    self.file = None;
+                    self.next = self.end;
+                    return Some(Err(error));
+                }
+                None if file.done => self.file = None,
+                None => file.fill(&mut self.read_ahead),
+            }
+        }
         if self.next >= self.end {
             return None;
         }
