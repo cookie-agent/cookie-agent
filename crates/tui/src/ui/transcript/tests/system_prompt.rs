@@ -801,6 +801,7 @@ fn native_compaction_expands_window_reference_details() {
             seq: 9,
             commit: Box::new(cookie_agent_protocol::ContextCheckpointCommit {
                 reason: None,
+                context_fresh: false,
                 checkpoint: cookie_agent_protocol::ContextCheckpoint::NativeWindow { window },
                 boundaries: cookie_agent_protocol::ContextCheckpointBoundaries {
                     source_from_seq: 2,

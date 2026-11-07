@@ -1043,8 +1043,12 @@ the active pre-compaction history before the recent messages retained unchanged
 after the summary; the two do not overlap. Active history is the currently assembled context,
 not a reload of events replaced by earlier checkpoints. The original saved log
 is preserved; retained recent messages are replayed from it. System and tool
-context comes first, followed by pinned `AGENTS.md`, the latest memory
-snapshot, loaded skills, the summary, and the recent messages. See [Compaction](../sessions/compaction.md) for selection
+context comes first, followed by the `AGENTS.md` turn, the memory turn, the
+summary, and the recent messages. A checkpoint with `context_fresh` records its
+`AGENTS.md` and memory again just before itself and pins nothing older; one
+without it, written before client protocol 1.90.0, pins the latest `AGENTS.md`,
+the latest memory snapshot, and every skill loaded before it, which then sit
+between the memory turn and the summary. See [Compaction](../sessions/compaction.md) for selection
 and fit rules.
 
 The retention fields:
@@ -1055,6 +1059,7 @@ The retention fields:
 | `budgets.keep_recent_tokens` | `u64` | Effective recent-history token budget for this checkpoint, not the raw configured request or a count of retained tokens. |
 | `checkpoint.native` | object, optional | On an `internal_summary` checkpoint, the provider window compacted from the same events (`window`) and the last event it covers (`source_through_seq`). Absent when native compaction was not attempted or failed. |
 | `reason` | object, optional | Why the checkpoint was made, when not for size, overflow, or a manual request (client protocol 1.78.0): `{"type": "cache_expiry", "expires_at", "next_fire"?, "job_id"?}`, a compaction [before the prompt cache expired](../sessions/compaction.md#before-the-cache-expires), for the scheduled job `job_id` firing at `next_fire` when one decided it. A reader treats a type it does not know as no reason. |
+| `context_fresh` | bool, optional | The context before the conversation was composed afresh for this checkpoint (client protocol 1.90.0): `agent_md_loaded` and `memory_loaded` recorded just before it hold what the model reads, and a skill loaded before the kept range is not carried. Absent, or `false`, in checkpoints written before. |
 | `checkpoint.folded_tools` | string array, optional | On an `internal_summary` checkpoint, the [deferred tools](#deferred-tools) loaded before it, and the previous checkpoint's: the next tool round declares them up front. Absent when empty; at most 1,024 names. |
 
 The effective budget is at most `min(configured keep_recent_tokens,

@@ -2381,6 +2381,15 @@ pub struct ContextCheckpointCommit {
     /// compactions, and in logs written before.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<crate::Open<CheckpointReason>>,
+    /// The context before the conversation was composed afresh for this
+    /// checkpoint: `AGENTS.md` and the memory snapshot were recorded again
+    /// just before it, and nothing from before its kept range is pinned,
+    /// loaded skills included (`docs/site/specs/forever-sessions.md` section
+    /// 5.2; client protocol 1.90.0). Absent in logs written before, whose
+    /// checkpoints keep pinning the latest `AGENTS.md`, memory, and every
+    /// loaded skill.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub context_fresh: bool,
 }
 impl ContextCheckpointCommit {
     pub fn validate(&self) -> Result<(), EventSchemaError> {
@@ -2477,6 +2486,8 @@ impl<'de> Deserialize<'de> for ContextCheckpointCommit {
             budgets: ContextCheckpointBudgets,
             #[serde(default)]
             reason: Option<crate::Open<CheckpointReason>>,
+            #[serde(default)]
+            context_fresh: bool,
         }
         let w = Wire::deserialize(d)?;
         let value = Self {
@@ -2484,6 +2495,7 @@ impl<'de> Deserialize<'de> for ContextCheckpointCommit {
             boundaries: w.boundaries,
             budgets: w.budgets,
             reason: w.reason,
+            context_fresh: w.context_fresh,
         };
         value.validate().map_err(serde::de::Error::custom)?;
         Ok(value)

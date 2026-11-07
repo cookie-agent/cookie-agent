@@ -488,6 +488,7 @@ pub(crate) fn checkpoint_commit(summary: &str) -> cookie_agent_protocol::Context
     let max = cookie_agent_protocol::SummaryByteLimit::new(1024).expect("summary limit");
     cookie_agent_protocol::ContextCheckpointCommit {
         reason: None,
+        context_fresh: false,
         checkpoint: cookie_agent_protocol::ContextCheckpoint::InternalSummary {
             checkpoint: cookie_agent_protocol::InternalSummaryCheckpoint::new(
                 summary.into(),

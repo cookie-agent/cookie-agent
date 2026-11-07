@@ -905,6 +905,7 @@ impl Engine {
             boundaries,
             budgets,
             reason: input.reason.clone(),
+            context_fresh: false,
         };
         if commit.validate().is_err() {
             // A window the boundaries cannot hold leaves the summary alone.

@@ -388,6 +388,7 @@ fn checkpoint_dedup_includes_the_exact_snapshot_boundary() {
         payload: Event::ContextCheckpointCommitted {
             commit: ContextCheckpointCommit {
                 reason: None,
+                context_fresh: false,
                 checkpoint: ContextCheckpoint::InternalSummary {
                     checkpoint,
                     native: None,

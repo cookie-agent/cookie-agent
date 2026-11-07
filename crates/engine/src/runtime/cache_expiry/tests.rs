@@ -367,6 +367,7 @@ fn checkpoint(seq: u64) -> Arc<StoredEvent> {
                     keep_recent_tokens: 0,
                 },
                 reason: None,
+                context_fresh: false,
             },
         },
     )

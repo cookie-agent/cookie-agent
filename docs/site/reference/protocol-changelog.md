@@ -5,6 +5,14 @@ The client protocol's version is `MAJOR.MINOR.PATCH`
 adds and a major breaks; before it, every minor could break the wire (see the
 [compatibility spec](../specs/compatibility-v1.md) section 3).
 
+## 1.90.0
+
+- `ContextCheckpointCommit` gains an optional `context_fresh`: the checkpoint
+  recorded `AGENTS.md` and the memory snapshot again just before itself, and
+  a native model's context pins nothing from before its kept range, loaded
+  skills included ([Sessions that run forever](../specs/forever-sessions.md)
+  section 5.2). Plugin protocol 1.44.0 carries it in event notifications.
+
 ## 1.89.0
 
 - `session.runtimes.list` (`SessionRuntimesListParams`, answered with a

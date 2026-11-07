@@ -1802,6 +1802,7 @@ fn checkpoint_validation_allows_predictive_trigger_and_requires_shrink() {
     .unwrap();
     let mut commit = ContextCheckpointCommit {
         reason: None,
+        context_fresh: false,
         checkpoint: ContextCheckpoint::InternalSummary {
             checkpoint,
             native: None,
@@ -1843,6 +1844,7 @@ fn checkpoint_recent_tail_is_required_and_stays_within_source() {
     .unwrap();
     let commit = ContextCheckpointCommit {
         reason: None,
+        context_fresh: false,
         checkpoint: ContextCheckpoint::InternalSummary {
             checkpoint,
             native: None,
@@ -1912,6 +1914,7 @@ fn native_checkpoint_rejects_recent_tail_boundary_and_budget() {
     .unwrap();
     let mut commit = ContextCheckpointCommit {
         reason: None,
+        context_fresh: false,
         checkpoint: ContextCheckpoint::NativeWindow { window },
         boundaries: ContextCheckpointBoundaries {
             source_from_seq: 1,
@@ -1957,9 +1960,33 @@ fn test_window(adapter: &str, provider: &str, model: &str) -> NativeContextWindo
     .unwrap()
 }
 
+/// `context_fresh` is written only when set, and a commit written before it
+/// reads as one that pins its older context.
+#[test]
+fn a_checkpoint_says_whether_it_refreshed_the_context() {
+    let older = serde_json::to_value(summary_commit(None)).unwrap();
+    assert!(older.get("context_fresh").is_none());
+    assert!(
+        !serde_json::from_value::<ContextCheckpointCommit>(older)
+            .unwrap()
+            .context_fresh
+    );
+    let fresh = ContextCheckpointCommit {
+        context_fresh: true,
+        ..summary_commit(None)
+    };
+    let written = serde_json::to_value(&fresh).unwrap();
+    assert_eq!(written["context_fresh"], json!(true));
+    assert_eq!(
+        serde_json::from_value::<ContextCheckpointCommit>(written).unwrap(),
+        fresh
+    );
+}
+
 fn summary_commit(native: Option<CheckpointNativeWindow>) -> ContextCheckpointCommit {
     ContextCheckpointCommit {
         reason: None,
+        context_fresh: false,
         checkpoint: ContextCheckpoint::InternalSummary {
             checkpoint: InternalSummaryCheckpoint::new(
                 "summary".into(),

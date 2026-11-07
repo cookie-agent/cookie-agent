@@ -5309,6 +5309,10 @@
             "checkpoint": {
               "$ref": "#/$defs/ContextCheckpoint"
             },
+            "context_fresh": {
+              "description": "The context before the conversation was composed afresh for this\ncheckpoint: `AGENTS.md` and the memory snapshot were recorded again\njust before it, and nothing from before its kept range is pinned,\nloaded skills included (`docs/site/specs/forever-sessions.md` section\n5.2; client protocol 1.90.0). Absent in logs written before, whose\ncheckpoints keep pinning the latest `AGENTS.md`, memory, and every\nloaded skill.",
+              "type": "boolean"
+            },
             "reason": {
               "anyOf": [
                 {

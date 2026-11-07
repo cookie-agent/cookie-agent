@@ -1124,6 +1124,7 @@ fn summary_commit(
     let max_summary_bytes = SummaryByteLimit::new(1024).expect("limit");
     ContextCheckpointCommit {
         reason: None,
+        context_fresh: false,
         checkpoint: ContextCheckpoint::InternalSummary {
             checkpoint: InternalSummaryCheckpoint::new(
                 summary.into(),
@@ -1752,6 +1753,7 @@ fn checkpoint_before_new_user_keeps_summary_and_user_live() {
             EventPayload::ContextCheckpointCommitted {
                 commit: ContextCheckpointCommit {
                     reason: None,
+                    context_fresh: false,
                     checkpoint: ContextCheckpoint::InternalSummary {
                         checkpoint,
                         native: None,
@@ -1872,6 +1874,7 @@ fn native_checkpoint_carries_window_and_drops_pre_checkpoint_history() {
             EventPayload::ContextCheckpointCommitted {
                 commit: ContextCheckpointCommit {
                     reason: None,
+                    context_fresh: false,
                     checkpoint: ContextCheckpoint::NativeWindow { window },
                     boundaries: ContextCheckpointBoundaries {
                         source_from_seq: 1,
@@ -1972,6 +1975,7 @@ fn native_checkpoint_does_not_reappend_covered_pending_producer_input() {
         EventPayload::ContextCheckpointCommitted {
             commit: ContextCheckpointCommit {
                 reason: None,
+                context_fresh: false,
                 checkpoint: ContextCheckpoint::NativeWindow { window },
                 boundaries: ContextCheckpointBoundaries {
                     source_from_seq: 1,
@@ -3078,6 +3082,7 @@ fn checkpointed_log(run: RunId, checkpoint: ContextCheckpoint) -> Vec<StoredEven
             EventPayload::ContextCheckpointCommitted {
                 commit: ContextCheckpointCommit {
                     reason: None,
+                    context_fresh: false,
                     checkpoint,
                     boundaries: ContextCheckpointBoundaries {
                         source_from_seq: 1,
