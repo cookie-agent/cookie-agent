@@ -44,3 +44,7 @@ toml.workspace = true
 [[example]]
 name = "forever_measure"
 required-features = ["test-support"]
+
+[[test]]
+name = "forever_growth"
+required-features = ["test-support"]

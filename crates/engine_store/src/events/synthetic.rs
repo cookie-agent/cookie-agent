@@ -41,6 +41,10 @@ pub struct Mix {
     pub runs: u64,
     /// What sizes the texts in it are multiplied by.
     pub size: f64,
+    /// How many delegations a run makes, on average: one per megabyte of the
+    /// largest log, above what the store's logs do, as each costs what it does
+    /// for as long as the log.
+    pub delegations: f64,
     pub seed: u64,
 }
 
@@ -51,6 +55,7 @@ impl Mix {
         Self {
             runs: (159.0 * times).round() as u64,
             size: 1.0,
+            delegations: 0.08,
             seed: 0x5eed,
         }
     }
@@ -62,6 +67,7 @@ impl Mix {
         Self {
             runs,
             size: 0.1,
+            delegations: 0.08,
             seed: 0x5eed,
         }
     }
@@ -290,6 +296,7 @@ struct RunWriter<'a> {
     templates: &'a Templates,
     numbers: Numbers,
     size: f64,
+    delegation_rate: f64,
     ids: u128,
     seq: u64,
     model_turn_seq: u64,
@@ -739,7 +746,7 @@ impl RunWriter<'_> {
                 1
             };
             self.turn(run, calls, turn as u32 + 1)?;
-            if self.numbers.chance(0.08 / 7.3) {
+            if self.numbers.chance(self.delegation_rate / 7.3) {
                 self.delegation(run)?;
             }
             if turn == 0
@@ -792,6 +799,7 @@ pub fn write(mix: &Mix, sink: &mut dyn Sink) -> Result<(), EventLogError> {
         templates: &templates,
         numbers: Numbers(mix.seed),
         size: mix.size,
+        delegation_rate: mix.delegations,
         ids: 0,
         seq: 1,
         model_turn_seq: 0,

@@ -3156,6 +3156,19 @@ impl EventLog {
         self.narrow(&mut storage);
     }
 
+    /// Test-only: the log opened without reading its file whole: from its
+    /// `state.json`, or a record at a time.
+    #[cfg(any(test, feature = "test-support"))]
+    #[must_use]
+    pub fn opened_without_parse_for_test(&self) -> bool {
+        self.opened_from_state
+            || self
+                .opened
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .is_some()
+    }
+
     /// Test-only: the sequences of the lines the log keeps in memory.
     #[cfg(any(test, feature = "test-support"))]
     pub fn kept_raw_seqs_for_test(&self) -> Vec<u64> {
