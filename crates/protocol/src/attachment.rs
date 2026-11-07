@@ -36,7 +36,7 @@ pub fn default_capability(runtime_id: &RuntimeId) -> CapabilityName {
 
 /// The attachment set a session's events describe: the fold of its
 /// `runtime_attached` and `runtime_detached` events in log order.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct RuntimeAttachmentFold {
     attachments: Vec<RuntimeAttachment>,
 }

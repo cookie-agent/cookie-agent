@@ -11,7 +11,7 @@ use std::borrow::Borrow;
 use crate::{ClientRunId, EventOrigin, EventPayload, RunSelection, StoredEvent, UserContent};
 
 /// One input waiting in a session's queue.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct QueuedInput {
     /// The seq of its `user_input_queued` event.
     pub queued_seq: u64,
@@ -24,7 +24,7 @@ pub struct QueuedInput {
 }
 
 /// A session's queued inputs, oldest first.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct QueuedInputs {
     entries: Vec<QueuedInput>,
 }

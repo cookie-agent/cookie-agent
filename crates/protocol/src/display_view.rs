@@ -449,7 +449,7 @@ fn concerns_state(payload: &EventPayload) -> bool {
 /// far and the few events since it was last worked out: [`state_events`] of
 /// that header followed by later events is [`state_events`] of the log through
 /// them.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Deserialize, serde::Serialize)]
 pub struct StateEventsFold {
     held: Vec<Arc<StoredEvent>>,
     unsettled: usize,
@@ -882,7 +882,7 @@ impl TailWindowReader {
 /// few headers, whose events they mostly share, and the events it read since it
 /// last worked its header out, whatever the number of runs a budget's bytes
 /// span, and reads nothing to move.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 pub struct CacheStartFold {
     budget: usize,
     /// The bytes of the events it measured.
@@ -897,14 +897,14 @@ pub struct CacheStartFold {
 }
 
 /// A boundary of a log, with the header of what precedes it.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 struct NotedStart {
     boundary: CacheBoundary,
     header: Vec<Arc<StoredEvent>>,
 }
 
 /// A run boundary of a log: where a cache of its view can start.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct CacheBoundary {
     pub seq: u64,
     pub timestamp: jiff::Timestamp,

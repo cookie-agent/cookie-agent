@@ -3,7 +3,7 @@ use std::borrow::Borrow;
 
 use crate::{EventPayload, ModelFinishReason, ModelSelection, RunId, RunSelection, StoredEvent};
 
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct SessionModelState {
     pub selection: Option<RunSelection>,
     pub successful_fallback: bool,

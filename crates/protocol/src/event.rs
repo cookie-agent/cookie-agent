@@ -2892,7 +2892,7 @@ pub struct RuntimeRevisions {
 /// `session_created` records them, and a later `run_started` or
 /// `delegation_reserved` records them again only when they changed, so an
 /// event without its own revisions was frozen against the latest before it.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct RevisionFold {
     latest: Option<RuntimeRevisions>,
 }
