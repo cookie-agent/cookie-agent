@@ -13,8 +13,8 @@ use std::{
 };
 
 use cookie_agent_protocol::{
-    AcpCommand, AcpContextUsage, AcpDetached, AcpOptionChoice, AcpSessionRecord, AgentId,
-    ApprovalFinalOutcome, ApprovalId, ApprovalRecord, ApprovalRequest, ApprovalStatus,
+    AcpCommand, AcpContextUsage, AcpDetached, AcpOptionChoice, AcpSessionRecord, AcpSessionStart,
+    AgentId, ApprovalFinalOutcome, ApprovalId, ApprovalRecord, ApprovalRequest, ApprovalStatus,
     ApprovalStep, ApprovalUserDecision, AttachmentName, ClientResponseId, DelegatedContextTurn,
     EventPayload, InvocationId, Open, ProducerMessageId, ProducerOwner, QueuedInputs,
     ResolvedModelRef, RunId, RunOutcome, SessionId, SessionModelState, SessionTitle,
@@ -114,14 +114,14 @@ impl LogState {
         self.acp.context
     }
 
-    /// The context the session's ACP sessions were given last, of whichever
-    /// agent; empty when none was.
+    /// The context `agent`'s latest ACP session was given, frozen for the life
+    /// of that session (`docs/site/specs/forever-sessions.md` section 3.4);
+    /// empty when it was given none.
     #[must_use]
-    pub fn acp_prompt_context(&self) -> &[String] {
-        self.acp
-            .prompt_context
-            .as_ref()
-            .map_or(&[], |context| context.as_slice())
+    pub fn acp_prompt_context(&self, agent: &AgentId) -> &[String] {
+        self.acp_agent(agent)
+            .and_then(|known| known.prompt_context.as_deref())
+            .map_or(&[], Vec::as_slice)
     }
 
     /// The session's accepted model selection, as committed turns advanced it.
@@ -419,9 +419,10 @@ pub struct AcpAgentState {
     pub record: AcpSessionRecord,
     /// What left that session behind since it started, in log order.
     pub detached: Vec<AcpDetached>,
-    /// The latest `prompt_context` recorded while this agent's session was
-    /// the log's latest. It goes on the record after its session starts, so
-    /// it is never another agent's.
+    /// What that session was given: the latest `prompt_context` recorded while
+    /// it was the log's latest. It goes on the record after its session starts,
+    /// so it is never another agent's. A resume or a fork carries it on, and a
+    /// session that starts afresh has been told nothing.
     pub prompt_context: Option<Arc<Vec<String>>>,
 }
 
@@ -434,7 +435,6 @@ struct AcpState {
     starting_options: Option<Vec<AcpOptionChoice>>,
     commands: Option<Vec<AcpCommand>>,
     context: Option<AcpContextUsage>,
-    prompt_context: Option<Arc<Vec<String>>>,
 }
 
 /// The chain of option values [`LogState::recorded_option_values`] reads.
@@ -469,6 +469,9 @@ impl AcpState {
                     Some(known) => {
                         known.record = record.clone();
                         known.detached.clear();
+                        if !continues_a_session(record.how) {
+                            known.prompt_context = None;
+                        }
                     }
                     None => self.agents.push(AcpAgentState {
                         record: record.clone(),
@@ -502,22 +505,28 @@ impl AcpState {
                 if update.context.is_some() {
                     self.context = update.context;
                 }
-                if let Some(context) = &update.prompt_context {
-                    let context = Arc::new(context.clone());
-                    if let Some((latest, _)) = &self.options.latest
-                        && let Some(known) = self
-                            .agents
-                            .iter_mut()
-                            .find(|known| &known.record.agent == latest)
-                    {
-                        known.prompt_context = Some(Arc::clone(&context));
-                    }
-                    self.prompt_context = Some(context);
+                if let Some(context) = &update.prompt_context
+                    && let Some((latest, _)) = &self.options.latest
+                    && let Some(known) = self
+                        .agents
+                        .iter_mut()
+                        .find(|known| &known.record.agent == latest)
+                {
+                    known.prompt_context = Some(Arc::new(context.clone()));
                 }
             }
             _ => {}
         }
     }
+}
+
+/// Whether an ACP session started this way goes on from an earlier one, and so
+/// keeps what that one was given.
+fn continues_a_session(how: AcpSessionStart) -> bool {
+    matches!(
+        how,
+        AcpSessionStart::Resumed | AcpSessionStart::Loaded | AcpSessionStart::Forked
+    )
 }
 
 /// The input after the latest committed turn's `input_through_seq`, which is

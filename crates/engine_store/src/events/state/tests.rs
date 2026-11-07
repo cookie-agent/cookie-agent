@@ -69,6 +69,20 @@ fn started(name: &str, declaration: &str, session: &str) -> (Option<RunId>, Even
     )
 }
 
+/// [`started`], the way `how` starts a session.
+fn started_as(
+    how: AcpSessionStart,
+    name: &str,
+    declaration: &str,
+    session: &str,
+) -> (Option<RunId>, EventPayload) {
+    let (run, mut payload) = started(name, declaration, session);
+    if let EventPayload::AcpSessionStarted { record } = &mut payload {
+        record.how = how;
+    }
+    (run, payload)
+}
+
 fn updated(update: AcpSessionUpdate) -> (Option<RunId>, EventPayload) {
     (None, EventPayload::AcpSessionUpdated { update })
 }
@@ -193,7 +207,7 @@ fn each_agent_keeps_its_latest_session_and_what_left_only_that_one_behind() {
 }
 
 #[test]
-fn prompt_context_is_kept_per_agent_and_the_latest_of_any() {
+fn prompt_context_is_kept_per_agent() {
     let context = |text: &str| {
         updated(AcpSessionUpdate {
             prompt_context: Some(vec![text.to_owned()]),
@@ -206,7 +220,7 @@ fn prompt_context_is_kept_per_agent_and_the_latest_of_any() {
         started("b", "x", "b-one"),
         context("of b"),
         // Back to `a`, which composes nothing as it resumes.
-        started("a", "x", "a-one"),
+        started_as(AcpSessionStart::Resumed, "a", "x", "a-one"),
     ]));
     let of = |name: &str| {
         state
@@ -218,7 +232,34 @@ fn prompt_context_is_kept_per_agent_and_the_latest_of_any() {
     };
     assert_eq!(of("a"), Some(vec!["of a".to_owned()]));
     assert_eq!(of("b"), Some(vec!["of b".to_owned()]));
-    assert_eq!(state.acp_prompt_context(), ["of b".to_owned()]);
+    assert_eq!(state.acp_prompt_context(&agent("a")), ["of a".to_owned()]);
+    assert!(state.acp_prompt_context(&agent("stranger")).is_empty());
+}
+
+#[test]
+fn a_session_that_starts_afresh_has_been_given_no_context() {
+    let context = updated(AcpSessionUpdate {
+        prompt_context: Some(vec!["of a-one".to_owned()]),
+        ..AcpSessionUpdate::default()
+    });
+    let given = |how| {
+        fold(&log(vec![
+            started("a", "x", "a-one"),
+            context.clone(),
+            started_as(how, "a", "x", "a-two"),
+        ]))
+        .acp_prompt_context(&agent("a"))
+        .to_vec()
+    };
+    assert!(given(AcpSessionStart::New).is_empty());
+    assert!(given(AcpSessionStart::Subagent).is_empty());
+    for how in [
+        AcpSessionStart::Resumed,
+        AcpSessionStart::Loaded,
+        AcpSessionStart::Forked,
+    ] {
+        assert_eq!(given(how), ["of a-one".to_owned()], "{how:?}");
+    }
 }
 
 fn committed(run: RunId, input_through_seq: u64) -> (Option<RunId>, EventPayload) {

@@ -518,10 +518,15 @@ From the user, 2026-11-06:
   agent's reply keeps it too, as the record precedes the reply, and the session branched off either
   gets it unchanged, composing nothing
   (`a_branch_after_a_fork_or_a_revert_keeps_the_recorded_context`).
-- **Not per agent today.** Section 3.4 has `state()` hold `prompt_context` per agent, and it does
-  (`AcpAgentState::prompt_context`), but a resume or a branch sends the latest of *any* agent
-  (`acp_prompt_context`, as `recorded_prompt_context` did): a session that goes from agent A to B
-  and back resumes A with B's context. Phase 1 changes no behaviour, so this stays until decided.
+- **Per agent, fixed in phase 2.** Section 3.4 has `state()` hold `prompt_context` per agent, but a
+  resume or a branch sent the latest of *any* agent, as `recorded_prompt_context` did: a session
+  that went from agent A to B and back resumed A with B's context. Every reader now takes the
+  agent's own (`LogState::acp_prompt_context(agent)`), and the latest of any is gone:
+  a resume or branch reads the agent it opens, `title_repeats_context` the agent that sent the title,
+  and what a subagent inherits the parent's agent
+  (`a_resume_after_another_agents_session_sends_its_own_context`). A session that starts afresh
+  (`new`, `subagent`) clears its agent's entry, as it has been told nothing, so a resume of one
+  that has not had its first prompt sends nothing rather than the context of the session it replaced.
 - **More readers a per-turn window breaks**, all in phase 2's list: `last_assistant_message`,
   `fork_support`, a delegation's `visible` check and its parent's termination
   (`delegation/reports.rs`), a background job's start and acceptance (`background_tasks.rs`),

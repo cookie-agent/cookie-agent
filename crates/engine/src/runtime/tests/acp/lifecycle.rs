@@ -382,7 +382,7 @@ async fn a_branch_after_a_fork_or_a_revert_keeps_the_recorded_context() {
     );
     let context_of = |id: SessionId| {
         let log = engine.inner.store.get(id).unwrap().log.clone();
-        log.state().acp_prompt_context().to_vec()
+        log.state().acp_prompt_context(&agent_id()).to_vec()
     };
     let recorded = context_of(session);
     assert!(!recorded.is_empty());
@@ -418,6 +418,75 @@ async fn a_branch_after_a_fork_or_a_revert_keeps_the_recorded_context() {
         1,
         "only the first session composed"
     );
+}
+
+/// An ACP session's context stays what it was given: going to another agent and
+/// back resumes the first with its own, not with the other's, which is what the
+/// log recorded last.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_resume_after_another_agents_session_sends_its_own_context() {
+    let document = |body: &str| {
+        format!(
+            "---\ndescription: Fixture\nmode: all\nacp: {{}}\ntool_groups: {{ \"*\": off }}\n---\n{body}\n"
+        )
+    };
+    let (first_document, second_document) =
+        (document("You are first."), document("You are second."));
+    let other = cookie_agent_protocol::AgentId::new("second").unwrap();
+    let second = format!(
+        "[runtimes.local.acp.agents.second]\ncommand = [{}, {}]\nenv = {{ ACP_FIXTURE_SYSTEM_PROMPT = \"1\" }}\ndescription = \"Second fixture agent\"\n",
+        toml_string(python_command()),
+        toml_string(&fixture_script().to_string_lossy()),
+    );
+    let acp = acp_fixture_with(
+        &[("ACP_FIXTURE_SYSTEM_PROMPT", "1")],
+        &[
+            ("fixture.md", &*first_document),
+            ("second.md", &*second_document),
+        ],
+        &second,
+    )
+    .await;
+    let engine = acp.engine();
+    let session = session_with(engine, &["say one"]).await;
+    let sent = requests(&acp, "session/new")[0]["systemPrompt"].clone();
+    assert!(sent.to_string().contains("You are first."), "{sent}");
+
+    let selected = RunSelection {
+        model: cookie_agent_protocol::acp_model_selection(&other),
+        agent: other.clone(),
+        preset: None,
+        acp_runtime: None,
+    };
+    let run = engine
+        .start_run(
+            RunStartParams {
+                reset_fallback: false,
+                session_id: session,
+                client_run_id: ClientRunId::new("second").unwrap(),
+                selection: selected,
+                content: "say from second".into(),
+            },
+            origin(),
+        )
+        .await
+        .expect("run started")
+        .run_id;
+    finished(engine, session, run).await;
+    wait_for_session_not_running(engine, session).await;
+    let state = engine.inner.store.get(session).unwrap().log.state();
+    assert!(
+        state
+            .acp_prompt_context(&other)
+            .join("")
+            .contains("You are second."),
+        "the second agent's session was given its own"
+    );
+
+    turn(engine, session, "back", "say back").await;
+    let resumed = requests(&acp, "session/resume");
+    assert_eq!(resumed.len(), 1, "{resumed:?}");
+    assert_eq!(resumed[0]["systemPrompt"], sent);
 }
 
 #[tokio::test(flavor = "multi_thread")]

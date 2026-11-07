@@ -1879,7 +1879,7 @@ impl Turn<'_> {
             "session_info_update" => {
                 if let Some(title) = update.get("title").and_then(Value::as_str) {
                     self.engine
-                        .set_acp_title(self.session(), self.run, title)
+                        .set_acp_title(self.session(), &self.live.agent.id, self.run, title)
                         .await?;
                 }
                 Ok(())
@@ -3922,12 +3922,12 @@ impl Engine {
         // An agent that takes a system prompt gets what cookie adds to the
         // conversation there rather than ahead of the first message, where
         // an agent such as Codex would name the session after it: a fresh
-        // context for a new session, and the one the session recorded for a
-        // session it resumes or forks, which the agent may not keep (Claude
-        // Code does not).
+        // context for a new session, and the one this agent's session was
+        // given for a session it resumes or forks, which the agent may not
+        // keep (Claude Code does not).
         let takes_system_prompt = caps.session("systemPrompt");
         let recorded_system_prompt = if takes_system_prompt {
-            wire::system_prompt(state.acp_prompt_context())
+            wire::system_prompt(state.acp_prompt_context(&agent.id))
         } else {
             None
         };
@@ -4734,13 +4734,14 @@ impl Engine {
     pub(super) async fn set_acp_title(
         &self,
         session: SessionId,
+        agent: &cookie_agent_protocol::AgentId,
         run: RunId,
         title: &str,
     ) -> Result<(), EngineError> {
         // The agent's title applies, again and again, until the user names
         // the session, even over a title cookie generated.
         let projection = self.inner.store.get(session)?;
-        if super::prompt::title_repeats_context(&projection.log.state(), title) {
+        if super::prompt::title_repeats_context(&projection.log.state(), agent, title) {
             return Ok(());
         }
         let Ok(title) = cookie_agent_protocol::SessionTitle::new(truncate(title.trim(), 512))

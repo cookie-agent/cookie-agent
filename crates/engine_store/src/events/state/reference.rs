@@ -122,28 +122,20 @@ pub fn stored_acp_context(events: &Events) -> Option<AcpContextUsage> {
     })
 }
 
-/// `prompt::recorded_prompt_context`.
-#[must_use]
-pub fn recorded_prompt_context(events: &Events) -> Vec<String> {
-    events
-        .iter()
-        .rev()
-        .find_map(|event| match &event.payload {
-            Event::AcpSessionUpdated { update } => update.prompt_context.clone(),
-            _ => None,
-        })
-        .unwrap_or_default()
-}
-
 /// The latest `prompt_context` recorded while `agent`'s session was the log's
-/// latest.
+/// latest, since a session of that agent last started afresh.
 #[must_use]
 pub fn agent_prompt_context(events: &Events, agent: &AgentId) -> Option<Vec<String>> {
     let mut latest = None;
     let mut context = None;
     for event in events {
         match &event.payload {
-            Event::AcpSessionStarted { record } => latest = Some(&record.agent),
+            Event::AcpSessionStarted { record } => {
+                latest = Some(&record.agent);
+                if &record.agent == agent && !super::continues_a_session(record.how) {
+                    context = None;
+                }
+            }
             Event::AcpSessionUpdated { update } if latest == Some(agent) => {
                 if let Some(recorded) = &update.prompt_context {
                     context = Some(recorded.clone());
@@ -745,10 +737,6 @@ pub fn differences(state: &LogState, events: &Events) -> Vec<&'static str> {
     check(
         "context use",
         state.acp_context() == stored_acp_context(events),
-    );
-    check(
-        "prompt context",
-        state.acp_prompt_context() == recorded_prompt_context(events),
     );
 
     // Latest values.

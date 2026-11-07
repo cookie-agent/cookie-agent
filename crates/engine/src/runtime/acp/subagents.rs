@@ -253,7 +253,11 @@ impl Engine {
         // What the agent passes its subagent of what cookie gave it: the
         // parent's system prompt, when cookie sent its context as one and
         // the agent hands that on.
-        let inherited = projection.log.state().acp_prompt_context().to_vec();
+        let inherited = projection
+            .log
+            .state()
+            .acp_prompt_context(&parent.agent.id)
+            .to_vec();
         if !inherited.is_empty() && subagents_inherit_system_prompt(parent.process.init()) {
             let _ = self
                 .append(

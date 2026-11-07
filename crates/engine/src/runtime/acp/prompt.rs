@@ -135,8 +135,13 @@ pub(crate) fn file_block(
 
 /// Whether `title` is the start of the context cookie put ahead of the
 /// first prompt: an agent that names its session after its first message
-/// (Codex) names it after cookie's context there, which names nothing.
-pub(crate) fn title_repeats_context(state: &crate::events::LogState, title: &str) -> bool {
+/// (Codex) names it after cookie's context there, which names nothing. The
+/// title is `agent`'s, so it is that agent's context it may repeat.
+pub(crate) fn title_repeats_context(
+    state: &crate::events::LogState,
+    agent: &cookie_agent_protocol::AgentId,
+    title: &str,
+) -> bool {
     let words = |text: &str| text.split_whitespace().collect::<Vec<_>>().join(" ");
     let title = words(title);
     let title = title.trim_end_matches(['…', '.']).trim_end();
@@ -144,7 +149,7 @@ pub(crate) fn title_repeats_context(state: &crate::events::LogState, title: &str
         return false;
     }
     state
-        .acp_prompt_context()
+        .acp_prompt_context(agent)
         .first()
         .is_some_and(|context| words(context).starts_with(title))
 }

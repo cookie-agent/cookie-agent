@@ -246,7 +246,9 @@ impl Engine {
                         .ok()
                         .and_then(|projection| projection.log.last_run_started())
                 {
-                    let _ = self.set_acp_title(live.session, run, title).await;
+                    let _ = self
+                        .set_acp_title(live.session, &live.agent.id, run, title)
+                        .await;
                     continue;
                 }
                 wakes |= starts_work(&event);
