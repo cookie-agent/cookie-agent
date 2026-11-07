@@ -1,6 +1,8 @@
 use std::{collections::HashSet, sync::Arc, time::Duration};
 
-use cookie_agent_protocol::{EventPayload as Event, SessionId, SessionOrigin, SessionStatus};
+#[cfg(test)]
+use cookie_agent_protocol::EventPayload as Event;
+use cookie_agent_protocol::{SessionId, SessionOrigin, SessionStatus};
 use jiff::Timestamp;
 
 use crate::runtime::helpers::root_id;
@@ -297,15 +299,7 @@ impl Engine {
         {
             return None;
         }
-        let ended_at = session
-            .log
-            .event_snapshot()
-            .iter()
-            .filter(|event| {
-                event.run_id.is_some() && matches!(event.payload, Event::RunFinished { .. })
-            })
-            .map(|event| event.timestamp)
-            .max()?;
+        let ended_at = session.log.state().last_run_end()?;
         let idle = Duration::try_from(now.duration_since(ended_at)).ok()?;
         (idle > idle_after).then_some(ended_at)
     }
@@ -356,7 +350,7 @@ impl Engine {
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .keys()
                 .any(|(pending, _)| *pending == session_id)
-            || has_runless_pending_inputs(&session.log.event_snapshot())
+            || !session.log.state().runless_pending_inputs().is_empty()
             || self.acp_background_pending(session_id)
     }
 
@@ -430,12 +424,6 @@ impl Engine {
                     .notify_evicted_subscribers(member, last_event_seq);
                 if member == root {
                     self.retain_registrations_on_eviction(member);
-                    self.inner
-                        .sessions
-                        .producer_projections
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .remove(&member);
                     self.inner
                         .deferral_views
                         .lock()
@@ -590,12 +578,6 @@ impl Engine {
     fn clear_evicted_session_caches(&self, session_id: SessionId) {
         self.retain_registrations_on_eviction(session_id);
         self.inner
-            .sessions
-            .producer_projections
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(&session_id);
-        self.inner
             .compaction
             .context_token_estimators
             .lock()
@@ -636,6 +618,7 @@ impl Engine {
     }
 }
 
+#[cfg(test)]
 pub(in crate::runtime) fn has_runless_pending_inputs(
     events: &[Arc<cookie_agent_protocol::StoredEvent>],
 ) -> bool {

@@ -28,13 +28,8 @@ impl Engine {
         let projection = self.inner.store.get(session)?;
         let offers_compact = projection
             .log
-            .event_snapshot()
-            .iter()
-            .rev()
-            .find_map(|event| match &event.payload {
-                Event::AcpSessionUpdated { update } => update.commands.as_ref(),
-                _ => None,
-            })
+            .state()
+            .acp_commands()
             .is_some_and(|commands| commands.iter().any(|command| command.name == "compact"));
         if !offers_compact {
             return Err(EngineError::AcpUnsupported(format!(
@@ -66,24 +61,32 @@ impl Engine {
             .await?
             .run_id;
         loop {
-            let outcome = self
-                .inner
-                .store
-                .get(session)?
-                .log
-                .event_snapshot()
-                .iter()
-                .rev()
-                .take_while(|event| {
-                    !(event.run_id == Some(run)
-                        && matches!(event.payload, Event::RunStarted { .. }))
+            // Woken by every change of the session: the log is read only
+            // once the projection has the run ended.
+            let projection = self.inner.store.get(session)?;
+            let ended = projection
+                .runs
+                .get(&run)
+                .is_none_or(|run| run.status != SessionStatus::Running);
+            let outcome = ended
+                .then(|| {
+                    projection
+                        .log
+                        .event_snapshot()
+                        .iter()
+                        .rev()
+                        .take_while(|event| {
+                            !(event.run_id == Some(run)
+                                && matches!(event.payload, Event::RunStarted { .. }))
+                        })
+                        .find_map(|event| match &event.payload {
+                            Event::RunFinished {
+                                outcome: cookie_agent_protocol::Open::Known(outcome),
+                            } if event.run_id == Some(run) => Some(outcome.clone()),
+                            _ => None,
+                        })
                 })
-                .find_map(|event| match &event.payload {
-                    Event::RunFinished {
-                        outcome: cookie_agent_protocol::Open::Known(outcome),
-                    } if event.run_id == Some(run) => Some(outcome.clone()),
-                    _ => None,
-                });
+                .flatten();
             match outcome {
                 // A run's end signals the session's subagent waits.
                 None => super::super::delegation::subagent_changed_or_recheck(&mut changes).await,

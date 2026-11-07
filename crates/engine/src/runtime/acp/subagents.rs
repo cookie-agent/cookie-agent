@@ -17,7 +17,7 @@ use std::sync::Arc;
 
 use cookie_agent_protocol::{
     AcpSessionRecord, AcpSessionStart, RunId, SessionId, SessionOrigin, SessionTitle,
-    SessionTitleChange, StoredEvent, ToolCallId,
+    SessionTitleChange, ToolCallId,
 };
 use serde_json::Value;
 
@@ -26,16 +26,6 @@ use super::runner::LiveSession;
 
 fn origin() -> cookie_agent_protocol::EventOrigin {
     event_origin("engine:acp")
-}
-
-/// Whether `events` are those of an ACP agent's own subagent session.
-pub(crate) fn is_acp_subagent(events: &[Arc<StoredEvent>]) -> bool {
-    events.iter().any(|event| {
-        matches!(
-            &event.payload,
-            Event::AcpSessionStarted { record } if record.how == AcpSessionStart::Subagent
-        )
-    })
 }
 
 /// The ACP adapters whose subagents get a prompt of their own rather than
@@ -263,7 +253,7 @@ impl Engine {
         // What the agent passes its subagent of what cookie gave it: the
         // parent's system prompt, when cookie sent its context as one and
         // the agent hands that on.
-        let inherited = super::prompt::recorded_prompt_context(&events);
+        let inherited = projection.log.state().acp_prompt_context().to_vec();
         if !inherited.is_empty() && subagents_inherit_system_prompt(parent.process.init()) {
             let _ = self
                 .append(
@@ -365,16 +355,12 @@ impl Engine {
     /// The tools the latest model request of `session` was offered
     /// (`model_tools_published`).
     pub(crate) fn latest_model_tool_names(&self, session: SessionId) -> Option<Vec<String>> {
-        let projection = self.inner.store.get(session).ok()?;
-        projection
+        self.inner
+            .store
+            .get(session)
+            .ok()?
             .log
-            .event_snapshot()
-            .iter()
-            .rev()
-            .find_map(|event| match &event.payload {
-                Event::ModelToolsPublished { tool_names, .. } => Some(tool_names.clone()),
-                _ => None,
-            })
+            .last_model_tool_names()
     }
 }
 

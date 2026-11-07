@@ -11,6 +11,7 @@ use cookie_agent_protocol::{
 use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
 
+use crate::events::state::{apply_approval_event, approval_event_id, pending_record};
 use crate::runtime::{
     ApprovalEvaluationTransition, ApprovalOutcome, ApprovalRespondFailure, ApprovalTerminal,
     Engine, EngineError, Event, PendingApproval, PreparedApprovalInvalidation, ReviewOutcome,
@@ -36,16 +37,15 @@ impl Engine {
     ) -> Result<ApprovalEvaluationTransition, EngineError> {
         let (permission_mode, review) = mode_review;
         let approval_id = request.approval_id();
-        let events = self.inner.store.log(session)?.event_snapshot();
-        let Some(record) = approval_record(session, &events, approval_id) else {
+        let log = self.inner.store.log(session)?;
+        let overlay_epoch = log.state().permission_overlay_epoch();
+        let Some((record, record_run)) = approval_with_run(&log, session, approval_id) else {
             return Err(EngineError::ApprovalNotPending {
                 session_id: session,
                 approval_id,
             });
         };
-        if record.status != ApprovalStatus::Pending
-            || approval_run_id(&events, approval_id) != Some(run)
-        {
+        if record.status != ApprovalStatus::Pending || record_run != Some(run) {
             // The record was finalized (run cancel, resume sweep, capability
             // invalidation) while the internal approval agent was still
             // evaluating. Fold the durable terminal decision into the same
@@ -248,7 +248,7 @@ impl Engine {
                 PendingApproval {
                     sender,
                     executor,
-                    permission_overlay_epoch: permission_overlay_epoch(&events),
+                    permission_overlay_epoch: overlay_epoch,
                 },
             );
         if replaced.is_some() {
@@ -267,27 +267,12 @@ impl Engine {
         params: ApprovalRespondParams,
     ) -> Result<ApprovalRespondResult, EngineError> {
         let projection = self.inner.store.get(params.session_id)?;
-        let events = projection.log.event_snapshot();
-        if let Some((recorded_approval_id, recorded_decision, recorded_feedback)) =
-            events.iter().find_map(|event| match &event.payload {
-                Event::ApprovalStep {
-                    approval_id,
-                    step:
-                        cookie_agent_protocol::Open::Known(
-                            cookie_agent_protocol::ApprovalStep::UserDecision {
-                                client_response_id,
-                                decision,
-                                feedback,
-                                ..
-                            },
-                        ),
-                } if client_response_id == &params.client_response_id => {
-                    Some((*approval_id, *decision, feedback.clone()))
-                }
-                _ => None,
-            })
-        {
-            let Some(request) = approval_record(params.session_id, &events, recorded_approval_id)
+        let state = projection.log.state();
+        if let Some(recorded) = state.response(&params.client_response_id) {
+            let (recorded_approval_id, recorded_decision, recorded_feedback) =
+                (recorded.approval_id, recorded.decision, &recorded.feedback);
+            let Some((request, _)) =
+                approval_with_run(&projection.log, params.session_id, recorded_approval_id)
             else {
                 return Err(approval_response_failure(
                     &params,
@@ -297,7 +282,7 @@ impl Engine {
             };
             if recorded_approval_id != params.approval_id
                 || recorded_decision != params.decision
-                || recorded_feedback != params.feedback
+                || *recorded_feedback != params.feedback
                 || approval_request_revision(&request.request) != params.request_revision
                 || request.request.operation_fingerprint() != &params.operation_fingerprint
             {
@@ -313,7 +298,9 @@ impl Engine {
             });
         }
 
-        let Some(record) = approval_record(params.session_id, &events, params.approval_id) else {
+        let Some((record, record_run)) =
+            approval_with_run(&projection.log, params.session_id, params.approval_id)
+        else {
             return Err(approval_response_failure(
                 &params,
                 ApprovalRespondErrorCode::ApprovalNotFound,
@@ -330,8 +317,7 @@ impl Engine {
                 Some(&record),
             ));
         }
-        let run_id =
-            approval_run_id(&events, params.approval_id).ok_or(EngineError::ApprovalConflict)?;
+        let run_id = record_run.ok_or(EngineError::ApprovalConflict)?;
         if approval_deadline_exhausted(approval_constraints(&record.request).expires_at) {
             self.approval_terminal_direct(
                 params.session_id,
@@ -416,7 +402,7 @@ impl Engine {
                 .get(&(params.session_id, params.approval_id))
                 .map(|pending| pending.permission_overlay_epoch)
                 .ok_or(EngineError::ApprovalConflict)?;
-            if pending_epoch != permission_overlay_epoch(&events) {
+            if pending_epoch != state.permission_overlay_epoch() {
                 return Err(approval_response_failure(
                     &params,
                     ApprovalRespondErrorCode::OperationChanged,
@@ -544,21 +530,17 @@ impl Engine {
         invalidation: PreparedApprovalInvalidation,
     ) -> Result<ApprovalRespondResult, EngineError> {
         let projection = self.inner.store.get(params.session_id)?;
-        let events = projection.log.event_snapshot();
-        if events.iter().any(|event| {
-            matches!(
-                &event.payload,
-                Event::ApprovalStep {
-                    step: cookie_agent_protocol::Open::Known(
-                        cookie_agent_protocol::ApprovalStep::UserDecision { client_response_id, .. }
-                    ),
-                    ..
-                } if client_response_id == &params.client_response_id
-            )
-        }) {
+        if projection
+            .log
+            .state()
+            .response(&params.client_response_id)
+            .is_some()
+        {
             return self.approval_respond_direct(params);
         }
-        let Some(record) = approval_record(params.session_id, &events, params.approval_id) else {
+        let Some((record, record_run)) =
+            approval_with_run(&projection.log, params.session_id, params.approval_id)
+        else {
             return Err(approval_response_failure(
                 &params,
                 ApprovalRespondErrorCode::ApprovalNotFound,
@@ -586,8 +568,7 @@ impl Engine {
                 Some(&record),
             ));
         }
-        let run_id =
-            approval_run_id(&events, params.approval_id).ok_or(EngineError::ApprovalConflict)?;
+        let run_id = record_run.ok_or(EngineError::ApprovalConflict)?;
         let reason_code = match invalidation {
             PreparedApprovalInvalidation::OperationChanged => ApprovalReasonCode::OperationChanged,
             PreparedApprovalInvalidation::PreparedCapabilityLost => {
@@ -648,14 +629,14 @@ impl Engine {
         approval_id: ApprovalId,
         terminal: ApprovalTerminal,
     ) -> Result<bool, EngineError> {
-        let events = self.inner.store.log(session)?.event_snapshot();
-        let Some(record) = approval_record(session, &events, approval_id) else {
+        let log = self.inner.store.log(session)?;
+        let Some((record, record_run)) = approval_with_run(&log, session, approval_id) else {
             return Ok(false);
         };
         if !matches!(
             record.status,
             ApprovalStatus::Pending | ApprovalStatus::Escalated
-        ) || approval_run_id(&events, approval_id) != Some(run)
+        ) || record_run != Some(run)
         {
             // Another path already finalized this record (user cancel on the
             // RPC racing a terminal sweep, revert, recovery). An escalated
@@ -732,14 +713,6 @@ fn approval_lost_outcome(record: &ApprovalRecord) -> ApprovalOutcome {
     }
 }
 
-pub(in crate::runtime) fn permission_overlay_epoch(events: &[Arc<StoredEvent>]) -> u64 {
-    events
-        .iter()
-        .rev()
-        .find(|event| matches!(event.payload, Event::SessionPermissionOverlaySet { .. }))
-        .map_or(0, |event| event.seq)
-}
-
 pub(in crate::runtime) fn approval_response_failure(
     params: &ApprovalRespondParams,
     code: ApprovalRespondErrorCode,
@@ -780,6 +753,21 @@ pub(crate) fn approval_records(
     records
 }
 
+/// The record of `approval_id` and the run that asked: folded while it is
+/// open, and a pass over the log once it settled.
+pub(crate) fn approval_with_run(
+    log: &crate::events::EventLog,
+    session_id: SessionId,
+    approval_id: ApprovalId,
+) -> Option<(ApprovalRecord, Option<RunId>)> {
+    if let Some(open) = log.state().open_approval(approval_id) {
+        return Some((open.record.clone(), open.run));
+    }
+    let events = log.event_snapshot();
+    let record = approval_record(session_id, &events, approval_id)?;
+    Some((record, approval_run_id(&events, approval_id)))
+}
+
 /// The one record `approval_id` folds to, without materializing the others.
 pub(crate) fn approval_record(
     session_id: SessionId,
@@ -802,66 +790,6 @@ pub(crate) fn approval_record(
         }
     }
     record
-}
-
-fn pending_record(session_id: SessionId, request: &ApprovalRequest) -> ApprovalRecord {
-    ApprovalRecord {
-        session_id,
-        request: request.clone(),
-        status: ApprovalStatus::Pending,
-        internal_decision: None,
-        user_decision: None,
-        final_decision: None,
-    }
-}
-
-/// The approval a post-request lifecycle event belongs to.
-fn approval_event_id(payload: &Event) -> Option<ApprovalId> {
-    match payload {
-        Event::ApprovalStep { approval_id, .. } | Event::ApprovalFinalized { approval_id, .. } => {
-            Some(*approval_id)
-        }
-        _ => None,
-    }
-}
-
-fn apply_approval_event(record: &mut ApprovalRecord, payload: &Event) {
-    match payload {
-        Event::ApprovalStep {
-            step: cookie_agent_protocol::Open::Known(step),
-            ..
-        } => match step {
-            cookie_agent_protocol::ApprovalStep::Evaluated { decision } => {
-                record.internal_decision = Some(decision.clone());
-            }
-            cookie_agent_protocol::ApprovalStep::Escalated { expires_at, .. } => {
-                record.status = ApprovalStatus::Escalated;
-                // The window an escalation opened is the record's.
-                if expires_at.is_some() {
-                    record.request = record.request.clone().with_expires_at(*expires_at);
-                }
-            }
-            cookie_agent_protocol::ApprovalStep::UserDecision { decision, .. } => {
-                record.user_decision = Some(*decision);
-            }
-            cookie_agent_protocol::ApprovalStep::DoomLoop { .. } => {}
-        },
-        // An outcome this build does not know is not an approval.
-        Event::ApprovalFinalized { outcome, .. } => match outcome.known() {
-            Some(outcome) => {
-                let decision = outcome.decision();
-                record.status = match decision.outcome {
-                    ApprovalFinalOutcome::Approved => ApprovalStatus::Approved,
-                    ApprovalFinalOutcome::Rejected => ApprovalStatus::Rejected,
-                    ApprovalFinalOutcome::Cancelled => ApprovalStatus::Cancelled,
-                    ApprovalFinalOutcome::Expired => ApprovalStatus::Expired,
-                };
-                record.final_decision = Some(decision);
-            }
-            None => record.status = ApprovalStatus::Cancelled,
-        },
-        _ => {}
-    }
 }
 
 pub(in crate::runtime) fn approval_run_id(

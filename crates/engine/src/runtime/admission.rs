@@ -15,6 +15,7 @@ use super::{
     delegation::{DelegationRecord, cancelled_delegate_result_with_reason},
     helpers::{invocation_id, session_depth},
 };
+use crate::events::state::{DelegatedTitle, Recorded};
 use crate::policy::FrozenRunPolicy;
 
 impl Engine {
@@ -378,23 +379,13 @@ impl Engine {
             return Ok(());
         }
         let projection = self.inner.store.get(child_session_id)?;
-        let mut found = false;
-        for event in projection.log.event_snapshot().iter() {
-            if let Event::DelegatedContextSeeded {
-                invocation_id: existing_invocation,
-                turns: existing_turns,
-            } = &event.payload
-                && *existing_invocation == invocation_id
-            {
-                if existing_turns != &turns {
-                    return Err(EngineError::ToolFailed(
-                        "delegated child has conflicting inherited context".into(),
-                    ));
-                }
-                found = true;
-            }
+        let recorded = projection.log.state().seed(invocation_id, &turns);
+        if recorded == Recorded::Conflicting {
+            return Err(EngineError::ToolFailed(
+                "delegated child has conflicting inherited context".into(),
+            ));
         }
-        if !found {
+        if recorded == Recorded::Absent {
             self.append(
                 child_session_id,
                 None,
@@ -419,23 +410,13 @@ impl Engine {
             return Ok(());
         }
         let projection = self.inner.store.get(child_session_id)?;
-        let mut found = false;
-        for event in projection.log.event_snapshot().iter() {
-            if let Event::DelegatedContextSeeded {
-                invocation_id: existing_invocation,
-                turns: existing_turns,
-            } = &event.payload
-                && *existing_invocation == invocation_id
-            {
-                if existing_turns != &turns {
-                    return Err(EngineError::ToolFailed(
-                        "delegated child has conflicting inherited context".into(),
-                    ));
-                }
-                found = true;
-            }
+        let recorded = projection.log.state().seed(invocation_id, &turns);
+        if recorded == Recorded::Conflicting {
+            return Err(EngineError::ToolFailed(
+                "delegated child has conflicting inherited context".into(),
+            ));
         }
-        if !found {
+        if recorded == Recorded::Absent {
             self.append_recovery_direct(
                 child_session_id,
                 None,
@@ -456,33 +437,24 @@ impl Engine {
         title: SessionTitle,
     ) -> Result<(), EngineError> {
         let projection = self.inner.store.get(child_session_id)?;
-        let mut has_matching_title = false;
-        for event in projection.log.event_snapshot().iter() {
-            if let Event::SessionTitleCommitted { change, .. } = &event.payload {
-                match change {
-                    SessionTitleChange::DelegatedSet {
-                        title: existing,
-                        invocation_id: existing_invocation,
-                    } if *existing_invocation == invocation_id => {
-                        if existing != &title {
-                            return Err(EngineError::ToolFailed(
-                                "delegated child has a conflicting origin title".into(),
-                            ));
-                        }
-                        has_matching_title = true;
-                    }
-                    SessionTitleChange::UserSet { .. }
-                    | SessionTitleChange::UserClear { .. }
-                    | SessionTitleChange::UserReset { .. } => {}
-                    _ => {
-                        return Err(EngineError::ToolFailed(
-                            "delegated child has a conflicting session title".into(),
-                        ));
-                    }
-                }
+        let recorded = projection
+            .log
+            .state()
+            .delegated_title(invocation_id, &title);
+        match recorded {
+            DelegatedTitle::OtherOrigin => {
+                return Err(EngineError::ToolFailed(
+                    "delegated child has a conflicting origin title".into(),
+                ));
             }
+            DelegatedTitle::OtherTitle => {
+                return Err(EngineError::ToolFailed(
+                    "delegated child has a conflicting session title".into(),
+                ));
+            }
+            DelegatedTitle::Absent | DelegatedTitle::Same => {}
         }
-        if !has_matching_title {
+        if recorded == DelegatedTitle::Absent {
             self.append(
                 child_session_id,
                 None,
@@ -507,33 +479,24 @@ impl Engine {
         title: SessionTitle,
     ) -> Result<(), EngineError> {
         let projection = self.inner.store.get(child_session_id)?;
-        let mut has_matching_title = false;
-        for event in projection.log.event_snapshot().iter() {
-            if let Event::SessionTitleCommitted { change, .. } = &event.payload {
-                match change {
-                    SessionTitleChange::DelegatedSet {
-                        title: existing,
-                        invocation_id: existing_invocation,
-                    } if *existing_invocation == invocation_id => {
-                        if existing != &title {
-                            return Err(EngineError::ToolFailed(
-                                "delegated child has a conflicting origin title".into(),
-                            ));
-                        }
-                        has_matching_title = true;
-                    }
-                    SessionTitleChange::UserSet { .. }
-                    | SessionTitleChange::UserClear { .. }
-                    | SessionTitleChange::UserReset { .. } => {}
-                    _ => {
-                        return Err(EngineError::ToolFailed(
-                            "delegated child has a conflicting session title".into(),
-                        ));
-                    }
-                }
+        let recorded = projection
+            .log
+            .state()
+            .delegated_title(invocation_id, &title);
+        match recorded {
+            DelegatedTitle::OtherOrigin => {
+                return Err(EngineError::ToolFailed(
+                    "delegated child has a conflicting origin title".into(),
+                ));
             }
+            DelegatedTitle::OtherTitle => {
+                return Err(EngineError::ToolFailed(
+                    "delegated child has a conflicting session title".into(),
+                ));
+            }
+            DelegatedTitle::Absent | DelegatedTitle::Same => {}
         }
-        if !has_matching_title {
+        if recorded == DelegatedTitle::Absent {
             self.append_recovery_direct(
                 child_session_id,
                 None,

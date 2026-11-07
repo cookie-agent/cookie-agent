@@ -16,8 +16,8 @@
 use cookie_agent_protocol::paths::PathStyle;
 use cookie_agent_protocol::{
     ApprovalConstraints, ApprovalEvaluation, ApprovalId, ApprovalRequest, ApprovalResourceSource,
-    ApprovalTrigger, DecisionTrace, Open, PermissionAction, PermissionEffect,
-    PreparedBindingLifetime, ToolCallId,
+    ApprovalTrigger, DecisionTrace, PermissionAction, PermissionEffect, PreparedBindingLifetime,
+    ToolCallId,
 };
 use cookie_agent_runtime_api::authoring::{prepared_operation, prepared_resource};
 use serde_json::Value;
@@ -679,26 +679,13 @@ impl Engine {
         let Ok(log) = self.inner.store.log(session) else {
             return answer;
         };
-        for event in log.event_snapshot().iter().rev() {
-            if let cookie_agent_protocol::EventPayload::ApprovalStep {
-                approval_id: id,
-                step:
-                    Open::Known(cookie_agent_protocol::ApprovalStep::UserDecision {
-                        decision,
-                        feedback,
-                        agent_option,
-                        ..
-                    }),
-            } = &event.payload
-                && *id == approval_id
-            {
-                answer.option.clone_from(agent_option);
-                if *decision == cookie_agent_protocol::ApprovalUserDecision::Reject {
-                    answer.note = feedback
-                        .as_ref()
-                        .map(|feedback| feedback.message.to_string());
-                }
-                break;
+        if let Some(recorded) = log.state().user_decision(approval_id) {
+            answer.option.clone_from(&recorded.agent_option);
+            if recorded.decision == cookie_agent_protocol::ApprovalUserDecision::Reject {
+                answer.note = recorded
+                    .feedback
+                    .as_ref()
+                    .map(|feedback| feedback.message.to_string());
             }
         }
         answer

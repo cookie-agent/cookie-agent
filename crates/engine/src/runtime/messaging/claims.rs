@@ -8,6 +8,8 @@ use crate::runtime::{Engine, EngineError, Inner, event_origin};
 /// The lease remains held through compaction, hooks, streaming, and model commit.
 pub(in crate::runtime) struct ClaimedPrompt {
     pub events: crate::events::EventSnapshot,
+    /// What the log folds to at `events`' tip.
+    pub state: Arc<crate::events::LogState>,
     engine: Weak<Inner>,
     session: SessionId,
     run: RunId,
@@ -19,6 +21,7 @@ impl ClaimedPrompt {
     /// keeping the claim itself.
     pub fn forget_events(&mut self) {
         self.events = Arc::default();
+        self.state = Arc::default();
     }
 
     pub async fn release(&mut self) -> Result<(), EngineError> {
@@ -115,8 +118,10 @@ impl Engine {
             self.inner.store.persist_buffered_session(session)?;
             Some(event.seq)
         };
+        let (events, state) = self.inner.store.log(session)?.snapshot_and_state();
         Ok(ClaimedPrompt {
-            events: self.inner.store.log(session)?.event_snapshot(),
+            events,
+            state,
             engine: Arc::downgrade(&self.inner),
             session,
             run,

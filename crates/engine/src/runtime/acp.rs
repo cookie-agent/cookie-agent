@@ -37,7 +37,6 @@ pub(crate) mod prompt;
 pub(crate) mod runner;
 mod subagents;
 mod terminal;
-pub(crate) use subagents::is_acp_subagent;
 mod wakes;
 pub(crate) mod wire;
 

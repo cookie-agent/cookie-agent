@@ -230,15 +230,10 @@ impl Engine {
         session_id: SessionId,
     ) -> Result<(), EngineError> {
         let session = self.inner.store.get(session_id)?;
-        let events = session.log.event_snapshot();
-        let approval_records = approval_records(session_id, &events);
-        for record in approval_records.values().filter(|record| {
-            matches!(
-                record.status,
-                ApprovalStatus::Pending | ApprovalStatus::Escalated
-            )
-        }) {
-            let Some(run_id) = approval_run_id(&events, record.request.approval_id()) else {
+        let state = session.log.state();
+        for open in state.open_approvals() {
+            let record = &open.record;
+            let Some(run_id) = open.run else {
                 continue;
             };
             // Resume is a liveness sweep, not a session-open ritual: a run

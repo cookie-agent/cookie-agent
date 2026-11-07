@@ -412,7 +412,13 @@ impl Engine {
             .messages
             .iter()
             .any(|message| pending(message) && message.reminder.is_none());
-        let user_pending = crate::runtime::sessions::residency::has_runless_pending_inputs(&events);
+        let user_pending = !self
+            .inner
+            .store
+            .log(session)?
+            .state()
+            .runless_pending_inputs()
+            .is_empty();
         if !real
             && !user_pending
             && let Some(goal) = projection.goal.as_ref().filter(|goal| {
@@ -589,18 +595,18 @@ impl Engine {
             self.subagent_changed(session);
             return Ok(());
         }
-        let events = projection.log.event_snapshot();
-        let goal = self
-            .goal_producer_projection(session)
-            .unwrap_or_else(|_| Arc::new(GoalProducerProjection::from_events(&events)));
+        let state = projection.log.state();
+        let goal = state.producers();
         let goal_selection = goal
             .goal
             .as_ref()
             .filter(|goal| matches!(goal.status, GoalStatus::Active | GoalStatus::Paused))
             .and(goal.selection.clone());
         let selection = goal_selection.unwrap_or_else(|| {
-            cookie_agent_protocol::SessionModelState::from_events(&events)
+            state
+                .model()
                 .selection
+                .clone()
                 .unwrap_or_else(|| projection.meta.creation_selection.clone())
         });
         {
@@ -709,9 +715,13 @@ impl Engine {
             .messages
             .iter()
             .any(|message| pending(message) && message.reminder.is_none());
-        let user_pending = crate::runtime::sessions::residency::has_runless_pending_inputs(
-            &self.inner.store.log(session)?.event_snapshot(),
-        );
+        let user_pending = !self
+            .inner
+            .store
+            .log(session)?
+            .state()
+            .runless_pending_inputs()
+            .is_empty();
         if !real {
             let valid = projection.goal.as_ref().is_some_and(|goal| {
                 goal.status == GoalStatus::Active
@@ -980,43 +990,12 @@ impl Engine {
         .await
     }
 
-    /// The session's producer/goal fold. The latest fold is kept and only
-    /// what the log gained since is folded onto it; a log that lost or
-    /// replaced what was folded (a revert, a reload) is folded again whole.
+    /// The session's producer/goal fold.
     pub(crate) fn goal_producer_projection(
         &self,
         session: SessionId,
     ) -> Result<Arc<GoalProducerProjection>, EngineError> {
-        let events = self.inner.store.log(session)?.event_snapshot();
-        let cached = self
-            .inner
-            .sessions
-            .producer_projections
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(&session);
-        let (mut fold, folded) = match cached {
-            Some(cached) if cached.is_prefix_of(&events) => (cached.fold, cached.folded),
-            _ => (crate::goal_projection::GoalProducerFold::default(), 0),
-        };
-        for event in &events[folded..] {
-            fold.observe(event);
-        }
-        let projection = fold.projection();
-        self.inner
-            .sessions
-            .producer_projections
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(
-                session,
-                super::mailbox::CachedProducerProjection {
-                    folded: events.len(),
-                    last: events.last().cloned(),
-                    fold,
-                },
-            );
-        Ok(projection)
+        Ok(self.inner.store.log(session)?.state().producers())
     }
 
     /// The projection a caller already harvested, or — only when it has none —
@@ -1212,15 +1191,12 @@ impl Engine {
                 }
             }
         }
-        let events = projection.log.event_snapshot();
-        Ok(
-            crate::runtime::sessions::residency::has_runless_pending_inputs(&events)
-                || self
-                    .goal_producer_projection(session)?
-                    .messages
-                    .iter()
-                    .any(|message| pending(message) && message.reminder.is_none()),
-        )
+        Ok(!projection.log.state().runless_pending_inputs().is_empty()
+            || self
+                .goal_producer_projection(session)?
+                .messages
+                .iter()
+                .any(|message| pending(message) && message.reminder.is_none()))
     }
 
     fn accept_goal_control_direct(
@@ -1829,21 +1805,12 @@ impl Engine {
             },
             connection_epoch: None,
         };
-        let already_accepted =
-            self.inner
-                .store
-                .log(session)?
-                .event_snapshot()
-                .iter()
-                .any(|event| {
-                    matches!(
-                        &event.payload,
-                        Event::ProducerMessageAccepted {
-                            producer_owner: ProducerOwner::Delegation { invocation_id },
-                            ..
-                        } if *invocation_id == reservation.invocation_id
-                    )
-                });
+        let already_accepted = self
+            .inner
+            .store
+            .log(session)?
+            .state()
+            .delegation_completion_accepted(reservation.invocation_id);
         if !already_accepted {
             let producer_id = producer_id.ok_or_else(|| {
                 EngineError::Producer("delegation completion registration is missing".into())

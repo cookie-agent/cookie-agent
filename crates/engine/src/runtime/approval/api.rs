@@ -4,8 +4,7 @@ use cookie_agent_protocol::{
 };
 
 use crate::runtime::{
-    Engine, EngineError, PreparedApprovalInvalidation,
-    approval::projection::{approval_records, permission_overlay_epoch},
+    Engine, EngineError, PreparedApprovalInvalidation, approval::projection::approval_records,
     helpers::root_id,
 };
 use cookie_agent_runtime_api::ToolError;
@@ -48,14 +47,13 @@ impl Engine {
         };
         if invalidation.is_none()
             && pending_epoch
-                != permission_overlay_epoch(
-                    &self
-                        .inner
-                        .store
-                        .get(params.session_id)?
-                        .log
-                        .event_snapshot(),
-                )
+                != self
+                    .inner
+                    .store
+                    .get(params.session_id)?
+                    .log
+                    .state()
+                    .permission_overlay_epoch()
         {
             invalidation = Some(PreparedApprovalInvalidation::OperationChanged);
         }
@@ -87,8 +85,19 @@ impl Engine {
                 root_id(&session.meta.origin, session.meta.session_id) == root_session_id
             })
             .flat_map(|session| {
-                approval_records(session.meta.session_id, &session.log.event_snapshot())
-                    .into_values()
+                // What is open is folded; anything else takes a pass over
+                // the log.
+                match status {
+                    Some(ApprovalStatus::Pending | ApprovalStatus::Escalated) => session
+                        .log
+                        .state()
+                        .open_approvals()
+                        .map(|open| open.record.clone())
+                        .collect::<Vec<_>>(),
+                    _ => approval_records(session.meta.session_id, &session.log.event_snapshot())
+                        .into_values()
+                        .collect(),
+                }
             })
             .filter(|record| status.is_none_or(|status| record.status == status))
             .collect();

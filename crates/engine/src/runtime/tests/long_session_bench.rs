@@ -624,7 +624,7 @@ async fn bench(target: u64) {
         cookie_agent_protocol::SessionModelState::from_events(&snapshot)
     });
     let pending = time(20, || {
-        crate::runtime::messaging::mailbox::pending_inputs(&snapshot, run)
+        crate::runtime::messaging::mailbox::pending_inputs_scan(&snapshot, run)
     });
     let runless = time(20, || {
         crate::runtime::sessions::residency::has_runless_pending_inputs(&snapshot)

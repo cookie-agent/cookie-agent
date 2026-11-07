@@ -5,7 +5,7 @@
 use std::time::Duration;
 
 use cookie_agent_protocol::{
-    EventOrigin, InputDelivery, QueuedInputs, RunId, RunSelection, RunStartParams, SessionId,
+    EventOrigin, InputDelivery, RunId, RunSelection, RunStartParams, SessionId,
     SessionRecallInputResult, SessionStatus, SessionSubmitInputParams, SessionSubmitInputResult,
 };
 
@@ -190,9 +190,9 @@ impl Engine {
         self.ensure_session_owned(session)?;
         self.on_actor(session, move |engine| {
             let projection = engine.inner.store.get(session)?;
-            let events = projection.log.event_snapshot();
+            let state = projection.log.state();
             if let Some(run) = running_run_of(&projection)
-                && let Some(pending) = pending_inputs(&events, run)
+                && let Some(pending) = pending_inputs(&state, run)
                     .into_iter()
                     .find(|pending| pending.admission_seq == seq)
             {
@@ -214,8 +214,7 @@ impl Engine {
                     content: pending.content,
                 });
             }
-            let queue = QueuedInputs::from_events(&events);
-            let Some(entry) = queue.get(seq) else {
+            let Some(entry) = state.queue().get(seq) else {
                 return Ok(SessionRecallInputResult::Gone);
             };
             let content = entry.content.clone();
@@ -241,8 +240,8 @@ impl Engine {
             if projection.status == SessionStatus::Running {
                 return;
             }
-            let queue = QueuedInputs::from_events(&projection.log.event_snapshot());
-            let Some(head) = queue.head().cloned() else {
+            let state = projection.log.state();
+            let Some(head) = state.queue().head().cloned() else {
                 return;
             };
             let origin = head
@@ -337,8 +336,9 @@ impl Engine {
             if running_run_of(&projection).is_none() {
                 return Ok(None);
             }
-            let events = projection.log.event_snapshot();
-            if let Some(entry) = QueuedInputs::from_events(&events)
+            let state = projection.log.state();
+            if let Some(entry) = state
+                .queue()
                 .entries()
                 .iter()
                 .find(|entry| entry.client_run_id == client_run_id)

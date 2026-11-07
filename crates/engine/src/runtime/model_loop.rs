@@ -342,8 +342,7 @@ impl Engine {
         let result_limits = policy::ResultLimits::from_config(&self.inner.config.load().runtime);
         let is_root = matches!(session.meta.origin, SessionOrigin::Root);
         let memory_variables = self.memory_variables(params.session_id);
-        let remembered =
-            cookie_agent_protocol::SessionModelState::from_events(&session.log.event_snapshot());
+        let remembered = session.log.state().model().clone();
         let mut run_policy = match &session.meta.origin {
             SessionOrigin::Root => {
                 // A selection equal to the session's own history (an engine
@@ -694,23 +693,15 @@ impl Engine {
             }
             hook.release.notified().await;
         }
-        let admission_events = self
-            .inner
-            .store
-            .get(params.session_id)?
-            .log
-            .event_snapshot();
-        let admission_end = admission_events
-            .iter()
-            .position(|event| {
-                event.run_id == Some(run_id) && matches!(event.payload, Event::RunStarted { .. })
-            })
-            .expect("run start was appended");
-        run_policy.goal_tools_enabled = crate::goal_projection::goal_tools_offered(
-            is_root,
-            run_policy.acp_agent().is_some(),
-            &admission_events[..admission_end],
-        );
+        run_policy.goal_tools_enabled = is_root
+            && (run_policy.acp_agent().is_none()
+                || self
+                    .inner
+                    .store
+                    .get(params.session_id)?
+                    .log
+                    .state()
+                    .goal_open_at_run_start());
         let parent = match session.meta.origin {
             SessionOrigin::Delegated {
                 parent_session_id, ..
@@ -1144,20 +1135,9 @@ impl Engine {
                 .get(session)
                 .ok()?
                 .log
-                .event_snapshot()
-                .iter()
-                .rev()
-                .find_map(|event| {
-                    if event.run_id != Some(run) {
-                        return None;
-                    }
-                    match &event.payload {
-                        Event::ModelAttemptStarted { resolved_model, .. } => {
-                            Some(resolved_model.clone())
-                        }
-                        _ => None,
-                    }
-                })
+                .state()
+                .last_attempt_model(run)
+                .cloned()
         });
         Event::run_finished(cookie_agent_protocol::RunOutcome::Failed {
             error: safe_error(&cookie_agent_protocol::diagnostics::error_chain(error)),
@@ -3123,8 +3103,7 @@ impl Engine {
             .inner
             .store
             .log(session)?
-            .event_snapshot()
-            .last()
+            .last_event()
             .map_or(0, |event| event.seq);
         if through_seq == 0 {
             return Ok(());

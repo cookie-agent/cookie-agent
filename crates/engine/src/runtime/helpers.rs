@@ -31,20 +31,26 @@ impl Engine {
         run_id: RunId,
         tool_call_id: ToolCallId,
     ) -> Result<cookie_agent_protocol::AssistantToolCallRef, EngineError> {
-        self.inner
-            .store
-            .get(session_id)?
-            .log
-            .event_snapshot()
-            .iter()
-            .rev()
-            .find_map(|event| match &event.payload {
-                Event::ToolCallStarted { start }
-                    if event.run_id == Some(run_id) && start.tool_call_id == tool_call_id =>
-                {
-                    Some(start.owner.clone())
-                }
-                _ => None,
+        let projection = self.inner.store.get(session_id)?;
+        let log = &projection.log;
+        let owner = |event: &cookie_agent_protocol::StoredEvent| match &event.payload {
+            Event::ToolCallStarted { start }
+                if event.run_id == Some(run_id) && start.tool_call_id == tool_call_id =>
+            {
+                Some(start.owner.clone())
+            }
+            _ => None,
+        };
+        // A call being ended is open; a pass over the log answers for one
+        // that already ended, which its second termination then fails on.
+        log.state()
+            .open_call(tool_call_id)
+            .and_then(|event| owner(event))
+            .or_else(|| {
+                log.event_snapshot()
+                    .iter()
+                    .rev()
+                    .find_map(|event| owner(event))
             })
             .ok_or_else(|| EngineError::ToolFailed("tool ownership is missing".into()))
     }
@@ -84,18 +90,23 @@ impl Engine {
         session_id: SessionId,
         run_id: RunId,
     ) -> Result<String, EngineError> {
-        self.inner
-            .store
-            .get(session_id)?
-            .log
-            .event_snapshot()
-            .iter()
-            .rev()
-            .find_map(|event| match &event.payload {
-                Event::RunStarted { agent, .. } if event.run_id == Some(run_id) => {
-                    Some(agent.composed_prompt.clone())
-                }
-                _ => None,
+        let projection = self.inner.store.get(session_id)?;
+        let log = &projection.log;
+        let prompt = |event: &cookie_agent_protocol::StoredEvent| match &event.payload {
+            Event::RunStarted { agent, .. } if event.run_id == Some(run_id) => {
+                Some(agent.composed_prompt.clone())
+            }
+            _ => None,
+        };
+        // The run asked about is nearly always the latest.
+        log.state()
+            .run_started(run_id)
+            .and_then(|event| prompt(event))
+            .or_else(|| {
+                log.event_snapshot()
+                    .iter()
+                    .rev()
+                    .find_map(|event| prompt(event))
             })
             .ok_or(EngineError::MissingRun(run_id))
     }

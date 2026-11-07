@@ -5,13 +5,12 @@ use std::{
 };
 
 use cookie_agent_protocol::{
-    ApprovalStatus, EventOrigin, RunCancelResult, RunId, RunStartParams, RunStartResult,
-    RunSteerResult, SessionId, SessionStatus, ToolCallId, UserContent,
+    EventOrigin, RunCancelResult, RunId, RunStartParams, RunStartResult, RunSteerResult, SessionId,
+    SessionStatus, ToolCallId, UserContent,
 };
 
 use super::{
     ActiveRun, ApprovalTerminal, Engine, EngineError, Event, SessionCommand, UserInputInterception,
-    approval::projection::{approval_records, approval_run_id},
     helpers::safe_error,
 };
 
@@ -476,19 +475,8 @@ impl Engine {
             .store
             .get(session)?
             .log
-            .event_snapshot()
-            .iter()
-            .any(|event| {
-                event.run_id == Some(run_id)
-                    && matches!(
-                        event.payload,
-                        Event::RunFinished {
-                            outcome: cookie_agent_protocol::Open::Known(
-                                cookie_agent_protocol::RunOutcome::Cancelled { .. }
-                            )
-                        }
-                    )
-            }))
+            .state()
+            .run_cancelled(run_id))
     }
 
     /// Asks the executing call `call` of `run` to move to the background, as
@@ -566,16 +554,14 @@ impl Engine {
                 .get_or_insert_with(|| origin.clone());
             active.record_cancel_cause(super::CancelCause::from_origin(&origin));
             active.cancellation.cancel();
-            let events = engine.inner.store.log(session)?.event_snapshot();
-            let pending = approval_records(session, &events)
-                .into_values()
-                .filter(|record| {
-                    matches!(
-                        record.status,
-                        ApprovalStatus::Pending | ApprovalStatus::Escalated
-                    ) && approval_run_id(&events, record.request.approval_id()) == Some(run)
-                })
-                .map(|record| record.request.approval_id())
+            let pending = engine
+                .inner
+                .store
+                .log(session)?
+                .state()
+                .open_approvals()
+                .filter(|open| open.run == Some(run))
+                .map(|open| open.record.request.approval_id())
                 .collect::<Vec<_>>();
             for approval_id in pending {
                 engine.approval_terminal_direct(

@@ -184,21 +184,10 @@ impl Engine {
         agent_md: bool,
     ) -> Result<(), EngineError> {
         let log = self.inner.store.log(session)?;
-        let events = log.event_snapshot();
-        // The previous run's end; the run just started is the latest.
-        let Some(ended) = events.iter().rev().find_map(|event| {
-            matches!(event.payload, Event::RunFinished { .. }).then_some(event.seq)
-        }) else {
+        // Since the previous run's end; the run just started is the latest.
+        let Some(attached) = log.state().attached_since_run_end().cloned() else {
             return Ok(());
         };
-        let attached = events
-            .iter()
-            .filter(|event| event.seq > ended)
-            .filter_map(|event| match &event.payload {
-                Event::RuntimeAttached { name, .. } => Some(name.clone()),
-                _ => None,
-            })
-            .collect::<std::collections::HashSet<_>>();
         if attached.is_empty() {
             return Ok(());
         }

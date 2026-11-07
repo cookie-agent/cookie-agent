@@ -27,11 +27,13 @@ impl Engine {
     /// The accepted selection, advanced only by a committed fallback model turn.
     pub fn session_model_selection(&self, session: SessionId) -> Result<RunSelection, EngineError> {
         let projection = self.inner.store.get(session)?;
-        Ok(
-            cookie_agent_protocol::SessionModelState::from_events(&projection.log.event_snapshot())
-                .selection
-                .unwrap_or_else(|| projection.meta.creation_selection.clone()),
-        )
+        Ok(projection
+            .log
+            .state()
+            .model()
+            .selection
+            .clone()
+            .unwrap_or_else(|| projection.meta.creation_selection.clone()))
     }
     /// Rebuilds the visible grant set from the grant sets cached by loaded
     /// trees (root logs included), so it never reads a log (tree-local C4).
@@ -664,7 +666,6 @@ impl Engine {
         self.kill_deleted_background_jobs(deleted);
         forget(&self.inner.sessions.actors, deleted);
         forget(&self.inner.sessions.producers, deleted);
-        forget(&self.inner.sessions.producer_projections, deleted);
         forget(&self.inner.skills_runtime.grants, deleted);
         forget(&self.inner.skills_runtime.models, deleted);
         forget(&self.inner.skills_runtime.pending_child, deleted);

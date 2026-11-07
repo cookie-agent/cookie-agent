@@ -540,16 +540,13 @@ impl Engine {
         {
             return Ok(None);
         }
-        let Some(agent) =
-            projection
-                .log
-                .event_snapshot()
-                .iter()
-                .rev()
-                .find_map(|event| match &event.payload {
-                    Event::RunStarted { agent, .. } => Some((**agent).clone()),
-                    _ => None,
-                })
+        let state = projection.log.state();
+        let Some(agent) = state
+            .latest_run_started()
+            .and_then(|event| match &event.payload {
+                Event::RunStarted { agent, .. } => Some((**agent).clone()),
+                _ => None,
+            })
         else {
             return Ok(None);
         };

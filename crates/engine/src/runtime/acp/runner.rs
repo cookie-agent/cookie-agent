@@ -43,6 +43,7 @@ use super::{
     terminal::{self, Terminal},
     wire::{self, ToolCallFields},
 };
+use crate::events::state::TakenInput;
 use crate::runtime_snapshot::RuntimeAgent;
 use cookie_agent_protocol::EventPayload as Event;
 
@@ -286,20 +287,6 @@ struct CompactionProgress {
 }
 
 /// Commands of an `available_commands_update`.
-/// Whether the input after `boundary` holds a wake of the agent's own
-/// (an admitted `acp_agent` producer message).
-fn woke_since(events: &crate::events::EventSnapshot, boundary: u64) -> bool {
-    let producers = crate::goal_projection::GoalProducerProjection::from_events(events);
-    producers.messages.iter().any(|message| {
-        !message.discarded
-            && matches!(
-                message.producer_owner,
-                cookie_agent_protocol::ProducerOwner::AcpAgent { .. }
-            )
-            && message.admission.is_some_and(|(_, seq)| seq > boundary)
-    })
-}
-
 fn commands_of(update: &Value) -> Vec<cookie_agent_protocol::AcpCommand> {
     update
         .get("availableCommands")
@@ -1427,7 +1414,8 @@ impl Turn<'_> {
         for input in &inputs {
             engine.push_content(&mut prompt, session, &input.content, &caps);
         }
-        let (producers, steered) = engine.input_since(&claim.events, self.input_through_seq, &caps);
+        let (producers, steered) =
+            engine.input_since(session, &claim.state, self.input_through_seq, &caps);
         prompt.extend(producers);
         if prompt.is_empty() {
             engine.release_steered_inputs(session);
@@ -1456,6 +1444,10 @@ impl Turn<'_> {
             let _ = reply.send(answer);
         });
         self.steer_echo = Some(false);
+        // The claim stays until the steer is answered, and what it read is
+        // done with.
+        let mut claim = claim;
+        claim.forget_events();
         Ok(Some(PendingSteer {
             answer,
             claim,
@@ -3049,11 +3041,7 @@ impl Engine {
         &self,
         session: SessionId,
     ) -> Option<cookie_agent_protocol::AcpContextUsage> {
-        let events = self.inner.store.log(session).ok()?.event_snapshot();
-        events.iter().rev().find_map(|event| match &event.payload {
-            Event::AcpSessionUpdated { update } => update.context,
-            _ => None,
-        })
+        self.inner.store.log(session).ok()?.state().acp_context()
     }
 
     /// The prompt rounds of `turn`'s run, until it ends.
@@ -3141,16 +3129,27 @@ impl Engine {
                 (Some(machines), Some(attachments)) => Some(format!("{machines}\n\n{attachments}")),
                 (machines, attachments) => machines.or(attachments),
             };
-            let prompt = self.acp_prompt(&claim.events, &mut turn.live, context, notes, process);
+            let prompt = self.acp_prompt(
+                active.session,
+                &claim.state,
+                &mut turn.live,
+                context,
+                notes,
+                process,
+            );
             // The agent's own subagent works only on what its parent gives
             // it: cookie has no prompt to send it.
-            if !prompt.is_empty() && super::is_acp_subagent(&claim.events) {
+            if !prompt.is_empty() && self.inner.store.log(active.session)?.is_acp_subagent() {
                 return Err(EngineError::Acp(format!(
                     "this is `{}`'s own subagent, which takes no messages; send them to its parent",
                     turn.live.agent.id
                 )));
             }
             turn.input_through_seq = claim.events.last().map_or(0, |event| event.seq);
+            // The claim stays for the round, and what it read is done with: a
+            // view held across the round's appends makes each copy.
+            let mut claim = claim;
+            claim.forget_events();
             turn.claim = Some(claim);
             turn.last_text.clear();
             turn.last_turn_seq = None;
@@ -3521,20 +3520,8 @@ impl Engine {
         policy: &crate::policy::FrozenRunPolicy,
         live: &LiveSession,
     ) -> Option<String> {
-        let events = self.inner.store.log(session).ok()?.event_snapshot();
-        let started = events.iter().rposition(|event| {
-            event.run_id == Some(run) && matches!(event.payload, Event::RunStarted { .. })
-        })?;
-        let previous_end = events[..started]
-            .iter()
-            .rposition(|event| matches!(event.payload, Event::RunFinished { .. }))?;
-        let changed = events[previous_end..started].iter().any(|event| {
-            matches!(
-                event.payload,
-                Event::RuntimeAttached { .. } | Event::RuntimeDetached { .. }
-            )
-        });
-        if !changed {
+        let state = self.inner.store.log(session).ok()?.state();
+        if !state.machines_changed_before(run)? {
             return None;
         }
         let block =
@@ -3572,7 +3559,7 @@ impl Engine {
             crate::runtime::memory::runs::SnapshotMode::Composed,
         )
         .await?;
-        let events = self.inner.store.log(session)?.event_snapshot();
+        let log = self.inner.store.log(session)?;
         let offered = self.offered_tools(session, policy)?;
         let mut context = Vec::new();
         if !document.body.trim().is_empty() {
@@ -3591,17 +3578,13 @@ impl Engine {
             )?);
         }
         context.extend(
-            events
-                .iter()
-                .rev()
-                .find_map(|event| match &event.payload {
-                    Event::MemoryLoaded {
-                        snapshot,
-                        in_place: false,
-                    } => Some(snapshot),
+            log.last_memory_loaded()
+                .and_then(|(event, _)| match &event.payload {
+                    Event::MemoryLoaded { snapshot, .. } => {
+                        crate::memory::render::snapshot_turn(snapshot)
+                    }
                     _ => None,
-                })
-                .and_then(crate::memory::render::snapshot_turn),
+                }),
         );
         Ok(context)
     }
@@ -3611,31 +3594,23 @@ impl Engine {
     /// first prompt's `context` on the session's first prompt.
     fn acp_prompt(
         &self,
-        events: &crate::events::EventSnapshot,
+        session: SessionId,
+        state: &crate::events::LogState,
         live: &mut LiveSession,
         context: Vec<String>,
         machines_note: Option<String>,
         process: &AgentProcess,
     ) -> Vec<Value> {
-        let boundary = events
-            .iter()
-            .rev()
-            .find_map(|event| match &event.payload {
-                Event::ModelTurnCommitted {
-                    input_through_seq, ..
-                } => Some(*input_through_seq),
-                _ => None,
-            })
-            .unwrap_or(0);
+        let boundary = state.input_boundary();
         let mut prompt = Vec::new();
         if live.first_prompt {
             prompt.extend(context.iter().map(|part| wire::text_block(part)));
         }
         prompt.extend(machines_note.as_deref().map(wire::text_block));
         let caps = &process.init().capabilities.prompt();
-        prompt.extend(self.input_since(events, boundary, caps).0);
+        prompt.extend(self.input_since(session, state, boundary, caps).0);
         // Only the agent's own wake: nothing to send, the round listens.
-        if prompt.is_empty() && !woke_since(events, boundary) {
+        if prompt.is_empty() && !state.woke_since(boundary) {
             prompt.push(wire::text_block("Continue."));
         }
         live.first_prompt = false;
@@ -3655,8 +3630,7 @@ impl Engine {
         let Ok(log) = self.inner.store.log(session) else {
             return Vec::new();
         };
-        let mut inputs =
-            crate::runtime::messaging::mailbox::pending_inputs(&log.event_snapshot(), run);
+        let mut inputs = crate::runtime::messaging::mailbox::pending_inputs(&log.state(), run);
         inputs.retain(|input| !declined.contains(&input.admission_seq));
         let held = inputs
             .iter()
@@ -3710,7 +3684,7 @@ impl Engine {
     ) -> Result<(Vec<u64>, u64), EngineError> {
         self.release_steered_inputs(session);
         let pending = crate::runtime::messaging::mailbox::pending_inputs(
-            &self.inner.store.log(session)?.event_snapshot(),
+            &self.inner.store.log(session)?.state(),
             run,
         );
         let mut submitted = Vec::new();
@@ -3756,63 +3730,45 @@ impl Engine {
         let Ok(log) = self.inner.store.log(session) else {
             return true;
         };
-        let events = log.event_snapshot();
-        let producers = crate::goal_projection::GoalProducerProjection::from_events(&events);
-        if producers
-            .messages
-            .iter()
-            .any(|message| !message.discarded && message.admission.is_none())
-        {
+        let state = log.state();
+        if state.producer_message_unadmitted() {
             return true;
         }
-        !self.input_since(&events, boundary, caps).0.is_empty()
+        !self
+            .input_since(session, &state, boundary, caps)
+            .0
+            .is_empty()
     }
 
     fn input_since(
         &self,
-        events: &crate::events::EventSnapshot,
+        session: SessionId,
+        state: &crate::events::LogState,
         boundary: u64,
         caps: &wire::PromptCapabilities,
     ) -> (Vec<Value>, cookie_agent_protocol::AcpSteered) {
-        let producers = crate::goal_projection::GoalProducerProjection::from_events(events);
-        let admitted = producers
-            .messages
-            .iter()
-            .filter(|message| !message.discarded)
-            .filter_map(|message| {
-                message.admission.map(|(_, seq)| {
-                    let wake = matches!(
-                        message.producer_owner,
-                        cookie_agent_protocol::ProducerOwner::AcpAgent { .. }
-                    );
-                    (seq, (message.message_id, &message.body, wake))
-                })
-            })
-            .collect::<HashMap<_, _>>();
-        let mut submitted = HashMap::new();
         let mut prompt = Vec::new();
         let mut taken = cookie_agent_protocol::AcpSteered::default();
-        for event in events.iter() {
-            match &event.payload {
-                Event::UserInputSubmitted { content } => {
-                    submitted.insert(event.seq, content);
+        for input in state.inputs_since(boundary) {
+            match input {
+                TakenInput::User {
+                    user_input_seq,
+                    content,
+                } => {
+                    self.push_content(&mut prompt, session, content, caps);
+                    taken.user_inputs.push(user_input_seq);
                 }
-                Event::UserInputApplied { user_input_seq } if event.seq > boundary => {
-                    if let Some(content) = submitted.get(user_input_seq) {
-                        self.push_content(&mut prompt, event.session_id, content, caps);
-                        taken.user_inputs.push(*user_input_seq);
+                TakenInput::Producer {
+                    message_id,
+                    body,
+                    wake,
+                } => {
+                    // The agent made its wake's message: never sent to it.
+                    if !wake {
+                        self.push_content(&mut prompt, session, body, caps);
                     }
+                    taken.producer_messages.push(message_id);
                 }
-                Event::ProducerMessageAdmitted { .. } if event.seq > boundary => {
-                    if let Some((message_id, body, wake)) = admitted.get(&event.seq) {
-                        // The agent made its wake's message: never sent to it.
-                        if !wake {
-                            self.push_content(&mut prompt, event.session_id, body, caps);
-                        }
-                        taken.producer_messages.push(*message_id);
-                    }
-                }
-                _ => {}
             }
         }
         (prompt, taken)
@@ -3855,8 +3811,8 @@ impl Engine {
         policy: Option<&crate::policy::FrozenRunPolicy>,
     ) -> Result<LiveSession, EngineError> {
         self.await_acp_session_close(session).await;
-        let events = self.inner.store.get(session)?.log.event_snapshot();
-        let plan = super::lifecycle::plan(&events, &agent.id);
+        let state = self.inner.store.get(session)?.log.state();
+        let plan = super::lifecycle::plan(&state, &agent.id);
         // The live session serves while the log still makes it the
         // session's: a fork or a revert since detached it.
         if let Some(live) = self.live_session(session)
@@ -3971,7 +3927,7 @@ impl Engine {
         // Code does not).
         let takes_system_prompt = caps.session("systemPrompt");
         let recorded_system_prompt = if takes_system_prompt {
-            wire::system_prompt(&super::prompt::recorded_prompt_context(&events))
+            wire::system_prompt(state.acp_prompt_context())
         } else {
             None
         };
@@ -4485,10 +4441,13 @@ impl Engine {
         session: SessionId,
     ) -> Result<Option<crate::runtime_snapshot::AcpOffers>, EngineError> {
         let projection = self.inner.store.get(session)?;
-        let selection =
-            cookie_agent_protocol::SessionModelState::from_events(&projection.log.event_snapshot())
-                .selection
-                .unwrap_or_else(|| projection.meta.creation_selection.clone());
+        let selection = projection
+            .log
+            .state()
+            .model()
+            .selection
+            .clone()
+            .unwrap_or_else(|| projection.meta.creation_selection.clone());
         let runtime = self.current_runtime();
         let Ok(agents) = runtime.agents_for_preset(selection.preset.as_deref()) else {
             return Ok(None);
@@ -4533,15 +4492,14 @@ impl Engine {
         EngineError,
     > {
         let projection = self.inner.store.get(session)?;
-        let events = projection.log.event_snapshot();
-        let recorded = events.iter().rev().find_map(|event| match &event.payload {
-            Event::AcpSessionStarted { record } if &record.agent == agent => {
-                Some(record.runtime_id.clone())
-            }
-            _ => None,
-        });
-        let selection = cookie_agent_protocol::SessionModelState::from_events(&events)
+        let state = projection.log.state();
+        let recorded = state
+            .acp_agent(agent)
+            .map(|known| known.record.runtime_id.clone());
+        let selection = state
+            .model()
             .selection
+            .clone()
             .unwrap_or_else(|| projection.meta.creation_selection.clone());
         let chosen = selection.acp_runtime.filter(|_| &selection.agent == agent);
         Ok((recorded, chosen))
@@ -4782,7 +4740,7 @@ impl Engine {
         // The agent's title applies, again and again, until the user names
         // the session, even over a title cookie generated.
         let projection = self.inner.store.get(session)?;
-        if super::prompt::title_repeats_context(&projection.log.event_snapshot(), title) {
+        if super::prompt::title_repeats_context(&projection.log.state(), title) {
             return Ok(());
         }
         let Ok(title) = cookie_agent_protocol::SessionTitle::new(truncate(title.trim(), 512))
@@ -4815,11 +4773,14 @@ impl Engine {
         params: cookie_agent_protocol::SessionAgentOptionSetParams,
     ) -> Result<cookie_agent_protocol::SessionAgentOptionSetResult, EngineError> {
         let projection = self.inner.store.get(params.session_id)?;
-        let agent_id =
-            cookie_agent_protocol::SessionModelState::from_events(&projection.log.event_snapshot())
-                .selection
-                .unwrap_or_else(|| projection.meta.creation_selection.clone())
-                .agent;
+        let agent_id = projection
+            .log
+            .state()
+            .model()
+            .selection
+            .clone()
+            .unwrap_or_else(|| projection.meta.creation_selection.clone())
+            .agent;
         let runtime = self.current_runtime();
         let resolved = runtime
             .agents

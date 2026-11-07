@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet, VecDeque},
+    collections::HashMap,
     num::NonZeroU32,
     sync::{Arc, Mutex},
 };
@@ -37,43 +37,12 @@ use crate::{actor::SessionActor, blocking::off_worker, events, session::SessionE
 
 use super::producers;
 
-/// A session's producer/goal fold and how far into its log it folded.
-pub(in crate::runtime) struct CachedProducerProjection {
-    /// The events folded, a prefix of the log.
-    pub(in crate::runtime) folded: usize,
-    /// The last event folded. Holding it keeps its allocation alive, so an
-    /// event at the same place in a later view of the log that is the same
-    /// allocation means the log still begins with what was folded.
-    pub(in crate::runtime) last: Option<Arc<cookie_agent_protocol::StoredEvent>>,
-    pub(in crate::runtime) fold: crate::goal_projection::GoalProducerFold,
-}
-
-impl CachedProducerProjection {
-    /// Whether `events` begins with the events this fold went through.
-    pub(in crate::runtime) fn is_prefix_of(
-        &self,
-        events: &[Arc<cookie_agent_protocol::StoredEvent>],
-    ) -> bool {
-        match (self.folded.checked_sub(1), &self.last) {
-            (None, None) => true,
-            (Some(index), Some(last)) => events
-                .get(index)
-                .is_some_and(|event| Arc::ptr_eq(event, last)),
-            _ => false,
-        }
-    }
-}
-
 /// Per-session mailbox and run state owned by [`crate::runtime::Inner`].
 #[derive(Default)]
 pub(crate) struct SessionRuntimeState {
     pub(in crate::runtime) actors: Mutex<HashMap<SessionId, SessionActor<SessionCommand>>>,
     pub(in crate::runtime) active: crate::runtime::runs::ActiveRuns,
     pub(in crate::runtime) producers: Mutex<HashMap<SessionId, producers::SessionProducers>>,
-    /// Each session's latest producer/goal fold, carried forward over what
-    /// its log gains.
-    pub(in crate::runtime) producer_projections:
-        Mutex<HashMap<SessionId, CachedProducerProjection>>,
     /// Each delegated session that waits on something live, keyed to its
     /// direct parent, which waits on it as a `subagent` (see
     /// `Engine::refresh_live_waiting`). Its lock serializes those refreshes
@@ -1556,29 +1525,14 @@ impl Engine {
             SessionCommand::PromotePendingInputs { run, reply } => {
                 let result = self.active_run_in(session, run).and_then(|_| {
                     self.promote_producer_inputs_direct(session, run, false)?;
-                    let events = self.inner.store.log(session)?.event_snapshot();
-                    let run_events = from_run_start(&events, run);
-                    let applied: HashSet<u64> = run_events
-                        .iter()
-                        .filter_map(|event| match &event.payload {
-                            Event::UserInputApplied { user_input_seq }
-                                if event.run_id == Some(run) =>
-                            {
-                                Some(*user_input_seq)
-                            }
-                            _ => None,
-                        })
-                        .collect();
-                    for user_input_seq in
-                        run_events.iter().filter_map(|event| match &event.payload {
-                            Event::UserInputSubmitted { .. }
-                                if event.run_id == Some(run) && !applied.contains(&event.seq) =>
-                            {
-                                Some(event.seq)
-                            }
-                            _ => None,
-                        })
-                    {
+                    let unapplied = self
+                        .inner
+                        .store
+                        .log(session)?
+                        .state()
+                        .unapplied_submissions(run)
+                        .collect::<Vec<_>>();
+                    for user_input_seq in unapplied {
                         self.append_direct(
                             session,
                             Some(run),
@@ -1607,7 +1561,7 @@ impl Engine {
         complete_if_empty: bool,
     ) -> Result<bool, EngineError> {
         let mut promoted = self.promote_producer_inputs_direct(session, run, false)?;
-        for pending in pending_inputs(&self.inner.store.log(session)?.event_snapshot(), run) {
+        for pending in pending_inputs(&self.inner.store.log(session)?.state(), run) {
             self.append_direct(
                 session,
                 Some(run),
@@ -1639,6 +1593,7 @@ impl Engine {
 
 /// Where `run` starts in `events`: the index of its `RunStarted`, looked
 /// for from the end, since the run asked about is nearly always the latest.
+#[cfg(test)]
 fn run_start_index<E: std::borrow::Borrow<StoredEvent>>(events: &[E], run: RunId) -> Option<usize> {
     events.iter().rposition(|event| {
         let event = event.borrow();
@@ -1646,20 +1601,36 @@ fn run_start_index<E: std::borrow::Borrow<StoredEvent>>(events: &[E], run: RunId
     })
 }
 
-/// The events from `run`'s start on, which hold every event of the run;
-/// the whole log when it has no start for the run.
-fn from_run_start<E: std::borrow::Borrow<StoredEvent>>(events: &[E], run: RunId) -> &[E] {
-    &events[run_start_index(events, run).unwrap_or(0)..]
+/// The inputs admitted for `run`, the log's latest, that it has yet to submit.
+pub(in crate::runtime) fn pending_inputs(
+    state: &crate::events::LogState,
+    run: RunId,
+) -> Vec<PendingInput> {
+    state
+        .pending_inputs(run)
+        .iter()
+        .filter_map(|event| match &event.payload {
+            Event::UserInputAdmitted { content } => Some(PendingInput {
+                admission_seq: event.seq,
+                origin: event
+                    .origin
+                    .clone()
+                    .unwrap_or_else(|| crate::runtime::event_origin("user")),
+                content: content.clone(),
+            }),
+            _ => None,
+        })
+        .collect()
 }
 
-/// The inputs admitted for `run` that it has yet to submit. Reads only the
-/// run's own events and the runless admissions queued since the run before
-/// it ended, not the whole log.
-pub(in crate::runtime) fn pending_inputs<E: std::borrow::Borrow<StoredEvent>>(
+/// [`pending_inputs`] by a scan: the run's own events and the runless
+/// admissions queued since the run before it ended.
+#[cfg(test)]
+pub(in crate::runtime) fn pending_inputs_scan<E: std::borrow::Borrow<StoredEvent>>(
     events: &[E],
     run: RunId,
 ) -> Vec<PendingInput> {
-    let mut pending = VecDeque::new();
+    let mut pending = std::collections::VecDeque::new();
     let mut initial_input_submitted = false;
     let start = run_start_index(events, run);
     let run_start_seq = start.map(|start| events[start].borrow().seq);
@@ -1721,7 +1692,7 @@ pub(in crate::runtime) fn pending_inputs<E: std::borrow::Borrow<StoredEvent>>(
 mod tests {
     use cookie_agent_protocol::{RunId, SessionId, StoredEvent};
 
-    use super::{Event, PendingInput, pending_inputs};
+    use super::{Event, PendingInput, pending_inputs_scan};
 
     fn event(run: RunId, seq: u64, payload: Event) -> StoredEvent {
         StoredEvent {
@@ -1784,7 +1755,7 @@ mod tests {
             ),
         ];
         assert_eq!(
-            pending_inputs(&events, run),
+            pending_inputs_scan(&events, run),
             vec![PendingInput {
                 admission_seq: 5,
                 origin: cookie_agent_protocol::EventOrigin::new("user").unwrap(),
@@ -1795,7 +1766,10 @@ mod tests {
             &serde_json::to_vec(&events).expect("serialize replay events"),
         )
         .expect("deserialize replay events");
-        assert_eq!(pending_inputs(&replayed, run), pending_inputs(&events, run));
+        assert_eq!(
+            pending_inputs_scan(&replayed, run),
+            pending_inputs_scan(&events, run)
+        );
 
         let mut terminal = replayed;
         terminal.push(event(
@@ -1803,7 +1777,7 @@ mod tests {
             7,
             Event::run_finished(cookie_agent_protocol::RunOutcome::Cancelled { reason: None }),
         ));
-        assert!(pending_inputs(&terminal, run).is_empty());
+        assert!(pending_inputs_scan(&terminal, run).is_empty());
     }
 
     #[test]
@@ -1841,7 +1815,7 @@ mod tests {
             ),
         ];
         assert_eq!(
-            pending_inputs(&events, run),
+            pending_inputs_scan(&events, run),
             vec![PendingInput {
                 admission_seq: 3,
                 origin: cookie_agent_protocol::EventOrigin::new("user").unwrap(),

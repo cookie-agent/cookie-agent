@@ -306,12 +306,8 @@ impl Engine {
                 .inner
                 .store
                 .log(parent_session_id)?
-                .event_snapshot()
-                .iter()
-                .any(|event| {
-                    matches!(event.payload, Event::ToolCallLinked { tool_call_id, child_session_id: linked_child }
-                        if tool_call_id == parent_tool_call_id && linked_child == child_session_id)
-                });
+                .state()
+                .call_linked(parent_tool_call_id, child_session_id);
             if !linked {
                 engine.append_direct(
                     parent_session_id,
@@ -1928,7 +1924,7 @@ impl Engine {
                 if !projection.runs.contains_key(&child_run_id) {
                     return Err(EngineError::MissingRun(child_run_id));
                 }
-                let recalled = pending_inputs(&projection.log.event_snapshot(), child_run_id)
+                let recalled = pending_inputs(&projection.log.state(), child_run_id)
                     .into_iter()
                     .find(|pending| pending.admission_seq == admission_seq);
                 let Some(pending) = recalled else {
@@ -2152,17 +2148,10 @@ impl Engine {
                 (false, None)
             }
         };
-        let mut already_accepted = parent.log.event_snapshot().iter().any(|event| {
-            matches!(
-                &event.payload,
-                Event::ProducerMessageAccepted {
-                    producer_owner: ProducerOwner::Delegation {
-                        invocation_id: accepted_invocation,
-                    },
-                    ..
-                } if *accepted_invocation == invocation_id
-            )
-        });
+        let mut already_accepted = parent
+            .log
+            .state()
+            .delegation_completion_accepted(invocation_id);
         let background = entry.request.background;
         let teaser = if entry.terminal_status.is_some() && entry.child_run_id.is_none() {
             DelegateTeaser {
@@ -2368,25 +2357,18 @@ impl Engine {
         &self,
         child_session_id: SessionId,
     ) -> Result<(), EngineError> {
-        let events = self.inner.store.log(child_session_id)?.event_snapshot();
-        let boundary = events
+        let pending = self
+            .inner
+            .store
+            .log(child_session_id)?
+            .state()
+            .runless_pending_inputs()
             .iter()
-            .rev()
-            .find(|event| matches!(event.payload, Event::RunFinished { .. }))
-            .map_or(0, |event| event.seq);
-        let mut pending = Vec::new();
-        for event in events
-            .iter()
-            .filter(|event| event.seq > boundary && event.run_id.is_none())
-        {
-            match &event.payload {
-                Event::UserInputAdmitted { content } => pending.push((event.seq, content.clone())),
-                Event::UserInputRecalled { user_input_seq, .. } => {
-                    pending.retain(|(seq, _)| seq != user_input_seq);
-                }
-                _ => {}
-            }
-        }
+            .filter_map(|event| match &event.payload {
+                Event::UserInputAdmitted { content } => Some((event.seq, content.clone())),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
         for (user_input_seq, content) in pending.into_iter().rev() {
             self.append(
                 child_session_id,

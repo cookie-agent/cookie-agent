@@ -461,13 +461,10 @@ impl Engine {
     ) -> Result<SkillInvocation, EngineError> {
         let projection = self.inner.store.get(session)?;
         let name = &plan.name;
-        let duplicate = projection.log.event_snapshot().iter().any(|event| {
-            matches!(
-                &event.payload,
-                EventPayload::SkillLoaded { name: prior_name, rendered_body, .. }
-                    if prior_name == name && rendered_body.as_bytes() == plan.rendered.as_bytes()
-            )
-        });
+        let duplicate = projection
+            .log
+            .state()
+            .skill_loaded(name, plan.rendered.as_bytes());
         let event = if duplicate {
             EventPayload::SkillInvocationNoted { name: name.clone() }
         } else {

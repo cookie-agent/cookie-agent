@@ -331,9 +331,7 @@ impl Engine {
             return;
         };
         if projection.status == SessionStatus::Running
-            || super::sessions::residency::has_runless_pending_inputs(
-                &projection.log.event_snapshot(),
-            )
+            || !projection.log.state().runless_pending_inputs().is_empty()
         {
             return;
         }
@@ -424,17 +422,23 @@ impl Engine {
     ) {
         let tool_call_id = request.tool_call_id();
         let presentation = self.inner.store.get(session).ok().and_then(|projection| {
-            projection
-                .log
-                .event_snapshot()
-                .iter()
-                .rev()
-                .find_map(|event| match &event.payload {
-                    Event::ToolCallStarted { start } if start.tool_call_id == tool_call_id => {
-                        Some(start.presentation.clone())
-                    }
-                    _ => None,
-                })
+            let started = |event: &Event| match event {
+                Event::ToolCallStarted { start } if start.tool_call_id == tool_call_id => {
+                    Some(start.presentation.clone())
+                }
+                _ => None,
+            };
+            // A call this approval asks for is open; a pass over the log
+            // answers for any other.
+            match projection.log.state().open_call(tool_call_id) {
+                Some(event) => started(&event.payload),
+                None => projection
+                    .log
+                    .event_snapshot()
+                    .iter()
+                    .rev()
+                    .find_map(|event| started(&event.payload)),
+            }
         });
         let (tool, summary) = presentation.map_or_else(
             || ("A tool call".to_owned(), None),

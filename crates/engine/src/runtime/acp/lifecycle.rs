@@ -60,40 +60,24 @@ pub(crate) enum Plan {
     },
 }
 
-/// What the agent `agent`'s next turn starts from, by `events`.
-pub(crate) fn plan(events: &[Arc<StoredEvent>], agent: &AgentId) -> Plan {
-    let mut latest: Option<&AcpSessionRecord> = None;
-    let mut detached: Vec<&AcpDetached> = Vec::new();
-    for event in events {
-        match &event.payload {
-            Event::AcpSessionStarted { record } if &record.agent == agent => {
-                latest = Some(record);
-                detached.clear();
-            }
-            Event::AcpSessionUpdated { update } => {
-                if let (Some(record), Some(marker)) = (latest, &update.detached)
-                    && marker.acp_session_id == record.acp_session_id
-                {
-                    detached.push(marker);
-                }
-            }
-            _ => {}
-        }
-    }
-    let Some(record) = latest else {
+/// What the agent `agent`'s next turn starts from, by the log's `state`.
+pub(crate) fn plan(state: &crate::events::LogState, agent: &AgentId) -> Plan {
+    let Some(known) = state.acp_agent(agent) else {
         return Plan::New;
     };
-    let Some(last) = detached.last() else {
-        return Plan::Resume(record.clone());
+    let Some(last) = known.detached.last() else {
+        return Plan::Resume(known.record.clone());
     };
-    let reverted = detached
+    let reverted = known
+        .detached
         .iter()
         .any(|marker| marker.reason == AcpDetachReason::Reverted);
-    let forked = detached
+    let forked = known
+        .detached
         .iter()
         .any(|marker| marker.reason != AcpDetachReason::Reverted);
     Plan::Branch {
-        from: record.clone(),
+        from: known.record.clone(),
         message_id: last.message_id.clone(),
         delete: reverted && !forked,
     }
@@ -597,10 +581,7 @@ impl super::super::Engine {
             .await?;
         // A session on another runtime than the one that runs it now, or
         // of another declaration, starts anew there, which forks nothing.
-        match plan(
-            &self.inner.store.get(forked)?.log.event_snapshot(),
-            &record.agent,
-        ) {
+        match plan(&self.inner.store.get(forked)?.log.state(), &record.agent) {
             Plan::Resume(started) if started.how == AcpSessionStart::Forked => Ok(()),
             _ if record.runtime_id == agent.runtime => {
                 Err(super::super::EngineError::Acp(format!(

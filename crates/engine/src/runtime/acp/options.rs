@@ -17,7 +17,6 @@ use cookie_agent_config::{AcpDocumentSettings, AcpModelChoice};
 use cookie_agent_protocol::{AcpConfigOption, AcpOptionChoice, AgentId, RuntimeId};
 use serde::{Deserialize, Serialize};
 
-use crate::events::EventSnapshot;
 use cookie_agent_protocol::EventPayload as Event;
 
 /// The cache file's name in the daemon's data folder.
@@ -329,57 +328,6 @@ pub(crate) fn starting_view(
     options
 }
 
-/// The starting values the session of `events` was created with, the
-/// latest `acp_session_updated.starting_options`.
-pub(crate) fn recorded_starting_options(events: &EventSnapshot) -> Vec<AcpOptionChoice> {
-    events
-        .iter()
-        .rev()
-        .find_map(|event| match &event.payload {
-            Event::AcpSessionUpdated { update } => update.starting_options.clone(),
-            _ => None,
-        })
-        .unwrap_or_default()
-}
-
-/// The option values the session last had with agent `agent` over
-/// declaration `runtime_agent`: the latest `acp_session_updated.options`
-/// before the ACP session that just started (the log's latest
-/// `acp_session_started`), as long as no earlier ACP session of another
-/// agent or declaration comes between. Empty when there are none.
-pub(crate) fn recorded_option_values(
-    events: &EventSnapshot,
-    agent: &AgentId,
-    runtime_agent: &AgentId,
-) -> Vec<(String, String)> {
-    let mut started = false;
-    for event in events.iter().rev() {
-        match &event.payload {
-            Event::AcpSessionStarted { record } if !started => {
-                started = true;
-                if &record.agent != agent || &record.runtime_agent != runtime_agent {
-                    return Vec::new();
-                }
-            }
-            Event::AcpSessionStarted { record }
-                if &record.agent != agent || &record.runtime_agent != runtime_agent =>
-            {
-                return Vec::new();
-            }
-            Event::AcpSessionUpdated { update } if started => {
-                if let Some(options) = &update.options {
-                    return options
-                        .iter()
-                        .map(|option| (option.id.clone(), option.current_value.clone()))
-                        .collect();
-                }
-            }
-            _ => {}
-        }
-    }
-    Vec::new()
-}
-
 impl crate::runtime::Engine {
     /// Puts back the option values the session last had (its model,
     /// effort, mode, and the rest) on an ACP session it resumed, forked, or
@@ -396,11 +344,11 @@ impl crate::runtime::Engine {
         let Ok(projection) = self.inner.store.get(session) else {
             return;
         };
-        let recorded = recorded_option_values(
-            &projection.log.event_snapshot(),
-            &live.agent.id,
-            &live.agent.agent,
-        );
+        let recorded = projection
+            .log
+            .state()
+            .recorded_option_values(&live.agent.id, &live.agent.agent)
+            .to_vec();
         for (id, value) in recorded {
             let current = live
                 .options
@@ -485,7 +433,7 @@ impl crate::runtime::Engine {
         let Ok(projection) = self.inner.store.get(session) else {
             return;
         };
-        let choices = recorded_starting_options(&projection.log.event_snapshot());
+        let choices = projection.log.state().acp_starting_options().to_vec();
         for choice in choices {
             let current = live
                 .options
