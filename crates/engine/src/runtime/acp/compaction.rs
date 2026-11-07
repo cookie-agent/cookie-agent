@@ -44,6 +44,8 @@ impl Engine {
             Some(focus) => format!("/compact {focus}"),
             None => "/compact".to_owned(),
         };
+        // The run's records come after this, which is all that is read of the log.
+        let tip = projection.log.physical_tip_seq();
         // Watched before the run starts, so its end cannot slip past.
         let mut changes = self.watch_subagent(session);
         let run = self
@@ -73,7 +75,7 @@ impl Engine {
             let outcome = if ended {
                 projection
                     .log
-                    .history()?
+                    .history_range(tip + 1..)?
                     .last_map_ok(|event| match &event.payload {
                         Event::RunFinished {
                             outcome: cookie_agent_protocol::Open::Known(outcome),

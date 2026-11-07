@@ -2221,7 +2221,8 @@ impl EventLog {
 
     /// Test-only: the passes over this log asked for since the last time this
     /// was called, each named `history` when a reader asked for one by name and
-    /// `file` when it reads the file, whatever asked, with where it was asked.
+    /// `file from <seq>` when it reads the file, whatever asked, with where it
+    /// was asked.
     #[cfg(any(test, feature = "test-support"))]
     pub fn take_history_calls_for_test(&self) -> Vec<String> {
         std::mem::take(
@@ -2259,8 +2260,8 @@ impl EventLog {
     fn pass(&self, seqs: impl std::ops::RangeBounds<u64>) -> Result<History, EventLogError> {
         let pass = self.unnoted_pass(seqs)?;
         #[cfg(any(test, feature = "test-support"))]
-        if pass.reads_the_file() {
-            self.note_history_call("file");
+        if let Some(from) = pass.reads_the_file_from() {
+            self.note_history_call(&format!("file from {from}"));
         }
         Ok(pass)
     }

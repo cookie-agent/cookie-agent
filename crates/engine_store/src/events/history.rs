@@ -253,10 +253,10 @@ impl History {
         }
     }
 
-    /// Test-only: whether any of this pass comes from the file.
+    /// Test-only: where in the log this pass starts reading the file, if it does.
     #[cfg(any(test, feature = "test-support"))]
-    pub(super) fn reads_the_file(&self) -> bool {
-        self.file.is_some()
+    pub(super) fn reads_the_file_from(&self) -> Option<u64> {
+        self.file.as_ref().map(|file| file.range.from_seq)
     }
 
     /// The records of this pass, when the log holds them all: a window need

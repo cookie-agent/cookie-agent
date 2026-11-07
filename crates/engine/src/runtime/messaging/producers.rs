@@ -1768,9 +1768,16 @@ impl Engine {
         let body = crate::runtime::delegation::render_background_completion(&teaser);
         let description = producer_description("Delegation completed: ", &teaser.preview);
         let parent = self.inner.store.get(session)?;
+        // Its reservation is a record of its run, which is nearly always the
+        // log's latest: read from there rather than over the whole log.
+        let from = parent
+            .log
+            .state()
+            .run_started(reservation.parent_run_id)
+            .map_or(0, |started| started.seq);
         let visible = parent
             .log
-            .history()?
+            .history_range(from..)?
             .find_map_ok(|event| {
                 (!parent.log.delegation_event_tainted(event)
                     && matches!(

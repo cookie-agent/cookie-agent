@@ -210,6 +210,60 @@ async fn an_untitled_acp_session_asks_for_its_title_without_a_pass() {
     }
 }
 
+/// A background delegation's completion and the agent's compaction, which are not
+/// everyday turns, read their own run of the log and not what precedes it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_delegation_and_a_compaction_read_only_their_own_run() {
+    crate::session::skip_reference_fold();
+    let document = "---\ndescription: Fixture\nmode: all\nacp: {}\npermissions:\n  delegate: { fixture: allow }\n---\nReview.\n";
+    let acp = acp_fixture(&[], &[("fixture.md", document)]).await;
+    let engine = acp.engine();
+    let session = engine.create_session(selection()).unwrap().session_id;
+    for round in 0..3 {
+        quiet_turn(engine, session, &format!("turn-{round}"), "say one").await;
+    }
+    passes(engine, session);
+    let call = format!(
+        "mcp call delegate_subagent {}",
+        serde_json::json!({
+            "description": "A child",
+            "prompt": "say from the child",
+            "agent_type": "fixture",
+            "background": true,
+        })
+    );
+    let before = log_of(engine, session).physical_tip_seq();
+    quiet_turn(engine, session, "delegate", &call).await;
+    logged(engine, session, |payload| {
+        matches!(payload, EventPayload::ProducerMessageAccepted { .. })
+    })
+    .await;
+    wait_for_session_not_running(engine, session).await;
+    assert_reads_only_since(&passes(engine, session), "producers.rs", before);
+    let before = log_of(engine, session).physical_tip_seq();
+    assert!(
+        engine
+            .compact_session_result(session, None, origin())
+            .await
+            .expect("forwarded")
+            .compacted
+    );
+    assert_reads_only_since(&passes(engine, session), "compaction.rs", before);
+}
+
+/// Panics if what `reader` asked of the file starts at or before `seq`.
+fn assert_reads_only_since(calls: &[String], reader: &str, seq: u64) {
+    for call in calls.iter().filter(|call| call.contains(reader)) {
+        let Some(from) = call
+            .strip_prefix("file from ")
+            .and_then(|rest| rest.split(':').next())
+        else {
+            continue;
+        };
+        assert!(from.parse::<u64>().unwrap() > seq, "{call}");
+    }
+}
+
 /// A long run of turns of every kind holds a turn's events, and answers as the
 /// file does all along.
 #[tokio::test(flavor = "multi_thread")]
