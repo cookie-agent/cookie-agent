@@ -312,15 +312,15 @@ impl Engine {
         {
             // Resolve retries against the state before their original admission,
             // not a fallback committed by this run or a later run.
-            let events = session.log.event_snapshot();
-            let start = events
-                .iter()
-                .position(|event| {
-                    event.run_id == Some(run.id)
-                        && matches!(event.payload, Event::RunStarted { .. })
-                })
-                .unwrap_or(0);
-            let prior = cookie_agent_protocol::SessionModelState::from_events(&events[..start]);
+            let mut prior = cookie_agent_protocol::SessionModelState::default();
+            for event in session.log.history()? {
+                let event = event?;
+                if event.run_id == Some(run.id) && matches!(event.payload, Event::RunStarted { .. })
+                {
+                    break;
+                }
+                prior.apply(event.run_id, &event.payload);
+            }
             params.selection = prior.continuation(
                 &params.selection,
                 &run.agent
@@ -1859,7 +1859,11 @@ impl Engine {
             && !cancelled
             && self.inner.config.load().runtime.loop_warning.enabled
             && let Some(warning) = super::loop_guard::loop_warning(
-                &self.inner.store.log(active.session)?.event_snapshot(),
+                &self
+                    .inner
+                    .store
+                    .log(active.session)?
+                    .model_context_events()?,
                 run,
                 id,
                 &result.output,

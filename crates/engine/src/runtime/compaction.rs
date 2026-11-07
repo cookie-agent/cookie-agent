@@ -276,28 +276,25 @@ impl Engine {
         if projection.status == SessionStatus::Running {
             return Err(EngineError::SessionRunning(session));
         }
-        let events = projection.log.event_snapshot();
+        let events = projection.log.model_context_events()?;
         let run = projection
             .log
             .last_run_started()
             .map(|(_, run, _)| run)
             .ok_or(EngineError::NoRunnableModel)?;
-        let mut policy = self.historical_title_policy(&events, run)?;
+        let mut policy = self.historical_title_policy(&projection.log, run)?;
         // The tools a run of the session would send now, as automatic
         // compaction sends its run's: the summary request stays a prefix of
         // the conversation's, for its cache and for the reasoning it
         // replays. Delegation targets come from the registry and the goal
         // tools are offered as at run admission.
         policy.historical_delegation = false;
-        policy.goal_tools_enabled = crate::goal_projection::goal_tools_offered(
-            matches!(
-                projection.meta.origin,
-                cookie_agent_protocol::SessionOrigin::Root
-            ),
-            policy.acp_agent().is_some(),
-            &events,
-        );
-        let binding = active_compaction_binding(&policy, &events, run)?;
+        policy.goal_tools_enabled = matches!(
+            projection.meta.origin,
+            cookie_agent_protocol::SessionOrigin::Root
+        ) && (policy.acp_agent().is_none()
+            || projection.log.state().producers().goal_is_open());
+        let binding = active_compaction_binding(&policy, &projection.log, run)?;
         let internal_policy = self.internal_agent_policy(
             InternalAgentKind::ContextCompaction,
             &policy,
@@ -428,7 +425,7 @@ impl Engine {
         }
 
         let requested_input_through_seq = input.events.last().map_or(0, |event| event.seq);
-        let current_events = projection.log.event_snapshot();
+        let current_events = projection.log.model_context_events()?;
         if projection
             .log
             .checkpoint_covers_input(requested_input_through_seq)
@@ -931,7 +928,11 @@ impl Engine {
         if let Some(run) = active_run {
             run.auto_compaction_failures.store(0, Ordering::Relaxed);
         }
-        Ok(self.inner.store.log(input.session)?.event_snapshot())
+        Ok(self
+            .inner
+            .store
+            .log(input.session)?
+            .model_context_events()?)
     }
 
     /// The context native compaction compacts from: the latest window when
@@ -1178,7 +1179,7 @@ impl Engine {
             )
             .await?;
         }
-        Ok(self.inner.store.log(session)?.event_snapshot())
+        Ok(self.inner.store.log(session)?.model_context_events()?)
     }
 
     fn estimated_request_tokens(
@@ -1224,12 +1225,12 @@ impl Drop for ManualCompaction<'_> {
 
 pub(crate) fn active_compaction_binding<'a>(
     policy: &'a FrozenRunPolicy,
-    events: &[Arc<StoredEvent>],
+    log: &crate::events::EventLog,
     run: RunId,
 ) -> Result<&'a cookie_agent_protocol::FrozenModelBinding, EngineError> {
     policy
         .selected_suffix
-        .get(active_fallback_index(events, run))
+        .get(active_fallback_index(log, run)?)
         .ok_or(EngineError::NoRunnableModel)
 }
 

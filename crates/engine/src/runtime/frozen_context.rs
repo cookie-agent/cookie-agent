@@ -73,7 +73,7 @@ impl Engine {
         if log.prompt_blocks().checkpoint_since_run {
             return Ok(ContextComposition::Live);
         }
-        let events = log.event_snapshot();
+        let events = log.model_context_events()?;
         let Some((run, agent, previous_preset)) =
             events.iter().rev().find_map(|event| match &event.payload {
                 Event::RunStarted {

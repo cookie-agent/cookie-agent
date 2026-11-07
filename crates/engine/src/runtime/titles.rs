@@ -27,10 +27,10 @@ impl Engine {
 
     pub(crate) fn historical_title_policy(
         &self,
-        events: &[Arc<StoredEvent>],
+        log: &crate::events::EventLog,
         run: RunId,
     ) -> Result<FrozenRunPolicy, EngineError> {
-        let (agent, suffix, internal_agents, preset) = latest_run_policy(events, run)?;
+        let (agent, suffix, internal_agents, preset) = latest_run_policy(log, run)?;
         let runtime = self.historical_run_runtime(run)?;
         let agents = Arc::clone(&runtime.agents);
         let mut policy = policy_from_snapshot(
@@ -67,28 +67,27 @@ impl Engine {
         {
             return Ok(());
         }
-        let events = projection.log.event_snapshot();
-        let inputs = events
-            .iter()
-            .filter(|event| event.seq <= input_through_seq)
-            .filter_map(|event| match &event.payload {
-                Event::UserInputSubmitted { content } => Some(content.as_plain_text()),
-                _ => None,
-            })
-            .collect::<Vec<_>>();
-        let input = events
-            .iter()
-            .find_map(|event| match &event.payload {
-                Event::UserInputSubmitted { content } if event.run_id == Some(run) => {
-                    Some(content.as_plain_text())
+        // The session's opening messages, and the first of the run: a pass that
+        // stops once it has them.
+        let mut inputs = Vec::new();
+        let mut input = None;
+        for event in projection.log.history()? {
+            let event = event?;
+            let through = event.seq >= input_through_seq;
+            if let Event::UserInputSubmitted { content } = &event.payload {
+                if event.seq <= input_through_seq && inputs.len() < policy.max_input_messages {
+                    inputs.push(content.as_plain_text().into_owned());
                 }
-                _ => None,
-            })
-            .unwrap_or_default();
-        let prompt = title_prompt(
-            inputs.iter().map(|input| input.as_ref()),
-            policy.max_input_messages,
-        );
+                if input.is_none() && event.run_id == Some(run) {
+                    input = Some(content.as_plain_text().into_owned());
+                }
+            }
+            if input.is_some() && (through || inputs.len() >= policy.max_input_messages) {
+                break;
+            }
+        }
+        let input = input.unwrap_or_default();
+        let prompt = title_prompt(inputs.iter().map(String::as_str), policy.max_input_messages);
         let generated = self
             .run_internal_history_agent(
                 session,
@@ -157,12 +156,11 @@ impl Engine {
         {
             return Ok(());
         }
-        let events = projection.log.event_snapshot();
-        let Some((run, input_through_seq)) = title_regeneration_target(&events) else {
+        let Some((run, input_through_seq)) = projection.log.state().latest_turn() else {
             return Ok(());
         };
-        let frozen = self.historical_title_policy(&events, run)?;
-        let active_index = active_fallback_index(&events, run);
+        let frozen = self.historical_title_policy(&projection.log, run)?;
+        let active_index = active_fallback_index(&projection.log, run)?;
         let internal = self.internal_agent_policy(
             InternalAgentKind::SessionTitle,
             &frozen,
@@ -209,57 +207,59 @@ type PersistedRunPolicy = (
 );
 
 pub(super) fn latest_run_policy(
-    events: &[Arc<StoredEvent>],
+    log: &crate::events::EventLog,
     run_id: RunId,
 ) -> Result<PersistedRunPolicy, EngineError> {
-    events
-        .iter()
-        .find_map(|event| match &event.payload {
-            Event::RunStarted {
-                agent,
-                internal_agents,
-                selection,
-                ..
-            } if event.run_id == Some(run_id) => Some((agent, internal_agents, selection)),
-            _ => None,
-        })
-        .ok_or(EngineError::MissingRun(run_id))
-        .and_then(|(agent, internal_agents, selection)| {
-            Ok((
-                agent.as_ref().clone(),
-                crate::policy::decode_bindings(agent.selected_suffix())?,
-                internal_agents.clone(),
-                selection.preset.clone(),
-            ))
-        })
-}
-
-pub(crate) fn title_regeneration_target(events: &[Arc<StoredEvent>]) -> Option<(RunId, u64)> {
-    events.iter().rev().find_map(|event| match &event.payload {
-        Event::ModelTurnCommitted {
-            input_through_seq, ..
-        } => event.run_id.map(|run| (run, *input_through_seq)),
+    let policy_of = |event: &StoredEvent| match &event.payload {
+        Event::RunStarted {
+            agent,
+            internal_agents,
+            selection,
+            ..
+        } if event.run_id == Some(run_id) => Some((
+            agent.as_ref().clone(),
+            internal_agents.clone(),
+            selection.preset.clone(),
+        )),
         _ => None,
-    })
+    };
+    // The run asked about is nearly always the latest.
+    let found = match log.state().run_started(run_id) {
+        Some(started) => policy_of(started),
+        None => log.history()?.find_map_ok(policy_of)?,
+    };
+    let (agent, internal_agents, preset) = found.ok_or(EngineError::MissingRun(run_id))?;
+    let suffix = crate::policy::decode_bindings(agent.selected_suffix())?;
+    Ok((agent, suffix, internal_agents, preset))
 }
 
-pub(crate) fn active_fallback_index(events: &[Arc<StoredEvent>], run_id: RunId) -> usize {
-    events
-        .iter()
-        .rev()
-        .find_map(|event| {
-            if event.run_id != Some(run_id) {
-                return None;
-            }
-            match &event.payload {
-                Event::ModelAttemptStarted { fallback_index, .. } => Some(*fallback_index as usize),
-                Event::ModelFallback {
-                    to_fallback_index, ..
-                } => Some(*to_fallback_index as usize),
-                _ => None,
-            }
-        })
-        .unwrap_or(0)
+/// The fallback `run_id` is on: its latest attempt or fallback. A pass over the
+/// log only for a run another has since tried a model after.
+pub(crate) fn active_fallback_index(
+    log: &crate::events::EventLog,
+    run_id: RunId,
+) -> Result<usize, crate::events::EventLogError> {
+    match log.state().latest_fallback() {
+        None => Ok(0),
+        Some((run, index)) if run == run_id => Ok(index),
+        Some(_) => Ok(log
+            .history()?
+            .last_map_ok(|event| {
+                if event.run_id != Some(run_id) {
+                    return None;
+                }
+                match &event.payload {
+                    Event::ModelAttemptStarted { fallback_index, .. } => {
+                        Some(*fallback_index as usize)
+                    }
+                    Event::ModelFallback {
+                        to_fallback_index, ..
+                    } => Some(*to_fallback_index as usize),
+                    _ => None,
+                }
+            })?
+            .unwrap_or(0)),
+    }
 }
 
 pub(super) fn validate_generated_title(value: &str, max_chars: usize) -> Option<SessionTitle> {

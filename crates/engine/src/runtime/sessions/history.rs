@@ -1,7 +1,7 @@
 use cookie_agent_protocol::SessionId;
 
 use crate::model_history;
-use crate::runtime::{Engine, EngineError, Event, compaction::active_compaction_binding};
+use crate::runtime::{Engine, EngineError, compaction::active_compaction_binding};
 
 /// Selects the history projection returned by [`Engine::get_history`].
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -30,29 +30,26 @@ impl Engine {
         session: SessionId,
         view: EngineHistoryView,
     ) -> Result<Vec<oven_sdk::HistoryTurn>, EngineError> {
-        let events = self.inner.store.log(session)?.event_snapshot();
-        let run = events
-            .iter()
-            .rev()
-            .find_map(|event| {
-                matches!(event.payload, Event::RunStarted { .. })
-                    .then_some(event.run_id)
-                    .flatten()
-            })
+        let log = self.inner.store.log(session)?;
+        let run = log
+            .state()
+            .latest_run_started()
+            .and_then(|started| started.run_id)
             .ok_or(EngineError::NoRunnableModel)?;
-        let policy = self.historical_title_policy(&events, run)?;
-        let binding = active_compaction_binding(&policy, &events, run)?;
+        let policy = self.historical_title_policy(&log, run)?;
+        let binding = active_compaction_binding(&policy, &log, run)?;
         let composed_prompt = self.run_agent_prompt(session, run)?;
         match view {
             EngineHistoryView::Assembled => Ok(model_history::assemble_model_context(
-                &events,
+                &log.model_context_events()?,
                 &self.inner.artifacts,
                 binding,
                 &composed_prompt,
             )?
             .history),
+            // Everything the session recorded, which its answer holds too.
             EngineHistoryView::Full => Ok(model_history::assemble_full_history(
-                &events,
+                &log.history()?.collect::<Result<Vec<_>, _>>()?,
                 &self.inner.artifacts,
                 binding,
                 &composed_prompt,

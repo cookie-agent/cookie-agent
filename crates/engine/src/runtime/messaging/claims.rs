@@ -7,6 +7,9 @@ use crate::runtime::{Engine, EngineError, Inner, event_origin};
 /// A request-input reservation, not evidence that a provider received the input.
 /// The lease remains held through compaction, hooks, streaming, and model commit.
 pub(in crate::runtime) struct ClaimedPrompt {
+    /// As of the claim, what a native model's context assembles from
+    /// ([`crate::events::EventLog::model_context_events`]); for an ACP agent's
+    /// run the events since the window start, of which it reads the tip.
     pub events: crate::events::EventSnapshot,
     /// What the log folds to at `events`' tip.
     pub state: Arc<crate::events::LogState>,
@@ -118,7 +121,20 @@ impl Engine {
             self.inner.store.persist_buffered_session(session)?;
             Some(event.seq)
         };
-        let (events, state) = self.inner.store.log(session)?.snapshot_and_state();
+        let log = self.inner.store.log(session)?;
+        let acp = self
+            .inner
+            .sessions
+            .active
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(&run)
+            .is_some_and(|active| active.policy.acp_agent().is_some());
+        let (events, state) = if acp {
+            log.recent_and_state()
+        } else {
+            log.model_context_and_state()?
+        };
         Ok(ClaimedPrompt {
             events,
             state,

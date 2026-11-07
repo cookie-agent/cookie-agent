@@ -694,11 +694,15 @@ fn manual_compaction_resolves_parent_model_from_nonzero_active_fallback() {
             prompt_fingerprint: Sha256Digest::of_bytes(b"fallback prompt"),
         },
     }];
-    let events = events
-        .into_iter()
-        .map(std::sync::Arc::new)
-        .collect::<Vec<_>>();
-    let binding = crate::runtime::compaction::active_compaction_binding(&owner, &events, run)
+    let mut state = crate::events::LogState::default();
+    for event in events {
+        state.observe(&std::sync::Arc::new(event));
+    }
+    let (active_run, index) = state.latest_fallback().expect("the active fallback");
+    assert_eq!(active_run, run);
+    let binding = owner
+        .selected_suffix
+        .get(index)
         .expect("active compaction binding");
     assert_eq!(binding.selection, fallback.selection);
     let internal = fixture
