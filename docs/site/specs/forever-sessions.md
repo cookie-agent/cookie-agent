@@ -118,8 +118,8 @@ and any other that a turn-long window breaks shows in section 7's tests as a fol
 differs.
 
 A log is windowed while its session's agent is an ACP agent: from the first turn such an agent
-commits, until a run starts with a native one. It also takes a file this process owns: a read-only
-log stays whole (section 12). A held snapshot keeps what it holds until it goes, as the list is
+commits, until a run starts with a native one. It also takes a file that holds what it lets go of, and since
+phase 4 that goes for a read-only log too (section 12). A held snapshot keeps what it holds until it goes, as the list is
 behind an `Arc`.
 
 ### 3.3 `history()`
@@ -182,26 +182,28 @@ which is at or before that record:
 | Where: the record's `seq`, `timestamp`, and byte offset; `history_format`; `STATE_VERSION` | | As `view.json` |
 | `ValidationState`, its taint, diagnostics, `render_only` | `validate_loaded` | Whole list |
 | `EventIndex` and the prompt block and deferral folds | `EventStorage` | Whole list |
-| `LineIndex`, and the raw lines no record reproduces | `load_event_jsonl`, `RawLines` | Whole file |
+| `LineIndex`, and the raw lines no record reproduces, which a line naming blobs no longer counts as (section 12) | `load_event_jsonl`, `RawLines` | Whole file |
 | The sequences validation refused, which a pass leaves out too | `EventStorage::refused` | Whole list |
 | Where a view cache starts, with the headers it can move to | `EventStorage::view_start` | Window |
 | The projection: meta, usage, `runs`, fold state | `projection_fold_with` | Whole list |
 | `state()`'s folds | Section 3.1 | |
-| The tree load's harvest: grants, delegation records, producer state | `harvest_records` | Whole list |
+| The tree load's harvest: grants, delegation records, producer state, a parent's facts | `state()`, as a fold of its own (section 12) | Whole list |
 
-None of these types serialize today, and some maps have tuple keys, so each needs
-serde derives and its maps written as lists, in JSON, with no new dependency. These are
-internal types, not history: this file is a cache, and it stands outside the
-compatibility rules.
+None of these types serialized, and some maps have tuple keys, so each has serde derives and
+its maps written as sorted lists, in JSON, with no new dependency, which also makes two equal
+states the same bytes. These are internal types, not history: this file is a cache, and it
+stands outside the compatibility rules.
 
-**Its size is not measured.** What it holds took 0.4 to 4.7 MB of heap on the logs in
-section 1. Phase 4 measures the file.
+**Measured by phase 4:** 1.9 to 3.2 MB on the logs of section 12, about a quarter of the log.
 
 ### 4.2 Writing it
 
 After a committed turn, when over 1 MiB of log came since the last write, so a long run
-is covered and a turn does not pay for a write, and when a session leaves memory. Outside
-every lock, and only by the process that owns the log. A crash loses nothing: the log stays the only source of truth.
+is covered and a turn does not pay for a write, and when a session leaves memory, which the
+store's release counts as. Only the process that owns the log writes it, and only a log with a
+window has one (a native log gets one from phase 7). The session's slot and the log's locks are
+held to copy what it holds; serializing and writing take no lock. A crash loses nothing: the log
+stays the only source of truth.
 
 ### 4.3 Opening
 
@@ -213,13 +215,17 @@ every lock, and only by the process that owns the log. A crash loses nothing: th
 
 **Any mismatch means folding the whole log from its start.** That covers a missing or
 unreadable file, a revert, a converted or rewritten log, and a line the loader would
-repair. A revert also removes the file. A torn final record is handled by step 2.
+repair. A revert also removes the file. A torn final record is handled by step 2. A file behind
+its log that still matches is no mismatch: what came after it is the tail, whatever its length.
 
 That fallback streams too, through the same steps, dropping each record once it has
 been folded, so it costs time and not memory. Reading the whole file into a buffer, as
-the loader does today, would not do at this scale.
+the loader does today, would not do at this scale. **Two kinds of log still read that way,**
+at the peak of section 1 (section 12): one with damage the file does not already
+answer for, and one of an older history format, which converts in memory.
 
-Line by line, the tail is read as the loader reads it, including blobs.
+Line by line, the tail is read as the loader reads it, including blobs. The log's first record
+comes from its first line, not from the file.
 
 ### 4.4 Across builds
 
@@ -245,7 +251,9 @@ why the golden ACP scenario is built to reach every fold (section 7).
   load for viewing is no longer needed for ACP trees.
 - **Damage in old records is found later** (section 11): an open no longer
   validates records before the offset. A damaged one shows when `history()` reads it.
-- **A read-only open** uses the file too, and writes none.
+- **A read-only open** uses the file too, and writes none. It holds only its window, through
+  the file or through the fallback, so a pass of it checks at its end that the owner has not cut
+  the file under it.
 
 ## 5. Native sessions
 
@@ -474,8 +482,8 @@ largest session:
 |---|---|---|
 | Live heap, idle | 39.5 MB | Measured by phase 3: 7.4 MB |
 | Live heap, during a run | The same | The same: one turn's events, and what its open calls hold |
-| Peak on opening | 55 MB | The `state.json` parse and the window: not measured, expected single-digit MB |
-| Parsed on opening | 12.4 MB of log | The window |
+| Peak on opening | 55 MB | Measured by phase 4: 8.5 MB |
+| Parsed on opening | 12.4 MB of log | The window, and 3.2 MB of `state.json` |
 
 Older pages, and a session's first open after `STATE_VERSION` rises, take time
 proportional to the log, but no memory beyond a page.
@@ -738,3 +746,168 @@ not move, as opening still parses the whole log.** Phase 4 is what takes the pea
 - **These are this machine's logs, not section 1's**, though the sizes match to a few percent. The
   39.47 against section 1's 38.5 is phases 1 and 2's folds, on another copy.
 - One run each: treat a few percent, and the open times, as noise.
+
+**Phase 4** (2026-11-07), read against the code at `2f7ccbe9d`.
+
+- **What the file holds, as built:** `{version, history_format, session_id, at: {seq, timestamp,
+  offset}, folds}`, with `folds` as section 4.1 lists. `STATE_VERSION` is 1, in
+  `events/state_file.rs`. `at` is the log's tip when the file was written, which at a session's
+  leaving memory need not be a committed turn: every fold holds at every record, and the per-append
+  reference checks say so. The window's `seq` is in `folds`, and `LineIndex` gives its offset.
+- **The harvest is a fold now** (`HarvestFold`, in `state()`, its scan the reference), or the file
+  would have needed a pass per write. So `harvest_records` and `ParentRunFacts::from_projection`
+  read no log, resident or not, which also answers phase 3's "a pass" for a resident windowed root.
+  Whether a delegation record is tainted is still asked as it is handed over, of the validation
+  state as it then stands.
+- **A line naming blobs stays in the file.** It was kept in memory as read, and on the largest log
+  that was half the file, 3.2 MB of 6.3 MB in base64, for 402 lines, and 2.4 MB of live heap on every
+  open, a parse's too. No repair happened to those lines and their record reproduces them, so they
+  now count as read as they are, and `ReadRawLines::bytes` reads the blobs back to compare, at a
+  fork or a `visit_json`. What a newer build wrote on such a line survives as before
+  (`a_line_naming_blobs_is_read_from_the_file_with_what_this_build_does_not_know`). The storage spec's
+  sentence about it is corrected.
+- **The fallback is one pass, with the projection folded on the way as a live append folds it.**
+  Only an `Observed::NeedsRefold` falls back to `projection_fold_with`'s two passes, as it does live.
+  It starts the same as an append: `EventStorage::push`, and `narrow` at each committed turn, so a
+  native log holds what it always held, without the buffer. A log that goes from ACP to native
+  keeps its window until its first `model_context_events()`, as a live one does.
+- **Where the fallback does not stream, against section 4.3's first text.** Damage: a line whose
+  read taints anything, a record that fails validation, or a broken sequence hands the log to the
+  loader of old, whole file and all. `validate_loaded`'s quarantine rebuilds validation over what it
+  accepted, and its reader's taint is the whole file's before the first record is checked, so
+  streaming that exactly would take a pass per quarantined record, or holding the records anyway. A
+  log with a state file that answers for its damage does not get here. **None of the 27 logs checked
+  below has any.** An older history format still converts in memory on a read-only open. These are
+  the only whole-file reads left; a lasting exception would be a damaged log no owner ever writes a
+  file for.
+- **"Stale" means not matching.** Section 7's "stale" file folds from the start when its record is no
+  longer where it says, as `view.json`'s does. One merely behind opens with a longer tail
+  (`a_state_file_behind_its_log_opens_with_a_longer_tail`), or per-MiB writes would be no use.
+- **Damage before the offset** is `EventLogError::Corrupt` from the pass that reads it, when the load
+  knew of none. A log whose load noted damage skips it in a pass, as it did. The open itself does not
+  notice (`damage_before_the_offset_shows_when_a_pass_reads_it`).
+- **A read-only log has a window now,** as phase 3 left for this phase. Its owner can still cut the
+  file with no word, so a pass of it ends by checking that the window's first record is still at
+  its offset, and ends in `HistoryCut` if not. A pass within a file an owner is appending to is
+  unaffected. `cold_window` takes `newest_pass`, so a viewer reads from where the view cache starts.
+- **What is not written.** A log with a sequence jump no taint explains gets no file: a parse would
+  find the gap and this log did not. Nor does one whose tip is a line it holds no record of. A log
+  that opened from the fallback writes at its next committed turn past 1 MiB, or as it leaves
+  memory. **A child this process never owned has no file,** so an existing tree's children parse at
+  each tree load until something writes to them. That is section 4.5's "each child that has one",
+  and it is the difference between the two tree columns below.
+- **Exact floats took a feature:** `float_roundtrip` on `serde_json` in the store, as a parse off by
+  one unit in the last place would make a snapshot differ from a parse. It is no new dependency.
+- **Tests.** Every open that does not read its log whole also parses it and compares validation,
+  taint, diagnostics, the index and every fold, line index, raw lines, records, and projection, by
+  `PartialEq` and by bytes (`state_file/reference.rs`), including every fallback. Every committed turn
+  of a windowed log in every test writes a file of that moment and opens through it, so all ACP tests
+  go through this. `a_state_file_and_the_tail_open_as_a_parse_at_every_turn_boundary_of_the_golden_logs`
+  does it for all 12 golden logs, native ones too, with the tail and with none.
+  `the_folds_of_the_golden_logs_match_their_recorded_digest` holds the digest of section 4.4; a change to
+  `latest_turn`'s fold, tried once, failed it. Crashes and mismatches are in `state_file/tests.rs`.
+- **Run once, not committed:** on scratch copies of the store's 27 largest ACP logs (3.5 to 12.5 MB, of
+  77 over 1 MB), a file at every turn boundary, each with the tail to the log's end, against one parse.
+  **17,438 boundaries, 122,480 records: every open went through the file, no fold differed, none
+  needed a refold, and no log had damage.** So `NeedsRefold`, phase 3's open question, did not come up
+  on real usage either.
+
+Measured on 2026-11-07, on scratch copies of this machine's six largest ACP logs in history format 3,
+opened by `begin_write` and `commit_adoption` in a release build. In MB by a counting allocator, the
+median of 5, each in a fresh process. "Before" is `2f7ccbe9d`. The fallback is the same open with no
+`state.json` anywhere:
+
+| Log | Children | `state.json` | Peak, before | Peak, after | Peak, fallback | Live, before | Live, after | Live, fallback | Open, before | Open, after | Open, fallback |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| 12.5 MB | 0 | 3.17 | 55.97 | 8.46 | 7.01 | 7.37 | 5.22 | 4.57 | 268 ms | 32 ms | 283 ms |
+| 11.2 MB | 3 | 2.09 | 54.84 | 5.58 | 5.42 | 5.37 | 3.24 | 3.23 | 211 ms | 30 ms | 248 ms |
+| 10.2 MB | 0 | 2.04 | 41.95 | 5.41 | 4.97 | 5.73 | 3.15 | 2.87 | 176 ms | 16 ms | 206 ms |
+| 10.1 MB | 0 | 2.20 | 41.84 | 5.69 | 5.23 | 6.51 | 3.42 | 3.13 | 171 ms | 28 ms | 181 ms |
+| 9.7 MB | 1 | 1.89 | 52.16 | 5.41 | 5.22 | 5.25 | 3.11 | 3.09 | 179 ms | 29 ms | 193 ms |
+| 9.3 MB | 10 | 2.16 | 41.63 | 5.63 | 5.03 | 5.20 | 3.55 | 3.17 | 400 ms | 48 ms | 507 ms |
+
+So a fallback costs about what an open cost, in time, and about what an open from the file does in
+memory. Its peak follows the largest record and what the folds hold, not the log's length. The file's
+own parse is what a peak over the fallback's is: its bytes held as they are read.
+
+The tree load alone, with `load_tree`, in the same way. "Before" holds the root's parse in the cache
+of read-only logs, which an adoption takes over:
+
+| Log | Children | Peak, before | Peak, all with files | Peak, no files | Time, before | Time, all with files | Time, no files |
+|---|---|---|---|---|---|---|---|
+| 12.5 MB | 0 | 55.97 | 8.46 | 5.13 | 252 ms | 36 ms | 277 ms |
+| 11.2 MB | 3 | 54.84 | 5.35 | 3.84 | 197 ms | 33 ms | 247 ms |
+| 10.2 MB | 0 | 41.95 | 5.27 | 3.95 | 164 ms | 25 ms | 201 ms |
+| 10.1 MB | 0 | 41.84 | 5.69 | 3.55 | 151 ms | 27 ms | 175 ms |
+| 9.7 MB | 1 | 52.16 | 5.02 | 3.53 | 160 ms | 28 ms | 192 ms |
+| 9.3 MB | 10 | 41.63 | 5.63 | 4.62 | 382 ms | 50 ms | 505 ms |
+
+Live after a tree load falls from 24.5 to 38.0 MB, to 3.4 to 5.5 MB with files, for the same reason. One
+root with its file and 10 children without took 360 ms, one run: the children's parses.
+
+The daemon, a release `cookie daemon` on a scratch `HOME` holding the same copies, each in a fresh
+process, with a thread preloaded to call `malloc_trim` on request, as nothing else here runs one. RSS
+after a trim, the rise on `session.resume` with no trim, what a second trim leaves of it, in MB, and the
+call's time, one run each:
+
+| Log | Idle, before | Idle, after | Rise, before | Rise, after | Left after trim, before | Left after trim, after | Resume, before | Resume, after |
+|---|---|---|---|---|---|---|---|---|
+| 12.5 MB | 102.2 | 104.1 | 45.4 | 14.9 | 14.2 | 10.3 | 285 ms | 45 ms |
+| 11.2 MB | 102.7 | 102.3 | 35.1 | 12.7 | 12.4 | 10.5 | 236 ms | 39 ms |
+| 10.2 MB | 104.0 | 103.7 | 43.1 | 14.3 | 12.7 | 10.0 | 195 ms | 39 ms |
+| 10.1 MB | 103.6 | 104.1 | 43.2 | 12.7 | 15.1 | 10.4 | 182 ms | 37 ms |
+| 9.7 MB | 103.6 | 105.0 | 34.7 | 11.4 | 13.5 | 8.9 | 199 ms | 38 ms |
+| 9.3 MB | 103.6 | 101.9 | 43.6 | 13.3 | 13.0 | 11.0 | 419 ms | 62 ms |
+
+With the fallback, on the same logs: rises of 9.4 to 13.8 MB, 7.4 to 12.1 MB left after a trim, and 199 to
+546 ms. The whole write as a session leaves memory, its view cache's included, took 9 to 14 ms and 4.3
+to 6.7 MB for the moment, on the largest logs.
+
+- **`FreedMemory` is moot for an open, and the threshold was left alone.** An open now frees 2 to 5 MB of
+  what it allocated, where it freed 21 to 31 MB, so RSS stays near what a trim would leave without one:
+  115 to 119 MB, where it stood at 138 to 148 MB. Nothing here calls for changing 32 MiB.
+- **The peak fell by 85 to 90 percent and the open's time by 84 to 91 percent,** where phase 3 left the
+  peak as it was. Live heap fell by a further 29 to 47 percent, as lines naming blobs left memory.
+- **What these do not say.** They are this machine's logs, and a log at 100 times this length is phase
+  5's. Open times are noise at a few ms, and one run of the daemon's rows is noise at a few MB.
+
+**What phase 5 must know.** Bytes of JSON in the file on those six logs, in KB, smallest to largest. Each
+is linear in the log unless it says otherwise, and each costs twice, in the heap and in the write:
+
+| Part | KB | Grows per |
+|---|---|---|
+| Whole file | 1,892 to 3,173 | |
+| `validation` | 1,100 to 1,383 | |
+| `validation.attempts` | 353 to 447 | Attempt: a `ResolvedModelRef` each, nearly always the same |
+| `validation.turn_models` | 203 to 258 | Turn: the same again |
+| `validation.tool_starts` | 175 to 234 | Tool call |
+| `validation.model_call_owners` | 170 to 227 | Tool call |
+| `validation.turns` | 110 to 141 | Turn |
+| `validation.runs` | 19 to 98 | Run |
+| `projection.runs` | 163 to 913 | Run: an `AgentSnapshot` of 3.4 KB each, where 159 runs of the largest log hold 4 distinct ones |
+| `projection.usage_rollup` | 7 to 36 | Turn: `observations`, which the wire leaves out and the file must not |
+| `projection.fold.tool_names` | 21 to 28 | Tool call |
+| `view_start` | 213 to 531 | Bounded: 1 to 3 noted starts and up to 256 unsettled records, each header written whole |
+| `lines` | 90 to 145 | Record |
+| `index`, of which `state` | 59 to 235 | |
+| `state.producers` | 2 to 135 | Message: their bodies |
+| `state.acp` | 24 to 44 | ACP session |
+| `state.run` | 12 to 20 | Bounded: the current run's `run_started` |
+| `state.opening_inputs` | 7 to 15 | Bounded: the first 16 inputs |
+| `state.harvest` | 1 | Grant or delegation: none of these six has many |
+| `raw` | 0 | Line no record reproduces, only with damage |
+
+- **Sharing does not survive the file.** `Arc<StoredEvent>` and `Arc<AgentSnapshot>` are written once per
+  holder and read as separate copies, so a log from the file holds about 0.65 MB more than one folded
+  on the largest log (5.22 against 4.57). Bounding `runs` takes most of that. If not, the file should
+  hold each once.
+- **`LineIndex` is read whole for what a sparse index must still answer:** the prefix check of the
+  open (a line's sequence at its offset), `window_start`, `StoredRaw::restore`, and `file_range`. `RawLines`
+  is rebuilt from it with a line each, in memory, 32 bytes a line. The check for an unexplained
+  sequence jump walks it at each write.
+- **A write's cost follows the file's size**, though the 9 to 14 ms above was not split up. `validation`
+  goes first if the file is to stay flat, and each of its maps is an append rule to answer for, as
+  section 6 says.
+- **A fork still reads the source's lines whole**, phase 3's note, and now reads the blobs of a line
+  naming them to compare it. Worth streaming with the same pass.
+

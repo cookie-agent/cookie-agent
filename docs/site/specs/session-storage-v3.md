@@ -306,6 +306,7 @@ Left for later:
       owner.lock              unchanged
       events.jsonl            history format 2 (4.2)
       view.json               the view header of 3.2 at a seq, and the byte offsets of recent run starts
+      state.json              what a windowed log folds to, and where its window starts (forever-sessions.md, section 4)
       blobs/<sha256>          replaces artifacts/
       subagents/
         index.json            also a summary per child, so the tree view reads no child log
@@ -367,9 +368,9 @@ again for a format 3):
   outputs as before. A log is smaller on disk, but a parse that reads it
   whole still reads the blobs its records name: the faster parse 4.2
   expects comes for the lines that are not moved, and for a cold view once
-  `view.json` lands. A line naming blobs is kept in memory as read (the
-  slimmed line, about 2.3 KB for a moved output), not re-read from the file,
-  so a fork copies it with its references.
+  `view.json` lands. A fork copies a line naming blobs with its references,
+  read from the file (`forever-sessions.md`, section 12, phase 4; it was first
+  kept in memory as read, about 2.3 KB for a moved output).
 - **What moves.** An output strictly longer than 8 KiB keeps its first
   2 KiB, floored to a character boundary, as `output`, with `output_bytes`
   and `output_blob`; a display stored as ranges of the output stays ranges
