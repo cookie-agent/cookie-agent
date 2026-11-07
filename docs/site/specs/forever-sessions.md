@@ -88,9 +88,10 @@ earlier session of another agent or declaration.
 
 ### 3.2 The window
 
-After each committed turn, a windowed log's window start moves to the earlier of that
-turn's record and its `input_through_seq`. So a run of any length holds about one turn's
-events, and a run that never ends is bounded too (the user's choice, 2026-11-06).
+After each committed turn, a windowed log's window start moves to that turn's record. So a run
+of any length holds about one turn's events, and a run that never ends is bounded too (the user's
+choice, 2026-11-06). This first said "the earlier of that turn's record and its
+`input_through_seq`", which section 12 explains is a whole run.
 
 Measured on the store's 12 largest logs, on disk, without what blobs hold (11,222 turns):
 
@@ -116,13 +117,15 @@ each of these against the code,
 and any other that a turn-long window breaks shows in section 7's tests as a fold that
 differs.
 
-A log is windowed while its session's agent is an ACP agent. A held snapshot keeps
-what it holds until it goes, as the list is behind an `Arc`.
+A log is windowed while its session's agent is an ACP agent: from the first turn such an agent
+commits, until a run starts with a native one. It also takes a file this process owns: a read-only
+log stays whole (section 12). A held snapshot keeps what it holds until it goes, as the list is
+behind an `Arc`.
 
 ### 3.3 `history()`
 
-It streams the file a record at a time and keeps nothing, so its memory does not depend
-on the log's length. Its time does: a read of old events is a pass over the log. A
+It streams the file a record at a time and keeps nothing but up to 64 KiB of lines read ahead, so
+its memory does not depend on the log's length. Its time does: a read of old events is a pass over the log. A
 caller keeps only what it needs, as an older page keeps its window and folds the header
 as it goes, which also gives the page's state for free. That serves pages, `event.read`,
 revert, fork, delete, and rare lookups such as `attachment_record`.
@@ -155,8 +158,10 @@ keeps what was recorded.
 
 ### 3.5 Revert
 
-A revert's cut can fall before the window. It reads `history()`, recomputes `state()`
-over the prefix, and holds the events since the new latest boundary.
+Wherever its cut falls, as a fold cannot be taken back, a revert reads what stays as a pass,
+recomputes `state()` and validation over it, and holds the events since the new latest boundary.
+It does this before it cuts the file, so a failed read changes nothing. It ends a pass still reading
+what it cuts with `EventLogError::HistoryCut`.
 
 ## 4. Opening without parsing the whole log
 
@@ -178,6 +183,8 @@ which is at or before that record:
 | `ValidationState`, its taint, diagnostics, `render_only` | `validate_loaded` | Whole list |
 | `EventIndex` and the prompt block and deferral folds | `EventStorage` | Whole list |
 | `LineIndex`, and the raw lines no record reproduces | `load_event_jsonl`, `RawLines` | Whole file |
+| The sequences validation refused, which a pass leaves out too | `EventStorage::refused` | Whole list |
+| Where a view cache starts, with the headers it can move to | `EventStorage::view_start` | Window |
 | The projection: meta, usage, `runs`, fold state | `projection_fold_with` | Whole list |
 | `state()`'s folds | Section 3.1 | |
 | The tree load's harvest: grants, delegation records, producer state | `harvest_records` | Whole list |
@@ -339,8 +346,10 @@ switch.
 ### 5.4 Switching agents
 
 - **ACP to native.** With no checkpoint, a native model's context is the whole log: its
-  first request reads it through `history()` and the log holds it until the next
-  checkpoint. Nothing is lost, and it is no worse than today.
+  first `model_context_events()` after the native run's start reads it and the log holds it until the
+  next checkpoint (until phase 7, for good) or an ACP agent's next committed turn. Nothing is lost,
+  and it is no worse than today. Asked of a session whose agent is still ACP, as `get_history` can,
+  it reads whole and the log keeps its window.
 - **Native to ACP.** The window narrows at the next committed turn.
 
 ### 5.5 The approval reviewer gets its own log
@@ -458,11 +467,12 @@ Each ships on its own and leaves things working.
 
 ## 10. Expected effect, and its limits
 
-All estimates until phases 3 and 4 measure them. On the largest session:
+Estimates until phases 3 and 4 measure them; phase 3 measured the first row (section 12). On the
+largest session:
 
 | | Today | After |
 |---|---|---|
-| Live heap, idle | 38.5 MB | About 5 MB, plus folds not yet measured |
+| Live heap, idle | 39.5 MB | Measured by phase 3: 7.4 MB |
 | Live heap, during a run | The same | The same: one turn's events, and what its open calls hold |
 | Peak on opening | 55 MB | The `state.json` parse and the window: not measured, expected single-digit MB |
 | Parsed on opening | 12.4 MB of log | The window |
@@ -596,3 +606,135 @@ The counts in section 2 are of the lines that call each, in the engine, the stor
   fork's reads before the lock. A delete takes no pass, as `acp_own_records` is a fold.
 - **What else reads the whole list inside the log, for phase 3:** `visit_json`, `truncate`, and the
   validation and index rebuilds, by `storage.all` or `raw.lines`.
+
+**Phase 3** (2026-11-07), read against the code at `109e91052`.
+
+- **The window starts at the committed turn's record, against section 3.2's first text.** An ACP
+  agent's `input_through_seq` is the tip when its prompt went out, and stays there for the prompt's
+  whole turn. So "the earlier of the record and `input_through_seq`" is always the latter, and
+  holds the whole run: on the store's 6 largest logs, 2.3 MB at the median turn on the worst log,
+  and 7.5 MB at most, where the measurement in section 3.2 and decision 5 are per turn. Nothing needs
+  the difference: `recent()`'s one caller reads the tip, and what an uncovered input needs is
+  in `state()`. Section 3.2 is corrected. The user's decision 5 is what this follows, but it is
+  a change of the approved text, so it is named here.
+- **Whether a log is windowed is read from its records,** so a reopening agrees. A committed turn of
+  the synthetic provider `acp` sets the start, a committed turn of any other model clears it, and a
+  `run_started` of any other model clears it, as what comes next is a native model's. A log also has to be
+  persisted, this process's, not converted, and not render-only; and a log whose last write failed,
+  which may hold part of a record, lets nothing more go.
+- **Read-only logs stay whole, in this phase and until phase 4 opens them.** Their owner can cut or
+  rewrite the file with no word to this process, where a pass reading an owned file is told. Opening
+  parses them whole anyway, and the cache of parsed logs lets them go when idle. A take-over
+  (`owned_from_read_only`) narrows at its fold, as any owned open does. A session not resident whose
+  view cache does not answer, or a page of one, therefore still holds its whole log for a while.
+- **An owned open parses whole, folds, and only then narrows** (`refold` calls `narrow_window`), so its
+  projection is not a second and third parse. Phase 4 replaces this.
+- **`History`** gives the creation from memory, then what precedes the window at the moment it was
+  asked from the file, then the window it saw, which is an `Arc`. So nothing appended later reaches
+  it. It reads lines through the loader's own `LineReader`, so a repair, a blob, and a skip read the
+  same, and leaves out what validation refused at load (`EventStorage::refused`). Off the worker, in
+  visits of up to 64 KiB of lines, as a `block_in_place` per record would cost more than the read.
+- **A revert under a pass in flight.** The log counts cuts, before it cuts the file and again as it
+  installs what stays, and a pass checks the count after each read, so what it hands out was read
+  before the cut. A pass with file left to read then ends in `EventLogError::HistoryCut`, whatever the
+  distance from the cut, which errs towards refusing; what it already gave stays true of the log as
+  it stood. **A reader sees that as an error, not a retry:** an older page or `event.read` racing a
+  revert fails, and the client is about to be told `Rewound` anyway. A fork reads again under the lock
+  instead. Nothing retries it otherwise.
+- **`write_view` reads nothing of a windowed log, and the cache starts a little earlier than it did.**
+  `CacheStartFold`, which an append feeds, notes the header at a run boundary every quarter of the
+  budget, and those are the starts it moves to, once what follows one no longer fits. So a cache starts
+  up to about a quarter of the budget (and a run) before the latest start it could have: a cold open
+  reads that much more, and `view.json` is written that much less. The first version kept what
+  `state_events` reads since the start and moved exactly; it held 5.6 MB of the largest log's 12 MB,
+  159 `run_started` at 30 KB each. `view_start` comes from the list at the first narrowing, and from
+  the pass at a revert. `display_view::cache_start` stays for a log that holds its events.
+- **A resident windowed session's newest window** reads from the cache's start (`newest_pass`) and not
+  over the log: 11 ms against 243 ms on the largest log, holding 1.9 MB for the moment against 5.8 MB.
+  When no boundary is yet known whose events on do not fit, it takes the pass.
+- **The first title** reads two folds, `opening_inputs` (the first 16 inputs) and `first_input_of_run`,
+  with a pass only when the configuration asks for more than 16, or for a run that is not the latest.
+- **`view_event_count`** answers the full view from the validation state's record count, and the
+  display view in one pass: `DisplayCount` no longer needs a second one to apply what the first found.
+  It stays a pass for a reader's first forward page when more follow: the reader is about to pass over
+  the log itself. A fold of the display count needs per-call state, so it is left for when it shows.
+- **Zero passes on a normal ACP turn**, enforced from the second turn on
+  (`a_normal_acp_turn_asks_for_no_pass_over_its_log`, and with a log past the view cache's budget
+  `a_windowed_session_places_its_view_cache_without_a_pass`, and with a title that will not commit
+  `an_untitled_acp_session_asks_for_its_title_without_a_pass`). The first turn's passes all read what
+  it holds. **What still reads the file on an ACP session**, by listing the calls of a scripted session and reading
+  their callers: a background delegation's completion and the agent's `/compact`, now each only from its own
+  run on (`a_delegation_and_a_compaction_read_only_their_own_run`), a tree load's harvest of a resident
+  root, once, `reconcile_parent`, revert, fork, older pages, and `event.read`.
+- **Fork.** `read_fork_prefix` and the `acp_detached` hook run before `mutation`, reading through a pass
+  and validating too. Under the lock it compares the log and `cut_count`, and reads again if a revert
+  won. `write_whole` still reads the source's lines whole with `RawLines::read`, under the lock, and the
+  buffered fork holds the copy: +25 MB and 209 ms on the largest log, for a fork through half of it. Not this phase's to change; phase 5 should stream it.
+- **Revert.** The pass of section 3.5 is one parse, and `refold`'s two passes are two more, so a revert
+  of the largest log through half of it takes 300 ms and holds 2.1 MB. `reverted_children`, `history_cut`,
+  and `AcpSessions::read` are passes of their own before it. Linear and rare, so left.
+- **`visit_json`** of a windowed log streams the file's lines, as what it appended has no raw line. The
+  rest (`truncate`, and the validation rebuilds of a refused append and a failed write) go through a pass
+  (`fold_prefix`, `rebuilt_validation`), holding `append` and no other lock.
+- **`NeedsRefold` did not come up** on the scripted turns, usage records included, and would cost two
+  passes under the session's slot. A real ACP log's usage should be looked at when phase 5 measures.
+- **A double revert with `ACP_FIXTURE_DELETE`** fails the next turn with `session/fork failed: no such
+  session`, the agent's session having been deleted. It does so with the window off too, so it is not
+  this phase's. Whether a real agent does the same was not looked at.
+- **Tests.** Every store append of a committed turn, in every test, compares the log with a reopening of
+  its file (`assert_window_reads_as_reopened`: records, the window, every fold against its scan,
+  validation, line index, where the view cache starts and its header) and the projection with
+  a reopening's. So the golden ACP scenario, when recorded, and all ACP tests are compared at each committed
+  turn. `a_golden_log_appended_again_answers_as_reopened_at_each_committed_turn` does that for the frozen
+  logs, with windows, pages, forward pages, lines, counts, metadata, and an owned reopening too;
+  `a_long_scripted_session_holds_one_turn_and_answers_as_its_file` is the longer scripted run. Each narrowing
+  in a test also reads what it let go of and compares it with what was held.
+- **What phase 4 must know.** `state.json` needs two parts section 4.1 did not list, added there: `refused`
+  and `view_start`. Its `window` is the `index.window_start` of the fold, so nothing more is needed to agree.
+  The open's parse is now the whole of the peak, and the tree load's `harvest_records` over a resident
+  windowed root is a pass. `opening_inputs` holds up to 16 inputs with their bodies. `History` assumes
+  `lines` is whole or absent, and scans from the start without it, so a sparse index (section 6) has
+  to give `file_range` its starts another way. Section 6's list gains `CacheStartFold`, bounded, except
+  for the 256 records `StateEventsFold` holds before it settles.
+
+Measured on 2026-11-07, on scratch copies of this machine's six largest ACP logs, converted to history
+format 3 and opened by `begin_write` and `commit_adoption` in a release build. Live heap and peak by a
+counting allocator, in MB, each log in a fresh process. "Before" is `109e91052`:
+
+| Log | Events | Live, before | Live, after | Peak, before | Peak, after | Held, after | Open, before | Open, after |
+|---|---|---|---|---|---|---|---|---|
+| 12.5 MB | 7,033 | 39.47 | 7.37 | 55.91 | 55.97 | 5 records | 255 ms | 269 ms |
+| 11.2 MB | 9,286 | 28.28 | 5.37 | 54.77 | 54.84 | 3 records | 190 ms | 223 ms |
+| 10.2 MB | 6,105 | 24.91 | 5.73 | 41.91 | 41.95 | 4 records | 166 ms | 187 ms |
+| 10.1 MB | 6,449 | 24.92 | 6.51 | 41.78 | 41.84 | 4 records | 156 ms | 176 ms |
+| 9.7 MB | 9,813 | 26.98 | 5.25 | 52.08 | 52.16 | 3 records | 162 ms | 176 ms |
+| 9.3 MB | 7,800 | 26.20 | 5.20 | 41.57 | 41.63 | 4 records | 388 ms | 447 ms |
+
+A pass over the whole log of the same six, from the file: 104 to 195 ms, holding 0.7 to 2.0 MB beyond
+what the log holds. `tail_window` as a whole pass: 151 to 243 ms, holding 4.5 to 17.4 MB, the newest run
+while the window is worked out, as phase 2 said; a resident session takes `newest_pass` instead.
+
+The daemon, a release `cookie daemon` on a scratch `HOME` holding the same copies, each in a fresh process:
+RSS after `malloc_trim`, the rise on `session.resume`, and the rise left after a second `malloc_trim`, in MB:
+
+| Log | Idle, before | Idle, after | Rise, before | Rise, after | Left after trim, before | Left after trim, after |
+|---|---|---|---|---|---|---|
+| 12.5 MB | 108.4 | 104.2 | 45.4 | 48.3 | 44.4 | 14.7 |
+| 11.2 MB | 108.0 | 104.3 | 37.3 | 37.6 | 34.3 | 13.5 |
+| 10.2 MB | 109.1 | 103.0 | 29.2 | 31.2 | 27.4 | 12.9 |
+| 10.1 MB | 107.9 | 104.0 | 30.3 | 29.5 | 28.6 | 14.9 |
+| 9.7 MB | 107.5 | 103.1 | 32.5 | 34.8 | 30.6 | 13.8 |
+| 9.3 MB | 107.1 | 105.2 | 43.0 | 42.9 | 31.1 | 13.4 |
+
+**So live heap fell by 74 to 81 percent and RSS left after a trim by 48 to 67 percent, and the peak did
+not move, as opening still parses the whole log.** Phase 4 is what takes the peak away.
+
+- **A trim was forced for this, and the daemon would not have run it.** `FreedMemory` needs 32 MiB free
+  beyond what it settled on, and a single open frees less than that of what `mallinfo2` counts: over two
+  janitor passes the real daemon, with no trim forced, stayed where the open left it (148.5 MB and 141.6 MB
+  on the two largest, from about 103 MB idle). So until something else frees enough, opening one windowed session costs the daemon
+  RSS what it did. What is free is reused by the next open, so it does not add up. Phase 4 should
+  make this moot, and the threshold was left alone.
+- **These are this machine's logs, not section 1's**, though the sizes match to a few percent. The
+  39.47 against section 1's 38.5 is phases 1 and 2's folds, on another copy.
+- One run each: treat a few percent, and the open times, as noise.
