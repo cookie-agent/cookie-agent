@@ -396,23 +396,25 @@ its context limit bounds.
 Trimming events leaves these, each small today and each linear in the log. `state.json`
 holds them, so they cost twice: in memory, and in writing the file.
 
-| Term | Grows per | Bound |
+| Term | Grows per | Bound (as built in phase 5, section 12) |
 |---|---|---|
-| `SessionProjection.runs`: agent copy, input, final text | Run | Only unfinished runs, and the latest; older ones read from `history()` |
-| `ProjectionFoldState.tool_names` | Tool call | Only the window's |
-| `tool_starts`, `terminated_tools`, `elided_tools`, call owners | Tool call | Only calls of unfinished runs. A termination for an older call is refused by a new "before the floor" rule |
-| `turns`, `turn_models`, `usage_turns`, `attempts` | Turn | Only the window's, under the same rule |
-| `admissions` | Input | Only unsettled, plus a digest set bounded by age if needed |
-| `runs` attribution, `approval_owners`, `internal_runs`, `delegations` | Run or call | Only open ones, plus any a settled record can still name |
-| Taint | Damage found | Stays: rare |
-| "Once" facts of section 3.1 | Delegation, skill | Keys only. Linear but tiny; accept, and revisit by measurement |
-| Producer fold | Message | Unsettled bodies only (section 3.1), and settled ones as an id |
-| `LineIndex`, raw lines | Record | Dropped for the windowed part: a sparse index of run boundaries, 1 entry per run, and `history()` finds the rest by reading |
+| `SessionProjection.runs`: agent copy, input, final text | Run | Unfinished runs, those a pending call or an open delegation holds, and the latest 16 that ended; older ones read from `history()` (`run_outcome`) |
+| `ProjectionFoldState.tool_names` | Tool call | The last 16 committed turns' |
+| `tool_starts`, `terminated_tools`, `elided_tools`, call owners | Tool call | Open calls, the latest 16 that ended, and the owners of the last 16 turns. A record naming an older one is refused: the "before the floor" rule |
+| `turns`, `turn_models`, `usage_turns`, `attempts` | Turn | The last 16 turns; unfinished attempts and the latest 16 that ended, of the runs kept, under the same rule |
+| `admissions` | Input | The latest 256 |
+| `runs` attribution, `approval_owners`, `internal_runs`, `delegations` | Run or call | Open ones, whatever their age, and the latest 16 of each that settled |
+| Taint | Damage found | Stays: rare. A damaged log's validation keeps every map, as its taint excuses records by what they hold |
+| "Once" facts of section 3.1 | Delegation, skill | Keys only. Linear but tiny; accepted |
+| Producer fold | Message | Unsettled messages, and the latest 16 that settled; of the rest, an 8-byte digest of each key with its message's ID, kept for as long as the log |
+| `LineIndex`, raw lines | Record | From the window, or an earlier view cache start, on, and up to 512 marks before, 64 KiB apart or more; `history()` reads the file from the nearest. Raw lines: only those no record reproduces |
+| The harvest's delegation records | Delegation | **Not bounded** (section 12): a tree load rebuilds the delegation registry from each one's records |
 
 **Each bound narrows what an append can be validated against.** A record naming something
 older than the floor can no longer be checked. That is the real cost here, so each
 needs an answer to "can a valid record still name this?" before it shrinks, from the
-append rules, not from assumption. Phase 5 does these one at a time, by measured size.
+append rules, not from assumption. Phase 5 did these one at a time, by measured size, and
+section 12 gives each answer.
 
 ## 7. Correctness
 
@@ -911,3 +913,194 @@ is linear in the log unless it says otherwise, and each costs twice, in the heap
 - **A fork still reads the source's lines whole**, phase 3's note, and now reads the blobs of a line
   naming them to compare it. Worth streaming with the same pass.
 
+
+**Phase 5** (2026-11-07), read against the code at `ba255d488`.
+
+**The measurement.** `events::synthetic` (test-only) writes an ACP session's log of any length from
+the golden logs' records with their identities changed, so each record has a real shape and whatever
+takes it validates it: a real append (`AppendSink`) or a file a real open then folds (`FileSink`). Its
+mix is the store's largest log's, by counts and sizes only, read from copies of this machine's 238
+logs: 159 runs of 1 to 87 turns (7.3 on average), 0.87 calls a turn, a committed turn of 1.5 KB at
+the median and 5.7 KB at the 99th percentile, a call's result of 4.4 KB and 18 KB, a `run_started` of
+about 10 KB, half the runs started by a producer's message, an ACP session started in 38% of runs and
+a new one every 30th. What the largest log does not do, it does at the other logs' rates: an approval
+in 19% of runs, an internal agent after 19% of runs' end, and a delegation in 8% of runs, about one per
+megabyte, which is the highest rate any log over 1 MB shows. And what makes a bound dangerous, at the
+rates the store shows or above: a call open across up to 28 turns, a background job that ends up to 8
+runs after its own, a delegation that finishes up to 7 runs later, an input admitted and recalled.
+The store's logs agree on how far back a record reaches: of 33,526 call starts and 5,338 usage records,
+every one names the latest committed turn; a call ends up to 29 turns after it starts; and after a run's
+end only a delegation's finish (up to 6 runs later), a call's end, an internal agent's records, an
+abandon, and a checkpoint name it, all but the first in the same moment.
+
+`examples/forever_measure.rs` (`--features test-support`, release) generates a log `N` times the largest
+into a scratch store, opens it in a fresh process by a fold, lets it leave memory, which writes
+`state.json`, and opens it again from that, with a counting allocator; `check` converts a copy of a
+store and opens each log both ways under the reference checks. `tests/forever_growth.rs`, a test
+binary of its own for its allocator, holds the bound in CI time (below).
+
+**Measured** on this machine in a release build, one process per open, live heap and peak in MB by the
+counting allocator, a fresh generation at each length. "Before" is `ba255d488`:
+
+| Length | Log | Live, before | Live, after | Peak, before | Peak, after | `state.json`, before | after | Open, before | after |
+|---|---|---|---|---|---|---|---|---|---|
+| 1x | 13.3 MB | | 0.79 | | 1.27 | 4.03 MB | 0.52 MB | | 11 ms |
+| 4x | 55.5 MB | 22.36 | 1.51 | 38.40 | 1.77 | 16.02 MB | 0.66 MB | 90 ms | 14 ms |
+| 10x | 139 MB | 52.44 | 2.69 | 93.18 | 2.84 | 40.05 MB | 1.03 MB | 239 ms | 20 ms |
+| 25x | 348 MB | 141.24 | 7.52 | 240.87 | 8.23 | 100.27 MB | 2.01 MB | 600 ms | 37 ms |
+| 50x | 686 MB | 281.17 | 14.11 | 479.08 | 15.53 | 198.93 MB | 3.40 MB | 1,207 ms | 52 ms |
+| 100x | 1,352 MB | 561.20 | 27.99 | 955.00 | 30.55 | 395.77 MB | 6.54 MB | 2,464 ms | 87 ms |
+
+These are the opens from `state.json`. What still grows is the delegations: about 1,270 at 100x, at about
+21 KB of heap and 4.4 KB of the file each (below). Without them, the same mix:
+
+| Length | Live | Peak | `state.json` | Open from it | Fold from the start |
+|---|---|---|---|---|---|
+| 1x | 0.73 | 1.28 | 0.54 MB | 10 ms | 156 ms |
+| 4x | 0.70 | 1.22 | 0.50 MB | 10 ms | 602 ms |
+| 10x | 0.76 | 1.31 | 0.55 MB | 4 ms | 1,445 ms |
+| 25x | 0.99 | 1.67 | 0.67 MB | 12 ms | 3,652 ms |
+| 50x | 1.26 | 2.06 | 0.80 MB | 5 ms | 7,150 ms |
+| 100x | 1.78 | 2.89 | 1.10 MB | 16 ms | 14,373 ms |
+
+**So, without delegations, live heap stays within 1.1 MB, `state.json` within 0.6 MB, and the open within a
+few ms of what they are at today's length, across growth to 100 times it.** What grows is two terms kept
+for as long as the log, on purpose: a producer message's key (0.50 MB of the file at 100x, about 7,900
+messages at 64 bytes each) and each ACP session the log records (58 KB). A fold from the start, the
+fallback, stays linear in time, 14.4 s at 100x against 15.0 s before, and flat in memory: 2.1 MB at its
+peak, where the same open read whole would hold the log. Writing `state.json` at 100x takes 6 ms, against
+2,676 ms and a 1,061 MB peak before. Open times under 20 ms are noise.
+
+The growth test asserts this at 150 and 600 runs of the mix with texts a tenth of their size and no
+delegations: what an open from `state.json` holds and the file each within a tenth and 64 KiB of the
+shorter log's, its time within three times and 250 ms. In a debug build: 513 KB and 540 KB held, 300 KB and
+318 KB of file, 18 ms each.
+
+**The bounds, largest first**, each re-measured at 25x (`state.json`, then live heap of an open from it;
+before: 100.3 MB and 141.2 MB):
+
+1. `SessionProjection.runs`, 52 MB of the file: unfinished runs, those a pending call or an open
+   delegation holds, and the latest 16 that ended. To 48.5 MB and 71.9 MB.
+2. Validation, 37 MB (attempts 11.1, turn models 6.5, call owners 6.0, call starts 5.8, turns 3.8, runs
+   2.5, ended calls 1.1, internal agents 0.4): to 49 KB. To 11.1 MB and 23.1 MB.
+3. The producer fold, 4.0 MB: to 150 KB, the settled keys. To 7.3 MB and 18.7 MB.
+4. `LineIndex`, 3.3 MB of the file and twice that of heap with the raw lines: to 21 KB. To 4.0 MB and 10.1
+   MB.
+5. The usage rollup's observations, 0.96 MB, and the projection's tool names, 0.63 MB: to a few KB. To 2.4
+   MB and 7.9 MB.
+6. The approval decisions, 0.25 MB, the attempt counts, 0.17 MB, and the cancelled runs: to 9 KB. To 2.0
+   MB and 7.5 MB.
+
+The harvest's delegation records, 1.3 MB of the file at 25x, are what is left (below).
+
+**Can a valid record still name it?** Read from the append rules in `validate_record` and from what the
+engine appends, and checked against the store's logs above. Validation lets go only while the log is
+windowed (`windowed_after`, the window's own rule), and only of a log whose load found no damage.
+
+- **Committed turns, their models, their usage, and call owners:** a call's start names its turn's owner,
+  and a usage record its turn. Both name the latest: an ACP runner commits a turn and starts its calls at
+  once (`runner.rs`), and reports usage with the round's last turn; a native loop does the same. The last
+  16 turns stay. A start or usage naming an older turn is refused.
+- **Attempts:** each lifecycle record names an unfinished attempt, an abandon follows its commit at once,
+  and a replay's base names an earlier attempt of its own run, which only native runs record. Unfinished
+  attempts of the runs kept stay, and the latest 16 that ended.
+- **Calls:** an ACP call can stay open across many turns, and a background job's call ends after its run
+  does, so a call stays until it ends, whatever its age. An ended call is named again only by a second end,
+  which is refused either way, and by an elision, which a native model's compaction writes; a log a native
+  model reads is validated whole again (below). The latest 16 ended stay.
+- **Runs:** nearly every record names its run. After a run's end, a delegation's finish, a call's end, an
+  internal agent, a producer's claim and release, and a question's answer can still name it, so a run stays
+  while any of those is open, whatever its age. A title's internal agent starts after its run ends, a
+  client may retry a run's `client_run_id`, and a checkpoint or an abandon follows by a moment: the latest
+  16 ended runs stay for those. `DelegatedContextSeeded` needs no run to exist, which a kept run answers.
+- **Approvals:** an approval waits as long as the user does, so it stays until it settles. A step or a grant
+  can follow its settling at once; the latest 16 settled stay.
+- **Delegations:** a delegation can finish long after its run, so it stays until it finishes; the latest 16
+  finished stay. Its parent run stays with it.
+- **Internal agents:** open ones stay; the latest 16 finished.
+- **Admitted inputs:** a recall names an input while it waits: the latest 256.
+- **Producer messages:** a message stays while anything can change it: until it is consumed and recorded, or
+  discarded, with no claim on it, and its run ended. The latest 16 settled stay, as a cron job reads where
+  its message landed once that run ended. After that, only a producer's retry of its key names it, as an
+  exactly-once delivery, and that is kept for as long as the log, as an 8-byte digest of owner and key with
+  the message's ID. A retry of a settled message is answered with its ID without its payload compared.
+  Whether a goal's reminder was consumed is kept too. Ended runs go, but for the latest 16 and those a held
+  message names: an admission names the run that starts.
+- **Projection runs:** readers ask of the run they are in, a delegate's child run, or a client's retry.
+  `SessionProjection::run_outcome` answers a status and final text for any run, reading the log for one it
+  let go of; the engine's readers of an older run's outcome take it (delegation completion and reports,
+  background jobs, admissions). Idempotency by `client_run_id` holds for the latest 16 ended runs and any
+  running, and cancelling a run older than that is `MissingRun` rather than nothing to do.
+- **Approval decisions, cancelled runs, attempt counts, tool names:** each is read of what just happened, an
+  answer just given, the run just cancelled, the attempt's own run, the turn just committed. The latest 16
+  of each stay, and the decisions of open approvals.
+- **Line index and raw lines:** no record names them. A pass, a revert, a fork, and `visit_json` read the file
+  from the nearest mark instead; a revert before the held lines reads the cut and its new index from the file.
+- **Kept for as long as the log, and why:** a producer message's key, as above; each ACP session the log
+  records, which a delete removes from its agent; tree grants, which are standing permissions; each "once"
+  fact, a key per delegation or skill; and the delegation records, which follows.
+
+**What cannot go flat here: the harvest's delegation records.** A tree load hands every delegation record
+to the engine, which rebuilds its registry from them and verifies each invocation's records against its
+fingerprint, so neither a record nor a part of one can go. Keeping only each child's latest invocation broke
+the golden delegation scenario, whose resumed child lists only with its first. At the stress rate above,
+about 1,270 delegations at 100x, they are 5.4 MB of `state.json` and about 26 MB of heap: the harvest, and
+the tree load's products, which hold them again until the engine takes them. At the store's real rate,
+about one per 7 MB of log, a log 100 times today's largest would hold about 190. Bounding them is the
+registry's to change: it would keep a finished delegation's outcome and what a resume checks, not its
+request. That is not this phase's.
+
+**How a fold and a whole read are compared.** A whole read (`validate_loaded`, `rebuild_validation`) keeps
+every map as it validates, since a record may name anything before it, and lets go of what settled at its
+end (`finish_whole`). A record-at-a-time validation lets go after every record that could let something go,
+not only at a committed turn: letting go at turns only kept, at a log's tip, what had settled since, and a
+fork's prefix ending mid-run differed from its parse. What it lets go of depends only on what it holds, and
+no later valid record brings it back, so the two keep the same. `assert_agrees_with_whole` checks that what
+a fold holds, a whole read holds the same, and that once each lets go of all that settled they are equal,
+which a log that went native at its end needs (a native log does not let go). A state file and its tail are
+compared with a fold of the whole file exactly, as before. The producer fold is compared with its scan by
+`agrees_with_whole`, and the decisions and cancelled runs by what the fold keeps of the scan's.
+
+- **A record a fold refuses goes to the whole read.** A log written before this phase may hold a record naming
+  what a fold now lets go of. Its open falls back to reading it whole, as for damage, which costs its peak
+  once; its `state.json` then serves. A failed append's rebuild, and a revert's fold of what stays, do the same.
+  None of this machine's logs needed it: **all 238, converted to history format 3, opened a record at a time
+  with the bounds, and the 156 windowed ones opened again from the `state.json` they wrote, each under the
+  reference checks.** That is at each log's tip, not at every turn boundary as phase 4 checked.
+- **A duplicate older than the floor.** An append of a run, attempt, call, or model call ID that a settled
+  record used is not found, where a whole read quarantines it. IDs are fresh UUIDs and model call IDs come
+  per turn, so this would take damage; the whole read is what finds damage (decision 1).
+- **A refusal says so.** Once anything was let go, a refused record's message adds that it may name what
+  settled before the validation floor.
+- **Native logs.** Validation, the projection's runs, and the line index let go only while the log is
+  windowed. A log whose agent turns native reads itself whole at its first `model_context_events()`, and then
+  validates whole again too, as a native compaction's elision may name an old call. The producer fold, the
+  rollup, tool names, decisions, cancelled runs, and attempt counts are bounded for every log: a native
+  model's history folds producer messages from its events (`GoalProducerProjection::from_events`), which keeps
+  them all, and the rest is read of what just happened, which no reader of a native log asks otherwise.
+- **The rollup's observations.** `ModelUsageRollup` listed every request, never on the wire, to work out its
+  hit rate and cost and to take a provisional turn back out. It now holds `UsageObservations`: counts, sums,
+  and the latest request. The client protocol's Rust type changes; its wire and schema do not.
+- **The line index's sparse part is not "1 entry per run",** against section 6's first text, which grows
+  with runs: up to 512 marks, 64 KiB apart, every other one going and the spacing doubling as they fill, so
+  a read from one covers a bounded share of the file. Section 6 is corrected. Sequence gaps are noted as lines
+  are read, so the check before a write no longer walks the index.
+- `STATE_VERSION` rose from 1 to 6, once per commit that changed what the folds give, and the digest test
+  insisted each time. A file of an earlier version, including version 1, folds from the start
+  (`a_state_file_that_does_not_match_its_log_folds_the_log_from_its_start`).
+- **Not done or not measured.** The daemon's RSS was not measured. The real logs were checked at their tips
+  only. The mix has no skills, attachments, elicitations, checkpoints, or grants; a grant is kept for as long
+  as the log and none of this machine's large logs has one. `view_start` (0.19 MB) and the projection's 16
+  kept runs (0.22 MB, an agent snapshot each, written once per run where most are the same) are bounded and
+  were left.
+
+**What phases 6 to 8 must know.**
+
+- A native window (phase 7) must decide what native validation lets go of: a replay's base names an earlier
+  attempt of its run, an elision names an ended call of any age in the compaction's range, and `windowed`
+  gates every bound. The line index already holds from wherever the window is, and `read_lines_again`
+  rebuilds it after a cut.
+- The reviewer's own log (phase 8) is a native child session: it gets what native logs get.
+- `run_outcome` is how to ask of an older run; `ProjectionFolds.runs` no longer holds them all.
+- Measure with `forever_measure generate <dir> <times> [delegations a run]`, `open <dir> [parts]`, and
+  `check <dir>`, and keep `tests/forever_growth.rs` passing. `Mix` takes a rate of delegations.
