@@ -289,6 +289,11 @@ fn a_state_file_that_does_not_match_its_log_folds_the_log_from_its_start() {
         value["version"] = (STATE_VERSION + 1).into();
     });
     assert!(!opened_from_state(&path), "of another STATE_VERSION");
+    // An earlier build's, whose folds kept what this one's let go of.
+    edited(&path, latest, |value| {
+        value["version"] = (STATE_VERSION - 1).into();
+    });
+    assert!(!opened_from_state(&path), "of an earlier STATE_VERSION");
     edited(&path, latest, |value| {
         value["history_format"] = (cookie_agent_protocol::HISTORY_FORMAT + 1).into();
     });
