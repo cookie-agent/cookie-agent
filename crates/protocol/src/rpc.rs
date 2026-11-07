@@ -1368,10 +1368,7 @@ pub struct ModelUsageRollup {
     pub estimated_cost_usd: Option<f64>,
     #[serde(skip)]
     #[schemars(skip)]
-    pub observations: Vec<Usage>,
-    #[serde(skip)]
-    #[schemars(skip)]
-    pub cost_provenance: Vec<UsageCostProvenance>,
+    pub observed: UsageObservations,
     #[serde(skip)]
     #[schemars(skip)]
     pub arithmetic_overflow: bool,
@@ -1381,6 +1378,31 @@ pub struct ModelUsageRollup {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum UsageCostProvenance {
     Stamped(Option<u64>),
+}
+
+/// What a model's rollup keeps of the requests it counted, never on the wire:
+/// what its cache hit rate and its cost are worked out from, summed, and the
+/// latest request, which a provisionally counted turn takes back out. Summed,
+/// not listed, so it does not grow with the session
+/// (`docs/site/specs/forever-sessions.md` section 6).
+#[doc(hidden)]
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct UsageObservations {
+    /// How many requests it counted.
+    pub count: u64,
+    /// The latest of them and the cost it was stamped with.
+    pub latest: Option<(Usage, UsageCostProvenance)>,
+    /// Of the requests that reported a cache read: how many, their input tokens,
+    /// and their cache-read tokens, and how many of them reported no input,
+    /// which leaves the hit rate unknown.
+    pub cache_reported: u64,
+    pub cache_input_tokens: u128,
+    pub cache_read_tokens: u128,
+    pub cache_without_input: u64,
+    /// The stamped costs, in pico-USD times a million, and how many requests had
+    /// none, which leaves the cost unknown.
+    pub cost: u128,
+    pub unpriced: u64,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]

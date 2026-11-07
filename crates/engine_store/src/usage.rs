@@ -3,7 +3,8 @@ use std::collections::BTreeMap;
 use cookie_agent_config::{ModelPricing, PicoUsdPerMillion, PricingConfig};
 use cookie_agent_models::catalog::{CatalogModelCost, CatalogModelCostRates};
 use cookie_agent_protocol::{
-    ModelKey, ModelUsageRollup, ResolvedModelRef, Usage, UsageCostProvenance, UsageRollup,
+    ModelKey, ModelUsageRollup, ResolvedModelRef, Usage, UsageCostProvenance, UsageObservations,
+    UsageRollup,
 };
 
 const PICO_USD_PER_USD: u128 = 1_000_000_000_000;
@@ -88,8 +89,7 @@ fn record_model(
     usage: &Usage,
     cost_provenance: UsageCostProvenance,
 ) {
-    rollup.observations.push(usage.clone());
-    rollup.cost_provenance.push(cost_provenance);
+    observe(&mut rollup.observed, usage, cost_provenance);
     add_observed(
         &mut rollup.input_tokens,
         usage.input_tokens,
@@ -171,12 +171,7 @@ pub fn merge(target: &mut UsageRollup, source: &UsageRollup) {
     for (model, source_model) in &source.by_model {
         let target_model = target.by_model.entry(model.clone()).or_default();
         target_model.arithmetic_overflow |= source_model.arithmetic_overflow;
-        target_model
-            .observations
-            .extend(source_model.observations.iter().cloned());
-        target_model
-            .cost_provenance
-            .extend(source_model.cost_provenance.iter().copied());
+        merge_observed(&mut target_model.observed, &source_model.observed);
         checked_increment(
             &mut target_model.input_tokens,
             source_model.input_tokens,
@@ -214,29 +209,18 @@ pub fn merge(target: &mut UsageRollup, source: &UsageRollup) {
 /// stamped with when they were recorded.
 pub fn with_pricing(mut rollup: UsageRollup) -> UsageRollup {
     rollup.cache_hit_rate = (!rollup.arithmetic_overflow)
-        .then(|| {
-            hit_rate(
-                rollup
-                    .by_model
-                    .values()
-                    .flat_map(|model| &model.observations),
-            )
-        })
+        .then(|| hit_rate(rollup.by_model.values().map(|model| &model.observed)))
         .flatten();
     let mut total_cost_numerator = 0_u128;
     let mut all_priced = rollup.request_count > 0 && !rollup.arithmetic_overflow;
     for usage in rollup.by_model.values_mut() {
         usage.cache_hit_rate = (!usage.arithmetic_overflow)
-            .then(|| hit_rate(usage.observations.iter()))
+            .then(|| hit_rate(std::iter::once(&usage.observed)))
             .flatten();
-        let cost = if usage.arithmetic_overflow
-            || usage.observations.len()
-                != usize::try_from(usage.request_count).unwrap_or(usize::MAX)
-            || usage.cost_provenance.len() != usage.observations.len()
-        {
+        let cost = if usage.arithmetic_overflow || usage.observed.count != usage.request_count {
             None
         } else {
-            observations_cost(&usage.cost_provenance)
+            observations_cost(&usage.observed)
         };
         usage.estimated_cost_usd = cost.map(cost_numerator_to_usd);
         if let Some(cost) = cost {
@@ -322,21 +306,78 @@ pub fn recache_cost_pico_usd(
     u64::try_from(rounded_pico_usd).ok()
 }
 
-fn hit_rate<'a>(observations: impl Iterator<Item = &'a Usage>) -> Option<f64> {
-    // Only turns whose provider reported cache usage participate: a single
-    // cache-unaware (or cache-miss) turn must not poison the whole rollup.
-    let mut input = 0_u64;
-    let mut cache_read = 0_u64;
-    let mut observed = false;
-    for usage in observations {
-        let Some(turn_cache_read) = usage.input_tokens_cache_read else {
-            continue;
-        };
-        observed = true;
-        input = input.checked_add(usage.input_tokens?)?;
-        cache_read = cache_read.checked_add(turn_cache_read)?;
+/// Adds a request to what a model's rollup keeps of its requests.
+fn observe(observed: &mut UsageObservations, usage: &Usage, cost: UsageCostProvenance) {
+    observed.count += 1;
+    if let Some(cache_read) = usage.input_tokens_cache_read {
+        observed.cache_reported += 1;
+        match usage.input_tokens {
+            Some(input) => observed.cache_input_tokens += u128::from(input),
+            None => observed.cache_without_input += 1,
+        }
+        observed.cache_read_tokens += u128::from(cache_read);
     }
-    if !observed {
+    match cost {
+        UsageCostProvenance::Stamped(Some(pico_usd)) => {
+            observed.cost += u128::from(pico_usd) * TOKENS_PER_MILLION;
+        }
+        UsageCostProvenance::Stamped(None) => observed.unpriced += 1,
+    }
+    observed.latest = Some((usage.clone(), cost));
+}
+
+/// Takes the latest request back out of what a model's rollup keeps, returning
+/// it; `None` when it does not know it.
+pub(crate) fn unobserve_latest(observed: &mut UsageObservations) -> Option<Usage> {
+    let (usage, cost) = observed.latest.take()?;
+    observed.count -= 1;
+    if let Some(cache_read) = usage.input_tokens_cache_read {
+        observed.cache_reported -= 1;
+        match usage.input_tokens {
+            Some(input) => observed.cache_input_tokens -= u128::from(input),
+            None => observed.cache_without_input -= 1,
+        }
+        observed.cache_read_tokens -= u128::from(cache_read);
+    }
+    match cost {
+        UsageCostProvenance::Stamped(Some(pico_usd)) => {
+            observed.cost -= u128::from(pico_usd) * TOKENS_PER_MILLION;
+        }
+        UsageCostProvenance::Stamped(None) => observed.unpriced -= 1,
+    }
+    Some(usage)
+}
+
+fn merge_observed(target: &mut UsageObservations, source: &UsageObservations) {
+    target.count += source.count;
+    target.cache_reported += source.cache_reported;
+    target.cache_input_tokens += source.cache_input_tokens;
+    target.cache_read_tokens += source.cache_read_tokens;
+    target.cache_without_input += source.cache_without_input;
+    target.cost += source.cost;
+    target.unpriced += source.unpriced;
+    // A merged rollup takes nothing back out.
+    target.latest = None;
+}
+
+/// The cache hit rate of the requests `observed` counted: only those whose
+/// provider reported cache usage take part, so a single cache-unaware (or
+/// cache-miss) turn does not poison the whole rollup. Unknown when one of those
+/// reported no input, or a sum leaves 64 bits.
+fn hit_rate<'a>(observed: impl Iterator<Item = &'a UsageObservations>) -> Option<f64> {
+    let mut input = 0_u128;
+    let mut cache_read = 0_u128;
+    let mut reported = false;
+    for observed in observed {
+        if observed.cache_without_input > 0 {
+            return None;
+        }
+        reported |= observed.cache_reported > 0;
+        input += observed.cache_input_tokens;
+        cache_read += observed.cache_read_tokens;
+    }
+    let (input, cache_read) = (u64::try_from(input).ok()?, u64::try_from(cache_read).ok()?);
+    if !reported {
         None
     } else if input == 0 {
         Some(0.0)
@@ -345,18 +386,10 @@ fn hit_rate<'a>(observations: impl Iterator<Item = &'a Usage>) -> Option<f64> {
     }
 }
 
-fn observations_cost(cost_provenance: &[UsageCostProvenance]) -> Option<u128> {
-    let mut total = 0_u128;
-    for provenance in cost_provenance {
-        let cost = match provenance {
-            UsageCostProvenance::Stamped(Some(pico_usd)) => {
-                u128::from(*pico_usd).checked_mul(TOKENS_PER_MILLION)?
-            }
-            UsageCostProvenance::Stamped(None) => return None,
-        };
-        total = total.checked_add(cost)?;
-    }
-    Some(total)
+/// The stamped cost of the requests `observed` counted; unknown when one has
+/// none.
+fn observations_cost(observed: &UsageObservations) -> Option<u128> {
+    (observed.unpriced == 0).then_some(observed.cost)
 }
 
 fn request_cost(usage: &Usage, rates: ModelPricing) -> Option<u128> {

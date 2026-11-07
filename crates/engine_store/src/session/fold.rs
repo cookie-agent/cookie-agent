@@ -238,6 +238,10 @@ pub(super) enum Observed {
 /// end by a moment, as a title's internal agent does.
 pub(crate) const ENDED_RUNS_KEPT: usize = 16;
 
+/// How many of the latest committed turns' tool names a projection keeps, for
+/// the calls that start from them.
+const TOOL_NAME_TURNS: u64 = 16;
+
 /// Fold state a projection keeps beyond its public fields, so an appended
 /// event can be applied in place instead of refolding the log.
 #[derive(Clone, Debug, Default, serde::Deserialize, serde::Serialize)]
@@ -246,9 +250,9 @@ pub struct ProjectionFoldState {
     delegated_title: Option<SessionTitle>,
     automatic_title: Option<SessionTitle>,
     title_eligibility: AutomaticTitleEligibility,
-    /// Tool name of each committed tool-call part, by
-    /// `(model_turn_seq, content_index)`. A later committed turn with the
-    /// same sequence replaces the names it carries.
+    /// Tool name of each committed tool-call part of the last
+    /// [`TOOL_NAME_TURNS`] turns, by `(model_turn_seq, content_index)`. A later
+    /// committed turn with the same sequence replaces the names it carries.
     #[serde(with = "crate::events::sorted::map")]
     tool_names: HashMap<(u64, u32), String>,
     /// Committed turns whose usage counted at their commit because no
@@ -518,6 +522,11 @@ impl ProjectionFolds {
                             .insert((*model_turn_seq, index as u32), name.as_str().to_owned());
                     }
                 }
+                // A call starts right after its turn commits, in every log of the
+                // store: the names of the last turns are all a start reads.
+                self.fold
+                    .tool_names
+                    .retain(|(turn, _), _| turn + TOOL_NAME_TURNS > *model_turn_seq);
             }
             EventPayload::DelegationReserved { reservation, .. } => {
                 self.fold
@@ -715,11 +724,10 @@ impl ProjectionFolds {
                         resolved_model.provider_id.clone(),
                         resolved_model.model_id.clone(),
                     ) {
-                        let observation = self
-                            .usage_rollup
-                            .by_model
-                            .get(&model)
-                            .map_or(0, |rollup| rollup.observations.len().saturating_sub(1));
+                        let observation =
+                            self.usage_rollup.by_model.get(&model).map_or(0, |rollup| {
+                                rollup.observed.count.saturating_sub(1) as usize
+                            });
                         self.fold
                             .provisional_usage
                             .insert(*model_turn_seq, ProvisionalUsage { model, observation });
@@ -848,8 +856,7 @@ pub(super) mod rollup_whole {
 
     type Model = (
         cookie_agent_protocol::ModelKey,
-        Vec<Usage>,
-        Vec<cookie_agent_protocol::UsageCostProvenance>,
+        cookie_agent_protocol::UsageObservations,
         bool,
     );
 
@@ -863,14 +870,7 @@ pub(super) mod rollup_whole {
             models: rollup
                 .by_model
                 .iter()
-                .map(|(key, model)| {
-                    (
-                        key,
-                        &model.observations,
-                        &model.cost_provenance,
-                        model.arithmetic_overflow,
-                    )
-                })
+                .map(|(key, model)| (key, &model.observed, model.arithmetic_overflow))
                 .collect::<Vec<_>>(),
         }
         .serialize(serializer)
@@ -882,13 +882,12 @@ pub(super) mod rollup_whole {
         let whole = Whole::<UsageRollup, Vec<Model>>::deserialize(deserializer)?;
         let mut rollup = whole.rollup;
         rollup.arithmetic_overflow = whole.overflowed;
-        for (key, observations, cost_provenance, overflowed) in whole.models {
+        for (key, observed, overflowed) in whole.models {
             let model = rollup
                 .by_model
                 .get_mut(&key)
                 .ok_or_else(|| serde::de::Error::custom("a model the rollup does not name"))?;
-            model.observations = observations;
-            model.cost_provenance = cost_provenance;
+            model.observed = observed;
             model.arithmetic_overflow = overflowed;
         }
         Ok(rollup)
@@ -905,11 +904,12 @@ fn unrecord_provisional(rollup: &mut UsageRollup, provisional: &ProvisionalUsage
     let Some(model) = rollup.by_model.get_mut(&provisional.model) else {
         return false;
     };
-    if model.arithmetic_overflow || model.observations.len() != provisional.observation + 1 {
+    if model.arithmetic_overflow || model.observed.count != provisional.observation as u64 + 1 {
         return false;
     }
-    let usage = model.observations.pop().expect("length checked above");
-    model.cost_provenance.pop();
+    let Some(usage) = crate::usage::unobserve_latest(&mut model.observed) else {
+        return false;
+    };
     let take = |total: &mut u64, value: Option<u64>| {
         *total -= value.unwrap_or_default();
     };
@@ -939,7 +939,7 @@ fn unrecord_provisional(rollup: &mut UsageRollup, provisional: &ProvisionalUsage
         take(cache_write, usage.input_tokens_cache_write);
         *requests -= 1;
     }
-    if model.observations.is_empty() {
+    if model.observed.count == 0 {
         rollup.by_model.remove(&provisional.model);
     }
     true
