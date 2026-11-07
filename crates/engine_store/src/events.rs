@@ -4178,15 +4178,91 @@ fn load_event_jsonl_in_place(
     };
     let mut raw = Vec::new();
     let mut records = Vec::new();
-    let mut diagnostics = Vec::new();
-    let mut validation_taint = ValidationTaint::default();
-    let mut last_observed_seq = 0_u64;
-    let mut render_only = None;
+    let mut reader = LineReader::new(path);
     for (index, line) in bytes
         .split(|byte| *byte == b'\n')
         .filter(|line| !line.is_empty())
         .enumerate()
     {
+        let read = reader.read(index, line, &mut fetch)?;
+        if let Some((seq, strict)) = read.sequenced {
+            lines.starts.push((seq, line_start(line)));
+            raw.push(raw_line(seq, line, strict));
+        }
+        if read.stop {
+            break;
+        }
+        records.extend(read.record);
+    }
+    let observed_tip = reader.last_observed_seq.max(
+        reader
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.skipped)
+            .map(|diagnostic| diagnostic.seq)
+            .max()
+            .unwrap_or(0),
+    );
+    Ok(LoadedEvents {
+        records,
+        render_only: reader.render_only,
+        raw: LoadedRaw {
+            buffer: bytes,
+            lines: raw,
+            converted,
+        },
+        lines,
+        torn_tail: torn,
+        converted,
+        diagnostics: reader.diagnostics,
+        validation_taint: reader.validation_taint,
+        next_seq: observed_tip.saturating_add(1).max(1),
+    })
+}
+
+/// What one line of a log reads as.
+#[derive(Default)]
+struct LineRead {
+    /// The line's sequence, when it carries one that advances the log, and
+    /// whether it decoded into its record as it is, with no repair.
+    sequenced: Option<(u64, bool)>,
+    /// The line's record; `None` when it holds none this build can read.
+    record: Option<StoredEvent>,
+    /// The sequence stopped increasing here: nothing from this line on is read.
+    stop: bool,
+}
+
+/// Reads a log's lines in order, one at a time, what [`EventLog`]'s load and a
+/// pass over its file ([`History`]) both go through, so that they read the same
+/// records. It repairs what it can read and notes what it cannot.
+struct LineReader<'a> {
+    path: &'a Path,
+    diagnostics: Vec<EventLoadDiagnostic>,
+    validation_taint: ValidationTaint,
+    last_observed_seq: u64,
+    render_only: Option<RenderOnly>,
+}
+
+impl<'a> LineReader<'a> {
+    fn new(path: &'a Path) -> Self {
+        Self {
+            path,
+            diagnostics: Vec::new(),
+            validation_taint: ValidationTaint::default(),
+            last_observed_seq: 0,
+            render_only: None,
+        }
+    }
+
+    /// Reads `line`, the log's line at `index` among those that are not empty,
+    /// taking the values it keeps in blobs from `fetch`.
+    fn read(
+        &mut self,
+        index: usize,
+        line: &[u8],
+        fetch: &mut dyn FnMut(&str) -> io::Result<Vec<u8>>,
+    ) -> Result<LineRead, EventLogError> {
+        let path = self.path;
         let line_number = index as u64 + 1;
         // Nearly every record is intact: type it straight from the bytes and
         // leave the untyped, repairing reader to the rest, and to a record
@@ -4200,17 +4276,22 @@ fn load_event_jsonl_in_place(
         {
             if !observe_sequence(
                 event.seq,
-                &mut last_observed_seq,
-                &mut diagnostics,
-                &mut validation_taint,
+                &mut self.last_observed_seq,
+                &mut self.diagnostics,
+                &mut self.validation_taint,
             ) {
-                render_only.get_or_insert(RenderOnly::SequenceBroken(event.seq));
-                break;
+                self.render_only
+                    .get_or_insert(RenderOnly::SequenceBroken(event.seq));
+                return Ok(LineRead {
+                    stop: true,
+                    ..LineRead::default()
+                });
             }
-            lines.starts.push((event.seq, line_start(line)));
-            raw.push(raw_line(event.seq, line, true));
-            records.push(event);
-            continue;
+            return Ok(LineRead {
+                sequenced: Some((event.seq, true)),
+                record: Some(event),
+                stop: false,
+            });
         }
         let mut value = match serde_json::from_slice::<serde_json::Value>(line) {
             Ok(value) => value,
@@ -4221,28 +4302,28 @@ fn load_event_jsonl_in_place(
                         format!("SessionCreated line is unreadable: {error}"),
                     );
                 }
-                diagnostics.push(EventLoadDiagnostic {
+                self.diagnostics.push(EventLoadDiagnostic {
                     seq: line_number,
                     reason: format!("corrupt JSON line: {error}"),
                     engine_version: None,
                     skipped: true,
                 });
-                validation_taint.mark_broad(line_number, line_number);
-                continue;
+                self.validation_taint.mark_broad(line_number, line_number);
+                return Ok(LineRead::default());
             }
         };
         let Some(object) = value.as_object_mut() else {
             if index == 0 {
                 return corrupt_value(path, "SessionCreated line is not a JSON object");
             }
-            diagnostics.push(EventLoadDiagnostic {
+            self.diagnostics.push(EventLoadDiagnostic {
                 seq: line_number,
                 reason: "event envelope is not a JSON object".into(),
                 engine_version: None,
                 skipped: true,
             });
-            validation_taint.mark_broad(line_number, line_number);
-            continue;
+            self.validation_taint.mark_broad(line_number, line_number);
+            return Ok(LineRead::default());
         };
         let seq = object
             .get("seq")
@@ -4255,18 +4336,20 @@ fn load_event_jsonl_in_place(
         let envelope_run_id = object
             .get("run_id")
             .and_then(|value| RunId::deserialize(value).ok());
+        let mut read = LineRead::default();
         if object.get("seq").and_then(Value::as_u64).is_some() {
             if !observe_sequence(
                 seq,
-                &mut last_observed_seq,
-                &mut diagnostics,
-                &mut validation_taint,
+                &mut self.last_observed_seq,
+                &mut self.diagnostics,
+                &mut self.validation_taint,
             ) {
-                render_only.get_or_insert(RenderOnly::SequenceBroken(seq));
-                break;
+                self.render_only
+                    .get_or_insert(RenderOnly::SequenceBroken(seq));
+                read.stop = true;
+                return Ok(read);
             }
-            lines.starts.push((seq, line_start(line)));
-            raw.push(raw_line(seq, line, false));
+            read.sequenced = Some((seq, false));
         }
         // Envelope members this build does not know are ignored, on the
         // first line too: they carry what a newer build added.
@@ -4282,7 +4365,7 @@ fn load_event_jsonl_in_place(
             // An event from a newer build: an audit event is skipped without
             // a trace, a state event leaves the session render-only.
             if object.get("skippable") != Some(&Value::Bool(true)) {
-                diagnostics.push(EventLoadDiagnostic {
+                self.diagnostics.push(EventLoadDiagnostic {
                     seq,
                     reason: format!(
                         "event `{tag}` is unknown to this build; the session can only be viewed"
@@ -4290,9 +4373,10 @@ fn load_event_jsonl_in_place(
                     engine_version,
                     skipped: true,
                 });
-                render_only.get_or_insert_with(|| RenderOnly::UnknownStateEvent(tag.to_owned()));
+                self.render_only
+                    .get_or_insert_with(|| RenderOnly::UnknownStateEvent(tag.to_owned()));
                 if let Some(payload) = object.get("payload") {
-                    validation_taint
+                    self.validation_taint
                         .mark_record(seq, envelope_run_id, payload)
                         .map_err(|message| EventLogError::Corrupt {
                             path: path.to_owned(),
@@ -4300,7 +4384,7 @@ fn load_event_jsonl_in_place(
                         })?;
                 }
             }
-            continue;
+            return Ok(read);
         }
         let mut degraded = Vec::new();
         if object
@@ -4314,16 +4398,16 @@ fn load_event_jsonl_in_place(
             if index == 0 {
                 return corrupt_value(path, "SessionCreated payload is absent");
             }
-            diagnostics.push(EventLoadDiagnostic {
+            self.diagnostics.push(EventLoadDiagnostic {
                 seq,
                 reason: "required payload is absent".into(),
                 engine_version,
                 skipped: true,
             });
-            validation_taint.mark_broad(seq, seq);
-            continue;
+            self.validation_taint.mark_broad(seq, seq);
+            return Ok(read);
         };
-        if references && let Err(reason) = blobs::internalize(&mut payload_value, &mut fetch) {
+        if references && let Err(reason) = blobs::internalize(&mut payload_value, fetch) {
             // A blob a crash lost before the sync that covers its record, or
             // one removed by hand: the record cannot be read whole.
             if index == 0 {
@@ -4332,19 +4416,19 @@ fn load_event_jsonl_in_place(
                     format!("SessionCreated is unsupported or corrupt: {reason}"),
                 );
             }
-            diagnostics.push(EventLoadDiagnostic {
+            self.diagnostics.push(EventLoadDiagnostic {
                 seq,
                 reason,
                 engine_version,
                 skipped: true,
             });
-            validation_taint
+            self.validation_taint
                 .mark_record(seq, envelope_run_id, &payload_value)
                 .map_err(|message| EventLogError::Corrupt {
                     path: path.to_owned(),
                     message: message.into(),
                 })?;
-            continue;
+            return Ok(read);
         }
         let payload = match deserialize_event_payload_best_effort(&payload_value) {
             Ok(read) => {
@@ -4362,19 +4446,19 @@ fn load_event_jsonl_in_place(
                         format!("SessionCreated is unsupported or corrupt: {reason}"),
                     );
                 }
-                diagnostics.push(EventLoadDiagnostic {
+                self.diagnostics.push(EventLoadDiagnostic {
                     seq,
                     reason,
                     engine_version,
                     skipped: true,
                 });
-                validation_taint
+                self.validation_taint
                     .mark_record(seq, envelope_run_id, &payload_value)
                     .map_err(|message| EventLogError::Corrupt {
                         path: path.to_owned(),
                         message: message.into(),
                     })?;
-                continue;
+                return Ok(read);
             }
         };
         drop(payload_value);
@@ -4397,14 +4481,14 @@ fn load_event_jsonl_in_place(
         match event {
             Ok(event) => {
                 if !degraded.is_empty() {
-                    diagnostics.push(EventLoadDiagnostic {
+                    self.diagnostics.push(EventLoadDiagnostic {
                         seq,
                         reason: format!("degraded optional fields: {}", degraded.join(", ")),
                         engine_version: event.engine_version.clone(),
                         skipped: false,
                     });
                 }
-                records.push(event);
+                read.record = Some(event);
             }
             Err((error, payload)) => {
                 if index == 0 {
@@ -4413,14 +4497,14 @@ fn load_event_jsonl_in_place(
                         format!("SessionCreated is unsupported or corrupt: {error}"),
                     );
                 }
-                diagnostics.push(EventLoadDiagnostic {
+                self.diagnostics.push(EventLoadDiagnostic {
                     seq,
                     reason: error,
                     engine_version,
                     skipped: true,
                 });
                 let payload = serde_json::to_value(payload).expect("event payload serializes");
-                validation_taint
+                self.validation_taint
                     .mark_record(seq, envelope_run_id, &payload)
                     .map_err(|message| EventLogError::Corrupt {
                         path: path.to_owned(),
@@ -4428,30 +4512,8 @@ fn load_event_jsonl_in_place(
                     })?;
             }
         }
+        Ok(read)
     }
-    let observed_tip = last_observed_seq.max(
-        diagnostics
-            .iter()
-            .filter(|diagnostic| diagnostic.skipped)
-            .map(|diagnostic| diagnostic.seq)
-            .max()
-            .unwrap_or(0),
-    );
-    Ok(LoadedEvents {
-        records,
-        render_only,
-        raw: LoadedRaw {
-            buffer: bytes,
-            lines: raw,
-            converted,
-        },
-        lines,
-        torn_tail: torn,
-        converted,
-        diagnostics,
-        validation_taint,
-        next_seq: observed_tip.saturating_add(1).max(1),
-    })
 }
 
 fn require_started_run(
