@@ -214,6 +214,47 @@ pub fn open_internal_agents(
     internal
 }
 
+/// The loop guard's walk back from the tip (`loop_guard::loop_warning` at
+/// `d7c8c15f2`): the latest run's calls since its latest input or start,
+/// oldest first, each with what its latest termination showed.
+fn loop_calls(events: &Events) -> (Option<RunId>, std::collections::VecDeque<super::LoopCall>) {
+    let Some(run) = events.iter().rev().find_map(|event| {
+        matches!(event.payload, Event::RunStarted { .. })
+            .then_some(event.run_id)
+            .flatten()
+    }) else {
+        return (None, std::collections::VecDeque::new());
+    };
+    let mut calls = Vec::new();
+    let mut terminated = HashMap::<ToolCallId, &cookie_agent_protocol::ToolCallTermination>::new();
+    for event in events
+        .iter()
+        .rev()
+        .filter(|event| event.run_id == Some(run))
+    {
+        match &event.payload {
+            Event::UserInputSubmitted { .. }
+            | Event::UserInputApplied { .. }
+            | Event::RunStarted { .. } => break,
+            Event::ToolCallStarted { start } => calls.push(super::LoopCall {
+                id: start.tool_call_id,
+                fingerprint: start.operation_fingerprint.clone(),
+                observed: terminated
+                    .get(&start.tool_call_id)
+                    .map(|termination| super::LoopObserved::of(termination)),
+            }),
+            Event::ToolCallTerminated { termination } => {
+                terminated
+                    .entry(termination.tool_call_id)
+                    .or_insert(termination);
+            }
+            _ => {}
+        }
+    }
+    calls.reverse();
+    (Some(run), calls.into())
+}
+
 /// `approval_projection::doom_loop_repetitions`: approval requests for
 /// `fingerprint` in `run_id` since the last reset, user input or a different
 /// operation completing, scanning back from the tip.
@@ -1152,6 +1193,18 @@ pub fn differences(state: &LogState, events: &Events) -> Vec<&'static str> {
             }
         }
     }
+
+    check("loop calls", {
+        let (run, calls) = loop_calls(events);
+        let held = super::loop_calls_held(&calls);
+        let kept = calls
+            .range(calls.len() - held..)
+            .cloned()
+            .collect::<Vec<_>>();
+        run.and_then(|run| state.loop_calls(run))
+            .is_none_or(|folded| folded.iter().eq(kept.iter()))
+            && run.is_none_or(|run| state.loop_calls(run).is_some())
+    });
 
     // Approvals.
     let session = events[0].session_id;

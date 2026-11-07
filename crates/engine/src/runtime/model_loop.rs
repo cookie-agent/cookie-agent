@@ -721,7 +721,6 @@ impl Engine {
             fallback_index: AtomicU64::new(0),
             auto_compaction_failures: AtomicU8::new(0),
             auto_compaction_diagnostic_emitted: AtomicBool::new(false),
-            loop_guard_digests: Default::default(),
         });
         self.inner
             .sessions
@@ -1859,15 +1858,14 @@ impl Engine {
             && !cancelled
             && self.inner.config.load().runtime.loop_warning.enabled
             && let Some(warning) = super::loop_guard::loop_warning(
-                &self
-                    .inner
+                self.inner
                     .store
                     .log(active.session)?
-                    .model_context_events()?,
-                run,
+                    .state()
+                    .loop_calls(run)
+                    .unwrap_or(&std::collections::VecDeque::new()),
                 id,
                 &result.output,
-                &active.loop_guard_digests,
             )
             && result.output.len() + warning.len()
                 <= cookie_agent_protocol::PersistedToolResult::MAX_OUTPUT_BYTES

@@ -19,9 +19,9 @@ use cookie_agent_protocol::{
     ClientResponseId, DelegatedContextTurn, DelegationStage, EventOrigin, EventPayload,
     InternalAgentInvocationId, InternalAgentKind, InternalAgentRunId, InvocationId, Open,
     OperationFingerprint, ProducerMessageId, ProducerOwner, QueuedInputs, ResolvedModelRef,
-    RevisionFold, RunId, RunOutcome, SafeErrorMessage, SessionId, SessionModelState, SessionTitle,
-    SessionTitleChange, Sha256Digest, StoredEvent, ToolCallId, ToolTerminationOutcome,
-    TreeApprovalGrant, UserContent,
+    RevisionFold, RunId, RunOutcome, SafeErrorMessage, SafeToolError, SessionId, SessionModelState,
+    SessionTitle, SessionTitleChange, Sha256Digest, StoredEvent, ToolCallId, ToolCallTermination,
+    ToolTerminationOutcome, TreeApprovalGrant, UserContent,
 };
 use jiff::Timestamp;
 
@@ -51,6 +51,7 @@ pub struct LogState {
     #[serde(with = "crate::events::sorted::map")]
     internal_agents: HashMap<(InternalAgentInvocationId, InternalAgentRunId), OpenInternalAgent>,
     doom: DoomFold,
+    loops: LoopFold,
     streak: RunStreak,
     latest_turn: Option<(RunId, u64)>,
     fallback: Option<(RunId, usize)>,
@@ -73,6 +74,7 @@ impl LogState {
         self.approvals.observe(event);
         self.once.observe(event);
         self.doom.observe(event);
+        self.loops.observe(event);
         self.streak.observe(event);
         self.request.observe(event);
         match &event.payload {
@@ -454,6 +456,15 @@ impl LogState {
         } else {
             0
         }
+    }
+
+    /// The latest calls of `run` the loop guard compares, oldest first, when
+    /// `run` is the log's latest run: those started since its latest input,
+    /// with at least [`LOOP_WINDOW_CALLS`] up to each still open, and at most
+    /// [`LOOP_HELD_CALLS`].
+    #[must_use]
+    pub fn loop_calls(&self, run: RunId) -> Option<&VecDeque<LoopCall>> {
+        (self.loops.run == Some(run)).then_some(&self.loops.calls)
     }
 
     /// How the latest runs ended, as far back as anything cleared them.
@@ -1136,6 +1147,126 @@ impl DoomFold {
             _ => {}
         }
     }
+}
+
+/// How many calls the loop guard compares, up to and including the one it
+/// checks.
+pub const LOOP_WINDOW_CALLS: usize = 64;
+
+/// How many calls [`LoopFold`] holds at most: a call open while more than this
+/// many others start is checked against what is left.
+pub const LOOP_HELD_CALLS: usize = 4 * LOOP_WINDOW_CALLS;
+
+/// One call of the latest run as the loop guard compares it.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+pub struct LoopCall {
+    pub id: ToolCallId,
+    pub fingerprint: OperationFingerprint,
+    /// What the model saw of it, once it ended.
+    pub observed: Option<LoopObserved>,
+}
+
+/// What the model saw of a call that ended.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+pub enum LoopObserved {
+    /// Its output, without a loop warning, as a digest.
+    Output(Sha256Digest),
+    Error(SafeToolError),
+    Missing,
+}
+
+impl LoopObserved {
+    /// What `termination` showed the model.
+    #[must_use]
+    pub fn of(termination: &ToolCallTermination) -> Self {
+        match (
+            &termination.outcome,
+            &termination.result,
+            &termination.error,
+        ) {
+            (ToolTerminationOutcome::Completed, Some(result), _) => {
+                Self::Output(Self::output_digest(&result.output))
+            }
+            (_, _, Some(error)) => Self::Error(error.clone()),
+            _ => Self::Missing,
+        }
+    }
+
+    /// The digest of `output` as the guard compares it: without the warning
+    /// it may have appended.
+    #[must_use]
+    pub fn output_digest(output: &str) -> Sha256Digest {
+        Sha256Digest::of_bytes(
+            cookie_agent_protocol::model_text::without_loop_warning(output).as_bytes(),
+        )
+    }
+}
+
+/// The calls the loop guard compares, of the latest run since its latest
+/// input (`docs/site/specs/forever-sessions.md` section 5.1): a native
+/// model's context no longer reaches back to the run's start.
+#[derive(Clone, Debug, Default, serde::Deserialize, serde::Serialize)]
+struct LoopFold {
+    run: Option<RunId>,
+    calls: VecDeque<LoopCall>,
+}
+
+impl LoopFold {
+    fn observe(&mut self, event: &StoredEvent) {
+        if let EventPayload::RunStarted { .. } = &event.payload {
+            if event.run_id.is_some() {
+                *self = Self {
+                    run: event.run_id,
+                    calls: VecDeque::new(),
+                };
+            }
+            return;
+        }
+        if event.run_id.is_none() || event.run_id != self.run {
+            return;
+        }
+        match &event.payload {
+            EventPayload::UserInputSubmitted { .. } | EventPayload::UserInputApplied { .. } => {
+                self.calls.clear();
+            }
+            EventPayload::ToolCallStarted { start } => {
+                self.calls.push_back(LoopCall {
+                    id: start.tool_call_id,
+                    fingerprint: start.operation_fingerprint.clone(),
+                    observed: None,
+                });
+                self.let_go();
+            }
+            EventPayload::ToolCallTerminated { termination } => {
+                if let Some(call) = self
+                    .calls
+                    .iter_mut()
+                    .rev()
+                    .find(|call| call.id == termination.tool_call_id)
+                {
+                    call.observed = Some(LoopObserved::of(termination));
+                }
+                self.let_go();
+            }
+            _ => {}
+        }
+    }
+
+    /// Lets go of the calls no check can reach: those more than a window
+    /// before the oldest open one, or before the latest when none is open.
+    fn let_go(&mut self) {
+        let held = loop_calls_held(&self.calls);
+        self.calls.drain(..self.calls.len() - held);
+    }
+}
+
+/// How many of `calls`, the newest, the loop guard can still compare.
+pub(crate) fn loop_calls_held(calls: &VecDeque<LoopCall>) -> usize {
+    let open = calls
+        .iter()
+        .position(|call| call.observed.is_none())
+        .unwrap_or(calls.len());
+    (calls.len() - open.saturating_sub(LOOP_WINDOW_CALLS - 1)).min(LOOP_HELD_CALLS)
 }
 
 /// How the latest runs ended, as far back as input, a resume, or a run's
