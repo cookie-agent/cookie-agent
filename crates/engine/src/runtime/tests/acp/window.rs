@@ -36,26 +36,25 @@ pub(in crate::runtime::tests) fn assert_answers_as_reopened(log: &Arc<EventLog>,
                     .unwrap(),
                 "{context}: the newest window"
             );
-            for before in [tip / 2] {
-                let page = log
-                    .history_range(..before)
-                    .unwrap()
-                    .older_page(view, budget, true)
-                    .unwrap();
-                let whole = reopened
-                    .history_range(..before)
-                    .unwrap()
-                    .older_page(view, budget, true)
-                    .unwrap();
-                assert_eq!(
-                    page.window, whole.window,
-                    "{context}: the page before {before}"
-                );
-                assert_eq!(
-                    page.header_at_end, whole.header_at_end,
-                    "{context}: the header before {before}"
-                );
-            }
+            let before = tip / 2;
+            let page = log
+                .history_range(..before)
+                .unwrap()
+                .older_page(view, budget, true)
+                .unwrap();
+            let whole = reopened
+                .history_range(..before)
+                .unwrap()
+                .older_page(view, budget, true)
+                .unwrap();
+            assert_eq!(
+                page.window, whole.window,
+                "{context}: the page before {before}"
+            );
+            assert_eq!(
+                page.header_at_end, whole.header_at_end,
+                "{context}: the header before {before}"
+            );
         }
     }
     for cursor in [None, Some(1), Some(tip / 2), Some(tip.saturating_sub(1))] {
