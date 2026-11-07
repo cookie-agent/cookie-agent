@@ -36,6 +36,8 @@ mod history;
 pub(crate) mod sorted;
 pub mod state;
 pub mod state_file;
+#[cfg(any(test, feature = "test-support"))]
+pub mod synthetic;
 pub use durability::Commit;
 pub use history::{History, NewestPass, OlderPage, ViewCacheStart};
 pub use state::LogState;

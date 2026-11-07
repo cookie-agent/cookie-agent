@@ -939,6 +939,13 @@ impl SessionStore {
     }
 
     /// Path of `id`'s session directory for a known placement.
+    /// Test-only: where a root session of this store keeps its files.
+    #[cfg(any(test, feature = "test-support"))]
+    #[must_use]
+    pub fn root_dir_for_test(&self, id: SessionId) -> PathBuf {
+        self.path_for(SessionLocation::Root, id)
+    }
+
     fn path_for(&self, location: SessionLocation, id: SessionId) -> PathBuf {
         match location {
             SessionLocation::Root => self.root_path(id),
