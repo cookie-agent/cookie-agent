@@ -34,7 +34,7 @@ mod durability;
 mod history;
 pub mod state;
 pub use durability::Commit;
-pub use history::History;
+pub use history::{History, OlderPage, ViewCacheStart};
 pub use state::LogState;
 
 #[derive(Debug, Error)]

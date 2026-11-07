@@ -574,8 +574,9 @@ pub struct Window {
 /// what it leaves out, a gap, and the run's newest model attempts that fit.
 /// The log's last event is always sent, as a forward page sends it.
 ///
-/// [`TailWindowReader`] gives the same reading a log one event at a time, which is what the engine does; this is what
-/// tests compare that with.
+/// [`TailWindowReader`] gives the same reading a log one event at a time. This
+/// walks back from the end and measures only what fits, for a log held in
+/// memory.
 #[must_use]
 pub fn tail_window(events: &[Arc<StoredEvent>], view: EventsView, budget: usize) -> Window {
     newest(events, None, view, budget).unwrap_or_default()
@@ -755,8 +756,9 @@ fn newest(
 /// that fits, else at the earliest event that does, and at least one event
 /// while any precede `before`.
 ///
-/// [`OlderPageReader`] gives the same reading a log one event at a time, which is what the engine does; this is what
-/// tests compare that with.
+/// [`OlderPageReader`] gives the same reading a log one event at a time. This
+/// walks back from the end and measures only what fits, for a log held in
+/// memory.
 #[must_use]
 pub fn older_page(
     events: &[Arc<StoredEvent>],

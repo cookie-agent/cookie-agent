@@ -89,11 +89,7 @@ pub(super) fn write_view(
     if !log.is_persisted() || log.is_render_only() || log.is_converted() {
         return Ok(None);
     }
-    let mut reader = display_view::TailWindowReader::new(EventsView::Display, VIEW_BUDGET);
-    for event in log.history()? {
-        reader.observe(event?);
-    }
-    let Some((first, header)) = reader.cache_start() else {
+    let Some((first, header)) = log.history()?.view_cache_start(VIEW_BUDGET)? else {
         return Ok(None);
     };
     if log
@@ -130,19 +126,6 @@ pub(super) fn write_view(
     })?;
     replace_cache_file(&path, &bytes, CacheSync::Atomic)?;
     Ok(Some(view_start))
-}
-
-/// The newest-first window of a pass over a whole log.
-fn read_tail_window(
-    events: crate::events::History,
-    view: EventsView,
-    budget: usize,
-) -> Result<display_view::Window, SessionError> {
-    let mut reader = display_view::TailWindowReader::new(view, budget);
-    for event in events {
-        reader.observe(event?);
-    }
-    Ok(reader.window())
 }
 
 /// The answer to `events.subscribe` with `from: "tail"` for `window`.
@@ -292,8 +275,7 @@ impl SessionStore {
                 });
                 (events, receiver)
             };
-            let window = read_tail_window(events, view, budget)?;
-            return Ok((newest_first(window), receiver));
+            return Ok((newest_first(events.tail_window(view, budget)?), receiver));
         }
         Err(SessionError::TreeContended(id))
     }
@@ -328,6 +310,6 @@ impl SessionStore {
             self.refresh_view(id, &log);
         }
         let tip = log.last_event().map_or(0, |event| event.seq);
-        Ok((read_tail_window(log.history()?, view, budget)?, tip))
+        Ok((log.history()?.tail_window(view, budget)?, tip))
     }
 }

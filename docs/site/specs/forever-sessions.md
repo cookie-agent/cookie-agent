@@ -561,7 +561,8 @@ The counts in section 2 are of the lines that call each, in the engine, the stor
 - **A pass is `history()` or `history_range()`**, which yield `Result<Arc<StoredEvent>, _>` and hold no
   lock. A scan from the tip becomes a pass keeping the latest answer (`last_map_ok`), as a file reads
   forward. **Phase 3 must read the file inside `History::next`, off the worker (`off_worker`), bounded
-  at the tip it saw when asked, and cope with a revert cutting the file under a pass in flight.**
+  at the tip it saw when asked, and cope with a revert cutting the file under a pass in flight.** Until
+  then it hands out records of the list, so what it costs here says little of what it will cost.
 - **`creation()`** answers for a log's first record. Phase 3 keeps that record whatever the window.
 - **`model_context_events()` is fallible** because phase 3 must read a windowed log whole for it, for
   the ACP-to-native switch of section 5.4. `get_history`'s assembled view, compaction, the loop guard,
@@ -576,10 +577,15 @@ The counts in section 2 are of the lines that call each, in the engine, the stor
   `read_view` holds the same today. So opening a session costs a run's events for a moment, and a run
   that never ends is the one case a window is not bounded by its budget. An older page keeps what fits
   its budget, in whole events: a cut result is held whole until the page is cut.
-- **`write_view` is a pass at every run's end.** The cache needs the header before its start and the
-  sizes of what follows. In memory this measures every event at each run's end where it used to stop
-  at the budget, which costs more on a long log, and phase 3's "no `history()` on a normal ACP turn"
-  fails on it. **Phase 3 must make it incremental,** from what the last write held.
+- **A window, a page, and the view cache read the list while the log holds it** (`History::tail_window`,
+  `older_page`, `view_cache_start`), and in tests also as a pass, asserting the two match. A pass must
+  measure every record, as what fits is known only at the end, where the list walks back and stops. On
+  a 12 MB log of 9,072 events, in a release build: the newest window 12 ms against 233 ms, and the view
+  cache 8 ms against 238 ms. The branch is one method, `History::held`, which phase 3 makes answer
+  `None` for what comes from disk.
+- **`write_view` then costs a pass at every run's end,** at the 238 ms above plus parsing, and phase 3's
+  "no `history()` on a normal ACP turn" fails on it. **Phase 3 must make it incremental,** from what the
+  last write held. An open of a windowed session costs the same pass, unless the view cache answers.
 - **Other passes on the way to a normal ACP turn that phase 3 should look at:** the first title
   (`maybe_generate_session_title`, until a title commits), and `view_event_count` (two passes, for a
   reader's first forward page when more follow).

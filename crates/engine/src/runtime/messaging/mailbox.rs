@@ -285,23 +285,22 @@ impl Engine {
         let store = Arc::clone(&self.inner.store);
         off_worker(|| {
             let log = store.readable_log(params.session_id)?;
-            let mut reader = cookie_agent_protocol::display_view::OlderPageReader::new(
+            // The client holds the header of what starts at `before`.
+            let delta = matches!(params.header, cookie_agent_protocol::PageHeader::Delta);
+            let crate::events::OlderPage {
+                window: page,
+                header_at_end,
+            } = log.history_range(..params.before)?.older_page(
                 params.view,
                 cookie_agent_protocol::history_window_bytes(params.max_bytes),
-            );
-            for event in log.history_range(..params.before)? {
-                reader.observe(event?);
-            }
-            // The client holds the header of what starts at `before`.
-            let held = matches!(params.header, cookie_agent_protocol::PageHeader::Delta)
-                .then(|| reader.header_at_end());
-            let page = reader.finish();
-            let header = match (params.header, held) {
-                (cookie_agent_protocol::PageHeader::Full, _) => page.header,
-                (cookie_agent_protocol::PageHeader::None, _) => Vec::new(),
-                (cookie_agent_protocol::PageHeader::Delta, held) => {
+                delta,
+            )?;
+            let header = match params.header {
+                cookie_agent_protocol::PageHeader::Full => page.header,
+                cookie_agent_protocol::PageHeader::None => Vec::new(),
+                cookie_agent_protocol::PageHeader::Delta => {
                     cookie_agent_protocol::display_view::header_delta(
-                        &held.unwrap_or_default(),
+                        &header_at_end.unwrap_or_default(),
                         page.header,
                     )
                 }
