@@ -819,3 +819,128 @@ pub fn write_file(mix: &Mix, path: &Path) -> Result<(u64, u64), EventLogError> {
     write(mix, &mut sink)?;
     sink.finish().map_err(io_error)
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::*;
+    use crate::ownership::WriteAuthority;
+
+    fn creation() -> EventPayload {
+        payload_of(Templates::load().of("session_created"))
+    }
+
+    /// Appends a synthetic log of `runs` runs, each record as strictly as a live
+    /// append, past where a windowed log lets go of what settled.
+    fn appended(directory: &Path, runs: u64) -> Arc<EventLog> {
+        let path = directory.join(SESSION).join("events.jsonl");
+        fs::create_dir_all(path.parent().expect("a directory")).expect("a directory");
+        let log = EventLog::create(
+            path,
+            SESSION.parse().expect("a session"),
+            EventOrigin::new("client:synthetic").expect("an origin"),
+            creation(),
+        )
+        .expect("a log");
+        let mut sink = SkipCreation {
+            log: &log,
+            skipped: false,
+        };
+        write(&Mix::small(runs), &mut sink).expect("a synthetic log appends");
+        log
+    }
+
+    /// [`AppendSink`] for a log created with its creation already.
+    struct SkipCreation<'a> {
+        log: &'a EventLog,
+        skipped: bool,
+    }
+
+    impl Sink for SkipCreation<'_> {
+        fn record(
+            &mut self,
+            run: Option<RunId>,
+            origin: &str,
+            payload: EventPayload,
+        ) -> Result<(), EventLogError> {
+            if !std::mem::replace(&mut self.skipped, true) {
+                return Ok(());
+            }
+            AppendSink(self.log).record(run, origin, payload)
+        }
+    }
+
+    /// A long log through real appends: what it holds, what its folds give, and
+    /// its validation agree with a reopening of its file, with what it let go of.
+    #[test]
+    fn a_synthetic_log_appends_and_answers_as_its_file() {
+        let directory = tempfile::tempdir().expect("a directory");
+        let log = appended(directory.path(), 48);
+        assert!(log.window_for_test().is_some(), "a windowed log");
+        assert!(
+            log.validation
+                .lock()
+                .expect("validation lock poisoned")
+                .let_go,
+            "it let go of what settled"
+        );
+        log.assert_window_reads_as_reopened();
+        let whole = log
+            .history()
+            .and_then(Iterator::collect::<Result<Vec<_>, _>>)
+            .expect("a pass");
+        super::super::state::reference::assert_matches_scans(&log.state(), &whole);
+        let reopened = EventLog::open(log.path().to_owned(), log.session_id).expect("a reopening");
+        assert_eq!(reopened.record_count(), log.record_count(), "the records");
+    }
+
+    /// A revert to well before the window, and a fork through there, read what
+    /// the window let go of from the file, and answer as the file does.
+    #[test]
+    fn a_revert_and_a_fork_before_the_window_read_the_file() {
+        let directory = tempfile::tempdir().expect("a directory");
+        let log = appended(directory.path(), 40);
+        let window = log.window_for_test().expect("a windowed log");
+        let through = window / 3;
+        // A fork of the log through there, written whole and opened.
+        let authority = WriteAuthority::new();
+        let fork_session: SessionId = "01a1b46f-0f55-7ba3-86e8-f8d942e26917"
+            .parse()
+            .expect("a session");
+        let prefix = log
+            .read_fork_prefix(fork_session, through)
+            .expect("a fork's prefix");
+        let fork_path = directory
+            .path()
+            .join(fork_session.to_string())
+            .join("events.jsonl");
+        fs::create_dir_all(fork_path.parent().expect("a directory")).expect("a directory");
+        // A store's fork shares its source's blobs with the tree it makes.
+        let blob_dir = blobs::tree_blob_dir(&fork_path);
+        fs::create_dir_all(&blob_dir).expect("a directory");
+        for entry in fs::read_dir(blobs::tree_blob_dir(log.path())).expect("the blobs") {
+            let entry = entry.expect("a blob");
+            fs::copy(entry.path(), blob_dir.join(entry.file_name())).expect("a copy");
+        }
+        let fork = EventLog::fork_buffered(fork_path.clone(), prefix, authority.capability());
+        let lines = fork.write_whole(&fork_path).expect("a fork written whole");
+        fork.mark_written(lines);
+        let forked = EventLog::open_read_only(fork_path, fork_session).expect("the fork opens");
+        let source = log
+            .history_range(..=through)
+            .and_then(Iterator::collect::<Result<Vec<_>, _>>)
+            .expect("a pass");
+        let copied = forked
+            .history()
+            .and_then(Iterator::collect::<Result<Vec<_>, _>>)
+            .expect("a pass");
+        assert_eq!(copied.len(), source.len(), "the fork's records");
+        // The revert, which cuts where only a mark is near.
+        log.truncate_after_for_test(through).expect("a revert");
+        assert_eq!(log.physical_tip_seq(), through, "the revert's tip");
+        log.assert_window_reads_as_reopened();
+        let reopened = EventLog::open(log.path().to_owned(), log.session_id).expect("a reopening");
+        assert_eq!(reopened.physical_tip_seq(), through, "the cut");
+    }
+}

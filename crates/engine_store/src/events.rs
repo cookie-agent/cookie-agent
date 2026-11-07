@@ -3572,7 +3572,7 @@ struct ValidationState {
     active_run: Option<RunId>,
     record_count: usize,
     /// The log's window is an ACP agent's ([`windowed_after`]): what settled is
-    /// let go of at each committed turn and run's end.
+    /// let go of after each record.
     windowed: bool,
     /// Something was let go of: a record naming what this does not hold may name
     /// what is older than its floor.
@@ -3716,8 +3716,9 @@ impl ValidationState {
     /// the last [`ADMISSIONS_KEPT`] admitted inputs. What goes is what settled
     /// before all of those, and a record naming it is refused: the floor.
     ///
-    /// It depends only on what the state holds, so letting go at every turn, or
-    /// once at a whole log's end, keeps the same.
+    /// It depends only on what the state holds, and what it lets go of no later
+    /// record can bring back, so letting go after every record, or once at a whole
+    /// log's end, keeps the same.
     fn let_go_settled(&mut self) {
         if self.keep_all || self.taint != ValidationTaint::default() {
             return;
@@ -3840,23 +3841,48 @@ impl ValidationState {
         fn set_within<K: Eq + std::hash::Hash>(held: &HashSet<K>, whole: &HashSet<K>) -> bool {
             held.iter().all(|key| whole.contains(key))
         }
-        assert!(
-            within(&self.runs, &whole.runs)
-                && within(&self.approval_owners, &whole.approval_owners)
-                && within(&self.attempts, &whole.attempts)
-                && within(&self.turns, &whole.turns)
-                && within(&self.turn_models, &whole.turn_models)
-                && set_within(&self.usage_turns, &whole.usage_turns)
-                && within(&self.internal_runs, &whole.internal_runs)
-                && within(&self.delegations, &whole.delegations)
-                && within(&self.model_call_owners, &whole.model_call_owners)
-                && within(&self.provider_item_owners, &whole.provider_item_owners)
-                && within(&self.tool_starts, &whole.tool_starts)
-                && within(&self.terminated_tools, &whole.terminated_tools)
-                && set_within(&self.elided_tools, &whole.elided_tools)
-                && within(&self.admissions, &whole.admissions),
-            "the validation state holds what {what} does not, or otherwise"
-        );
+        for (map, held) in [
+            ("runs", within(&self.runs, &whole.runs)),
+            (
+                "approval owners",
+                within(&self.approval_owners, &whole.approval_owners),
+            ),
+            ("attempts", within(&self.attempts, &whole.attempts)),
+            ("turns", within(&self.turns, &whole.turns)),
+            ("turn models", within(&self.turn_models, &whole.turn_models)),
+            (
+                "usage turns",
+                set_within(&self.usage_turns, &whole.usage_turns),
+            ),
+            (
+                "internal runs",
+                within(&self.internal_runs, &whole.internal_runs),
+            ),
+            ("delegations", within(&self.delegations, &whole.delegations)),
+            (
+                "model call owners",
+                within(&self.model_call_owners, &whole.model_call_owners),
+            ),
+            (
+                "provider item owners",
+                within(&self.provider_item_owners, &whole.provider_item_owners),
+            ),
+            ("tool starts", within(&self.tool_starts, &whole.tool_starts)),
+            (
+                "terminated tools",
+                within(&self.terminated_tools, &whole.terminated_tools),
+            ),
+            (
+                "elided tools",
+                set_within(&self.elided_tools, &whole.elided_tools),
+            ),
+            ("admissions", within(&self.admissions, &whole.admissions)),
+        ] {
+            assert!(
+                held,
+                "the validation state's {map} hold what {what}'s do not, or otherwise"
+            );
+        }
         let settled = |state: &Self| {
             let mut state = state.clone();
             state.keep_all = false;
@@ -3867,6 +3893,54 @@ impl ValidationState {
             settled(self) == settled(whole),
             "the validation state differs from {what} once each lets go of what settled"
         );
+    }
+
+    /// Whether [`Self::let_go_settled`] could let go of anything: a cheap check,
+    /// true whenever it could, on maps it keeps small.
+    fn may_let_go(&self) -> bool {
+        let settled = |count: usize| count > SETTLED_KEPT;
+        self.turns.len() as u64 > TURNS_KEPT
+            || self.admissions.len() > ADMISSIONS_KEPT
+            || settled(self.terminated_tools.len())
+            || settled(
+                self.approval_owners
+                    .values()
+                    .filter(|owner| owner.settled_seq.is_some())
+                    .count(),
+            )
+            || settled(
+                self.delegations
+                    .values()
+                    .filter(|delegation| delegation.finished_seq.is_some())
+                    .count(),
+            )
+            || settled(
+                self.internal_runs
+                    .values()
+                    .filter(|internal| internal.finished_seq.is_some())
+                    .count(),
+            )
+            || settled(
+                self.runs
+                    .values()
+                    .filter(|run| run.ended_seq.is_some())
+                    .count(),
+            )
+            || settled(
+                self.attempts
+                    .values()
+                    .filter(|attempt| attempt.finished)
+                    .count(),
+            )
+            // What a run that went leaves.
+            || self
+                .attempts
+                .values()
+                .any(|attempt| !self.runs.contains_key(&attempt.run_id))
+            || self
+                .tool_starts
+                .values()
+                .any(|(run, _)| !self.runs.contains_key(run))
     }
 
     /// How many entries its maps hold, to tell whether a letting go let go.
@@ -4649,8 +4723,8 @@ fn rebuild_whole<E: Borrow<StoredEvent>>(
 }
 
 /// Validates `record` as the next of a log whose validation is `state`, and folds
-/// it in. A windowed log lets go of what settled at each committed turn and run's
-/// end, so a record naming what it let go of is refused: older than the floor
+/// it in. A windowed log lets go of what settled as it goes, so a record naming
+/// what it let go of is refused: older than the floor
 /// (`docs/site/specs/forever-sessions.md` sections 6 and 11).
 fn validate_record_incremental(
     path: &Path,
@@ -4675,12 +4749,9 @@ fn validate_record_incremental(
     if let Some(windowed) = windowed_after(&record.payload) {
         state.windowed = windowed;
     }
-    if state.windowed
-        && matches!(
-            record.payload,
-            EventPayload::RunFinished { .. } | EventPayload::ModelTurnCommitted { .. }
-        )
-    {
+    // After every record, so what it holds is what letting go once at the end of
+    // a whole validation keeps, wherever the log ends.
+    if state.windowed && state.may_let_go() {
         state.let_go_settled();
     }
     Ok(())
