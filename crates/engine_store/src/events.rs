@@ -1332,15 +1332,15 @@ impl EventStorage {
         )
     }
 
-    /// Whether the line index let go of lines the log needs it to hold: a log that
+    /// Whether the line index let go of lines of what the log holds: a log that
     /// read itself whole for a native model after an ACP agent's window, whose
-    /// context starts before that window did.
+    /// context starts before that window did. A view cache's start that comes to
+    /// lie before them is not: a cache is then not written, as before.
     fn lines_fall_short(&self) -> bool {
         let Some(first) = self.lines.as_ref().and_then(LineIndex::held_from) else {
             return false;
         };
-        self.lines_held_from()
-            .is_none_or(|held_from| held_from < first)
+        self.window.is_none_or(|window| window < first)
     }
 
     /// Lets go of where the lines before what the log holds start, but for where a
