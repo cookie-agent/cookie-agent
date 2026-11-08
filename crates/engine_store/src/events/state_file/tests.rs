@@ -454,6 +454,8 @@ fn a_state_file_from_before_a_revert_folds_the_log_from_its_start() {
         .expect("an append");
     }
     drop(log);
+    // An owned open removed it, as it did not match.
+    write_state(&path, latest);
     assert!(
         !opened_from_state(&path),
         "the file from before it, regrown"
@@ -491,7 +493,9 @@ fn a_crash_at_each_step_of_writing_folds_or_opens_as_a_parse() {
     assert!(!opened_from_state(&path), "the log ends before the record");
     fs::write(&path, &whole).expect("the whole log");
 
-    // Part of the record the file names reached the disk.
+    // Part of the record the file names reached the disk. An owned open removed
+    // the file, as it did not match.
+    write_state(&path, latest);
     let torn = line_start + (*end as usize - line_start) / 2;
     fs::write(&path, &whole[..torn]).expect("a torn record");
     assert!(!opened_from_state(&path), "the record is torn");

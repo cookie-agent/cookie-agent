@@ -1700,3 +1700,11 @@ a review in the golden scenario.
   (`write_state_unless_cut`, which the reviewer's log uses too;
   `a_state_write_racing_a_revert_leaves_neither_its_file_nor_its_note`, through a test-only seam
   between taking the state and writing it).
+- **An owned open removes a `state.json` it has no use for.** A file that no longer matched its
+  log, or one beside a log under `STATE_MIN_LOG_BYTES`, was read and parsed at every open and
+  thrown away, and nothing rewrote or removed it. An owned open (`open_owned`, the parse it falls
+  back on, and `owned_from_read_only`, so a reviewer's log too) now removes the file when the log
+  did not open from it or is shorter than that, and notes nothing written
+  (`an_owned_open_removes_a_state_file_that_does_not_match_or_is_not_wanted`). A read-only open
+  leaves it alone. Two checks of `state_file/tests.rs` write their file again before an open, as
+  the owned open before them now removes it.

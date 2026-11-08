@@ -1823,13 +1823,17 @@ impl EventLog {
             })
         });
         let Some(opened) = opened else {
-            return Self::open_parsed(
+            let log = Self::open_parsed(
                 path,
                 session_id,
                 read_only,
                 write_capability,
                 _test_authority,
-            );
+            )?;
+            if !read_only {
+                log.settle_state_file();
+            }
+            return Ok(log);
         };
         let state_file::OpenedLog {
             storage,
@@ -1875,6 +1879,9 @@ impl EventLog {
         });
         #[cfg(any(test, feature = "test-support"))]
         log.assert_opened_as_parsed();
+        if !read_only {
+            log.settle_state_file();
+        }
         Ok(log)
     }
 
@@ -2125,7 +2132,7 @@ impl EventLog {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone();
-        Some(Arc::new(Self {
+        let owned = Arc::new(Self {
             path: self.path.clone(),
             session_id: self.session_id,
             append: Mutex::new(()),
@@ -2160,7 +2167,9 @@ impl EventLog {
             model_context_shadow: Mutex::default(),
             #[cfg(any(test, feature = "test-support"))]
             opened_from_state: self.opened_from_state,
-        }))
+        });
+        owned.settle_state_file();
+        Some(owned)
     }
 
     /// Appends one record and, when it is a commit point, returns after a

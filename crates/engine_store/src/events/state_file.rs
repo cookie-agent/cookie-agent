@@ -721,6 +721,36 @@ impl EventLog {
         })
     }
 
+    /// On an owned open: removes [`STATE_FILE`] when this log did not open from
+    /// it, as it does not match the log, or when the log is shorter than the
+    /// least that has one ([`STATE_MIN_LOG_BYTES`]), though it matches. Nothing
+    /// else would: such a file is read at every open and thrown away, and only a
+    /// log that is due one writes it again. A removal that fails leaves it for
+    /// the next owned open.
+    pub(super) fn settle_state_file(&self) {
+        let short = self
+            .storage()
+            .lines
+            .as_ref()
+            .is_none_or(|lines| lines.len < state_min_log_bytes());
+        if !short && self.state_written.load(Ordering::Acquire) > 0 {
+            return;
+        }
+        let Some(directory) = self.path.parent() else {
+            return;
+        };
+        let path = directory.join(STATE_FILE);
+        match fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => {
+                eprintln!("{}: could not be removed: {error}", path.display());
+                return;
+            }
+        }
+        self.state_written.store(0, Ordering::Release);
+    }
+
     /// Notes that `state`, this log's, is now in [`STATE_FILE`].
     pub fn note_state_written(&self, state: &StateFile) {
         self.state_written

@@ -216,3 +216,42 @@ fn a_state_write_racing_a_revert_leaves_neither_its_file_nor_its_note() {
         "nothing of the log noted as written"
     );
 }
+
+/// An owned open removes a `state.json` that does not match its log, and one beside
+/// a log shorter than the least that has one, though it matches: nothing else
+/// would, and every open read it and threw it away (review, 2026-11-08). One that
+/// matches a log long enough stays.
+#[test]
+fn an_owned_open_removes_a_state_file_that_does_not_match_or_is_not_wanted() {
+    let temporary = private_tempdir();
+    let (root, _) = golden_acp_tree(&temporary);
+    let store = store_in(&temporary);
+    leave_memory(&store, &[root]);
+    let dir = store.resolve_dir(root).expect("a session");
+    let state = dir.join(STATE_FILE);
+
+    store.open_for_write(root).expect("an adoption");
+    assert!(
+        store
+            .get_resident(root)
+            .expect("resident")
+            .log
+            .opened_from_state_for_test()
+    );
+    assert!(state.is_file(), "a file that matches stays");
+    assert!(store.evict(root).expect("an eviction"));
+
+    fs::write(&state, b"not json").expect("a damaged file");
+    store.open_for_write(root).expect("an adoption");
+    assert!(!state.exists(), "a file that does not match goes");
+    assert!(store.evict(root).expect("an eviction"));
+    assert!(state.is_file(), "leaving memory writes it again");
+
+    let length = fs::metadata(dir.join(crate::session::EVENTS_FILE))
+        .expect("the log")
+        .len();
+    crate::events::state_file::set_state_min_log_bytes_for_test(length + 1);
+    store.open_for_write(root).expect("an adoption");
+    crate::events::state_file::set_state_min_log_bytes_for_test(0);
+    assert!(!state.exists(), "a log shorter than the least has none");
+}
