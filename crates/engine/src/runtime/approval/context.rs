@@ -756,4 +756,4 @@ fn summarize_arguments(name: &str, arguments: &Value) -> String {
 }
 
 #[cfg(test)]
-mod tests;
+pub(in crate::runtime) mod tests;

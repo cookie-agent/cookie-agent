@@ -13,10 +13,12 @@ use super::*;
 use crate::session::projection;
 
 /// The digest of what every fold gives at every turn boundary of the golden logs,
-/// and the [`STATE_VERSION`] it was recorded under.
+/// and the [`STATE_VERSION`] it was recorded under. Recorded again, under the same
+/// version, when the golden `reviewer` scenario was added: what the folds give on
+/// the earlier logs did not change, and no earlier build wrote a reviewer's log.
 const RECORDED_DIGEST: (u32, &str) = (
     9,
-    "e9c21b93011f30b4fb00fe4e245411d4e0f4cf918f1fa9f75e84f6ed6e22e7a6",
+    "e339ca6de965aa178ca54c152a812adb1a5bfc7b5a0c4f651f9711037184c175",
 );
 
 fn golden_root() -> PathBuf {
@@ -48,10 +50,22 @@ fn golden_logs() -> Vec<PathBuf> {
     logs
 }
 
+/// The session of a golden log: the one its directory is named for, or, for an
+/// approval reviewer's own log, the one its first record names.
 fn session_of(path: &Path) -> SessionId {
-    path.parent()
+    let directory = path
+        .parent()
         .and_then(Path::file_name)
-        .and_then(|name| name.to_str())
+        .and_then(|name| name.to_str());
+    if directory == Some(crate::session::REVIEWER_DIR) {
+        let first = fs::read_to_string(path).expect("a golden log");
+        let first = first.lines().next().expect("a creation");
+        return serde_json::from_str::<serde_json::Value>(first).expect("a record")["session_id"]
+            .as_str()
+            .and_then(|id| id.parse().ok())
+            .expect("the creation names its session");
+    }
+    directory
         .and_then(|name| name.parse().ok())
         .expect("a log's directory is named for its session")
 }

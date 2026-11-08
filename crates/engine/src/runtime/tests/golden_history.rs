@@ -474,15 +474,172 @@ fn scenario_logs(scenario: &Path) -> Vec<Arc<crate::events::EventLog>> {
         .into_iter()
         .filter(|path| path.file_name().is_some_and(|name| name == "events.jsonl"))
         .map(|path| {
-            let session = path
+            let directory = path
                 .parent()
                 .and_then(Path::file_name)
-                .and_then(|name| name.to_str())
-                .and_then(|name| name.parse::<SessionId>().ok())
-                .expect("a log's directory names its session");
+                .and_then(|name| name.to_str());
+            // An approval reviewer's own log names its session in its first record.
+            let session = if directory == Some(crate::session::REVIEWER_DIR) {
+                let log = std::fs::read_to_string(&path).expect("a golden log");
+                serde_json::from_str::<Value>(log.lines().next().expect("a creation"))
+                    .expect("a record")["session_id"]
+                    .as_str()
+                    .and_then(|id| id.parse::<SessionId>().ok())
+                    .expect("the creation names its session")
+            } else {
+                directory
+                    .and_then(|name| name.parse::<SessionId>().ok())
+                    .expect("a log's directory names its session")
+            };
             crate::events::EventLog::open_read_only(path, session).expect("a golden log")
         })
         .collect()
+}
+
+/// At every review of every golden log, the approval reviewer's own log sends
+/// what today's render of the whole log gives, with bounds no log reaches
+/// and with bounds small enough to start an epoch at nearly every review
+/// (`docs/site/specs/forever-sessions.md` section 5.5).
+#[test]
+fn golden_logs_send_from_the_reviewer_log_what_the_render_gives() {
+    use crate::runtime::approval::context::{Bounds, render, tests::log_sends};
+    let mut reviews = 0;
+    let mut verdicts = 0;
+    for (_, scenario) in golden_scenarios() {
+        for log in scenario_logs(&scenario) {
+            let events = log
+                .history()
+                .expect("a pass")
+                .collect::<Result<Vec<_>, _>>()
+                .expect("a golden log");
+            verdicts += log_sends::verdicts(&events).len();
+            for event in &events {
+                let EventPayload::ApprovalRequested { request } = &event.payload else {
+                    continue;
+                };
+                reviews += 1;
+                for bounds in [
+                    Bounds::new(None, None, "Evaluate approval requests."),
+                    Bounds {
+                        window: 1_500,
+                        system_tokens: 20,
+                    },
+                ] {
+                    assert_eq!(
+                        log_sends::sent(&events, None, request.approval_id(), bounds),
+                        render(&events, None, request.approval_id(), bounds),
+                        "{}: review {}",
+                        log.path().display(),
+                        event.seq
+                    );
+                }
+            }
+        }
+    }
+    assert!(reviews > 0, "no golden log asks for a review");
+    assert!(verdicts > 0, "no golden log records a verdict");
+}
+
+/// The approval reviewer's own logs the golden `reviewer` scenario recorded
+/// hold, at every turn, what today's render of the session's whole log gives
+/// for that review with the same bounds: the turns since the epoch's first as
+/// its earlier turns, and the turn as its request. That holds for a root, for
+/// the fork, whose log was copied from its source's latest epoch, after a
+/// revert that cut the root's, and for a delegated child, whose opening its
+/// root's log gave once (`docs/site/specs/forever-sessions.md` section 5.5).
+#[test]
+fn the_golden_reviewer_logs_hold_what_the_render_gives() {
+    use crate::runtime::approval::context::{Bounds, Inherited, RootOpening, render};
+    let scenario = Path::new(GOLDEN_ROOT)
+        .join(HISTORY_FORMAT.to_string())
+        .join("reviewer");
+    let logs = scenario_logs(&scenario);
+    let read = |log: &crate::events::EventLog| {
+        log.history()
+            .expect("a pass")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("a golden log")
+    };
+    let mut turns_checked = 0;
+    let mut epochs = 0;
+    for reviewer in logs
+        .iter()
+        .filter(|log| log.path().parent().and_then(Path::file_name) == Some("reviewer".as_ref()))
+    {
+        let session_dir = reviewer.path().parent().and_then(Path::parent).unwrap();
+        let session = logs
+            .iter()
+            .find(|log| log.path() == session_dir.join("events.jsonl"))
+            .expect("the reviewed session's log");
+        let events = read(session);
+        // The reviewer's bounds, from the approval agent the runs froze.
+        let approval = events
+            .iter()
+            .find_map(|event| match &event.payload {
+                EventPayload::RunStarted {
+                    internal_agents, ..
+                } => internal_agents
+                    .iter()
+                    .find(|agent| agent.agent.as_str() == "approval")
+                    .cloned(),
+                _ => None,
+            })
+            .expect("the approval agent");
+        let system = cookie_agent_config::render_internal_prompt(
+            &approval.composed_prompt,
+            cookie_agent_config::InternalPromptValues {
+                default_prompt: "",
+                focus: None,
+            },
+        );
+        let bounds = Bounds::new(Some(7_000), Some(1_024), &system);
+        // A delegated child's opening, from its root's log up to its creation.
+        let inherited = (session_dir.parent().and_then(Path::file_name)
+            == Some(crate::session::SUBAGENTS_DIR.as_ref()))
+        .then(|| {
+            let root_dir = session_dir.parent().and_then(Path::parent).unwrap();
+            let root = logs
+                .iter()
+                .find(|log| log.path() == root_dir.join("events.jsonl"))
+                .expect("the root's log");
+            let mut opening = RootOpening::new(session.creation().expect("a creation").timestamp);
+            for event in read(root) {
+                opening.observe(event);
+            }
+            let (entries, agents_md) = opening.finish();
+            Inherited { entries, agents_md }
+        });
+        let mut thread = Vec::new();
+        for event in read(reviewer) {
+            let EventPayload::ReviewerTurnRecorded { turn } = &event.payload else {
+                continue;
+            };
+            if turn.epoch.is_some() {
+                epochs += 1;
+                thread.clear();
+            }
+            let rendered = render(&events, inherited.as_ref(), turn.approval_id, bounds)
+                .expect("the review's request");
+            assert_eq!(
+                rendered.reviews,
+                thread,
+                "{}: the turns before {}",
+                reviewer.path().display(),
+                turn.cut_seq
+            );
+            assert_eq!(
+                rendered.request,
+                turn.request,
+                "{}: the turn at {}",
+                reviewer.path().display(),
+                turn.cut_seq
+            );
+            thread.push((turn.request.clone(), turn.verdict.clone()));
+            turns_checked += 1;
+        }
+    }
+    assert!(turns_checked >= 10, "{turns_checked} turns");
+    assert!(epochs >= 3, "{epochs} epochs");
 }
 
 /// Every fold of `EventLog::state` reads what the scan it replaced read, at
@@ -939,14 +1096,12 @@ fn resolve_placeholders(value: &mut Value, children: &Children, page: &str) {
 /// it (a run's input, a steer, a delegated prompt, a message); its step is
 /// the number of assistant messages since then. Requests without tools are
 /// the summarizer's.
+///
+/// A review answers with the verdict a `#v:<decision>` in the call under
+/// review names; a call that names none gets the summarizer's text, which
+/// fails the review, as in the scenarios recorded before the reviewer kept
+/// its own log.
 fn reply_to(rules: &Rules, request: &Value) -> Reply {
-    if request
-        .get("tools")
-        .and_then(Value::as_array)
-        .is_none_or(Vec::is_empty)
-    {
-        return text("Summary: the conversation explored, edited, and fetched files.");
-    }
     let messages = request["messages"].as_array().cloned().unwrap_or_default();
     let message_text = |message: &Value| match &message["content"] {
         Value::String(text) => text.clone(),
@@ -957,6 +1112,25 @@ fn reply_to(rules: &Rules, request: &Value) -> Reply {
             .join("\n"),
         _ => String::new(),
     };
+    if let Some(last) = messages.last().map(message_text)
+        && let Some(block) = last.rfind("<approval_request>").map(|at| &last[at..])
+        && let Some(at) = block.find("#v:")
+    {
+        let decision = block[at + 3..]
+            .split(|character: char| !character.is_ascii_alphabetic())
+            .next()
+            .unwrap_or_default();
+        return text(&format!(
+            "{{\"decision\":\"{decision}\",\"reason\":\"The call asks for {decision}.\"}}"
+        ));
+    }
+    if request
+        .get("tools")
+        .and_then(Value::as_array)
+        .is_none_or(Vec::is_empty)
+    {
+        return text("Summary: the conversation explored, edited, and fetched files.");
+    }
     for (index, message) in messages.iter().enumerate().rev() {
         if message["role"] != "user" {
             continue;
@@ -1281,6 +1455,9 @@ async fn record_golden_history() {
     if wanted("acp") {
         record_acp(&out.join("acp")).await;
     }
+    if wanted("reviewer") {
+        record_reviewer(&out.join("reviewer")).await;
+    }
     eprintln!("recorded the golden session logs in {}", out.display());
 }
 
@@ -1385,6 +1562,154 @@ async fn record_revert_and_fork(scenario: &Path) {
         &selection,
         "three",
         user_text("#k:three Answer again."),
+    )
+    .await;
+    quiesce(engine, session).await;
+    engine.shutdown().await;
+    keep_scenario(&sessions_of(fixture.root.path()), scenario).await;
+}
+
+const REVIEWED_AGENT: &str = "---\ndescription: Golden reviewed agent\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  read: allow\n  bash: ask\n  write: ask\n  delegate: allow\n---\nWork in the repository.\n";
+
+const REVIEWED_WORKER: &str = "---\ndescription: Golden reviewed worker\nmode: subagent\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  bash: ask\n---\nDo what the parent asks.\n";
+
+/// The coding model with a window small enough that the reviewer's
+/// conversation starts over within the scenario.
+fn reviewer_capabilities() -> String {
+    CODING_CAPABILITIES.replace("context_tokens = 200000", "context_tokens = 7000")
+}
+
+fn reviewer_rules() -> Rules {
+    let bash = |command: String| tool("bash", json!({ "command": command }));
+    let mut grow = (0..9)
+        .map(|index| {
+            bash(format!(
+                "echo step {index} #v:allow {}",
+                "padding ".repeat(48)
+            ))
+        })
+        .collect::<Vec<_>>();
+    grow.push(text("Every step ran."));
+    Rules::from([
+        (
+            "start",
+            vec![
+                tool(
+                    "write",
+                    json!({"path": "notes.md", "content": "# Notes #v:allow\n\nThe build passes.\n"}),
+                ),
+                bash("echo build #v:allow".into()),
+                bash("echo push #v:ask".into()),
+                bash("rm -rf target #v:deny".into()),
+                text("The notes are written; the clean was refused."),
+            ],
+        ),
+        ("grow", grow),
+        (
+            "delegate",
+            vec![
+                tool(
+                    "delegate_subagent",
+                    json!({"agent_type": "worker", "description": "Check the child", "prompt": "#k:child Run the child's check."}),
+                ),
+                text("The child checked."),
+            ],
+        ),
+        (
+            "child",
+            vec![
+                bash("echo child check #v:allow".into()),
+                text("The child's check passed."),
+            ],
+        ),
+        (
+            "forked",
+            vec![
+                bash("echo in the fork #v:allow".into()),
+                text("The fork ran its step."),
+            ],
+        ),
+        (
+            "again",
+            vec![
+                bash("echo after the revert #v:allow".into()),
+                text("Ran after the revert."),
+            ],
+        ),
+    ])
+}
+
+/// The approval reviewer with its own log (`docs/site/specs/forever-sessions.md`
+/// section 5.5): verdicts of each kind, a user's answer to an escalation,
+/// enough reviews for the conversation to start over, a fork after them that
+/// copies the reviewer's log and reviews on in the fork, a revert before them
+/// that cuts it, and a delegated child's reviews.
+async fn record_reviewer(scenario: &Path) {
+    let endpoint = script_server(reviewer_rules()).await;
+    let (fixture, selection) = coding_fixture_with(
+        &endpoint,
+        REVIEWED_AGENT,
+        None,
+        &reviewer_capabilities(),
+        Some(REVIEWED_WORKER),
+    )
+    .await;
+    let engine = &fixture.engine;
+    let session = engine.create_session(selection.clone()).unwrap().session_id;
+    run(
+        engine,
+        session,
+        &selection,
+        "start",
+        user_text("#k:start Write the notes, check the build, and push."),
+    )
+    .await;
+    answer_approvals(engine, session, &[ApprovalUserDecision::ApproveOnce]).await;
+    quiesce(engine, session).await;
+    let first_end = log_tip(engine, session);
+    run(
+        engine,
+        session,
+        &selection,
+        "grow",
+        user_text("#k:grow Run every step."),
+    )
+    .await;
+    quiesce(engine, session).await;
+    let grown = log_tip(engine, session);
+    let fork = engine
+        .fork_session(session, grown, origin(), None)
+        .await
+        .expect("fork after the reviews that started over")
+        .session_id;
+    run(
+        engine,
+        fork,
+        &selection,
+        "forked",
+        user_text("#k:forked Go on in the fork."),
+    )
+    .await;
+    quiesce(engine, fork).await;
+    engine
+        .revert_session(session, first_end, origin(), None)
+        .await
+        .expect("revert to the first run's end");
+    run(
+        engine,
+        session,
+        &selection,
+        "again",
+        user_text("#k:again Run one more step."),
+    )
+    .await;
+    quiesce(engine, session).await;
+    run(
+        engine,
+        session,
+        &selection,
+        "delegate",
+        user_text("#k:delegate Have a worker check it."),
     )
     .await;
     quiesce(engine, session).await;
@@ -1824,6 +2149,17 @@ pub(super) async fn coding_fixture(
     primary: &str,
     plugin: Option<(&str, cookie_agent_config::PluginConfig)>,
 ) -> (CodingFixture, RunSelection) {
+    coding_fixture_with(endpoint, primary, plugin, CODING_CAPABILITIES, None).await
+}
+
+/// [`coding_fixture`] with the model's `capabilities` and a `worker` agent.
+async fn coding_fixture_with(
+    endpoint: &str,
+    primary: &str,
+    plugin: Option<(&str, cookie_agent_config::PluginConfig)>,
+    capabilities: &str,
+    worker: Option<&str>,
+) -> (CodingFixture, RunSelection) {
     let (fixture, selection) = custom_fixture_with_capabilities(
         endpoint,
         primary,
@@ -1833,9 +2169,9 @@ pub(super) async fn coding_fixture(
         None,
         None,
         200_000,
-        None,
+        worker,
         "openai-compatible",
-        Some(CODING_CAPABILITIES),
+        Some(capabilities),
     );
     fixture.engine.shutdown().await;
     let Fixture {

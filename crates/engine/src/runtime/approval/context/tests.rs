@@ -1124,3 +1124,133 @@ fn the_log_sends_what_the_render_gives_across_epochs_and_budgets() {
     assert!(trajectory_let_go, "an epoch let go of trajectory entries");
     assert!(messages_let_go, "an epoch let go of messages");
 }
+
+/// A session an earlier build reviewed has no reviewer log: its next review
+/// starts one with a fresh turn from one pass over its log, which says the
+/// conversation started over and carries the last verdicts its log records,
+/// where the render sent the conversation from its first review. That turn
+/// starts the log's first epoch.
+#[test]
+fn a_session_with_no_reviewer_log_starts_one_with_a_fresh_turn_carrying_its_verdicts() {
+    let mut log = Log::new();
+    let run = RunId::new_v7();
+    log.user(run, "client:tui", "Tidy the repository.");
+    for index in 0..3 {
+        let call = log.call(run, "bash", json!({"command": format!("tidy {index}")}));
+        let approval = log.request(run, call, PermissionAction::BASH);
+        log.review(run, approval, Some(("allow", Some("Fine."))));
+        log.end(run, call, ToolTerminationOutcome::Completed, "");
+    }
+    let call = log.call(run, "bash", json!({"command": "tidy last"}));
+    let current = log.request(run, call, PermissionAction::BASH);
+    let cut = log.events.len() as u64;
+    let Event::ApprovalRequested { request } = &log.events[cut as usize - 1].payload else {
+        panic!("the request");
+    };
+    let turns = |owner: &cookie_agent_protocol::AssistantToolCallRef| {
+        super::thread::turn_arguments(&log.events, owner)
+    };
+    let prepared = super::thread::Review {
+        thread: &[],
+        inherited: None,
+        request,
+        cut,
+        call: None,
+        turns: Some(&turns),
+        bounds: ROOMY,
+    }
+    .prepare(log.events.clone());
+    assert!(prepared.conversation.reviews.is_empty());
+    let sent = &prepared.conversation.request;
+    assert!(sent.starts_with("<context>\n[user] "));
+    assert!(sent.contains("this conversation started over"));
+    assert_eq!(sent.matches("[your earlier verdict] on bash: ").count(), 3);
+    for index in 0..3 {
+        assert!(sent.contains(&format!("command: tidy {index}")), "{index}");
+    }
+    let turn = prepared.record(
+        &Verdict {
+            decision: ApprovalInternalDecisionKind::Allow,
+            reason: None,
+        },
+        cut + 1,
+    );
+    assert_eq!(
+        turn.epoch.as_ref().map(|epoch| epoch.verdicts.len()),
+        Some(3)
+    );
+    // The render of the whole log sent the three earlier turns.
+    assert_eq!(
+        super::render(&log.events, None, current, ROOMY)
+            .unwrap()
+            .reviews
+            .len(),
+        3
+    );
+}
+
+/// An epoch of a root session reads `AGENTS.md` afresh, the newest run's
+/// before its cut, where the render kept those before the first review for
+/// every epoch: that is the one place their turns differ, and the rest of
+/// the turn is the render's.
+#[test]
+fn an_epoch_reads_agents_md_afresh_where_the_render_kept_the_first() {
+    let mut log = Log::new();
+    let first_run = RunId::new_v7();
+    log.agents_md(first_run, "Use tabs.");
+    log.user(first_run, "client:tui", "Format the code.");
+    let mut approvals = Vec::new();
+    let mut run = first_run;
+    for index in 0..8 {
+        if index == 4 {
+            run = RunId::new_v7();
+            log.agents_md(run, "Use spaces.");
+            log.user(run, "client:tui", "Now the tests.");
+        }
+        let call = log.call(
+            run,
+            "bash",
+            json!({"command": format!("fmt {index} {}", "f".repeat(800))}),
+        );
+        let approval = log.request(run, call, PermissionAction::BASH);
+        log.review(run, approval, Some(("allow", None)));
+        log.end(run, call, ToolTerminationOutcome::Completed, "");
+        approvals.push(approval);
+    }
+    let bounds = Bounds {
+        window: 2_400,
+        system_tokens: 0,
+    };
+    let (conversations, _) =
+        log_sends::sent_all(&log.events, None, approvals.last().copied(), bounds);
+    let mut differed = 0;
+    for (review, sent) in &conversations {
+        let rendered = super::render(&log.events, None, *review, bounds).unwrap();
+        if sent == &rendered {
+            assert!(
+                !sent.request.contains("Use spaces.")
+                    && sent
+                        .reviews
+                        .iter()
+                        .all(|(turn, _)| !turn.contains("Use spaces.")),
+                "an equal turn reads the first AGENTS.md"
+            );
+            continue;
+        }
+        differed += 1;
+        // The fresh turn of an epoch after the second run's AGENTS.md: the
+        // same but for the project instructions.
+        let fresh = sent.reviews.first().map_or(&sent.request, |(turn, _)| turn);
+        assert!(fresh.contains("[project instructions]\n/work/AGENTS.md:\nUse spaces."));
+        let with_the_first = |turn: &str| turn.replace("Use spaces.", "Use tabs.");
+        assert_eq!(with_the_first(&sent.request), rendered.request);
+        assert_eq!(sent.reviews.len(), rendered.reviews.len());
+        for ((turn, verdict), (rendered_turn, rendered_verdict)) in
+            sent.reviews.iter().zip(&rendered.reviews)
+        {
+            assert_eq!(&with_the_first(turn), rendered_turn);
+            assert_eq!(verdict, rendered_verdict);
+        }
+    }
+    assert!(differed > 0, "an epoch came after the second AGENTS.md");
+}
