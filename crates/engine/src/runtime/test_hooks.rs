@@ -205,6 +205,9 @@ pub(crate) struct TestHooks {
     pub(crate) acp_steer_wakes: AtomicU64,
     /// The sessions bridge calls were given to, in order.
     pub(crate) bridge_attributions: Mutex<Vec<cookie_agent_protocol::SessionId>>,
+    /// What each approval review read of its session's log, in order: from
+    /// which sequence, and how many records.
+    pub(crate) reviewer_reads: Mutex<Vec<(u64, usize)>>,
 }
 
 impl TestHooks {

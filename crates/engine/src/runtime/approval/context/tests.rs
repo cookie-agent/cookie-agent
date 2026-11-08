@@ -16,9 +16,25 @@ use serde_json::{Value, json};
 
 use super::{
     Bounds, Conversation, Inherited, MAX_REASON_CHARS, RootOpening, Verdict, cap_tokens,
-    delegation_prompt, parse_verdict, render,
+    delegation_prompt, parse_verdict,
 };
 use crate::runtime::Event;
+
+pub(in crate::runtime) mod log_sends;
+
+/// Today's render of the whole log, the reference: every conversation a test
+/// renders is also the one the reviewer's own log sends for the same reviews
+/// (`docs/site/specs/forever-sessions.md` section 5.5).
+fn render(
+    events: &[Arc<StoredEvent>],
+    inherited: Option<&Inherited>,
+    current: ApprovalId,
+    bounds: Bounds,
+) -> Option<Conversation> {
+    let rendered = super::render(events, inherited, current, bounds)?;
+    log_sends::assert_log_sends_as_rendered(events, inherited, current, bounds, &rendered);
+    Some(rendered)
+}
 
 /// Bounds no test conversation reaches.
 const ROOMY: Bounds = Bounds {
@@ -992,4 +1008,119 @@ fn an_epoch_starts_over_with_the_last_five_verdicts() {
         );
         assert_eq!(conversation.reviews.last().unwrap().0, previous.request);
     }
+}
+
+/// A small deterministic generator for the property test below.
+struct Lcg(u64);
+
+impl Lcg {
+    fn next(&mut self, bound: u64) -> u64 {
+        self.0 = self
+            .0
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        (self.0 >> 33) % bound
+    }
+}
+
+/// Over many reviews and epochs, with messages and calls of every size, both
+/// budgets dropping entries, failed reviews, user decisions, and messages
+/// from producers, the reviewer's own log sends at every review what the
+/// render of the whole log gives, from what each epoch kept: the epochs
+/// start at the same reviews, and an entry an earlier epoch let go of is
+/// never one a later one keeps (`docs/site/specs/forever-sessions.md`
+/// section 5.5).
+#[test]
+fn the_log_sends_what_the_render_gives_across_epochs_and_budgets() {
+    let mut trajectory_let_go = false;
+    let mut messages_let_go = false;
+    for seed in 0..6 {
+        let mut random = Lcg(seed);
+        let mut log = Log::new();
+        let mut run = RunId::new_v7();
+        log.attach("local", "labpc", "/work");
+        log.agents_md(run, "Keep the tests green.");
+        log.user(run, "client:tui", "The task.");
+        let mut reviews = Vec::new();
+        for step in 0..60 {
+            if random.next(10) == 0 {
+                run = RunId::new_v7();
+                log.agents_md(run, "Keep the tests green.");
+            }
+            match random.next(6) {
+                0 => log.user(
+                    run,
+                    if random.next(3) == 0 {
+                        "engine:delegation"
+                    } else {
+                        "client:tui"
+                    },
+                    &format!("message {step} {}", "m".repeat(random.next(1_500) as usize)),
+                ),
+                1 => {
+                    let cron = crate::runtime::cron::fire::cron_owner(
+                        &cookie_agent_protocol::CronJobId::new("nightly1").unwrap(),
+                    );
+                    log.produce(run, cron, &format!("scheduled {step}"));
+                }
+                _ => {}
+            }
+            let call = log.call(
+                run,
+                ["bash", "write", "read", "mcp_tool"][random.next(4) as usize],
+                json!({
+                    "command": format!("step {step} {}", "c".repeat(random.next(2_000) as usize)),
+                    "path": "src/lib.rs",
+                    "content": "x\n".repeat(random.next(40) as usize),
+                }),
+            );
+            if random.next(3) != 0 {
+                let approval = log.request(run, call, PermissionAction::BASH);
+                let verdict = match random.next(5) {
+                    0 => None,
+                    1 => Some(("deny", Some("No."))),
+                    2 => Some(("ask", None)),
+                    _ => Some(("allow", Some("Fine."))),
+                };
+                log.review(run, approval, verdict);
+                if verdict.is_some_and(|(decision, _)| decision == "ask") {
+                    log.user_answer(run, approval, (random.next(2) == 0).then_some("not now"));
+                }
+                reviews.push(approval);
+            }
+            let outcome = [
+                ToolTerminationOutcome::Completed,
+                ToolTerminationOutcome::Failed,
+                ToolTerminationOutcome::Cancelled,
+            ][random.next(3) as usize];
+            log.end(run, call, outcome, "");
+        }
+        let call = log.call(run, "bash", json!({"command": "the last"}));
+        let last = log.request(run, call, PermissionAction::BASH);
+        reviews.push(last);
+        let bounds = Bounds {
+            window: 2_500 + random.next(6_000) as usize,
+            system_tokens: 50,
+        };
+        let (conversations, threads) = log_sends::sent_all(&log.events, None, Some(last), bounds);
+        assert_eq!(conversations.last().map(|(id, _)| *id), Some(last));
+        for (review, conversation) in &conversations {
+            assert_eq!(
+                Some(conversation),
+                super::render(&log.events, None, *review, bounds).as_ref(),
+                "seed {seed}"
+            );
+        }
+        let epochs = threads.iter().filter(|thread| thread.len() == 1).count();
+        assert!(epochs > 2, "seed {seed}: {epochs} epochs");
+        let epochs = threads
+            .iter()
+            .flatten()
+            .filter_map(|turn| turn.epoch.as_ref())
+            .collect::<Vec<_>>();
+        trajectory_let_go |= epochs.iter().any(|epoch| epoch.trajectory_omitted > 0);
+        messages_let_go |= epochs.iter().any(|epoch| epoch.messages_omitted.is_some());
+    }
+    assert!(trajectory_let_go, "an epoch let go of trajectory entries");
+    assert!(messages_let_go, "an epoch let go of messages");
 }

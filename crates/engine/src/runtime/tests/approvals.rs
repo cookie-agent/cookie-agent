@@ -565,16 +565,42 @@ fn chat_messages(request: &str) -> Vec<(String, String)> {
         .collect()
 }
 
-/// Two reviews in one session build one append-only reviewer conversation:
-/// the second request is the first, its verdict, and one more turn, and a
-/// restarted daemon renders the same conversation from the log (approval
-/// reviewer spec sections 4.1 and 12). The verdict's reason is recorded as
-/// the evaluation's rationale.
+/// The reviewer turns a session's reviewer log holds, from its file.
+fn reviewer_turns(
+    engine: &crate::Engine,
+    session: cookie_agent_protocol::SessionId,
+) -> Vec<cookie_agent_protocol::ReviewerTurn> {
+    engine
+        .inner
+        .store
+        .reviewer_log(session)
+        .expect("a lookup")
+        .expect("the reviewer's log")
+        .history()
+        .expect("a pass")
+        .filter_map(|event| match &event.expect("a record").payload {
+            EventPayload::ReviewerTurnRecorded { turn } => Some((**turn).clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Reviews in one session build one append-only reviewer conversation: each
+/// request is the one before it, its verdict, and one more turn (approval
+/// reviewer spec sections 4.1 and 12). The conversation is the reviewer's own
+/// log, a hidden child session: each turn is stored as it was sent, so after
+/// a restart the next review sends those bytes again, and only the first
+/// review reads the session's log whole; each later one reads only what came
+/// after the previous review's cut (`docs/site/specs/forever-sessions.md`
+/// section 5.5). The verdict's reason is recorded as the evaluation's
+/// rationale, and what the log sends is today's render of the whole log.
 #[tokio::test]
 async fn repeated_approvals_build_one_append_only_reviewer_conversation() {
-    let (endpoint, captured) =
-        scripted_two_evaluated_writes_server(r#"{"decision":"allow","reason":"Routine write."}"#)
-            .await;
+    let (endpoint, captured) = scripted_evaluated_writes_server(
+        r#"{"decision":"allow","reason":"Routine write."}"#,
+        &[2, 1],
+    )
+    .await;
     let (mut fixture, selection) = custom_fixture_with_endpoint_primary_and_internal(
         &endpoint,
         "---\ndescription: Approval test agent\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  write: ask\n---\nTest approval flow.\n",
@@ -585,30 +611,39 @@ async fn repeated_approvals_build_one_append_only_reviewer_conversation() {
         None,
         false,
     );
-    fixture.engine.register_tool_provider(
-        crate::ToolLayer::Local,
-        Arc::new(TestWriteProvider {
-            executed: Arc::new(TestFlag::default()),
-        }),
-    );
+    let register = |engine: &crate::Engine| {
+        engine.register_tool_provider(
+            crate::ToolLayer::Local,
+            Arc::new(TestWriteProvider {
+                executed: Arc::new(TestFlag::default()),
+            }),
+        );
+    };
+    register(&fixture.engine);
     let session = fixture
         .engine
         .create_session(selection.clone())
         .expect("session");
-    fixture
-        .engine
-        .start_run(
-            RunStartParams {
-                reset_fallback: false,
-                session_id: session.session_id,
-                client_run_id: ClientRunId::new("conversation").expect("run ID"),
-                selection,
-                content: "request two writes".to_owned().into(),
-            },
-            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
-        )
-        .await
-        .expect("run");
+    let start = |engine: &crate::Engine, key: &str, text: &str| {
+        let params = RunStartParams {
+            reset_fallback: false,
+            session_id: session.session_id,
+            client_run_id: ClientRunId::new(key).expect("run ID"),
+            selection: selection.clone(),
+            content: text.to_owned().into(),
+        };
+        let engine = engine.clone();
+        async move {
+            engine
+                .start_run(
+                    params,
+                    cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+                )
+                .await
+                .expect("run");
+        }
+    };
+    start(&fixture.engine, "conversation", "request two writes").await;
     await_projection(
         &fixture.engine,
         session.session_id,
@@ -616,38 +651,50 @@ async fn repeated_approvals_build_one_append_only_reviewer_conversation() {
         |projection| projection.status == SessionStatus::Completed,
     )
     .await;
-    let requests = with_watchdog("captured fixture completion", captured)
-        .await
-        .expect("server task");
-    let first = chat_messages(&requests[1]);
-    let second = chat_messages(&requests[3]);
-    assert_eq!(first.len(), 2);
-    assert_eq!(first[0].1, "Evaluate approval requests conservatively.");
-    assert!(first[1].1.starts_with("<context>\n[user] "));
-    assert!(first[1].1.contains("request two writes"));
-    assert_eq!(second.len(), 4);
-    assert_eq!(
-        &second[..2],
-        first.as_slice(),
-        "the second request extends the first"
+    let turns = reviewer_turns(&fixture.engine, session.session_id);
+    assert_eq!(turns.len(), 2);
+    assert!(turns[0].epoch.is_some(), "a log's first turn starts it");
+    assert!(turns[1].epoch.is_none());
+    // The first review read the session's log whole, once; the second only
+    // what came after the first one's cut.
+    let reads = std::mem::take(
+        &mut *fixture
+            .engine
+            .inner
+            .test_hooks
+            .reviewer_reads
+            .lock()
+            .unwrap(),
     );
+    assert_eq!(reads.len(), 2);
+    assert_eq!(reads[0].0, 1);
+    assert_eq!(reads[1].0, turns[0].cut_seq + 1);
     assert_eq!(
-        second[2],
-        (
-            "assistant".to_owned(),
-            r#"{"decision":"allow","reason":"Routine write."}"#.to_owned()
-        )
+        reads[1].1 as u64,
+        turns[1].cut_seq - turns[0].cut_seq,
+        "the delta, and nothing before it"
+    );
+    // Hidden: the reviewer's log is no child of the session.
+    let store = &fixture.engine.inner.store;
+    assert!(
+        store
+            .children(session.session_id)
+            .expect("children")
+            .is_empty()
     );
     assert!(
-        second[3]
-            .1
-            .starts_with("<context_delta>\n[tool call] write")
+        store
+            .tree(session.session_id)
+            .expect("a tree")
+            .children
+            .is_empty()
     );
+    let reviewer_dir = store
+        .session_dir(session.session_id)
+        .join(crate::session::REVIEWER_DIR);
+    assert!(reviewer_dir.join(crate::session::STATE_FILE).is_file());
 
-    let events = fixture
-        .engine
-        .inner
-        .store
+    let events = store
         .get(session.session_id)
         .expect("projection")
         .log
@@ -662,7 +709,7 @@ async fn repeated_approvals_build_one_append_only_reviewer_conversation() {
                         cookie_agent_protocol::Open::Known(
                             cookie_agent_protocol::ApprovalStep::Evaluated { decision },
                         ),
-                } => Some((*approval_id, decision.rationale.clone())),
+                } => Some((*approval_id, decision.rationale.clone(), event.seq)),
                 _ => None,
             })
             .collect::<Vec<_>>();
@@ -670,11 +717,92 @@ async fn repeated_approvals_build_one_append_only_reviewer_conversation() {
     assert!(
         reviewed
             .iter()
-            .all(|(_, rationale)| rationale.as_deref() == Some("Routine write."))
+            .all(|(_, rationale, _)| rationale.as_deref() == Some("Routine write."))
     );
+    for (turn, (approval, _, evaluated)) in turns.iter().zip(&reviewed) {
+        assert_eq!(turn.approval_id, *approval);
+        assert_eq!(turn.evaluated_seq, *evaluated);
+    }
 
+    // A restarted daemon opens the reviewer's log from its state file and
+    // sends what it holds, as it was sent.
     fixture.engine.shutdown().await;
     fixture.engine = reopen_engine(&fixture);
+    register(&fixture.engine);
+    start(&fixture.engine, "again", "one more write").await;
+    await_projection(
+        &fixture.engine,
+        session.session_id,
+        "the third review",
+        |projection| projection.status == SessionStatus::Completed,
+    )
+    .await;
+    assert!(
+        fixture
+            .engine
+            .inner
+            .store
+            .reviewer_log(session.session_id)
+            .expect("a lookup")
+            .expect("the reviewer's log")
+            .opened_from_state_for_test(),
+        "the review opened the reviewer's log from its state file"
+    );
+    let requests = with_watchdog("captured fixture completion", captured)
+        .await
+        .expect("server task");
+    let first = chat_messages(&requests[1]);
+    let second = chat_messages(&requests[3]);
+    let third = chat_messages(&requests[6]);
+    assert_eq!(first.len(), 2);
+    assert_eq!(first[0].1, "Evaluate approval requests conservatively.");
+    assert!(first[1].1.starts_with("<context>\n[user] "));
+    assert!(first[1].1.contains("request two writes"));
+    assert_eq!(second.len(), 4);
+    assert_eq!(
+        &second[..2],
+        first.as_slice(),
+        "the second request extends the first"
+    );
+    let verdict = (
+        "assistant".to_owned(),
+        r#"{"decision":"allow","reason":"Routine write."}"#.to_owned(),
+    );
+    assert_eq!(second[2], verdict);
+    assert!(
+        second[3]
+            .1
+            .starts_with("<context_delta>\n[tool call] write")
+    );
+    assert_eq!(
+        &third[..4],
+        second.as_slice(),
+        "the third extends the second"
+    );
+    assert_eq!(third[4], verdict);
+    assert!(third[5].1.contains("one more write"));
+    let turns = reviewer_turns(&fixture.engine, session.session_id);
+    assert_eq!(turns.len(), 3);
+    assert_eq!(turns[0].request, first[1].1);
+    assert_eq!(turns[1].request, second[3].1);
+    assert_eq!(turns[2].request, third[5].1);
+    let reads = fixture
+        .engine
+        .inner
+        .test_hooks
+        .reviewer_reads
+        .lock()
+        .unwrap()
+        .clone();
+    assert_eq!(
+        reads,
+        [(
+            turns[1].cut_seq + 1,
+            (turns[2].cut_seq - turns[1].cut_seq) as usize
+        )]
+    );
+
+    // Today's render of the whole log gives the same conversation.
     let restarted = fixture
         .engine
         .inner
@@ -686,13 +814,14 @@ async fn repeated_approvals_build_one_append_only_reviewer_conversation() {
     let conversation = crate::runtime::approval::context::render(
         &restarted,
         None,
-        reviewed[1].0,
+        turns[2].approval_id,
         crate::runtime::approval::context::Bounds::new(None, None, ""),
     )
     .expect("render");
-    assert_eq!(conversation.reviews.len(), 1);
+    assert_eq!(conversation.reviews.len(), 2);
     assert_eq!(conversation.reviews[0].0, first[1].1);
-    assert_eq!(conversation.request, second[3].1);
+    assert_eq!(conversation.reviews[1].0, second[3].1);
+    assert_eq!(conversation.request, third[5].1);
     fixture.engine.shutdown().await;
 }
 

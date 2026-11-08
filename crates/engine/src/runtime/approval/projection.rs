@@ -33,6 +33,32 @@ impl Engine {
         executor: PreparedExecutorCell,
         mode_review: (PermissionMode, ReviewOutcome),
         cancelled: bool,
+    ) -> Result<(ApprovalEvaluationTransition, Option<u64>), EngineError> {
+        let mut evaluated_seq = None;
+        let transition = self.approval_evaluation_complete_inner(
+            session,
+            run,
+            request,
+            executor,
+            mode_review,
+            cancelled,
+            &mut evaluated_seq,
+        )?;
+        Ok((transition, evaluated_seq))
+    }
+
+    /// [`Self::approval_evaluation_complete_direct`], noting in
+    /// `evaluated_seq` where the log recorded a reviewer's verdict.
+    #[allow(clippy::too_many_arguments)]
+    fn approval_evaluation_complete_inner(
+        &self,
+        session: SessionId,
+        run: RunId,
+        request: ApprovalRequest,
+        executor: PreparedExecutorCell,
+        mode_review: (PermissionMode, ReviewOutcome),
+        cancelled: bool,
+        evaluated_seq: &mut Option<u64>,
     ) -> Result<ApprovalEvaluationTransition, EngineError> {
         let (permission_mode, review) = mode_review;
         let approval_id = request.approval_id();
@@ -81,6 +107,7 @@ impl Engine {
         }
 
         let source = ApprovalDecisionSource::InternalAgent;
+        let reviewed = matches!(review, ReviewOutcome::Verdict { .. });
         let (decision, reason_code, rationale) = match review {
             ReviewOutcome::Verdict {
                 decision: ApprovalInternalDecisionKind::Allow,
@@ -119,7 +146,7 @@ impl Engine {
         };
         let reviewer_failed = reason_code == ApprovalReasonCode::InternalAgentFailed;
         let denial_reason = rationale.clone();
-        self.append_direct(
+        let evaluated = self.append_direct_record(
             session,
             Some(run),
             crate::runtime::event_origin("engine:approvals"),
@@ -136,6 +163,9 @@ impl Engine {
                 },
             ),
         )?;
+        if reviewed {
+            *evaluated_seq = Some(evaluated.seq);
+        }
         if matches!(
             decision,
             ApprovalInternalDecisionKind::Allow | ApprovalInternalDecisionKind::Deny

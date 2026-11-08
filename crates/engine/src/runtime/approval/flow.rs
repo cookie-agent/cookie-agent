@@ -1,4 +1,8 @@
-use std::{borrow::Cow, collections::HashMap, sync::Mutex};
+use std::{
+    borrow::Cow,
+    collections::HashMap,
+    sync::{Arc, Mutex},
+};
 
 use cookie_agent_protocol::{
     ApprovalConstraints, ApprovalDecisionSource, ApprovalEvaluation, ApprovalFinalDecision,
@@ -121,6 +125,21 @@ pub(crate) struct ApprovalRuntimeState {
     pub(crate) store: ApprovalStore,
     pub(crate) pending: Mutex<HashMap<(SessionId, ApprovalId), PendingApproval>>,
     pub(crate) permission_overlay_mutation: tokio::sync::Mutex<()>,
+    /// One review at a time per session, from reading the reviewer's log to
+    /// recording its turn, so each turn follows the one before it.
+    pub(crate) reviews: Mutex<HashMap<SessionId, Arc<tokio::sync::Mutex<()>>>>,
+}
+
+/// A review's turn, to record in the reviewer's log once the session's log
+/// holds its verdict.
+pub(crate) struct PendingReviewTurn {
+    _review: tokio::sync::OwnedMutexGuard<()>,
+    prepared: approval_context::thread::Prepared,
+    /// The reviewer's log holds no turn yet: this one creates it.
+    create: bool,
+    /// How many cuts the session's log had when the review read it: a revert
+    /// since leaves the turn out.
+    cuts: u64,
 }
 
 impl Engine {
@@ -384,8 +403,8 @@ impl Engine {
             });
         }
 
-        let review = match permission_mode {
-            PermissionMode::Ask => ReviewOutcome::Unreviewed,
+        let (review, pending_turn) = match permission_mode {
+            PermissionMode::Ask => (ReviewOutcome::Unreviewed, None),
             PermissionMode::AutoApprove
             | PermissionMode::AutoApproveN
             | PermissionMode::AutoApproveY => {
@@ -419,10 +438,10 @@ impl Engine {
         };
         let session = active.session;
         let cancelled = active.cancellation.is_cancelled();
-        let evaluated = (request.clone(), executor.clone());
-        let transition = self
+        let evaluated = (request.clone(), executor.clone(), review.clone());
+        let (transition, evaluated_seq) = self
             .on_actor(session, move |engine| {
-                let (request, executor) = evaluated;
+                let (request, executor, review) = evaluated;
                 engine.approval_evaluation_complete_direct(
                     session,
                     run,
@@ -433,6 +452,19 @@ impl Engine {
                 )
             })
             .await?;
+        if let (Some(pending), ReviewOutcome::Verdict { decision, reason }, Some(evaluated_seq)) =
+            (pending_turn, &review, evaluated_seq)
+        {
+            self.record_review_turn(
+                session,
+                pending,
+                &approval_context::Verdict {
+                    decision: *decision,
+                    reason: reason.clone(),
+                },
+                evaluated_seq,
+            );
+        }
         let (mut receiver, expires_at) = match transition {
             ApprovalEvaluationTransition::Resolved(outcome) => return Ok(outcome),
             ApprovalEvaluationTransition::Escalated {
@@ -476,7 +508,13 @@ impl Engine {
 
     /// Asks the approval reviewer about `request`, the call under review,
     /// in the session's reviewer conversation (approval reviewer spec
-    /// section 4).
+    /// section 4), and what its log records once the verdict is evaluated.
+    ///
+    /// The conversation is the reviewer's own log
+    /// (`docs/site/specs/forever-sessions.md` section 5.5): this reads the
+    /// session's log only after the last turn's cut, and the whole of it only
+    /// for a log's first turn, which a session an earlier build reviewed
+    /// starts with.
     async fn review_approval(
         &self,
         active: &ActiveRun,
@@ -484,22 +522,108 @@ impl Engine {
         session: &crate::session::SessionProjection,
         policy: &FrozenInternalAgentPolicy,
         request: &ApprovalRequest,
-    ) -> ReviewOutcome {
-        let Ok(log) = self.inner.store.log(active.session) else {
-            return ReviewOutcome::Failed;
+    ) -> (ReviewOutcome, Option<PendingReviewTurn>) {
+        let gate = Arc::clone(
+            self.inner
+                .approvals
+                .reviews
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .entry(active.session)
+                .or_default(),
+        );
+        let guard = gate.lock_owned().await;
+        let Ok(prepared) = self.prepare_review(session, policy, request) else {
+            return (ReviewOutcome::Failed, None);
         };
-        // The reviewer's conversation renders from the whole log until it has
-        // its own (`docs/site/specs/forever-sessions.md` section 5.5): its
-        // epochs and run numbers count from the log's start, which the
-        // model's context no longer reaches after a checkpoint.
-        let Ok(events) = log
-            .history()
-            .and_then(|pass| pass.collect::<Result<Vec<_>, _>>())
-        else {
-            return ReviewOutcome::Failed;
+        let Some((prepared, create, cuts, system)) = prepared else {
+            return (ReviewOutcome::Failed, None);
         };
-        let Ok(inherited) = self.reviewer_inheritance(session) else {
-            return ReviewOutcome::Failed;
+        let history = prepared.conversation.history(system);
+        let summary_source = prepared.conversation.request.clone();
+        let result = self
+            .run_internal_history_agent(
+                active.session,
+                Some(run),
+                InternalAgentKind::Approval,
+                policy,
+                InternalAgentHistoryInput {
+                    history,
+                    summary_source,
+                    tools: Vec::new(),
+                    reject_non_text: true,
+                },
+                InternalAgentExecution {
+                    cancellation: &active.cancellation,
+                    actor_direct: false,
+                },
+            )
+            .await;
+        let pending = PendingReviewTurn {
+            _review: guard,
+            prepared,
+            create,
+            cuts,
+        };
+        match result {
+            Ok(result) => approval_context::parse_verdict(&result.text).map_or(
+                (ReviewOutcome::Failed, None),
+                |verdict| {
+                    (
+                        ReviewOutcome::Verdict {
+                            decision: verdict.decision,
+                            reason: verdict.reason,
+                        },
+                        Some(pending),
+                    )
+                },
+            ),
+            Err(_) => (ReviewOutcome::Failed, None),
+        }
+    }
+
+    /// What the review of `request` sends, from the reviewer's log and the
+    /// session's since the log's last turn, whether it creates the log, how
+    /// many cuts the session's log had, and the system prompt. `None` when the
+    /// session's log does not hold the request.
+    #[allow(clippy::type_complexity)]
+    fn prepare_review(
+        &self,
+        session: &crate::session::SessionProjection,
+        policy: &FrozenInternalAgentPolicy,
+        request: &ApprovalRequest,
+    ) -> Result<Option<(approval_context::thread::Prepared, bool, u64, String)>, EngineError> {
+        let session_id = session.meta.session_id;
+        let log = self.inner.store.log(session_id)?;
+        let cuts = log.cut_count();
+        // The model's context holds the call under review, open, with its
+        // committed turn, and the request just appended.
+        let context = log.model_context_events()?;
+        let Some(cut) = context.iter().rev().find_map(|event| match &event.payload {
+            Event::ApprovalRequested { request: requested }
+                if requested.approval_id() == request.approval_id() =>
+            {
+                Some(event.seq)
+            }
+            _ => None,
+        }) else {
+            return Ok(None);
+        };
+        let turns = |owner: &cookie_agent_protocol::AssistantToolCallRef| {
+            approval_context::thread::turn_arguments(&context, owner)
+        };
+        let call = log.state().open_call(request.tool_call_id()).map(|start| {
+            let arguments = match &start.payload {
+                Event::ToolCallStarted { start } => turns(&start.owner),
+                _ => None,
+            };
+            approval_context::thread::call_facts(start, arguments)
+        });
+        let thread = match self.inner.store.reviewer_log(session_id)? {
+            Some(reviewer) => {
+                approval_context::thread::thread_of(&reviewer.model_context_events()?)
+            }
+            None => Vec::new(),
         };
         // The official `approval` document's body is the whole prompt; the
         // output contract stays in the request block
@@ -518,39 +642,81 @@ impl Engine {
                 .and_then(|binding| internal_agent_output_limit(binding, policy)),
             &system,
         );
-        let Some(conversation) =
-            approval_context::render(&events, inherited.as_ref(), request.approval_id(), bounds)
-        else {
-            return ReviewOutcome::Failed;
+        // A log's first turn opens with what a delegated session inherits,
+        // read once, and reads the session's log from its start.
+        let inherited = if thread.is_empty() {
+            self.reviewer_inheritance(session)?
+        } else {
+            None
         };
-        let history = conversation.history(system);
-        let result = self
-            .run_internal_history_agent(
-                active.session,
-                Some(run),
-                InternalAgentKind::Approval,
-                policy,
-                InternalAgentHistoryInput {
-                    history,
-                    summary_source: conversation.request,
-                    tools: Vec::new(),
-                    reject_non_text: true,
-                },
-                InternalAgentExecution {
-                    cancellation: &active.cancellation,
-                    actor_direct: false,
-                },
-            )
-            .await;
-        match result {
-            Ok(result) => approval_context::parse_verdict(&result.text).map_or(
-                ReviewOutcome::Failed,
-                |verdict| ReviewOutcome::Verdict {
-                    decision: verdict.decision,
-                    reason: verdict.reason,
-                },
-            ),
-            Err(_) => ReviewOutcome::Failed,
+        let review = approval_context::thread::Review {
+            thread: &thread,
+            inherited: inherited.as_ref(),
+            request,
+            cut,
+            call: call.as_ref(),
+            turns: Some(&turns),
+            bounds,
+        };
+        // The delta after the last turn's cut, from the nearest point the log
+        // can read from; a log's first turn passes over the whole log once.
+        let from = thread
+            .last()
+            .map_or(1, |last| last.cut_seq.saturating_add(1));
+        let read = log
+            .history_range(from..=cut)?
+            .collect::<Result<Vec<_>, _>>()?;
+        #[cfg(test)]
+        self.inner
+            .test_hooks
+            .reviewer_reads
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push((from, read.len()));
+        let prepared = review.prepare(read);
+        Ok(Some((prepared, thread.is_empty(), cuts, system)))
+    }
+
+    /// Records `pending`, the turn a review sent, with `verdict`, which the
+    /// session's log evaluated at `evaluated_seq`, in the reviewer's log. A
+    /// revert of the session since the review read it leaves it out, and a
+    /// failure only costs the next review a longer delta.
+    fn record_review_turn(
+        &self,
+        session: SessionId,
+        pending: PendingReviewTurn,
+        verdict: &approval_context::Verdict,
+        evaluated_seq: u64,
+    ) {
+        let PendingReviewTurn {
+            _review,
+            prepared,
+            create,
+            cuts,
+        } = pending;
+        if self
+            .inner
+            .store
+            .log(session)
+            .map_or(true, |log| log.cut_count() != cuts)
+        {
+            return;
+        }
+        let payload = Event::ReviewerTurnRecorded {
+            turn: Box::new(prepared.record(verdict, evaluated_seq)),
+        };
+        let recorded = if create {
+            self.inner
+                .store
+                .create_reviewer_log(session, vec![payload])
+                .map(drop)
+        } else {
+            self.inner.store.append_reviewer(session, payload).map(drop)
+        };
+        if let Err(error) = recorded {
+            eprintln!(
+                "cookie-agent: session {session}: the reviewer's turn was not recorded: {error}"
+            );
         }
     }
 

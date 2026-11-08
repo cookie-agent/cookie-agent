@@ -1753,6 +1753,16 @@ pub(crate) async fn scripted_repeated_write_server(
 pub(crate) async fn scripted_two_evaluated_writes_server(
     internal_output: &str,
 ) -> (String, tokio::task::JoinHandle<Vec<String>>) {
+    scripted_evaluated_writes_server(internal_output, &[2]).await
+}
+
+/// A model that, in each run, calls `write` as many times as `runs` says,
+/// each answered by `internal_output` as the reviewer's verdict, and then
+/// ends the run with text. The task returns every request, in order.
+pub(crate) async fn scripted_evaluated_writes_server(
+    internal_output: &str,
+    runs: &[usize],
+) -> (String, tokio::task::JoinHandle<Vec<String>>) {
     use tokio::io::AsyncWriteExt as _;
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -1773,13 +1783,16 @@ pub(crate) async fn scripted_two_evaluated_writes_server(
     let approval = format!(
         "data: {internal_delta}\n\ndata: {{\"choices\":[{{\"delta\":{{}},\"finish_reason\":\"stop\"}}]}}\n\n"
     );
-    let bodies = [
-        tool_call(1),
-        approval.clone(),
-        tool_call(2),
-        approval,
-        "data: {\"choices\":[{\"delta\":{\"content\":\"persistent approvals complete\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n".to_owned(),
-    ];
+    let mut bodies = Vec::new();
+    let mut index = 0;
+    for writes in runs {
+        for _ in 0..*writes {
+            index += 1;
+            bodies.push(tool_call(index));
+            bodies.push(approval.clone());
+        }
+        bodies.push("data: {\"choices\":[{\"delta\":{\"content\":\"persistent approvals complete\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n".to_owned());
+    }
     let task = tokio::spawn(async move {
         let mut requests = Vec::new();
         for body in bodies {
