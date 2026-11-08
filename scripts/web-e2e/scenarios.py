@@ -1382,6 +1382,58 @@ def newest_first(browser):
     browser.check()
 
 
+def reopen_newest_first(browser):
+    """Opens the open session afresh, as newest_first left it: its newest
+    runs under a row of history not loaded. Returns that row's `before`."""
+    session = open_session_id(browser)
+    browser.script("location.reload()")
+    time.sleep(0.5)
+    browser.wait("the connection", lambda: browser.text("#connected") != "")
+    browser.wait("the session row", lambda: count(browser, 'aside [data-session="%s"]' % session) == 1)
+    click_row(browser, 'aside [data-session="%s"]' % session)
+    browser.wait("the row of history not loaded", lambda: count(browser, "#transcript [data-history]") == 1, timeout=30)
+    return browser.script("return document.querySelector('#transcript [data-history]').dataset.history")
+
+
+def history_reconnect(browser):
+    """The row of history not loaded across a dropped connection: a read in
+    flight when it drops fails and says so, a click while the page
+    reconnects reads nothing, as nothing can be sent, and once the page has
+    reconnected a click reads the page."""
+    row = "#transcript [data-history]"
+    first = reopen_newest_first(browser)
+    with open(os.path.join(HOME, "daemon.pid")) as file:
+        daemon = int(file.read())
+    visibility = (
+        "Object.defineProperty(document, 'visibilityState', {configurable: true, get: () => arguments[0]});"
+        "document.dispatchEvent(new Event('visibilitychange'))"
+    )
+    os.kill(daemon, signal.SIGSTOP)
+    try:
+        # The paused daemon does not answer: the read is in flight when the
+        # page, shown again, finds the connection gone.
+        browser.click(row)
+        browser.wait("the read", lambda: count(browser, "#transcript [data-history-loading]") == 1, timeout=10)
+        browser.script(visibility, "hidden")
+        browser.script(visibility, "visible")
+        browser.wait("the reconnect", lambda: "stopped answering" in browser.text("#reconnecting"), timeout=20)
+        browser.wait("the read's failure", lambda: count(browser, "#transcript [data-history-failed]") == 1, timeout=10)
+        print("a read in flight when the connection dropped failed and says so")
+        browser.click(row)
+        time.sleep(1)
+        assert count(browser, "#transcript [data-history-loading]") == 0, \
+            "a click while the page reconnects shows a read nothing sent"
+        assert count(browser, "#transcript [data-history-failed]") == 1, "the click took the failure away"
+    finally:
+        os.kill(daemon, signal.SIGCONT)
+    browser.wait("the reconnection", lambda: browser.text("#connected") != "" and count(browser, "#reconnecting") == 0, timeout=60)
+    browser.click(row)
+    browser.wait("the page after the reconnect", lambda: browser.script(
+        "const r = document.querySelector(arguments[0]); return !r || r.dataset.history !== arguments[1]", row, first
+    ), timeout=30)
+    print("a click while reconnecting read nothing; after the reconnect a click read the page")
+
+
 def session_list_older(browser):
     """The session list shows the last 7 days (the filter's default), and
     an unread session whatever its age, with no Show older: a longer date
@@ -7352,6 +7404,8 @@ SCENARIOS = [
     ("long_session", long_session, "long", []),
     ("history_gap", history_gap, "long", ["long_session"]),
     ("newest_first", newest_first, "long", []),
+    # It pauses its daemon.
+    ("history_reconnect", history_reconnect, "long", ["newest_first"]),
     ("near_view", near_view, "long", []),
     # Its daemon has sessions last active months ago (test-web-page.sh).
     ("session_list_older", session_list_older, "long", []),

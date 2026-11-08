@@ -3009,13 +3009,16 @@ impl Workspace {
     }
 
     /// Reads the history the viewed session's row of history not loaded
-    /// stands for (`events.page`), unless a page is being read.
+    /// stands for (`events.page`), unless a page is being read. While the
+    /// page reconnects nothing is read: a row marked loading then would wait
+    /// for an answer nothing asked for, and refuse every later read.
     pub fn load_history(self, before: u64) {
-        let Some(session_id) = self.selected.get_untracked() else {
+        let (Some(session_id), Some(client)) = (self.selected.get_untracked(), self.client())
+        else {
             return;
         };
-        let params = self.update_store(|store| store.request_history(session_id, before));
-        let (Some(params), Some(client)) = (params, self.client()) else {
+        let Some(params) = self.update_store(|store| store.request_history(session_id, before))
+        else {
             return;
         };
         spawn_local(async move {
@@ -3028,13 +3031,15 @@ impl Workspace {
         });
     }
 
-    /// Reads a call's result the display view cut, whole (`event.read`).
+    /// Reads a call's result the display view cut, whole (`event.read`),
+    /// unless the page reconnects ([`Self::load_history`]).
     pub fn load_cut_result(self, call_id: ToolCallId) {
-        let Some(session_id) = self.selected.get_untracked() else {
+        let (Some(session_id), Some(client)) = (self.selected.get_untracked(), self.client())
+        else {
             return;
         };
-        let params = self.update_store(|store| store.request_cut_result(session_id, call_id));
-        let (Some(params), Some(client)) = (params, self.client()) else {
+        let Some(params) = self.update_store(|store| store.request_cut_result(session_id, call_id))
+        else {
             return;
         };
         spawn_local(async move {
@@ -3046,18 +3051,28 @@ impl Workspace {
         });
     }
 
-    /// Opens or puts away the complete content of a cut display block.
+    /// Opens or puts away the complete content of a cut display block. While
+    /// the page reconnects, loaded content still goes away, but nothing
+    /// starts a read ([`Self::load_history`]).
     pub fn toggle_full_content(self, call_id: ToolCallId, block: usize) {
         let Some(session_id) = self.selected.get_untracked() else {
             return;
         };
+        let client = self.client();
         let read = self.update_store(|store| {
-            store
-                .sessions
-                .get_mut(&session_id)
-                .and_then(|state| state.toggle_full_content(call_id, block))
+            let state = store.sessions.get_mut(&session_id)?;
+            let loaded = state.tools.get(&call_id).is_some_and(|tool| {
+                matches!(
+                    tool.full_content(block),
+                    Some(FullContentState::Loaded { .. })
+                )
+            });
+            if client.is_none() && !loaded {
+                return None;
+            }
+            state.toggle_full_content(call_id, block)
         });
-        let (Some(read), Some(client)) = (read, self.client()) else {
+        let (Some(read), Some(client)) = (read, client) else {
             return;
         };
         spawn_local(async move {
