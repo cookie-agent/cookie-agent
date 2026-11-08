@@ -255,6 +255,7 @@ never stored.
 | `tool_round_started`, `deferred_tools_announced`, `tools_availability_announced` | audit | run | [Deferred tools](#deferred-tools): a tool round's eager tools, what the model was told it can load, and which of the round's tools left or came back |
 | `prompt_blocks_recorded`, `prompt_blocks_announced` | audit | run | [Prompt blocks](#prompt-blocks): where a run's prompt carries its blocks, and what changed since |
 | `context_refreshed` | audit | run | [Prompt blocks](#prompt-blocks): the context before the conversation was composed again between compactions, and why |
+| `system_prompt_composed` | audit | run | [Prompt blocks](#prompt-blocks): a checkpoint inside a run composed the run's system prompt afresh |
 | `model_turn_committed`, `model_usage_recorded` | state | run | A committed turn and its usage |
 | `native_replay_cut` | state | run | Reasoning at or before `through_seq` is no longer replayed, because the request before it changed since it was made; see [Stale reasoning](#stale-reasoning) |
 | `automatic_runs_held`, `automatic_runs_resumed` | state | runless | A [held session](../specs/held-sessions.md): its automatic runs stopped, and the resume that cleared it |
@@ -1023,8 +1024,18 @@ Later runs that name no selection of their own use it.
   `text`, or no `text` when the block no longer applies. Model history renders
   it in place as a user turn; a checkpoint leaves earlier ones out of the
   messages it keeps, and the next request announces afresh.
+- `system_prompt_composed { composed_prompt, prompt_fingerprint, blocks? }`
+  (client protocol 1.91.0) comes right after a native run's
+  `context_checkpoint_committed` when the checkpoint composed the run's system
+  prompt afresh and it differs from the one in force. Every later request of
+  the run carries it instead of its `run_started` agent's `composed_prompt`,
+  until a later one; the rest of that agent (permissions, models, limits) stays
+  as the run started. `blocks` is as for `prompt_blocks_recorded`, absent when
+  a plugin replaced the prompt. Clients show it in the system prompt row. A
+  run that does not outlive its engine is the only reader, so an engine that
+  does not know it skips it.
 
-Both are audit events: an engine that does not know them composes every
+They are audit events: an engine that does not know them composes every
 prompt afresh.
 ### The queued-input lane
 

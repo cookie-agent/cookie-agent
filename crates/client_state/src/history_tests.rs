@@ -532,3 +532,55 @@ fn a_reply_has_its_cut_once_its_run_finishes_and_keeps_later_settings() {
     assert!(store.apply_event(renamed));
     assert_eq!(store.sessions[&session_id].reply_cut(item), Some(51));
 }
+
+/// A prompt a checkpoint inside the running run composed replaces the one the
+/// system prompt row shows, and the row's fingerprint, which keys its cache,
+/// with it; a record of another run changes nothing.
+#[test]
+fn a_prompt_composed_inside_a_run_is_the_one_its_row_shows() {
+    let events = log(CODING);
+    let end = events
+        .iter()
+        .rposition(|event| matches!(event.payload, EventPayload::RunFinished { .. }))
+        .unwrap();
+    let run = events[end].run_id;
+    let mut running = events[..end].to_vec();
+    let template = (*running[end - 1]).clone();
+    let composed = |seq: u64, run_id, text: &str| {
+        Arc::new(StoredEvent {
+            seq,
+            run_id,
+            payload: EventPayload::SystemPromptComposed {
+                composed_prompt: text.into(),
+                prompt_fingerprint: cookie_agent_protocol::Sha256Digest::of_bytes(text.as_bytes()),
+                blocks: None,
+            },
+            ..template.clone()
+        })
+    };
+    running.push(composed(
+        running.last().unwrap().seq + 1,
+        Some(cookie_agent_protocol::RunId::new_v7()),
+        "another run's",
+    ));
+    let before = reduce_session_events(running[0].session_id, 0, &running);
+    let shown = before.run_snapshot.as_deref().unwrap();
+    assert_ne!(shown.composed_prompt, "another run's");
+    running.push(composed(
+        running.last().unwrap().seq + 1,
+        run,
+        "composed afresh",
+    ));
+    let after = reduce_session_events(running[0].session_id, 0, &running);
+    let shown = after.run_snapshot.as_deref().unwrap();
+    assert_eq!(shown.composed_prompt, "composed afresh");
+    assert_eq!(
+        shown.prompt_fingerprint,
+        cookie_agent_protocol::Sha256Digest::of_bytes(b"composed afresh")
+    );
+    assert_eq!(
+        shown.agent,
+        before.run_snapshot.as_deref().unwrap().agent,
+        "the rest of the run's agent stays"
+    );
+}

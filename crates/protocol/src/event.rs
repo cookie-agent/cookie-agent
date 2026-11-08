@@ -3268,6 +3268,24 @@ pub enum EventPayload {
         blocks: Vec<PromptBlockSpan>,
         composed_live: bool,
     },
+    /// The system prompt a run's requests carry from here, composed afresh
+    /// at a checkpoint inside the run, as a run's admission composes it:
+    /// the agent's body, the prompt blocks, and the plugins' system-prompt
+    /// hooks (client protocol 1.91.0; `docs/site/specs/forever-sessions.md`
+    /// section 5.2). It replaces the run's `run_started` `composed_prompt`
+    /// and `prompt_fingerprint`, or an earlier record of this kind, until
+    /// the run ends; the rest of the run's agent stays as `run_started`
+    /// froze it. `blocks` is where the prompt carries its prompt blocks, as
+    /// `prompt_blocks_recorded` gives them for a run's first prompt; absent
+    /// when a plugin replaced the prompt.
+    SystemPromptComposed {
+        #[schemars(length(min = 1, max = 131072))]
+        composed_prompt: String,
+        prompt_fingerprint: Sha256Digest,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[schemars(length(max = 16))]
+        blocks: Option<Vec<PromptBlockSpan>>,
+    },
     /// Prompt blocks that changed since the system prompt carried them
     /// (client protocol 1.54.0). Rendered in place as a user turn of the
     /// model's history.
@@ -3663,6 +3681,7 @@ crate::open_enum!(tagged EventPayload, tag = "type", tags = [
     "context_refreshed",
     "prompt_blocks_recorded",
     "prompt_blocks_announced",
+    "system_prompt_composed",
     "model_turn_committed",
     "model_usage_recorded",
     "native_compaction_finished",
@@ -3822,6 +3841,11 @@ impl EventPayload {
             | Self::ContextRefreshed { .. }
             | Self::PromptBlocksRecorded { .. }
             | Self::PromptBlocksAnnounced { .. }
+            // Only the run that records it reads it, and a run does not
+            // outlive the engine that started it: one that does not know it
+            // never sends another request of that run, and its next run
+            // composes the prompt afresh after the checkpoint before it.
+            | Self::SystemPromptComposed { .. }
             | Self::ModelOutputStarted { .. }
             | Self::ModelReplayEvaluated { .. }
             | Self::TextDelta { .. }
@@ -4132,6 +4156,25 @@ impl EventPayload {
                         .any(|block| block.key.is_empty() || block.key.len() > 64) =>
             {
                 return Err(EventSchemaError::InvalidModelTools);
+            }
+            Self::SystemPromptComposed {
+                composed_prompt,
+                blocks,
+                ..
+            } if composed_prompt.trim().is_empty()
+                || composed_prompt.len() > AgentSnapshot::MAX_PROMPT_BYTES
+                || blocks.as_ref().is_some_and(|blocks| {
+                    blocks.len() > 16
+                        || blocks.iter().any(|block| {
+                            block.key.is_empty()
+                                || block.key.len() > 64
+                                || (block.start as usize)
+                                    .checked_add(block.len as usize)
+                                    .is_none_or(|end| end > composed_prompt.len())
+                        })
+                }) =>
+            {
+                return Err(EventSchemaError::InvalidAgentSnapshot);
             }
             Self::PromptBlocksAnnounced { blocks }
                 if blocks.is_empty()

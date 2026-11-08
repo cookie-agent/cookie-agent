@@ -1434,6 +1434,7 @@ pub fn syncs_on_append(payload: &EventPayload) -> bool {
         | EventPayload::ToolsAvailabilityAnnounced { .. }
         | EventPayload::PromptBlocksRecorded { .. }
         | EventPayload::PromptBlocksAnnounced { .. }
+        | EventPayload::SystemPromptComposed { .. }
         | EventPayload::ContextRefreshed { .. }
         | EventPayload::AttemptAbandoned { .. }
         | EventPayload::NativeReplayCut { .. }

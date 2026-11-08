@@ -293,8 +293,8 @@ impl Superseded {
 /// folds before a window that starts after `prefix` so that its state ends
 /// where a full replay's would.
 ///
-/// They are the latest `run_started` and its `run_finished`, the latest
-/// `memory_loaded`,
+/// They are the latest `run_started`, its latest `system_prompt_composed`,
+/// and its `run_finished`, the latest `memory_loaded`,
 /// `model_tools_published`, `acp_session_started`, and
 /// `session_model_selected`; the session's `session_created`; the latest ACP
 /// commands, options, starting options, and context use, each event holding
@@ -322,6 +322,13 @@ pub fn state_events(prefix: &[Arc<StoredEvent>]) -> Vec<Arc<StoredEvent>> {
     for event in prefix.iter().rev() {
         match &event.payload {
             EventPayload::RunStarted { .. } if latest.insert("run_started") => take(event),
+            // The latest run's system prompt, when a checkpoint inside it
+            // composed it afresh.
+            EventPayload::SystemPromptComposed { .. }
+                if !latest.contains("run_started") && latest.insert("system_prompt_composed") =>
+            {
+                take(event);
+            }
             // The latest run's end, when it ended: its run no longer runs.
             EventPayload::RunFinished { .. } if !latest.contains("run_started") => {
                 if latest.insert("run_finished") {
@@ -424,6 +431,7 @@ fn concerns_state(payload: &EventPayload) -> bool {
         EventPayload::SessionCreated { .. }
         | EventPayload::RunStarted { .. }
         | EventPayload::RunFinished { .. }
+        | EventPayload::SystemPromptComposed { .. }
         | EventPayload::MemoryLoaded { .. }
         | EventPayload::ModelToolsPublished { .. }
         | EventPayload::AcpSessionStarted { .. }

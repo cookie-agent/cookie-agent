@@ -1960,6 +1960,65 @@ fn test_window(adapter: &str, provider: &str, model: &str) -> NativeContextWindo
     .unwrap()
 }
 
+/// A system prompt composed afresh inside a run is an audit record, with its
+/// blocks only when a plugin did not replace the prompt, and refused when a
+/// block lies outside the prompt or the prompt is empty or too long.
+#[test]
+fn a_prompt_composed_inside_a_run_names_its_blocks_within_it() {
+    let prompt = "You help.\n\n---\n\nskills";
+    let event = |composed_prompt: String, blocks| StoredEvent {
+        engine_version: None,
+        origin: None,
+        session_id: SessionId::new_v7(),
+        run_id: Some(RunId::new_v7()),
+        seq: 4,
+        timestamp: jiff::Timestamp::now(),
+        payload: EventPayload::SystemPromptComposed {
+            prompt_fingerprint: Sha256Digest::of_bytes(composed_prompt.as_bytes()),
+            composed_prompt,
+            blocks,
+        },
+    };
+    let span = |start, len| PromptBlockSpan {
+        key: "skills".into(),
+        start,
+        len,
+    };
+    let valid = event(prompt.into(), Some(vec![span(16, 6)]));
+    assert!(valid.payload.is_audit());
+    assert_eq!(valid.validate(), Ok(()));
+    let wire = serde_json::to_value(&valid).unwrap();
+    assert_eq!(wire["payload"]["type"], json!("system_prompt_composed"));
+    assert_eq!(wire["skippable"], json!(true));
+    assert_eq!(serde_json::from_value::<StoredEvent>(wire).unwrap(), valid);
+
+    // A plugin replaced the prompt: no blocks.
+    let replaced = event(prompt.into(), None);
+    assert_eq!(replaced.validate(), Ok(()));
+    assert!(
+        serde_json::to_value(&replaced).unwrap()["payload"]
+            .get("blocks")
+            .is_none()
+    );
+
+    for invalid in [
+        event(prompt.into(), Some(vec![span(16, 7)])),
+        event(prompt.into(), Some(vec![span(u32::MAX, 1)])),
+        event(" ".into(), None),
+        event("x".repeat(AgentSnapshot::MAX_PROMPT_BYTES + 1), None),
+    ] {
+        assert_eq!(
+            invalid.validate(),
+            Err(EventSchemaError::InvalidAgentSnapshot)
+        );
+    }
+    let runless = StoredEvent {
+        run_id: None,
+        ..valid
+    };
+    assert_eq!(runless.validate(), Err(EventSchemaError::MissingRunId));
+}
+
 /// `context_fresh` is written only when set, and a commit written before it
 /// reads as one that pins its older context.
 #[test]

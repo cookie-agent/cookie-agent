@@ -453,6 +453,21 @@ pub(super) fn reduce_event_from(
             state.agent_md_sources.clear();
             state.agent_md_row = None;
         }
+        // A checkpoint inside the run composed its system prompt afresh: the
+        // system prompt row shows the one its requests now carry.
+        EventPayload::SystemPromptComposed {
+            composed_prompt,
+            prompt_fingerprint,
+            ..
+        } => {
+            if run_id.is_some()
+                && state.active_run == run_id
+                && let Some(snapshot) = state.run_snapshot.as_mut()
+            {
+                snapshot.composed_prompt = composed_prompt;
+                snapshot.prompt_fingerprint = prompt_fingerprint;
+            }
+        }
         EventPayload::UserInputAdmitted { content } => {
             close_open_assistant(state, timestamp);
             state.last_agent_activity = Some(timestamp);

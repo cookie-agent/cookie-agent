@@ -5,6 +5,16 @@ The client protocol's version is `MAJOR.MINOR.PATCH`
 adds and a major breaks; before it, every minor could break the wire (see the
 [compatibility spec](../specs/compatibility-v1.md) section 3).
 
+## 1.91.0
+
+- A new audit event, `system_prompt_composed { composed_prompt,
+  prompt_fingerprint, blocks? }`: a checkpoint inside a run composed the run's
+  system prompt afresh, and the run's requests carry it from there instead of
+  its `run_started` agent's `composed_prompt`
+  ([Sessions that run forever](../specs/forever-sessions.md) section 5.2). The
+  display view's header holds the latest run's latest one. Plugin protocol
+  1.45.0 carries it in event notifications.
+
 ## 1.90.0
 
 - `ContextCheckpointCommit` gains an optional `context_fresh`: the checkpoint

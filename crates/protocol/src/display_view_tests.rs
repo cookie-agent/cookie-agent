@@ -288,6 +288,47 @@ fn the_header_holds_the_latest_settings_before_a_window() {
     assert!(header.windows(2).all(|pair| pair[0].seq < pair[1].seq));
 }
 
+/// A prompt a checkpoint inside a run composed, as `run`'s.
+fn composed_prompt(template: &StoredEvent, run: Option<crate::RunId>, text: &str) -> StoredEvent {
+    StoredEvent {
+        run_id: run,
+        ..with_payload(
+            template,
+            EventPayload::SystemPromptComposed {
+                composed_prompt: text.into(),
+                prompt_fingerprint: crate::Sha256Digest::of_bytes(text.as_bytes()),
+                blocks: None,
+            },
+        )
+    }
+}
+
+#[test]
+fn the_header_keeps_the_latest_runs_latest_composed_prompt() {
+    let events = coding();
+    let starts = events
+        .iter()
+        .filter(|event| matches!(event.payload, EventPayload::RunStarted { .. }))
+        .collect::<Vec<_>>();
+    let (first, last) = (starts[0].as_ref(), starts[starts.len() - 1].as_ref());
+    let mut log = vec![
+        first.clone(),
+        composed_prompt(first, first.run_id, "first run"),
+    ];
+    log.push(last.clone());
+    log.push(composed_prompt(last, last.run_id, "older"));
+    log.push(composed_prompt(last, last.run_id, "newer"));
+    let log = renumbered(log);
+    assert_eq!(seqs(&state_events(&log)), [3, 5]);
+    // A run started since: its own prompt is its `run_started`'s.
+    let mut next = log
+        .iter()
+        .map(|event| event.as_ref().clone())
+        .collect::<Vec<_>>();
+    next.push(first.clone());
+    assert_eq!(seqs(&state_events(&renumbered(next))), [6]);
+}
+
 #[test]
 fn the_header_keeps_each_acp_setting_from_its_latest_update_only() {
     let template = coding()[5].as_ref().clone();
@@ -593,8 +634,9 @@ fn parsed(log: &str) -> Vec<Arc<StoredEvent>> {
         .collect()
 }
 
-/// The coding history with ACP settings, a hold, and a queued input among
-/// its events: every kind of setting a header keeps.
+/// The coding history with ACP settings, a hold, a queued input, and
+/// prompts composed inside runs among its events: every kind of setting a
+/// header keeps.
 fn with_settings() -> Vec<Arc<StoredEvent>> {
     let events = coding();
     let template = events[5].as_ref().clone();
@@ -602,6 +644,13 @@ fn with_settings() -> Vec<Arc<StoredEvent>> {
     let mut mixed = Vec::new();
     for (index, event) in events.iter().enumerate() {
         mixed.push(event.as_ref().clone());
+        if index % 23 == 20 && event.run_id.is_some() {
+            mixed.push(composed_prompt(
+                &template,
+                event.run_id,
+                &format!("prompt {index}"),
+            ));
+        }
         let update = match index % 23 {
             3 => AcpSessionUpdate {
                 commands: commands(&format!("c{index}")),

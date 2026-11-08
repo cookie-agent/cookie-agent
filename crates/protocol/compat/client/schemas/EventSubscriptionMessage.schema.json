@@ -4267,6 +4267,42 @@
           "type": "object"
         },
         {
+          "description": "The system prompt a run's requests carry from here, composed afresh\nat a checkpoint inside the run, as a run's admission composes it:\nthe agent's body, the prompt blocks, and the plugins' system-prompt\nhooks (client protocol 1.91.0; `docs/site/specs/forever-sessions.md`\nsection 5.2). It replaces the run's `run_started` `composed_prompt`\nand `prompt_fingerprint`, or an earlier record of this kind, until\nthe run ends; the rest of the run's agent stays as `run_started`\nfroze it. `blocks` is where the prompt carries its prompt blocks, as\n`prompt_blocks_recorded` gives them for a run's first prompt; absent\nwhen a plugin replaced the prompt.",
+          "properties": {
+            "blocks": {
+              "items": {
+                "$ref": "#/$defs/PromptBlockSpan"
+              },
+              "maxItems": 16,
+              "type": [
+                "array",
+                "null"
+              ]
+            },
+            "composed_prompt": {
+              "maxLength": 131072,
+              "minLength": 1,
+              "type": "string"
+            },
+            "prompt_fingerprint": {
+              "maxLength": 64,
+              "minLength": 64,
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            "type": {
+              "const": "system_prompt_composed",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "composed_prompt",
+            "prompt_fingerprint"
+          ],
+          "type": "object"
+        },
+        {
           "description": "Prompt blocks that changed since the system prompt carried them\n(client protocol 1.54.0). Rendered in place as a user turn of the\nmodel's history.",
           "properties": {
             "blocks": {
