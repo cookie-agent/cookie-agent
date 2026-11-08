@@ -1923,6 +1923,141 @@ fn tool_header_text(view: &TranscriptView<'_>, tool: &ToolCallState) -> String {
     crate::places::paths_under_home(&tool.header_text(), home)
 }
 
+/// The parts of a tool row's header, each already HTML but the texts.
+struct ToolHeader<'a> {
+    id: &'a str,
+    header: &'a str,
+    /// Where in `header` the memory URL it links starts, and the URL.
+    link: Option<(usize, &'a str)>,
+    chevron: &'a str,
+    icon: &'a str,
+    progress: Option<&'a str>,
+    machine: &'a str,
+    status: &'a str,
+    approval: &'a str,
+    background: &'a str,
+}
+
+impl ToolHeader<'_> {
+    /// A folded call's header: one line, cut to fit, its machine, status
+    /// and buttons at the end.
+    fn folded(&self) -> String {
+        let Self {
+            chevron,
+            icon,
+            machine,
+            status,
+            approval,
+            background,
+            ..
+        } = self;
+        let id = escape(self.id);
+        let progress = self
+            .progress
+            .map(|progress| {
+                format!(
+                    "<span class=\"min-w-0 shrink truncate {NOTE}\" data-progress>· {}</span>",
+                    escape(
+                        &cookie_agent_client_state::tool_header::flatten_header_argument(progress)
+                    )
+                )
+            })
+            .unwrap_or_default();
+        let toggle = match self.link {
+            None => format!(
+                "<button type=\"button\" data-action=\"toggle-tool\" data-call=\"{id}\" aria-expanded=\"false\" class=\"flex min-h-11 min-w-0 flex-1 items-center gap-2 rounded-lg px-2 py-1 text-left font-mono text-[0.8125rem] hover:bg-hover active:bg-press\">{chevron}{icon}<span class=\"min-w-0 shrink truncate\" data-header>{}</span>{progress}<span class=\"flex-1\"></span>{machine}{status}</button>",
+                escape(self.header),
+            ),
+            Some((at, url)) => {
+                let suffix = self.header[at + url.len()..].trim();
+                let suffix = if suffix.is_empty() {
+                    String::new()
+                } else {
+                    format!(
+                        "<span class=\"min-w-0 shrink truncate\">{}</span>",
+                        escape(suffix)
+                    )
+                };
+                format!(
+                    "<div class=\"flex min-w-0 flex-1 items-center rounded-lg hover:bg-hover\" data-header-row><button type=\"button\" data-action=\"toggle-tool\" data-call=\"{id}\" aria-expanded=\"false\" class=\"flex min-h-11 min-w-0 shrink items-center gap-2 rounded-l-lg py-1 pl-2 text-left font-mono text-sm active:bg-press\">{chevron}{icon}<span class=\"min-w-0 shrink truncate\" data-header>{}</span></button><button type=\"button\" data-action=\"open-memory\" data-memory-url=\"{url}\" title=\"Open it in Memory\" class=\"ml-2 min-h-11 min-w-0 shrink truncate rounded-md px-1 text-left font-mono text-sm underline decoration-dotted underline-offset-2 hover:bg-press active:bg-surface-2\" data-memory-link>{url}</button><button type=\"button\" data-action=\"toggle-tool\" data-call=\"{id}\" aria-expanded=\"false\" tabindex=\"-1\" class=\"flex min-h-11 min-w-0 flex-1 items-center gap-2 rounded-r-lg py-1 pr-2 pl-2 text-left font-mono text-sm active:bg-press\">{suffix}{progress}<span class=\"flex-1\"></span>{machine}{status}</button></div>",
+                    escape(self.header[..at].trim_end()),
+                    url = escape(url),
+                )
+            }
+        };
+        format!("<div class=\"flex items-center\">{toggle}{approval}{background}</div>")
+    }
+
+    /// An open call's header: its whole title and argument as text that
+    /// wraps, its machine, status and buttons floated at the end of the
+    /// first line so the lines after it run the row's full width. A button
+    /// lays its content out on its own, out of reach of any float, so the
+    /// toggle is a bare button under the text: the row lets clicks through
+    /// to it but on its buttons.
+    fn open(&self) -> String {
+        let Self {
+            chevron,
+            icon,
+            machine,
+            status,
+            approval,
+            background,
+            ..
+        } = self;
+        let id = escape(self.id);
+        let progress = self
+            .progress
+            .map(|progress| {
+                format!(
+                    " <span class=\"{NOTE}\" data-progress>· {}</span>",
+                    escape(
+                        &cookie_agent_client_state::tool_header::flatten_header_argument(progress)
+                    )
+                )
+            })
+            .unwrap_or_default();
+        // As tall as a one-line row, and drawn up into its padding so that
+        // its margin box is the first line alone.
+        let side = format!(
+            "<span class=\"float-right -my-3 -mr-2 ml-2 flex min-h-11 items-center indent-0\"><span class=\"flex items-center gap-2 pr-2\">{machine}{status}</span>{approval}{background}</span>"
+        );
+        // The chevron and icon sit at the top of the first line, hung out
+        // to the left of the lines after it so that those start under the
+        // title: their boxes are as wide as the icons, 1em each at their
+        // sizes, and the row's padding and first-line indent are their
+        // widths and gaps.
+        let lead = format!(
+            "<span class=\"mr-2 inline-flex w-[0.625rem] indent-0 align-top\">{chevron}</span><span class=\"mr-2 inline-flex w-[0.8125rem] indent-0 align-top\">{icon}</span>"
+        );
+        let (title, marker) = match self.link {
+            None => (
+                format!("<span data-header>{}</span>", escape(self.header)),
+                "",
+            ),
+            Some((at, url)) => {
+                let suffix = self.header[at + url.len()..].trim();
+                let suffix = if suffix.is_empty() {
+                    String::new()
+                } else {
+                    format!(" <span>{}</span>", escape(suffix))
+                };
+                (
+                    format!(
+                        "<span data-header>{}</span> <button type=\"button\" data-action=\"open-memory\" data-memory-url=\"{url}\" title=\"Open it in Memory\" class=\"pointer-events-auto rounded-md px-1 indent-0 text-left underline decoration-dotted underline-offset-2 hover:bg-press active:bg-surface-2\" data-memory-link>{url}</button>{suffix}",
+                        escape(self.header[..at].trim_end()),
+                        url = escape(url),
+                    ),
+                    " data-header-row",
+                )
+            }
+        };
+        format!(
+            "<div class=\"pointer-events-none relative isolate min-h-11 flow-root py-3 pr-2 pl-[2.9375rem] indent-[-2.4375rem] font-mono text-[0.8125rem] leading-5 whitespace-normal wrap-anywhere\"{marker}><button type=\"button\" data-action=\"toggle-tool\" data-call=\"{id}\" aria-expanded=\"true\" aria-label=\"{}\" class=\"pointer-events-auto absolute inset-0 -z-10 rounded-lg hover:bg-hover active:bg-press\"></button>{side}{lead}{title}{progress}</div>",
+            escape(self.header),
+        )
+    }
+}
+
 /// A tool call: one header line, collapsed until clicked, as in the TUI.
 /// The header has the hint's icon, the title and the primary argument it
 /// does not name, the latest progress while it runs, and the status; the
@@ -1942,27 +2077,18 @@ fn tool_html(view: &TranscriptView<'_>, tool: &ToolCallState) -> String {
         _ => "",
     };
     let status = format!(
-        "<span class=\"inline-flex h-5 shrink-0 items-center gap-1 text-xs {}\" title=\"{}\">{}<span class=\"{label_class}\">{}</span></span>",
+        "<span class=\"inline-flex h-5 shrink-0 items-center gap-1 text-xs {}\" title=\"{}\" data-tool-status>{}<span class=\"{label_class}\">{}</span></span>",
         mark.tone,
         mark.label,
         svg(mark.icon, if mark.spins { "animate-spin" } else { "" }),
         mark.label
     );
     let expanded = view.expanded.tool(&tool.id);
-    let progress = tool
-        .shown_progress()
-        .map(|progress| {
-            format!(
-                "<span class=\"min-w-0 shrink truncate {NOTE}\" data-progress>· {}</span>",
-                escape(&cookie_agent_client_state::tool_header::flatten_header_argument(progress))
-            )
-        })
-        .unwrap_or_default();
     // A call waiting for an approval says so on its header, and opens the
     // approvals from there.
     let approval = if view.waiting_approval(tool) {
         format!(
-            "<button type=\"button\" data-action=\"approvals\" class=\"mr-1 inline-flex min-h-9 shrink-0 items-center gap-1.5 self-center rounded-md bg-warn-soft px-2.5 text-xs font-medium text-warn hover:brightness-95\">{}waiting for you</button>",
+            "<button type=\"button\" data-action=\"approvals\" class=\"pointer-events-auto mr-1 inline-flex min-h-9 shrink-0 items-center gap-1.5 self-center rounded-md bg-warn-soft px-2.5 text-xs font-medium text-warn hover:brightness-95\">{}waiting for you</button>",
             svg(icondata::LuShield, "")
         )
     } else {
@@ -1975,7 +2101,7 @@ fn tool_html(view: &TranscriptView<'_>, tool: &ToolCallState) -> String {
         && !tool.backgrounded
     {
         format!(
-            "<button type=\"button\" data-action=\"background\" data-call=\"{}\" title=\"Move to the background\" class=\"inline-flex min-h-11 shrink-0 items-center gap-1 rounded-md px-2 text-xs hover:bg-hover active:bg-press\">{}background</button>",
+            "<button type=\"button\" data-action=\"background\" data-call=\"{}\" title=\"Move to the background\" class=\"pointer-events-auto inline-flex min-h-11 shrink-0 items-center gap-1 rounded-md px-2 text-xs hover:bg-hover active:bg-press\">{}background</button>",
             escape(&id),
             svg(icondata::LuLayers, "")
         )
@@ -2000,46 +2126,30 @@ fn tool_html(view: &TranscriptView<'_>, tool: &ToolCallState) -> String {
         "text-muted",
     ));
     let header = tool_header_text(view, tool);
-    // An open call's header wraps to show its whole title and argument, its
-    // chevron, icon, and status on the first line, padded so that a single
-    // line sits in the middle of the row's height; a folded one is one
-    // line, cut to fit.
-    let (align, fit, pad) = if expanded {
-        ("items-start", "whitespace-normal wrap-anywhere", "py-3")
-    } else {
-        ("items-center", "truncate", "py-1")
-    };
     // A memory the call names is a link to the Memory view inside the
-    // header, a click target of its own between the two halves that toggle.
+    // header, a click target of its own between the parts that toggle.
     let link = tool
         .memory_url()
         .and_then(|url| header.find(url).map(|at| (at, url)));
-    let toggle = match link {
-        None => format!(
-            "<button type=\"button\" data-action=\"toggle-tool\" data-call=\"{}\" aria-expanded=\"{expanded}\" class=\"flex min-h-11 min-w-0 flex-1 {align} gap-2 rounded-lg px-2 {pad} text-left font-mono text-[0.8125rem] hover:bg-hover active:bg-press\">{chevron}{icon}<span class=\"min-w-0 shrink {fit}\" data-header>{}</span>{progress}<span class=\"flex-1\"></span>{machine}{status}</button>",
-            escape(&id),
-            escape(&header),
-        ),
-        Some((at, url)) => {
-            let suffix = header[at + url.len()..].trim();
-            let suffix = if suffix.is_empty() {
-                String::new()
-            } else {
-                format!(
-                    "<span class=\"min-w-0 shrink {fit}\">{}</span>",
-                    escape(suffix)
-                )
-            };
-            format!(
-                "<div class=\"flex min-w-0 flex-1 {align} rounded-lg hover:bg-hover\" data-header-row><button type=\"button\" data-action=\"toggle-tool\" data-call=\"{id}\" aria-expanded=\"{expanded}\" class=\"flex min-h-11 min-w-0 shrink {align} gap-2 rounded-l-lg {pad} pl-2 text-left font-mono text-sm active:bg-press\">{chevron}{icon}<span class=\"min-w-0 shrink {fit}\" data-header>{}</span></button><button type=\"button\" data-action=\"open-memory\" data-memory-url=\"{url}\" title=\"Open it in Memory\" class=\"ml-2 min-h-11 min-w-0 shrink {fit} rounded-md px-1 text-left font-mono text-sm underline decoration-dotted underline-offset-2 hover:bg-press active:bg-surface-2\" data-memory-link>{url}</button><button type=\"button\" data-action=\"toggle-tool\" data-call=\"{id}\" aria-expanded=\"{expanded}\" tabindex=\"-1\" class=\"flex min-h-11 min-w-0 flex-1 {align} gap-2 rounded-r-lg {pad} pr-2 pl-2 text-left font-mono text-sm active:bg-press\">{suffix}{progress}<span class=\"flex-1\"></span>{machine}{status}</button></div>",
-                escape(header[..at].trim_end()),
-                id = escape(&id),
-                url = escape(url),
-            )
-        }
+    let parts = ToolHeader {
+        id: &id,
+        header: &header,
+        link,
+        chevron: &chevron,
+        icon: &icon,
+        progress: tool.shown_progress(),
+        machine: &machine,
+        status: &status,
+        approval: &approval,
+        background: &background,
+    };
+    let header_row = if expanded {
+        parts.open()
+    } else {
+        parts.folded()
     };
     let mut html = format!(
-        "<div class=\"rounded-[0.625rem] bg-raised ring-1 ring-line transition-shadow hover:ring-line-2\" data-tool=\"{}\" data-expanded=\"{expanded}\"><div class=\"flex {align}\">{toggle}{approval}{background}</div>",
+        "<div class=\"rounded-[0.625rem] bg-raised ring-1 ring-line transition-shadow hover:ring-line-2\" data-tool=\"{}\" data-expanded=\"{expanded}\">{header_row}",
         escape(&id),
     );
     if let Some(delegate) = view.delegates.get(&tool.id) {

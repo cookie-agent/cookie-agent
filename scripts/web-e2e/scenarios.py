@@ -662,7 +662,7 @@ def tool_rows(browser):
     centers = browser.script(
         "const b = document.querySelector(arguments[0] + ' [data-action=toggle-tool]');"
         "const mid = (e) => { const r = e.getBoundingClientRect(); return r.top + r.height / 2; };"
-        "return [mid(b), mid(b.querySelector('[data-header]')), mid(b.querySelector('svg'))]",
+        "return [mid(b), mid(b.parentElement.querySelector('[data-header]')), mid(b.parentElement.querySelector('svg'))]",
         row,
     )
     assert max(centers) - min(centers) < 2, centers
@@ -7250,21 +7250,32 @@ def reduced_transcript(browser):
 
 
 # The open tool row's header: its height, its title span's, the gap between
-# the tops of its status mark and its title, and whether the title
-# holds the command's last word.
+# the tops of its status mark and its title, whether the title
+# holds the command's last word, and, open, whether the lines after the
+# first run on under the status mark: a box as wide as a line can be does
+# not fit beside the mark, so it goes below it, as wide as those lines.
 HEADER_FIT = """
 const row = [...document.querySelectorAll('#transcript [data-tool]')].pop();
 const header = row.querySelector('[data-header]');
-const status = row.querySelector('[data-action=toggle-tool] [title]');
+const status = row.querySelector('[data-tool-status]');
+let under = null;
+if (row.dataset.expanded === 'true') {
+    const probe = document.createElement('span');
+    probe.style.cssText = 'display: inline-block; width: 100%; height: 0';
+    header.after(probe);
+    under = probe.getBoundingClientRect().right > status.getBoundingClientRect().left;
+    probe.remove();
+}
 return {height: header.getBoundingClientRect().height,
     top: Math.abs(status.getBoundingClientRect().top - header.getBoundingClientRect().top),
-    whole: header.innerText.includes('word40'), text: header.innerText};
+    under, whole: header.innerText.includes('word40'), text: header.innerText};
 """
 
 
 def open_tool_header(browser):
     """An open call's header wraps to show its whole command, its status on
-    the first line; folded, it is one line again."""
+    the first line and the lines after it the row's full width; folded, it
+    is one line again."""
     new_session(browser)
     send(browser, "run a wordy command")
     browser.wait("the approval", lambda: count(browser, "#transcript [data-action=approvals]") == 1)
@@ -7280,6 +7291,7 @@ def open_tool_header(browser):
     opened = browser.script(HEADER_FIT)
     assert opened["whole"], "the open header does not show the command's last word: %s" % opened["text"]
     assert opened["top"] < 12, "the status left the first line: %s" % opened
+    assert opened["under"], "the lines after the first stop short of the status: %s" % opened
     browser.script("[...document.querySelectorAll('#transcript [data-tool]')].pop().scrollIntoView({block: 'start'})")
     browser.shot("open-tool-header")
     browser.script(toggle)
