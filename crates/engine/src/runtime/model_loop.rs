@@ -516,107 +516,18 @@ impl Engine {
             self.compose_tool_prompt_sections(&mut run_policy, params.session_id)?;
             self.compose_skill_listing(params.session_id, &mut run_policy)?;
         }
-        let context_id = crate::plugin::plugin_context_id();
-        let mut prompt_replaced = false;
-        let mut injected_messages = Vec::new();
-        for hooked in self
-            .inner
-            .plugins
-            .interception_plugins(ExtensionInterceptionHook::AgentBeforeStart)
-            .into_iter()
-            .filter(|_| !acp)
-        {
-            let plugin = hooked.name.clone();
-            let result = self
-                .inner
-                .plugins
-                .intercept_named::<_, cookie_agent_protocol::ExtensionAgentBeforeStartResult>(
-                    &plugin,
-                    cookie_agent_protocol::PLUGIN_INTERCEPT_AGENT_BEFORE_START_METHOD,
-                    &ExtensionAgentBeforeStartParams {
-                        session_id: params.session_id,
-                        context_id: context_id.clone(),
-                        agent_path: run_policy.agent.agent.to_string(),
-                        prompt_context: cookie_agent_protocol::ExtensionPromptContext {
-                            input: (!producer_start).then(|| params.content.clone()),
-                            system_prompt: run_policy.agent.composed_prompt.clone(),
-                            injected_messages: injected_messages.clone(),
-                        },
-                    },
-                    Some(params.session_id),
-                    Some(&context_id),
-                )
-                .await;
-            match result {
-                Ok(result) => {
-                    if let Some(replacement) = result
-                        .replace_system_prompt
-                        .filter(|value| !value.is_empty())
-                    {
-                        if replacement.len() > 128 * 1024 {
-                            self.record_plugin_diagnostic(
-                                params.session_id,
-                                plugin.clone(),
-                                PluginDiagnosticKind::InvalidModification,
-                                "plugin replacement system prompt exceeds the byte limit".into(),
-                            );
-                        } else {
-                            // The blocks are no longer where they were.
-                            run_policy.prompt_blocks.clear();
-                            prompt_replaced = true;
-                            run_policy.agent.composed_prompt = replacement;
-                            run_policy.agent.prompt_fingerprint =
-                                Sha256Digest::of_bytes(run_policy.agent.composed_prompt.as_bytes());
-                        }
-                    }
-                    if let Some(addendum) = result
-                        .append_to_system_prompt
-                        .filter(|value| !value.is_empty())
-                    {
-                        if run_policy.agent.composed_prompt.len()
-                            + PROMPT_BLOCK_SEPARATOR.len()
-                            + addendum.len()
-                            > 128 * 1024
-                        {
-                            self.record_plugin_diagnostic(
-                                params.session_id,
-                                plugin.clone(),
-                                PluginDiagnosticKind::InvalidModification,
-                                "plugin agent addendum exceeds the system prompt byte limit".into(),
-                            );
-                        } else {
-                            push_prompt_block(&mut run_policy.agent.composed_prompt, &addendum);
-                            run_policy.agent.prompt_fingerprint =
-                                Sha256Digest::of_bytes(run_policy.agent.composed_prompt.as_bytes());
-                        }
-                    }
-                    if let Some(message) = result.inject_message {
-                        if message.content.trim().is_empty()
-                            || message.role == cookie_agent_protocol::ExtensionMessageRole::Tool
-                        {
-                            self.record_plugin_diagnostic(
-                                params.session_id,
-                                plugin,
-                                PluginDiagnosticKind::InvalidModification,
-                                "plugin injected an empty or unsupported tool-role message".into(),
-                            );
-                        } else {
-                            injected_messages.push(message);
-                        }
-                    }
-                }
-                Err(error) => {
-                    if let Some(failure) = self.hook_failed(
-                        params.session_id,
-                        &hooked,
-                        ExtensionInterceptionHook::AgentBeforeStart,
-                        error,
-                    ) {
-                        return Err(EngineError::PluginHookFailed(failure));
-                    }
-                }
-            }
-        }
+        let hooked = if acp {
+            AgentPromptHooks::default()
+        } else {
+            self.agent_prompt_hooks(
+                params.session_id,
+                &mut run_policy,
+                (!producer_start).then(|| params.content.clone()),
+            )
+            .await?
+        };
+        let mut prompt_replaced = hooked.replaced;
+        let injected_messages = hooked.injected;
         // The previous run's system prompt, byte for byte; a hook's change
         // to it waits for the next refresh point (frozen context spec,
         // section 6.2).
@@ -1968,8 +1879,16 @@ impl Engine {
         // The fallback entry whose refusal of deferred tools was retried
         // without them, and why: it marks the model once a retry succeeds.
         let mut deferral_retry = None::<(usize, String)>;
-        let composed_prompt = &policy.agent.composed_prompt;
-        let prompt_fingerprint = &policy.agent.prompt_fingerprint;
+        // The system prompt the run started with; a checkpoint inside the run
+        // may compose another, which its requests carry from then on
+        // (`docs/site/specs/forever-sessions.md` section 5.2).
+        let started_prompt = (
+            policy.agent.composed_prompt.as_str(),
+            &policy.agent.prompt_fingerprint,
+        );
+        // The checkpoint `tools` were published after: a later one starts a
+        // new tool round, for the request right after it too.
+        let mut tools_checkpoint = self.inner.store.log(session)?.latest_checkpoint_seq();
         let mut entry = *sticky_entry;
         let mut last_error = ModelError::invalid_request("model fallback chain is empty");
         let mut first_request = Some(prompt_events);
@@ -2029,13 +1948,26 @@ impl Engine {
                     }
                     Err(error) => return Err(error),
                 };
+                let request_events = self
+                    .tools_after_checkpoint(
+                        session,
+                        run,
+                        policy,
+                        &mut tools_checkpoint,
+                        &mut tools,
+                        deferral_retry
+                            .as_ref()
+                            .is_some_and(|(retried, _)| *retried == entry),
+                    )
+                    .await?
+                    .unwrap_or(request_events);
                 // A provider window alone that this request cannot use is
                 // summarized from the log first, once (native compaction spec
                 // section 7).
                 let (request_events, context) = match self.request_context(
                     &request_events,
                     binding,
-                    composed_prompt,
+                    crate::model_history::prompt_in_force(&request_events, started_prompt).0,
                     model.model().as_ref(),
                 ) {
                     Err(EngineError::ModelHistory(
@@ -2059,10 +1991,24 @@ impl Engine {
                                 origin: event_origin("engine:auto-compact"),
                             })
                             .await?;
+                        let request_events = self
+                            .tools_after_checkpoint(
+                                session,
+                                run,
+                                policy,
+                                &mut tools_checkpoint,
+                                &mut tools,
+                                deferral_retry
+                                    .as_ref()
+                                    .is_some_and(|(retried, _)| *retried == entry),
+                            )
+                            .await?
+                            .unwrap_or(request_events);
                         let context = self.request_context(
                             &request_events,
                             binding,
-                            composed_prompt,
+                            crate::model_history::prompt_in_force(&request_events, started_prompt)
+                                .0,
                             model.model().as_ref(),
                         )?;
                         (request_events, context)
@@ -2094,6 +2040,10 @@ impl Engine {
                     continue;
                 }
                 let prefix_fingerprint = prefix_fingerprints.map(|fingerprints| fingerprints.whole);
+                let prompt_fingerprint =
+                    crate::model_history::prompt_in_force(&request_events, started_prompt)
+                        .1
+                        .clone();
                 let input_through_seq = request_events.last().map_or(0, |event| event.seq);
                 let carries_window = context.native_context.is_some();
                 // The context is built from the snapshot alone, so it is built
@@ -2117,7 +2067,7 @@ impl Engine {
                         fallback_index: entry as u32,
                         retry_ordinal: attempts - 1,
                         resolved_model: wire_model(binding),
-                        prompt_fingerprint: prompt_fingerprint.clone(),
+                        prompt_fingerprint,
                     },
                 )
                 .await?;
@@ -3366,6 +3316,174 @@ fn apply_model_params(
     }
     if let Some(top_p) = adjustments.top_p {
         request.inference.top_p = Some(top_p);
+    }
+}
+
+/// What the plugins' `agent_before_start` hooks made of a run's system
+/// prompt: whether one replaced it, and the messages they injected.
+#[derive(Default)]
+pub(super) struct AgentPromptHooks {
+    pub(super) replaced: bool,
+    pub(super) injected: Vec<cookie_agent_protocol::ExtensionInjectedMessage>,
+}
+
+impl Engine {
+    /// Runs the plugins' `agent_before_start` hooks on `policy`'s composed
+    /// prompt, as a run's admission does and a checkpoint inside a run does
+    /// again (`docs/site/specs/forever-sessions.md` section 5.2): each may
+    /// append to it or replace it, and inject a message. `input` is the user
+    /// content that starts the run, `None` for a producer's message or a
+    /// checkpoint. A hook that fails with `on_error = block` fails the call.
+    pub(super) async fn agent_prompt_hooks(
+        &self,
+        session: SessionId,
+        policy: &mut FrozenRunPolicy,
+        input: Option<cookie_agent_protocol::UserContent>,
+    ) -> Result<AgentPromptHooks, EngineError> {
+        let context_id = crate::plugin::plugin_context_id();
+        let mut prompt_replaced = false;
+        let mut injected_messages = Vec::new();
+        for hooked in self
+            .inner
+            .plugins
+            .interception_plugins(ExtensionInterceptionHook::AgentBeforeStart)
+        {
+            let plugin = hooked.name.clone();
+            let result = self
+                .inner
+                .plugins
+                .intercept_named::<_, cookie_agent_protocol::ExtensionAgentBeforeStartResult>(
+                    &plugin,
+                    cookie_agent_protocol::PLUGIN_INTERCEPT_AGENT_BEFORE_START_METHOD,
+                    &ExtensionAgentBeforeStartParams {
+                        session_id: session,
+                        context_id: context_id.clone(),
+                        agent_path: policy.agent.agent.to_string(),
+                        prompt_context: cookie_agent_protocol::ExtensionPromptContext {
+                            input: input.clone(),
+                            system_prompt: policy.agent.composed_prompt.clone(),
+                            injected_messages: injected_messages.clone(),
+                        },
+                    },
+                    Some(session),
+                    Some(&context_id),
+                )
+                .await;
+            match result {
+                Ok(result) => {
+                    if let Some(replacement) = result
+                        .replace_system_prompt
+                        .filter(|value| !value.is_empty())
+                    {
+                        if replacement.len() > 128 * 1024 {
+                            self.record_plugin_diagnostic(
+                                session,
+                                plugin.clone(),
+                                PluginDiagnosticKind::InvalidModification,
+                                "plugin replacement system prompt exceeds the byte limit".into(),
+                            );
+                        } else {
+                            // The blocks are no longer where they were.
+                            policy.prompt_blocks.clear();
+                            prompt_replaced = true;
+                            policy.agent.composed_prompt = replacement;
+                            policy.agent.prompt_fingerprint =
+                                Sha256Digest::of_bytes(policy.agent.composed_prompt.as_bytes());
+                        }
+                    }
+                    if let Some(addendum) = result
+                        .append_to_system_prompt
+                        .filter(|value| !value.is_empty())
+                    {
+                        if policy.agent.composed_prompt.len()
+                            + PROMPT_BLOCK_SEPARATOR.len()
+                            + addendum.len()
+                            > 128 * 1024
+                        {
+                            self.record_plugin_diagnostic(
+                                session,
+                                plugin.clone(),
+                                PluginDiagnosticKind::InvalidModification,
+                                "plugin agent addendum exceeds the system prompt byte limit".into(),
+                            );
+                        } else {
+                            push_prompt_block(&mut policy.agent.composed_prompt, &addendum);
+                            policy.agent.prompt_fingerprint =
+                                Sha256Digest::of_bytes(policy.agent.composed_prompt.as_bytes());
+                        }
+                    }
+                    if let Some(message) = result.inject_message {
+                        if message.content.trim().is_empty()
+                            || message.role == cookie_agent_protocol::ExtensionMessageRole::Tool
+                        {
+                            self.record_plugin_diagnostic(
+                                session,
+                                plugin,
+                                PluginDiagnosticKind::InvalidModification,
+                                "plugin injected an empty or unsupported tool-role message".into(),
+                            );
+                        } else {
+                            injected_messages.push(message);
+                        }
+                    }
+                }
+                Err(error) => {
+                    if let Some(failure) = self.hook_failed(
+                        session,
+                        &hooked,
+                        ExtensionInterceptionHook::AgentBeforeStart,
+                        error,
+                    ) {
+                        return Err(EngineError::PluginHookFailed(failure));
+                    }
+                }
+            }
+        }
+        Ok(AgentPromptHooks {
+            replaced: prompt_replaced,
+            injected: injected_messages,
+        })
+    }
+
+    /// Starts the new tool round a checkpoint begins when one committed
+    /// since `tools` were published, after `tools_checkpoint`
+    /// (`docs/site/specs/forever-sessions.md` section 5.2): the tools are
+    /// published afresh into `tools`, every one up front when `all_eager` (a
+    /// retry after the model refused deferred tools), what that announces is
+    /// recorded, and the log's model context, which now holds it, is
+    /// returned. `None` when no checkpoint committed since.
+    #[allow(clippy::too_many_arguments)]
+    async fn tools_after_checkpoint(
+        &self,
+        session: SessionId,
+        run: RunId,
+        policy: &FrozenRunPolicy,
+        tools_checkpoint: &mut u64,
+        tools: &mut Vec<ToolDefinition>,
+        all_eager: bool,
+    ) -> Result<Option<crate::events::EventSnapshot>, EngineError> {
+        let checkpoint = self.inner.store.log(session)?.latest_checkpoint_seq();
+        if checkpoint <= *tools_checkpoint {
+            return Ok(None);
+        }
+        *tools_checkpoint = checkpoint;
+        let mut published = self.published_tool_definitions(session, policy)?;
+        for payload in std::mem::take(&mut published.pending) {
+            self.append(
+                session,
+                Some(run),
+                event_origin("engine:deferred-tools"),
+                payload,
+            )
+            .await?;
+        }
+        *tools = published.definitions;
+        if all_eager {
+            for tool in tools.iter_mut() {
+                tool.loading = oven_sdk::ToolLoading::Eager;
+            }
+        }
+        Ok(Some(self.inner.store.log(session)?.model_context_events()?))
     }
 }
 

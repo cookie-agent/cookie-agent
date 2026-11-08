@@ -39,8 +39,12 @@ replaces the whole prompt instead of appending to it.
 
 The resulting agent snapshot is frozen in `run_started`. Model retries and
 fallbacks reuse that run policy and prompt fingerprint; configuration refreshes
-cannot alter an admitted run. Request assembly reuses the first event snapshot
-for the first attempt and refreshes session events only when a later attempt
+cannot alter an admitted run. The one exception is a native run's checkpoint,
+which composes the prompt again through steps 1 to 6 and records it as
+`system_prompt_composed` (see [the frozen context](#the-frozen-context)):
+the run's later requests carry that prompt, while the rest of its snapshot,
+its permissions and models among it, stays as `run_started` froze it.
+Request assembly reuses the first event snapshot for the first attempt and refreshes session events only when a later attempt
 needs current history.
 
 ## Fingerprints
@@ -51,7 +55,8 @@ the attachments block, tool-provider sections, skill listings, and plugin compos
 effective fingerprints before
 `run_started` is persisted. Model-attempt events record the prompt fingerprint,
 and replay validation rejects attempt attribution that contradicts the frozen
-run snapshot.
+run snapshot, or, after a `system_prompt_composed` in the run, that record's
+fingerprint.
 
 AGENTS.md context and the memory snapshot are intentionally excluded from the
 system-prompt fingerprint. Each has its own durable event, provenance, and
@@ -59,7 +64,8 @@ user-role boundary.
 
 ## Tool-provider sections
 
-Tool providers can contribute cross-tool behavioral policy at run admission:
+Tool providers can contribute cross-tool behavioral policy at run admission,
+and at a native run's checkpoint, which composes the prompt again:
 built-in providers, plugins, and runtimes over the runtime protocol. Each section is normalized, validated, and rendered with an
 engine-derived identity:
 
@@ -75,8 +81,9 @@ the session attaches, in attach order (plugins under `global`), each in
 registration order.
 Declaration order determines section order within a provider. Bodies are limited to 8 KiB per section,
 16 KiB per provider, and 32 KiB across all providers. Any invalid content or
-overflow rejects run admission instead of truncating or omitting policy. The
-existing 128 KiB composed-prompt limit still applies.
+overflow rejects run admission instead of truncating or omitting policy; at
+a checkpoint it leaves the prompt the run's requests carry. The existing 128
+KiB composed-prompt limit still applies.
 
 This channel is for durable behavioral policy that must survive compaction and
 carry system priority. Per-tool guidance remains in typed tool descriptions;
@@ -194,8 +201,8 @@ project. Moving a session to another project changes the next run's prompt,
 which costs one prompt-cache miss, like any other change to the session's
 facts. Attribute values are XML-escaped. The block is frozen with the prompt: an
 attachment added or removed, or a machine renamed, regrouped, or merged after
-admission changes the next run's block, while the tool descriptions follow
-at once. The block is skipped rather than truncated if the composed prompt is
+admission changes the next run's block, or the block a checkpoint inside the
+run composes, while the tool descriptions follow at once. The block is skipped rather than truncated if the composed prompt is
 already at its byte limit.
 
 An [ACP agent](../extend/acp-agents.md#what-the-first-prompt-carries) gets
@@ -419,7 +426,8 @@ The memory tools' provider contributes a `<tool_instructions
 provider="builtin.memory">` section (see
 [Tool-provider sections](#tool-provider-sections)) to every run that is
 offered any memory tool, and none to one that is not. It is composed at run
-admission from the run's frozen policy, so it is identical on every run that
+admission, and at a checkpoint inside the run, from the run's frozen policy,
+so it is identical on every run that
 keeps the same access and stays cached. On a model that loads
 [deferred tools](tools.md#deferred-tools), the memory tools are deferred and
 the section arrives with their first load instead, unless
@@ -477,12 +485,29 @@ point, on every model ([frozen context spec](../specs/frozen-context.md)).
 **It is composed afresh** at the session's first run, at the first run after
 a compaction, after a run whose prompt a plugin replaced, and at a
 **refresh**, which records `context_refreshed { reason, changed }` and starts
-a new tool round. **A native session's checkpoint** composes the AGENTS.md and
-memory turns afresh itself, in the run that compacts, and the next request
-starts a new tool round; the system prompt the run was admitted with stays
-until the next run, which composes it afresh
-([forever sessions](../specs/forever-sessions.md), section 5.2). An ACP
-agent's context stays as its session started it. The refresh points:
+a new tool round. **A native session's checkpoint** composes the whole
+context afresh in the run that compacts
+([forever sessions](../specs/forever-sessions.md), section 5.2):
+
+- the AGENTS.md and memory turns, read as compaction starts and recorded just
+  before the checkpoint;
+- the system prompt, right after the checkpoint, as the run's admission
+  composes it: the agent's body as its document reads now, the runtimes,
+  attachments, tool instructions, and skills blocks, and the plugins'
+  `agent_before_start` hooks (run with no `input`; a message one injects is
+  not taken). When it differs from the prompt the run's requests carry, it is
+  recorded as `system_prompt_composed { composed_prompt, prompt_fingerprint,
+  blocks? }`, and every later request of the run carries it, so the log alone
+  gives the request after a restart. A prompt that cannot be composed (too
+  long, or a hook that blocks failed) leaves the one in force;
+- the tool round, which starts over for the request right after the
+  checkpoint.
+
+The run's agent otherwise stays as it was admitted: its permissions, models,
+limits, and delegation targets, which the run's policy decides, change only at
+the next run. Between runs a checkpoint leaves the prompt to the next run,
+which composes it afresh. An ACP agent's context stays as its session started
+it. The refresh points:
 
 - an eager tool's parameter schema changed since the round started
   (`engine_updated` when the engine build that started the round differs,
@@ -521,7 +546,8 @@ Each block replaces the part of the system prompt it names, and a removed block 
 ```
 
 A plugin's system-prompt hook changes take effect at the next point the
-context is composed afresh; its injected messages apply to every run.
+context is composed afresh, a checkpoint inside a run included; its injected
+messages apply to every run's start.
 
 **Skills** render where they were loaded, as user turns, like any other
 turn: a checkpoint keeps one in its kept range in place and summarizes an

@@ -1818,6 +1818,25 @@ pub(crate) fn fresh_agent_md_turn(
     (!loaded.is_empty()).then(|| agent_md_turn(&loaded))
 }
 
+/// The system prompt a request of the latest run of `events` carries, with
+/// its fingerprint: the run's latest `system_prompt_composed`, which a
+/// checkpoint inside the run composed afresh, or `started`, the prompt and
+/// fingerprint its `run_started` froze, when it recorded none
+/// (`docs/site/specs/forever-sessions.md` section 5.2).
+pub(crate) fn prompt_in_force<'a>(
+    events: &'a [std::sync::Arc<StoredEvent>],
+    started: (&'a str, &'a cookie_agent_protocol::Sha256Digest),
+) -> (&'a str, &'a cookie_agent_protocol::Sha256Digest) {
+    match crate::events::model_context::latest_composed_prompt(events).map(|event| &event.payload) {
+        Some(EventPayload::SystemPromptComposed {
+            composed_prompt,
+            prompt_fingerprint,
+            ..
+        }) => (composed_prompt, prompt_fingerprint),
+        _ => started,
+    }
+}
+
 /// Test-only: what a request assembles from `selected`, a log's model context
 /// ([`crate::events::EventLog::model_context_events`]), is what it assembles
 /// from `whole`, the log through the same record: the context with and
@@ -1853,11 +1872,17 @@ pub(crate) fn assert_assembles_as_whole(
             ),
         }
     }
+    // The prompt a request carries is the log's too: one a checkpoint inside
+    // the run composed, or the run's own.
+    let fingerprint = cookie_agent_protocol::Sha256Digest::of_bytes(composed_prompt.as_bytes());
+    let (selected_prompt, _) = prompt_in_force(selected, (composed_prompt, &fingerprint));
+    let (whole_prompt, _) = prompt_in_force(whole, (composed_prompt, &fingerprint));
+    assert_eq!(selected_prompt, whole_prompt, "the system prompt in force");
     for use_windows in [true, false] {
         same(
             "the request's context",
-            assemble_model_context_with(selected, store, binding, composed_prompt, use_windows),
-            assemble_model_context_with(whole, store, binding, composed_prompt, use_windows),
+            assemble_model_context_with(selected, store, binding, selected_prompt, use_windows),
+            assemble_model_context_with(whole, store, binding, whole_prompt, use_windows),
         );
     }
     let summary_view = |events| assemble_summary_view(events, store, binding, composed_prompt);

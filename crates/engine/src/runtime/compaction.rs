@@ -946,6 +946,13 @@ impl Engine {
             )
         })
         .await?;
+        // A checkpoint inside a run composes the run's system prompt afresh,
+        // as the run's admission did, for its next request; between runs, the
+        // next run composes it (forever sessions spec, section 5.2).
+        if let Some(run) = &active_run {
+            self.recompose_run_prompt(input.session, input.run, &run.policy)
+                .await?;
+        }
         // A checkpoint ends whatever compaction was planned before the
         // prompt cache expires.
         self.cache_expiry_touch(input.session);

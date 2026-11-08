@@ -1410,6 +1410,22 @@ fn wire_digest(
     protocol::Sha256Digest::new(value.as_str()).map_err(|_| EngineError::RuntimeCompileFailed)
 }
 
+/// Sets `snapshot`'s composed prompt back to `agent`'s body, with the body's
+/// fingerprints, as a run's freeze starts it before its prompt blocks are
+/// appended: what a checkpoint inside a run composes its system prompt from
+/// (`docs/site/specs/forever-sessions.md` section 5.2). The rest of the
+/// snapshot, its permissions and models among it, stays.
+pub(crate) fn reset_composed_prompt(
+    snapshot: &mut protocol::AgentSnapshot,
+    agent: &ResolvedAgent,
+) -> Result<(), EngineError> {
+    let document = &agent.document;
+    snapshot.composed_prompt = document.body.clone();
+    snapshot.prompt_fingerprint = wire_digest(&document.prompt_fingerprint)?;
+    snapshot.document_fingerprint = wire_digest(&document.document_fingerprint)?;
+    Ok(())
+}
+
 pub(crate) fn resolve_agent<'a>(
     registry: &'a AgentRegistry,
     id: &protocol::AgentId,

@@ -84,6 +84,10 @@ impl Engine {
         Ok(self.inner.store.log(session_id)?.physical_model_turns() + 1)
     }
 
+    /// The system prompt `run_id`'s requests carry: the latest one a
+    /// checkpoint inside the run composed afresh, or the one its
+    /// `run_started` froze (`docs/site/specs/forever-sessions.md` section
+    /// 5.2).
     pub(super) fn run_agent_prompt(
         &self,
         session_id: SessionId,
@@ -95,12 +99,16 @@ impl Engine {
             Event::RunStarted { agent, .. } if event.run_id == Some(run_id) => {
                 Some(agent.composed_prompt.clone())
             }
+            Event::SystemPromptComposed {
+                composed_prompt, ..
+            } if event.run_id == Some(run_id) => Some(composed_prompt.clone()),
             _ => None,
         };
         // The run asked about is nearly always the latest.
-        let latest = log
-            .state()
-            .run_started(run_id)
+        let state = log.state();
+        let latest = state
+            .run_prompt(run_id)
+            .or_else(|| state.run_started(run_id))
             .and_then(|event| prompt(event));
         match latest {
             Some(prompt) => Some(prompt),

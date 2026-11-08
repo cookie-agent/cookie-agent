@@ -86,17 +86,37 @@ impl Engine {
         else {
             return Ok(ContextComposition::Live);
         };
-        let Some(prompt_blocks) = events.iter().rev().find_map(|event| match &event.payload {
-            Event::PromptBlocksRecorded { blocks, .. } if event.run_id == Some(run) => {
-                Some(blocks.clone())
-            }
-            _ => None,
-        }) else {
+        // The prompt the run's requests carried last, with its blocks: one a
+        // checkpoint inside the run composed, or its own. A run whose prompt
+        // a plugin replaced records no blocks.
+        let Some((prompt, prompt_blocks)) =
+            events.iter().rev().find_map(|event| match &event.payload {
+                Event::PromptBlocksRecorded { blocks, .. } if event.run_id == Some(run) => Some((
+                    (
+                        agent.composed_prompt.clone(),
+                        agent.prompt_fingerprint.clone(),
+                    ),
+                    Some(blocks.clone()),
+                )),
+                Event::SystemPromptComposed {
+                    composed_prompt,
+                    prompt_fingerprint,
+                    blocks,
+                } if event.run_id == Some(run) => Some((
+                    (composed_prompt.clone(), prompt_fingerprint.clone()),
+                    blocks.clone(),
+                )),
+                _ => None,
+            })
+        else {
+            return Ok(ContextComposition::Live);
+        };
+        let Some(prompt_blocks) = prompt_blocks else {
             return Ok(ContextComposition::Live);
         };
         let previous = PreviousContext {
-            composed_prompt: agent.composed_prompt.clone(),
-            prompt_fingerprint: agent.prompt_fingerprint.clone(),
+            composed_prompt: prompt.0,
+            prompt_fingerprint: prompt.1,
             prompt_blocks,
             agent_md: previous_agent_md(&events, run),
         };
@@ -171,6 +191,78 @@ impl Engine {
 }
 
 impl Engine {
+    /// Composes `run`'s system prompt afresh at a checkpoint inside it, as a
+    /// run's admission composes it, and records it as the prompt the run's
+    /// requests carry from here when it differs from the one they carry now
+    /// (`docs/site/specs/forever-sessions.md` section 5.2): the agent's body
+    /// as the live registry holds it now, the runtimes, attachments, tool
+    /// instructions, and skills blocks, and the plugins' system-prompt hooks.
+    /// Only the prompt changes; `policy`, the run's frozen policy, keeps its
+    /// permissions, models, and limits. A prompt that cannot be composed
+    /// now, too long or refused by a hook that blocks, leaves the one in
+    /// force.
+    pub(super) async fn recompose_run_prompt(
+        &self,
+        session: SessionId,
+        run: RunId,
+        policy: &FrozenRunPolicy,
+    ) -> Result<(), EngineError> {
+        if policy.acp_agent().is_some() {
+            return Ok(());
+        }
+        let mut composed = policy.clone();
+        // The agent's body as it reads now; its frozen one when the live
+        // registry no longer holds it as a native agent.
+        let live = self
+            .current_runtime()
+            .agents_for_preset(policy.preset.as_deref())
+            .ok();
+        let agent = live
+            .as_deref()
+            .and_then(|agents| agents.get(&policy.agent.agent))
+            .filter(|agent| agent.acp.is_none())
+            .or_else(|| policy.registry.get(&policy.agent.agent));
+        let Some(agent) = agent else {
+            return Ok(());
+        };
+        crate::policy::reset_composed_prompt(&mut composed.agent, agent)?;
+        composed.prompt_blocks.clear();
+        self.compose_runtimes_prompt(&mut composed, session);
+        self.compose_attachments_prompt(&mut composed, session);
+        match self.compose_tool_prompt_sections(&mut composed, session) {
+            Err(EngineError::ToolPrompt(_)) => return Ok(()),
+            composed => composed?,
+        }
+        self.compose_skill_listing(session, &mut composed)?;
+        // A message a hook injects joins a run at its admission only.
+        let hooked = match self.agent_prompt_hooks(session, &mut composed, None).await {
+            Ok(hooked) => hooked,
+            Err(EngineError::PluginHookFailed(_)) => return Ok(()),
+            Err(error) => return Err(error),
+        };
+        let blocks = (!hooked.replaced).then_some(composed.prompt_blocks);
+        let prompt = composed.agent.composed_prompt;
+        let in_force = self.run_agent_prompt(session, run)?;
+        let known = self.inner.store.log(session)?.prompt_blocks().run_blocks;
+        let texts = blocks
+            .as_deref()
+            .and_then(|blocks| crate::events::prompt_block_texts(&prompt, blocks));
+        if prompt == in_force && texts == known {
+            return Ok(());
+        }
+        self.append(
+            session,
+            Some(run),
+            super::event_origin("engine:prompt"),
+            Event::SystemPromptComposed {
+                composed_prompt: prompt,
+                prompt_fingerprint: composed.agent.prompt_fingerprint,
+                blocks,
+            },
+        )
+        .await
+    }
+
     /// What runtimes a client attached since the previous run ended add to
     /// the model's context, recorded at this run's admission where the model
     /// reads them: each one's workspace `AGENTS.md`, and the memories of a

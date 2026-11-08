@@ -686,6 +686,18 @@ async fn auto_compaction_commits_checkpoint_before_the_attempt_that_uses_it() {
         committed >= checkpoint_seq,
         "post-compaction turn consumes the checkpoint"
     );
+    // The checkpoint composed the same prompt: nothing records it again, and
+    // the new tool round starts before the attempt after it.
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event.payload, EventPayload::SystemPromptComposed { .. }))
+    );
+    assert!(events.iter().any(|event| {
+        matches!(event.payload, EventPayload::ToolRoundStarted { .. })
+            && event.seq > checkpoint_seq
+            && event.seq < attempt_starts[1]
+    }));
     fixture.engine.shutdown().await;
 }
 
@@ -1332,4 +1344,207 @@ async fn compaction_summary_streams_live_deltas_for_its_invocation() {
     .await;
     assert_eq!(deltas, ["first half, ", "second half"]);
     fixture.engine.shutdown().await;
+}
+
+/// A checkpoint inside a run composes the run's system prompt afresh, as the
+/// run's admission composes it, and starts the new tool round for the request
+/// right after it: what changed since the run froze its prompt (here a tool
+/// provider's prompt section) is in the system prompt from that request on,
+/// recorded so the log alone gives it after a restart
+/// (`docs/site/specs/forever-sessions.md` section 5.2).
+#[tokio::test]
+async fn a_checkpoint_inside_a_run_composes_its_system_prompt_afresh() {
+    let text = |content: &str, prompt_tokens: u64| {
+        format!(
+            "data: {{\"choices\":[{{\"delta\":{{\"content\":\"{content}\"}},\"finish_reason\":null}}]}}\n\ndata: {{\"choices\":[{{\"delta\":{{}},\"finish_reason\":\"stop\"}}],\"usage\":{{\"prompt_tokens\":{prompt_tokens},\"completion_tokens\":5,\"total_tokens\":{prompt_tokens}}}}}\n\n"
+        )
+    };
+    let tool_turn = "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"write-call\",\"type\":\"function\",\"function\":{\"name\":\"write\",\"arguments\":\"{}\"}}]},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}],\"usage\":{\"prompt_tokens\":7000,\"completion_tokens\":10,\"total_tokens\":7010}}\n\n".to_owned();
+    let (endpoint, captured, ..) = scripted_server_with_status_and_delay(
+        vec![
+            (200, text("first run done", 900)),
+            (200, tool_turn),
+            (200, text("checkpoint summary", 0)),
+            (200, text("after compaction", 900)),
+        ],
+        usize::MAX,
+    )
+    .await;
+    let (fixture, selection) =
+        custom_fixture_with_endpoint_primary_internal_concurrency_and_context(
+            &endpoint,
+            "---\ndescription: prompt at a checkpoint\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  write: allow\n---\nTest a prompt composed at a checkpoint.\n",
+            None,
+            None,
+            false,
+            None,
+            None,
+            8_192,
+            None,
+        );
+    let notes = TestPromptProvider::new(
+        "test.notes",
+        vec![crate::PromptSection {
+            title: "Notes".into(),
+            body: "NOTES-FIRST-VERSION".into(),
+        }],
+    );
+    fixture
+        .engine
+        .register_tool_provider(crate::ToolLayer::Local, Arc::new(notes.clone()));
+    fixture.engine.register_tool_provider(
+        crate::ToolLayer::Local,
+        Arc::new(TestWriteProvider {
+            executed: Arc::new(TestFlag::default()),
+        }),
+    );
+    let session = fixture
+        .engine
+        .create_session(selection.clone())
+        .unwrap()
+        .session_id;
+    let start = |index: usize, content: String| RunStartParams {
+        reset_fallback: false,
+        session_id: session,
+        client_run_id: ClientRunId::new(format!("checkpoint-prompt-{index}")).unwrap(),
+        selection: selection.clone(),
+        content: content.into(),
+    };
+    let origin = cookie_agent_protocol::EventOrigin::new("client:test").unwrap();
+    fixture
+        .engine
+        .start_run(start(0, "the first run".into()), origin.clone())
+        .await
+        .unwrap();
+    wait_for_session_not_running(&fixture.engine, session).await;
+    // Changed between runs: the second run keeps the first one's prompt, and
+    // composes it afresh only at its checkpoint.
+    notes.replace_sections(vec![crate::PromptSection {
+        title: "Notes".into(),
+        body: "NOTES-SECOND-VERSION".into(),
+    }]);
+    fixture
+        .engine
+        .start_run(
+            start(
+                1,
+                format!("the second run {}", "context padding ".repeat(1500)),
+            ),
+            origin,
+        )
+        .await
+        .unwrap();
+    wait_for_session_not_running(&fixture.engine, session).await;
+
+    let requests = with_watchdog("captured requests", captured)
+        .await
+        .expect("captured requests");
+    assert_eq!(requests.len(), 4, "a run, a call, the summary, the answer");
+    let system = |request: &str| request_body(request)["messages"][0].to_string();
+    assert!(system(&requests[1]).contains("NOTES-FIRST-VERSION"));
+    let after = system(&requests[3]);
+    assert!(after.contains("NOTES-SECOND-VERSION"), "{after}");
+    assert!(!after.contains("NOTES-FIRST-VERSION"));
+
+    let log = fixture.engine.inner.store.log(session).unwrap();
+    let events = log.events();
+    let run = events
+        .iter()
+        .rev()
+        .find(|event| matches!(event.payload, EventPayload::RunStarted { .. }))
+        .and_then(|event| event.run_id)
+        .unwrap();
+    let checkpoint = events
+        .iter()
+        .find(|event| {
+            matches!(
+                event.payload,
+                EventPayload::ContextCheckpointCommitted { .. }
+            )
+        })
+        .expect("a checkpoint inside the run");
+    assert_eq!(checkpoint.run_id, Some(run));
+    let composed = events
+        .iter()
+        .filter(|event| matches!(event.payload, EventPayload::SystemPromptComposed { .. }))
+        .collect::<Vec<_>>();
+    assert_eq!(composed.len(), 1);
+    let composed = composed[0];
+    assert_eq!(composed.run_id, Some(run));
+    assert!(composed.seq > checkpoint.seq);
+    let EventPayload::SystemPromptComposed {
+        composed_prompt,
+        prompt_fingerprint,
+        blocks,
+    } = &composed.payload
+    else {
+        unreachable!()
+    };
+    assert!(composed_prompt.contains("NOTES-SECOND-VERSION"));
+    assert_eq!(
+        *prompt_fingerprint,
+        Sha256Digest::of_bytes(composed_prompt.as_bytes())
+    );
+    assert!(
+        blocks
+            .as_ref()
+            .is_some_and(|blocks| blocks.iter().any(|block| block.key == "tool_instructions"))
+    );
+    // The new round starts, and the request after the checkpoint carries
+    // the composed prompt's fingerprint; the one before, the run's own.
+    let attempts = events
+        .iter()
+        .filter_map(|event| match &event.payload {
+            EventPayload::ModelAttemptStarted {
+                prompt_fingerprint, ..
+            } if event.run_id == Some(run) => Some((event.seq, prompt_fingerprint.clone())),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(attempts.len(), 2);
+    let started = fixture
+        .engine
+        .inner
+        .store
+        .get(session)
+        .unwrap()
+        .runs
+        .get(&run)
+        .unwrap()
+        .agent
+        .prompt_fingerprint
+        .clone();
+    assert_eq!(attempts[0].1, started);
+    assert_eq!(attempts[1].1, *prompt_fingerprint);
+    assert!(events.iter().any(|event| {
+        matches!(event.payload, EventPayload::ToolRoundStarted { .. })
+            && event.seq > checkpoint.seq
+            && event.seq < attempts[1].0
+    }));
+    // The model knows the composed blocks as they are: nothing to announce.
+    assert!(!events.iter().any(|event| {
+        matches!(event.payload, EventPayload::PromptBlocksAnnounced { .. })
+            && event.seq > composed.seq
+    }));
+    assert_eq!(
+        fixture.engine.run_agent_prompt(session, run).unwrap(),
+        *composed_prompt
+    );
+    let assembled = |engine: &crate::Engine| {
+        let engine = engine.clone();
+        async move {
+            let history = engine
+                .get_history(session, EngineHistoryView::Assembled)
+                .await
+                .unwrap();
+            serde_json::to_string(&history[0]).unwrap()
+        }
+    };
+    let before = assembled(&fixture.engine).await;
+    assert!(before.contains("NOTES-SECOND-VERSION"));
+    fixture.engine.shutdown().await;
+    // After a restart, the log alone gives the same.
+    let reopened = reopen_engine(&fixture);
+    assert_eq!(assembled(&reopened).await, before);
+    reopened.shutdown().await;
 }

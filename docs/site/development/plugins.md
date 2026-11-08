@@ -416,7 +416,7 @@ A plugin lists the hooks it handles in `capabilities.intercept`, each as
 |---|---|---|
 | `tool_before_call` | after a call passes policy and approval | allow, block, or modify the arguments |
 | `tool_after_result` | after a call finishes, before it is committed | replace the model-facing content |
-| `agent_before_start` | at a run's start | append to or replace the system prompt, inject a message |
+| `agent_before_start` | at a run's start, and at a checkpoint inside a run | append to or replace the system prompt, inject a message |
 | `session_before_compact` | before compaction | add or replace its instructions, or cancel it |
 | `user_before_input` | before root user input or steering is committed | allow, transform it, or handle it without a run |
 | `model_before_request` | before each user-facing model attempt | replace the messages, adjust inference parameters |
@@ -447,7 +447,7 @@ decides what happens next:
 |---|---|
 | `tool_before_call` | fails the call before it runs; the model reads "Tool call blocked: plugin `<name>` could not check this: …" |
 | `tool_after_result` | fails the call after it ran, withholding its result; the model reads "Tool result withheld: …" |
-| `agent_before_start`, `user_before_input`, `model_before_select` (a run's model) | refuses `run.start`, `run.steer`, or `session.submit_input` |
+| `agent_before_start`, `user_before_input`, `model_before_select` (a run's model) | refuses `run.start`, `run.steer`, or `session.submit_input`; at a checkpoint inside a run, keeps the system prompt the run's requests carry |
 | `model_before_select` (a fallback) | ends the run without falling back |
 | `model_before_request`, `message_end` | abandons the model attempt, without a model error, and fails the run |
 | `session_before_compact` | refuses `session.compact`; an automatic compaction is skipped, as when the plugin cancels it |
@@ -510,6 +510,16 @@ for `model_before_request`, and `content[2]: unknown type `hologram`` for
 | `injected_messages` | The messages earlier plugins injected (`{ role, content }`), in order. |
 
 Each plugin sees what the plugins before it made of the prompt.
+
+What it does to the prompt takes effect when the context before the
+conversation is composed afresh: at a run's start after a compaction, a
+refresh, or a run that changed its agent, and at a checkpoint inside a run
+([the frozen context](../reference/system-prompt.md#the-frozen-context)).
+Otherwise a run keeps the previous run's system prompt, and only an injected
+message is taken. At a checkpoint inside a run the hook runs again with
+`input` `null`; the prompt it gives is the one the run's later requests
+carry, and a message it injects is not taken, since messages join a run at
+its start only.
 
 `tool_before_call` and `tool_after_result` carry the call's `origin`:
 `{"kind":"base"}` for a daemon base tool, or

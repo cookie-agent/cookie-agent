@@ -228,6 +228,23 @@ impl Scenario {
         self.check();
     }
 
+    /// The run's system prompt, composed afresh at a checkpoint inside it.
+    fn composed(&mut self, prompt: &str) {
+        self.record(EventPayload::SystemPromptComposed {
+            composed_prompt: prompt.into(),
+            prompt_fingerprint: Sha256Digest::of_bytes(prompt.as_bytes()),
+            blocks: None,
+        });
+    }
+
+    /// The system prompt a request of the latest run carries.
+    fn prompt_in_force(&self) -> String {
+        let fingerprint = Sha256Digest::of_bytes(b"System prompt.");
+        super::super::prompt_in_force(&self.whole(), ("System prompt.", &fingerprint))
+            .0
+            .to_owned()
+    }
+
     fn accept_message(&mut self, key: &str, body: &str) -> ProducerMessageId {
         let message_id = ProducerMessageId::new_v7();
         let seq = self.tip() + 1;
@@ -301,6 +318,15 @@ impl Scenario {
             state.observe(event);
         }
         let selected = model_context(&whole, &state).unwrap_or_else(|| whole.clone());
+        // The log's own fold gives the prompt in force as a pass does.
+        let run = state.latest_run_started().and_then(|event| event.run_id);
+        assert_eq!(
+            run.and_then(|run| state.run_prompt(run))
+                .map(|event| event.seq),
+            crate::events::model_context::latest_composed_prompt(&whole).map(|event| event.seq),
+            "the run's prompt, at {}",
+            self.tip()
+        );
         // A log that let go of the rest each time holds the same.
         let tip = self.held.last().map_or(0, |event| event.seq);
         let mut held = std::mem::take(&mut self.held);
@@ -459,7 +485,9 @@ fn a_long_native_session_assembles_from_its_model_context_as_from_the_whole_log(
         false,
         Some(("rules, third version", "lessons, third version")),
     );
+    log.composed("PROMPT-AFTER-THIRD");
     log.turn(other.clone(), "after the summary-only checkpoint", &[]);
+    assert_eq!(log.prompt_in_force(), "PROMPT-AFTER-THIRD");
     log.finish_run();
 
     // A message admitted to a run that ended before taking it, back to the
@@ -467,6 +495,8 @@ fn a_long_native_session_assembles_from_its_model_context_as_from_the_whole_log(
     // in the middle of a run.
     let waiting = log.accept_message("report-2", "WAITING-REPORT-BODY");
     log.start_run(&log.native.clone());
+    // A run's own prompt again: the earlier run's composed one was its own.
+    assert_eq!(log.prompt_in_force(), "System prompt.");
     log.record(EventPayload::ProducerMessageAdmitted {
         message_id: waiting,
     });
@@ -489,6 +519,7 @@ fn a_long_native_session_assembles_from_its_model_context_as_from_the_whole_log(
         true,
         Some(("rules, fourth version", "lessons, fourth version")),
     );
+    log.composed("PROMPT-AFTER-FOURTH");
     // A call that ends after a checkpoint that kept nothing names the turn
     // and the start before it.
     log.end_call(log.run, open_call, open);
@@ -502,11 +533,26 @@ fn a_long_native_session_assembles_from_its_model_context_as_from_the_whole_log(
     let earliest = compaction_tail_candidates(&log.events).first().copied();
     let start = crate::events::model_context::context_window_start(&log.events).unwrap();
     assert!(earliest.is_some_and(|seq| seq >= start));
+    let composed = log
+        .events
+        .iter()
+        .rfind(|event| matches!(event.payload, EventPayload::SystemPromptComposed { .. }))
+        .unwrap()
+        .seq;
+    assert!(earliest.is_some_and(|seq| seq > composed));
+    // The prompt this checkpoint composes is the same, so it records none:
+    // the one before its window is the prompt in force, and is pinned.
     log.checkpoint(
         earliest,
         false,
         Some(("rules, fifth version", "lessons, fourth version")),
     );
+    assert!(
+        crate::events::model_context::context_window_start(&log.events)
+            .is_some_and(|start| start > composed)
+    );
+    assert!(log.held.iter().any(|event| event.seq == composed));
+    assert_eq!(log.prompt_in_force(), "PROMPT-AFTER-FOURTH");
     log.turn(native, "after the earliest tail", &[]);
     log.finish_run();
     let text = rendered(&log.assembled(&log.other));
