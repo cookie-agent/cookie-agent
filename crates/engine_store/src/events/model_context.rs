@@ -71,7 +71,7 @@ pub fn latest_summary_checkpoint<E: Borrow<StoredEvent>>(
 
 /// The first record a request can read after `commit`: its summary's kept
 /// range, or what follows it, and what follows its provider window.
-fn commit_window_start(commit: &ContextCheckpointCommit) -> u64 {
+pub(crate) fn commit_window_start(commit: &ContextCheckpointCommit) -> u64 {
     let after_source = commit.boundaries.source_through_seq.saturating_add(1);
     match &commit.checkpoint {
         ContextCheckpoint::InternalSummary { native, .. } => commit

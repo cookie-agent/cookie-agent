@@ -32,7 +32,7 @@ pub const STATE_FILE: &str = "state.json";
 /// or the file's shape does: a different one means folding the log from its
 /// start. The test `the_folds_of_the_golden_logs_match_their_recorded_digest`
 /// says when.
-pub const STATE_VERSION: u32 = 7;
+pub const STATE_VERSION: u32 = 8;
 
 /// How much of a log comes between two writes of [`STATE_FILE`] on a run's way,
 /// so a long run is covered and a turn does not pay for a write.

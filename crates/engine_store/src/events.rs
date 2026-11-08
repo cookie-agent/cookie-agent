@@ -456,6 +456,55 @@ pub(crate) fn windowed_after(payload: &EventPayload) -> Option<bool> {
     }
 }
 
+/// What a log's records say of what its folds may let go of
+/// (`docs/site/specs/forever-sessions.md` sections 6 and 12): while its agent is
+/// an ACP agent ([`windowed_after`]), and once a native model's log has a
+/// checkpoint, as its context then starts there. A native log with none keeps
+/// everything, as its model reads it all.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Deserialize, Serialize)]
+pub(crate) struct LettingGo {
+    acp: bool,
+    /// Where a native model's context starts, as of the latest checkpoint
+    /// ([`model_context::context_window_start`]), never moving back.
+    context_from: Option<u64>,
+    /// Where the latest summary's context starts: a provider window alone, which
+    /// builds before 1.29.0 wrote, leaves the context starting there.
+    summary_from: Option<u64>,
+}
+
+impl LettingGo {
+    pub(crate) fn observe(&mut self, payload: &EventPayload) {
+        if let Some(acp) = windowed_after(payload) {
+            self.acp = acp;
+        }
+        if let EventPayload::ContextCheckpointCommitted { commit } = payload {
+            let start = model_context::commit_window_start(commit);
+            let start = match commit.checkpoint {
+                cookie_agent_protocol::ContextCheckpoint::InternalSummary { .. } => {
+                    self.summary_from = Some(start);
+                    start
+                }
+                cookie_agent_protocol::ContextCheckpoint::NativeWindow { .. } => {
+                    start.min(self.summary_from.unwrap_or(0))
+                }
+            };
+            self.context_from = Some(self.context_from.map_or(start, |from| from.max(start)));
+        }
+    }
+
+    /// Whether what settled may go.
+    pub(crate) fn lets_go(self) -> bool {
+        self.acp || self.context_from.is_some()
+    }
+
+    /// The earliest end of a call that a valid record can still name, a native
+    /// model's compaction eliding its output: the context's start. An ACP agent's
+    /// log is never compacted so.
+    fn calls_in_view_from(self) -> Option<u64> {
+        if self.acp { None } else { self.context_from }
+    }
+}
+
 impl EventIndex {
     fn observe(&mut self, event: &Arc<StoredEvent>) {
         Arc::make_mut(&mut self.state).observe(event);
@@ -2765,9 +2814,9 @@ impl EventLog {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let whole = Arc::new(self.pass(..)?.collect::<Result<Vec<_>, _>>()?);
-        // A native model's log keeps everything for validation too, as it does
-        // its records: it may name what an ACP agent's window let go of, as a
-        // compaction's elision of an old call does.
+        // A native model's validation keeps every call that ended in its context,
+        // which a compaction's elision may name, and an ACP agent's window let go
+        // of those: it validates whole again.
         let native = self.storage().index.window_start.is_none();
         let let_go = self
             .validation
@@ -3683,9 +3732,9 @@ struct ValidationState {
     previous_timestamp: Option<Timestamp>,
     active_run: Option<RunId>,
     record_count: usize,
-    /// The log's window is an ACP agent's ([`windowed_after`]): what settled is
-    /// let go of after each record.
-    windowed: bool,
+    /// Whether what settled is let go of after each record, and which ended calls
+    /// stay in view.
+    letting_go: LettingGo,
     /// Something was let go of: a record naming what this does not hold may name
     /// what is older than its floor.
     let_go: bool,
@@ -3791,7 +3840,7 @@ impl ValidationState {
             previous_timestamp: None,
             active_run: None,
             record_count: 0,
-            windowed: false,
+            letting_go: LettingGo::default(),
             let_go: false,
             keep_all: false,
         }
@@ -3810,14 +3859,16 @@ impl ValidationState {
     /// for a log validated a record at a time.
     fn finish_whole(&mut self) {
         self.keep_all = false;
-        if self.windowed {
+        if self.letting_go.lets_go() {
             self.let_go_settled();
         }
     }
 
-    /// Lets go of what no valid record can still name, in a windowed log whose
-    /// load found no damage (`docs/site/specs/forever-sessions.md` section 6): a
-    /// damaged log's taint excuses records by what this holds, so it keeps all.
+    /// Lets go of what no valid record can still name, in a log that lets go
+    /// ([`LettingGo`]) whose load found no damage
+    /// (`docs/site/specs/forever-sessions.md` section 6): a damaged log's taint
+    /// excuses records by what this holds, so it keeps all. A native model's log
+    /// also keeps every call that ended since its context's start.
     ///
     /// What stays, and why each may still be named, is in section 12. In short:
     /// what is open stays, whatever its age: a run that has not ended or that a
@@ -3832,9 +3883,17 @@ impl ValidationState {
     /// record can bring back, so letting go after every record, or once at a whole
     /// log's end, keeps the same.
     fn let_go_settled(&mut self) {
+        self.let_go_settled_keeping(self.letting_go.calls_in_view_from());
+    }
+
+    /// [`Self::let_go_settled`], keeping the calls that ended at or after
+    /// `in_view_from`, whatever their run, as a native model's compaction may
+    /// still elide their output (section 12).
+    fn let_go_settled_keeping(&mut self, in_view_from: Option<u64>) {
         if self.keep_all || self.taint != ValidationTaint::default() {
             return;
         }
+        let in_view = |ended: u64| in_view_from.is_some_and(|from| ended >= from);
         let before = self.held();
         let floor = self.next_model_turn_seq.saturating_sub(TURNS_KEPT);
         self.turns.retain(|seq, _| *seq >= floor);
@@ -3845,6 +3904,9 @@ impl ValidationState {
         self.provider_item_owners
             .retain(|_, owner| owner.model_turn_seq >= floor);
         for call in settled_beyond(&self.terminated_tools, SETTLED_KEPT, |_, seq| Some(*seq)) {
+            if in_view(self.terminated_tools[&call]) {
+                continue;
+            }
             self.terminated_tools.remove(&call);
             self.tool_starts.remove(&call);
             self.elided_tools.remove(&call);
@@ -3912,9 +3974,12 @@ impl ValidationState {
         }) {
             self.attempts.remove(&attempt);
         }
-        // What names a run it no longer holds goes with it: what settled does.
-        self.tool_starts
-            .retain(|_, (run, _)| runs.contains_key(run));
+        // What names a run it no longer holds goes with it: what settled does, but
+        // for a call still in view, which only an elision names, by its own run.
+        let terminated = &self.terminated_tools;
+        self.tool_starts.retain(|call, (run, _)| {
+            runs.contains_key(run) || terminated.get(call).is_some_and(|ended| in_view(*ended))
+        });
         self.terminated_tools
             .retain(|call, _| self.tool_starts.contains_key(call));
         self.elided_tools
@@ -3995,10 +4060,12 @@ impl ValidationState {
                 "the validation state's {map} hold what {what}'s do not, or otherwise"
             );
         }
+        // What a native model's view keeps of calls an ACP agent's window already
+        // let go of a whole read still holds, so the two compare without it.
         let settled = |state: &Self| {
             let mut state = state.clone();
             state.keep_all = false;
-            state.let_go_settled();
+            state.let_go_settled_keeping(None);
             state
         };
         assert!(
@@ -4011,9 +4078,20 @@ impl ValidationState {
     /// true whenever it could, on maps it keeps small.
     fn may_let_go(&self) -> bool {
         let settled = |count: usize| count > SETTLED_KEPT;
+        let in_view_from = self.letting_go.calls_in_view_from();
+        let in_view = |ended: u64| in_view_from.is_some_and(|from| ended >= from);
+        // The calls in view are those that ended last, as are those kept anyway.
+        let calls_in_view = match in_view_from {
+            Some(_) => self
+                .terminated_tools
+                .values()
+                .filter(|ended| in_view(**ended))
+                .count(),
+            None => 0,
+        };
         self.turns.len() as u64 > TURNS_KEPT
             || self.admissions.len() > ADMISSIONS_KEPT
-            || settled(self.terminated_tools.len())
+            || self.terminated_tools.len() > SETTLED_KEPT.max(calls_in_view)
             || settled(
                 self.approval_owners
                     .values()
@@ -4049,10 +4127,13 @@ impl ValidationState {
                 .attempts
                 .values()
                 .any(|attempt| !self.runs.contains_key(&attempt.run_id))
-            || self
-                .tool_starts
-                .values()
-                .any(|(run, _)| !self.runs.contains_key(run))
+            || self.tool_starts.iter().any(|(call, (run, _))| {
+                !self.runs.contains_key(run)
+                    && !self
+                        .terminated_tools
+                        .get(call)
+                        .is_some_and(|ended| in_view(*ended))
+            })
     }
 
     /// How many entries its maps hold, to tell whether a letting go let go.
@@ -4858,12 +4939,10 @@ fn validate_record_incremental(
         });
     }
     state.note_settling(record);
-    if let Some(windowed) = windowed_after(&record.payload) {
-        state.windowed = windowed;
-    }
+    state.letting_go.observe(&record.payload);
     // After every record, so what it holds is what letting go once at the end of
     // a whole validation keeps, wherever the log ends.
-    if state.windowed && state.may_let_go() {
+    if state.letting_go.lets_go() && state.may_let_go() {
         state.let_go_settled();
     }
     Ok(())

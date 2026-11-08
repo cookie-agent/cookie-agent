@@ -261,9 +261,10 @@ pub struct ProjectionFoldState {
     provisional_usage: HashMap<u64, ProvisionalUsage>,
     /// The session's goal, which `meta.waiting_on` reports while active.
     goals: crate::goal_projection::GoalFold,
-    /// The log's window is an ACP agent's: what settled can go
-    /// (`docs/site/specs/forever-sessions.md` section 6).
-    windowed: bool,
+    /// Whether what settled can go (`docs/site/specs/forever-sessions.md`
+    /// section 6): the log's window is an ACP agent's, or a native model's
+    /// checkpoint started its context.
+    letting_go: crate::events::LettingGo,
     /// Some run left [`ProjectionFolds::runs`]: [`SessionProjection::run_outcome`]
     /// reads the log for one not there.
     runs_let_go: bool,
@@ -543,9 +544,7 @@ impl ProjectionFolds {
         {
             return Observed::NeedsRefold;
         }
-        if let Some(windowed) = crate::events::windowed_after(&envelope.payload) {
-            self.fold.windowed = windowed;
-        }
+        self.fold.letting_go.observe(&envelope.payload);
         if matches!(
             envelope.payload,
             EventPayload::RunFinished { .. }
@@ -567,7 +566,7 @@ impl ProjectionFolds {
     /// answer, a run's status and final text, [`SessionProjection::run_outcome`]
     /// reads from the log (`docs/site/specs/forever-sessions.md` section 12).
     fn let_go_settled_runs(&mut self) {
-        if !self.fold.windowed || self.runs.len() <= ENDED_RUNS_KEPT {
+        if !self.fold.letting_go.lets_go() || self.runs.len() <= ENDED_RUNS_KEPT {
             return;
         }
         let open = &self.fold.open_delegations;
