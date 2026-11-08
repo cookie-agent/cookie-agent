@@ -183,6 +183,7 @@ async fn a_native_window_moves_at_its_checkpoint_and_an_ordinary_turn_reads_no_p
         .session_dir(session)
         .join(crate::session::STATE_FILE);
     assert!(!state.exists());
+    log.take_history_calls_for_test();
 
     assert!(
         engine
@@ -190,6 +191,9 @@ async fn a_native_window_moves_at_its_checkpoint_and_an_ordinary_turn_reads_no_p
             .await
             .expect("compaction")
     );
+    // Compaction reads the model's context, which the log holds, and no more.
+    let calls = log.take_history_calls_for_test();
+    assert!(calls.is_empty(), "{calls:#?}");
     let window = log
         .window_for_test()
         .expect("the checkpoint moved the window");
@@ -215,6 +219,23 @@ async fn a_native_window_moves_at_its_checkpoint_and_an_ordinary_turn_reads_no_p
     quiesce(engine, session).await;
     let calls = log.take_history_calls_for_test();
     assert!(calls.is_empty(), "{calls:#?}");
+    // The assembled history is the model's context too; the full one is the
+    // whole log, which it reads from the file.
+    engine
+        .get_history(session, EngineHistoryView::Assembled)
+        .await
+        .unwrap();
+    let calls = log.take_history_calls_for_test();
+    assert!(calls.is_empty(), "{calls:#?}");
+    engine
+        .get_history(session, EngineHistoryView::Full)
+        .await
+        .unwrap();
+    assert!(
+        log.take_history_calls_for_test()
+            .iter()
+            .any(|call| call.starts_with("file from"))
+    );
     assert_eq!(log.window_for_test(), Some(window), "a turn leaves it");
 
     // Out of memory and back: from the state file, holding what it held.
