@@ -336,16 +336,9 @@ async fn anthropic_toggle_only_on_requests_summarized_adaptive_thinking() {
 async fn anthropic_budget_variants_send_manual_thinking_budgets() {
     // Claude Haiku 4.5: models.dev gives only `min: 1024`.
     let catalog = anthropic("claude-haiku-4-5", 64_000, vec![budget(Some(1024), None)]);
-    assert_eq!(
-        variant_names(&catalog),
-        ["budget-min", "budget-high", "budget-max"]
-    );
+    assert_eq!(variant_names(&catalog), ["high", "max"]);
 
-    for (variant, budget_tokens) in [
-        ("budget-min", 1024),
-        ("budget-high", 16_000),
-        ("budget-max", 31_999),
-    ] {
+    for (variant, budget_tokens) in [("high", 16_000), ("max", 31_999)] {
         let body = request_body(&catalog, variant).await;
         assert_eq!(
             body["thinking"],
@@ -363,23 +356,20 @@ async fn anthropic_budget_variants_fit_the_output_limit_with_full_or_capped_outp
     // smaller agent cap) as visible output, and the Anthropic adapter adds the
     // thinking budget on top, so visible output must shrink to fit.
     let catalog = anthropic("claude-opus-4-1", 32_000, vec![budget(Some(1024), None)]);
-    assert_eq!(
-        variant_names(&catalog),
-        ["budget-min", "budget-high", "budget-max"]
-    );
+    assert_eq!(variant_names(&catalog), ["high", "max"]);
     for (cap, budget_tokens, max_tokens) in [
         // Full output limit: visible output is what the budget leaves.
         (32_000, 27_904, 32_000),
-        (32_000, 1024, 32_000),
+        (32_000, 13_952, 32_000),
         // A smaller agent cap that still fits is kept.
         (2_048, 27_904, 2_048 + 27_904),
         // A cap that does not fit beside the budget is lowered.
         (8_000, 27_904, 32_000),
     ] {
-        let variant = if budget_tokens == 1024 {
-            "budget-min"
+        let variant = if budget_tokens == 13_952 {
+            "high"
         } else {
-            "budget-max"
+            "max"
         };
         let body = request_body_with_output_cap(&catalog, variant, Some(cap)).await;
         assert_eq!(
@@ -399,17 +389,8 @@ async fn anthropic_effort_on_budget_only_models_uses_a_manual_budget() {
         64_000,
         vec![effort(&["low", "medium", "high"]), budget(Some(1024), None)],
     );
-    assert_eq!(
-        variant_names(&catalog),
-        [
-            "low",
-            "medium",
-            "high",
-            "budget-min",
-            "budget-high",
-            "budget-max"
-        ]
-    );
+    // Its effort levels replace the catalog's budget levels.
+    assert_eq!(variant_names(&catalog), ["low", "medium", "high"]);
 
     let body = request_body(&catalog, "high").await;
     assert_eq!(

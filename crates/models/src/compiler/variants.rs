@@ -4,7 +4,7 @@ use cookie_agent_identity::{ConfiguredModelDefault, VariantId};
 use serde::Serialize;
 
 use crate::{
-    ProviderOptions,
+    ProviderOptions, ReasoningEffort,
     authoring::{ManagedModelOverride, ReasoningBehavior, RequestDefaults, VariantDefinition},
     catalog::CatalogReasoningOption,
 };
@@ -114,18 +114,16 @@ fn generated(
 ) -> Result<(CompiledVariantMap, Vec<VariantId>), VariantCompileError> {
     let mut variants = BTreeMap::new();
     let mut order = Vec::new();
+    let budgets = budgets_stand_in_for_effort(source, &supported)?;
     for option in source {
         match option {
             CatalogReasoningOption::Effort { values } => {
                 for value in values {
-                    let (id, reasoning) = if let Some(value) = value.as_deref() {
-                        let effort =
-                            serde_json::from_value(serde_json::Value::String(value.to_owned()))
-                                .map_err(|_| VariantCompileError::Invalid)?;
-                        (value, ReasoningBehavior::Effort { value: effort })
-                    } else {
-                        ("off", ReasoningBehavior::Toggle { enabled: false })
-                    };
+                    let (id, reasoning) = effort_variant(value.as_deref())?;
+                    // Budget levels take these names; the wire could not send them anyway.
+                    if budgets && !supported(&reasoning) {
+                        continue;
+                    }
                     insert_generated(
                         &mut variants,
                         &mut order,
@@ -146,6 +144,7 @@ fn generated(
                     )?;
                 }
             }
+            CatalogReasoningOption::BudgetTokens { .. } if !budgets => {}
             CatalogReasoningOption::BudgetTokens { min, max } => {
                 for (id, value) in budget_levels(*min, *max, budget_room) {
                     insert_generated(
@@ -163,33 +162,68 @@ fn generated(
     Ok((variants, order))
 }
 
+/// The variant an effort value generates: the effort level, or `off` for a
+/// null value.
+fn effort_variant(value: Option<&str>) -> Result<(&str, ReasoningBehavior), VariantCompileError> {
+    let Some(value) = value else {
+        return Ok(("off", ReasoningBehavior::Toggle { enabled: false }));
+    };
+    let effort = serde_json::from_value(serde_json::Value::String(value.to_owned()))
+        .map_err(|_| VariantCompileError::Invalid)?;
+    Ok((value, ReasoningBehavior::Effort { value: effort }))
+}
+
+/// A model gets one set of reasoning levels. Effort levels win when the wire
+/// can send one that turns reasoning on; token budgets are generated only
+/// when it cannot. Claude Opus 4.5 and the Claude 4.6 models list both, and
+/// their effort levels already carry a thinking budget or adaptive thinking.
+fn budgets_stand_in_for_effort(
+    source: &[CatalogReasoningOption],
+    supported: impl Fn(&ReasoningBehavior) -> bool,
+) -> Result<bool, VariantCompileError> {
+    for option in source {
+        if let CatalogReasoningOption::Effort { values } = option {
+            for value in values {
+                let (_, reasoning) = effort_variant(value.as_deref())?;
+                let on = !matches!(
+                    reasoning,
+                    ReasoningBehavior::Toggle { .. }
+                        | ReasoningBehavior::Effort {
+                            value: ReasoningEffort::None
+                        }
+                );
+                if on && supported(&reasoning) {
+                    return Ok(false);
+                }
+            }
+        }
+    }
+    Ok(true)
+}
+
 /// Generated budget variants: `budget-auto` for a dynamic (`-1`) minimum,
-/// `budget-min` for a fixed minimum, then `budget-high` (half the usable
-/// maximum, at least the minimum) and `budget-max`. The usable maximum is the
-/// catalog maximum capped at 31,999 tokens and at the output limit less
-/// [`MIN_VISIBLE_OUTPUT_TOKENS`];
-/// levels that do not fit or repeat a lower level are skipped.
+/// then `high` (half the usable maximum, at least the catalog minimum) and
+/// `max`. They share the effort levels' names because a model has only one
+/// of the two. The usable maximum is the catalog maximum capped at 31,999
+/// tokens and at the output limit less [`MIN_VISIBLE_OUTPUT_TOKENS`]; when
+/// the minimum does not fit there is no fixed level, and when `high` would
+/// equal `max` only `max` is generated.
 fn budget_levels(min: Option<i64>, max: Option<i64>, room: i64) -> Vec<(&'static str, i64)> {
     let mut levels = Vec::new();
     if min == Some(-1) {
         levels.push(("budget-auto", -1));
     }
-    let floor = min.filter(|value| *value >= 0);
-    if let Some(value) = floor.filter(|value| *value <= room) {
-        levels.push(("budget-min", value));
-    }
+    let floor = min.filter(|value| *value >= 0).unwrap_or(0);
     let maximum = max
         .unwrap_or(MAX_GENERATED_BUDGET)
         .min(MAX_GENERATED_BUDGET)
         .min(room);
-    let floor = floor.unwrap_or(0);
     if maximum > 0 && maximum >= floor {
         let high = ((maximum + 1) / 2).max(floor);
-        for (id, value) in [("budget-high", high), ("budget-max", maximum)] {
-            if levels.last().is_none_or(|(_, previous)| *previous < value) {
-                levels.push((id, value));
-            }
+        if high < maximum {
+            levels.push(("high", high));
         }
+        levels.push(("max", maximum));
     }
     levels
 }
@@ -450,7 +484,7 @@ mod tests {
     fn toggle_with_budget_tokens_suppresses_generated_on() {
         let override_ = override_with(
             BTreeMap::new(),
-            Some(ConfiguredModelDefault::Named(id("budget-max"))),
+            Some(ConfiguredModelDefault::Named(id("max"))),
         );
 
         let (variants, order, default) = managed_variants(
@@ -465,12 +499,9 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(
-            names(&order),
-            ["off", "budget-min", "budget-high", "budget-max"]
-        );
+        assert_eq!(names(&order), ["off", "high", "max"]);
         assert!(!variants.contains_key(&id("on")));
-        assert_eq!(default, Some(id("budget-max")));
+        assert_eq!(default, Some(id("max")));
     }
 
     fn budgets(order: &[VariantId], variants: &CompiledVariantMap) -> Vec<(String, i64)> {
@@ -512,11 +543,7 @@ mod tests {
         // Claude Haiku 4.5: models.dev gives only `min: 1024`.
         assert_eq!(
             budget_variants(Some(1024), None, 64_000),
-            levels(&[
-                ("budget-min", 1024),
-                ("budget-high", 16_000),
-                ("budget-max", 31_999)
-            ])
+            levels(&[("high", 16_000), ("max", 31_999)])
         );
     }
 
@@ -525,17 +552,13 @@ mod tests {
         // Claude Opus 4.1: 32K output keeps 4,096 visible tokens.
         assert_eq!(
             budget_variants(Some(1024), None, 32_000),
-            levels(&[
-                ("budget-min", 1024),
-                ("budget-high", 13_952),
-                ("budget-max", 27_904)
-            ])
+            levels(&[("high", 13_952), ("max", 27_904)])
         );
         // No room at all: no fixed budget fits.
         assert_eq!(budget_variants(Some(1024), None, 4_096), []);
         assert_eq!(
             budget_variants(None, Some(8000), 8_192),
-            levels(&[("budget-high", 2048), ("budget-max", 4096)])
+            levels(&[("high", 2048), ("max", 4096)])
         );
     }
 
@@ -543,24 +566,56 @@ mod tests {
     fn budget_levels_respect_catalog_bounds_and_skip_duplicates() {
         assert_eq!(
             budget_variants(Some(128), Some(262_144), 400_000),
-            levels(&[
-                ("budget-min", 128),
-                ("budget-high", 16_000),
-                ("budget-max", 31_999)
-            ])
+            levels(&[("high", 16_000), ("max", 31_999)])
         );
         assert_eq!(
             budget_variants(Some(1024), Some(1024), 64_000),
-            levels(&[("budget-min", 1024)])
+            levels(&[("max", 1024)])
         );
         assert_eq!(
             budget_variants(Some(-1), Some(24_576), 65_536),
-            levels(&[
-                ("budget-auto", -1),
-                ("budget-high", 12_288),
-                ("budget-max", 24_576)
-            ])
+            levels(&[("budget-auto", -1), ("high", 12_288), ("max", 24_576)])
         );
+    }
+
+    fn effort_and_budget(supported: impl Fn(&ReasoningBehavior) -> bool) -> Vec<String> {
+        let (_, order, _) = super::managed_variants(
+            &[
+                CatalogReasoningOption::Effort {
+                    values: vec![Some("none".into()), Some("low".into()), Some("high".into())],
+                },
+                CatalogReasoningOption::BudgetTokens {
+                    min: Some(1024),
+                    max: None,
+                },
+            ],
+            64_000,
+            supported,
+            None,
+            &RequestDefaults::default(),
+            &ProviderOptions::default(),
+        )
+        .unwrap();
+        order.iter().map(|id| id.as_str().to_owned()).collect()
+    }
+
+    #[test]
+    fn supported_effort_levels_replace_budget_levels() {
+        // Claude Opus 4.5 lists both.
+        assert_eq!(effort_and_budget(|_| true), ["none", "low", "high"]);
+    }
+
+    #[test]
+    fn budget_levels_stand_in_when_the_wire_cannot_send_effort() {
+        let no_effort =
+            |reasoning: &ReasoningBehavior| !matches!(reasoning, ReasoningBehavior::Effort { .. });
+        assert_eq!(effort_and_budget(no_effort), ["high", "max"]);
+        // An effort list that only turns reasoning off does not count.
+        let only_none = |reasoning: &ReasoningBehavior| match reasoning {
+            ReasoningBehavior::Effort { value } => *value == ReasoningEffort::None,
+            _ => true,
+        };
+        assert_eq!(effort_and_budget(only_none), ["none", "high", "max"]);
     }
 
     #[test]

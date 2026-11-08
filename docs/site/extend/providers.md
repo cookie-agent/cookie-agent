@@ -245,11 +245,14 @@ Managed models get variants from the catalog's `reasoning_options`:
 - Each effort level becomes a variant of the same name (`low`, `high`, `max`, ...).
 - A toggle becomes `off` and `on`; `on` is dropped when a supported effort or
   budget variant already turns reasoning on.
-- A token budget becomes `budget-min` (the catalog minimum), `budget-high` (half
-  the usable maximum), and `budget-max`. The usable maximum is the catalog
-  maximum capped at 31,999 tokens and at the output limit less 4,096 tokens
-  kept for visible output (a 32K-output model's `budget-max` is 27,904). A
-  dynamic minimum (`-1`) becomes `budget-auto`.
+- A token budget becomes `high` (half the usable maximum, at least the catalog
+  minimum) and `max`, but only when the model has no effort level the wire can
+  send: a model gets one set of levels, and effort wins (Claude Opus 4.5 and
+  the Claude 4.6 models list both and get only their effort levels). The usable
+  maximum is the catalog maximum capped at 31,999 tokens and at the output
+  limit less 4,096 tokens kept for visible output (a 32K-output model's `max`
+  is 27,904). When `high` would equal `max`, only `max` is made. A dynamic
+  minimum (`-1`) also adds `budget-auto`.
 
 Variants the selected wire cannot express are dropped. Wire mapping by family:
 

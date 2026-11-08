@@ -1097,7 +1097,7 @@ fn anthropic_compatible_and_bedrock_accept_toggle_and_budget_variants() {
                 .iter()
                 .map(|id| id.as_str())
                 .collect::<Vec<_>>(),
-            ["off", "budget-min", "budget-high", "budget-max"]
+            ["off", "high", "max"]
         );
     }
 }
