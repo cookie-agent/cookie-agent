@@ -295,7 +295,9 @@ fn a_format_2_log_read_from_any_line_is_the_loaders_and_answers_the_same_window(
     assert!(text.contains("\"record_omitted\""), "live state is omitted");
     assert!(text.contains("_blob\""), "values moved to blobs");
 
-    let log = crate::events::EventLog::open_read_only(path.clone(), id).expect("full load");
+    // Read whole, so it knows where every line starts: a native window would
+    // let go of those before its checkpoint's context.
+    let log = crate::events::EventLog::parsed_read_only(path.clone(), id).expect("full load");
     assert!(log.diagnostics().is_empty(), "{:?}", log.diagnostics());
     let events = log.event_snapshot();
     let total: usize = events

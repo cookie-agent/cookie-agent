@@ -2278,9 +2278,19 @@ impl SessionStore {
         if matches!(envelope.payload, EventPayload::RunFinished { .. }) {
             self.refresh_resident_view(id);
         }
-        // A committed turn is where the state file may be due.
-        if matches!(envelope.payload, EventPayload::ModelTurnCommitted { .. }) {
-            self.refresh_state(id, EventLog::state_due_after_turn);
+        // A committed turn is where the state file may be due, and a checkpoint,
+        // which moves a native model's window, is where it is
+        // (`docs/site/specs/forever-sessions.md` section 5.6).
+        match envelope.payload {
+            EventPayload::ModelTurnCommitted { .. } => {
+                self.refresh_state(id, EventLog::state_due_after_turn);
+            }
+            EventPayload::ContextCheckpointCommitted { .. } => {
+                self.refresh_state(id, |log| {
+                    log.state_behind().is_some_and(|behind| behind > 0)
+                });
+            }
+            _ => {}
         }
         Ok(envelope)
     }
@@ -2433,7 +2443,11 @@ impl SessionStore {
             let (events, state) = log.snapshot_and_state();
             crate::events::state::reference::assert_matches_scans(&state, &events);
             // A window that moved answers as a reopening of the file does.
-            if matches!(envelope.payload, EventPayload::ModelTurnCommitted { .. }) {
+            if matches!(
+                envelope.payload,
+                EventPayload::ModelTurnCommitted { .. }
+                    | EventPayload::ContextCheckpointCommitted { .. }
+            ) {
                 log.assert_window_reads_as_reopened();
                 let reopened = EventLog::parsed_read_only(log.path().to_owned(), id)
                     .map(|reopened| projection_fold(reopened).expect("reference fold"));

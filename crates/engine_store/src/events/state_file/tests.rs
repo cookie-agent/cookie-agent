@@ -15,8 +15,8 @@ use crate::session::projection;
 /// The digest of what every fold gives at every turn boundary of the golden logs,
 /// and the [`STATE_VERSION`] it was recorded under.
 const RECORDED_DIGEST: (u32, &str) = (
-    8,
-    "ab040dfcf1208361e458abe5f0da37d43d162b9eaa148d5d8269cb0b34705638",
+    9,
+    "e9c21b93011f30b4fb00fe4e245411d4e0f4cf918f1fa9f75e84f6ed6e22e7a6",
 );
 
 fn golden_root() -> PathBuf {
@@ -116,7 +116,12 @@ fn for_each_turn_boundary(path: &Path, mut visit: impl FnMut(StateFile, u64)) {
                 .expect("a golden log folds a record at a time");
             index += 1;
             let tip = folding.storage.all.last().expect("a record").clone();
-            if tip.seq != folding.reader.last_observed_seq || !is_model_turn(&tip) {
+            let boundary = matches!(
+                tip.payload,
+                EventPayload::ModelTurnCommitted { .. }
+                    | EventPayload::ContextCheckpointCommitted { .. }
+            );
+            if tip.seq != folding.reader.last_observed_seq || !boundary {
                 continue;
             }
             let mut folds = folding.projection.clone().expect("a golden log applies");
@@ -504,14 +509,18 @@ fn a_read_only_open_holds_the_window_and_writes_nothing() {
     assert!(!path.with_file_name(STATE_FILE).exists());
 }
 
-/// A native log has no file until phase 7, whatever its size.
+/// A native log holds its model's context once a checkpoint commits, and its file
+/// holds what that pins before the window; one with no checkpoint holds every
+/// record and has no file, whatever its size (section 5.6).
 #[test]
-fn a_native_log_gets_no_state_file_and_holds_its_records() {
-    let log = golden_logs()
-        .into_iter()
-        .find(|log| log.starts_with(golden_root().join("coding")))
-        .expect("the golden coding scenario");
-    let (_directory, path) = copy_of(&log);
+fn a_native_log_holds_its_context_once_a_checkpoint_commits_and_its_file_the_pins() {
+    let golden = |scenario: &str| {
+        golden_logs()
+            .into_iter()
+            .find(|log| log.starts_with(golden_root().join(scenario)))
+            .expect("a golden scenario")
+    };
+    let (_directory, path) = copy_of(&golden("replay"));
     let session = session_of(&path);
     let owned = EventLog::open(path.clone(), session).expect("an open");
     assert_eq!(owned.window_for_test(), None);
@@ -519,6 +528,35 @@ fn a_native_log_gets_no_state_file_and_holds_its_records() {
     assert_eq!(owned.state_behind(), None);
     let folds = projection(Arc::clone(&owned)).expect("a projection");
     assert!(owned.state_file(&folds).is_none());
+
+    let (_directory, path) = copy_of(&golden("coding"));
+    let session = session_of(&path);
+    let owned = EventLog::open(path.clone(), session).expect("an open");
+    let window = owned.window_for_test().expect("a native window");
+    let held = owned.storage().snapshot();
+    let pinned = held.iter().filter(|event| event.seq < window).count();
+    assert!(pinned > 0, "the checkpoint pins what precedes its context");
+    assert!((held.len() as u64) < owned.record_count());
+    assert_eq!(owned.recent().len(), held.len() - pinned);
+    let folds = projection(Arc::clone(&owned)).expect("a projection");
+    let state = owned
+        .state_file(&folds)
+        .expect("a native window has a file");
+    assert_eq!(state.folds.pinned.len(), pinned);
+    assert!(state.folds.context);
+    write_state(&path, &state);
+    drop(owned);
+    assert!(opened_from_state(&path));
+    let reopened = EventLog::open_read_only(path.clone(), session).expect("an open");
+    assert!(
+        reopened
+            .storage()
+            .snapshot()
+            .iter()
+            .map(|event| event.seq)
+            .eq(held.iter().map(|event| event.seq)),
+        "it opens holding what it held"
+    );
 }
 
 /// Damage before the offset is not read as the log opens: it shows when a pass

@@ -507,15 +507,17 @@ fn golden_logs_fold_as_their_scans_read_them() {
 }
 
 /// The records of a golden log appended as the store appends them, its window
-/// moved by each turn its agent committed: at each, the window answers as a
-/// reopening of the file does, and an owned reopening holds the same window.
-/// A log of a native agent's has none (`docs/site/specs/forever-sessions.md`
-/// section 7).
-#[test]
-fn a_golden_log_appended_again_answers_as_reopened_at_each_committed_turn() {
+/// moved by each turn an ACP agent committed and each checkpoint a native model
+/// did: at each, the window answers as a reopening of the file does, and an owned
+/// reopening holds the same window. A native log with no checkpoint has none
+/// (`docs/site/specs/forever-sessions.md` sections 5 and 7).
+///
+/// One test per scenario, so they run side by side.
+fn golden_log_appended_again_answers_as_reopened(scenario: &str) -> (usize, usize) {
     let mut windows = 0;
+    let mut native_windows = 0;
     let scenarios = Path::new(GOLDEN_ROOT).join(HISTORY_FORMAT.to_string());
-    for scenario in ["acp", "coding", "revert-fork"] {
+    {
         for golden in scenario_logs(&scenarios.join(scenario)) {
             let records = golden.event_snapshot();
             let directory = private_tempdir();
@@ -528,6 +530,7 @@ fn a_golden_log_appended_again_answers_as_reopened_at_each_committed_turn() {
                 records[0].payload.clone(),
             )
             .expect("the log");
+            let mut checkpointed = false;
             for record in &records[1..] {
                 // A run's records rely on no record a fork left out.
                 let Ok(appended) = log.append(
@@ -537,23 +540,39 @@ fn a_golden_log_appended_again_answers_as_reopened_at_each_committed_turn() {
                 ) else {
                     break;
                 };
-                let EventPayload::ModelTurnCommitted { resolved_model, .. } = &record.payload
-                else {
-                    continue;
-                };
-                if resolved_model.provider_id.as_str() != cookie_agent_protocol::ACP_MODEL_PROVIDER
-                {
-                    assert_eq!(log.window_for_test(), None, "{scenario}");
-                    continue;
-                }
-                windows += 1;
                 let context = format!("{scenario} at {}", appended.seq);
-                assert_eq!(log.window_for_test(), Some(appended.seq), "{context}");
+                match &record.payload {
+                    EventPayload::ModelTurnCommitted { resolved_model, .. }
+                        if resolved_model.provider_id.as_str()
+                            == cookie_agent_protocol::ACP_MODEL_PROVIDER =>
+                    {
+                        windows += 1;
+                        assert_eq!(log.window_for_test(), Some(appended.seq), "{context}");
+                    }
+                    EventPayload::ModelTurnCommitted { .. } => {
+                        assert_eq!(log.window_for_test().is_some(), checkpointed, "{context}");
+                    }
+                    EventPayload::ContextCheckpointCommitted { .. } => {
+                        checkpointed = true;
+                        native_windows += 1;
+                        assert!(log.window_for_test().is_some(), "{context}");
+                    }
+                    _ => continue,
+                }
                 super::acp::window::assert_answers_as_reopened(&log, &context);
                 let copy = private_tempdir();
                 let copied = copy.path().join(records[0].session_id.to_string());
                 create_private_test_dir(&copied);
                 std::fs::copy(log.path(), copied.join("events.jsonl")).expect("a copy");
+                // With the blobs its large values moved to.
+                let blobs = crate::events::blobs::tree_blob_dir(log.path());
+                if blobs.is_dir() {
+                    let target = crate::events::blobs::tree_blob_dir(&copied.join("events.jsonl"));
+                    std::fs::create_dir_all(&target).expect("a blob directory");
+                    for blob in std::fs::read_dir(&blobs).expect("blobs").flatten() {
+                        std::fs::copy(blob.path(), target.join(blob.file_name())).expect("a blob");
+                    }
+                }
                 let owned = crate::events::EventLog::open(
                     copied.join("events.jsonl"),
                     records[0].session_id,
@@ -561,16 +580,50 @@ fn a_golden_log_appended_again_answers_as_reopened_at_each_committed_turn() {
                 .expect("reopens owned");
                 crate::session::projection(Arc::clone(&owned)).expect("folds");
                 assert_eq!(owned.window_for_test(), log.window_for_test(), "{context}");
-                assert_eq!(
-                    owned.recent().len(),
-                    log.recent().len(),
-                    "{context}: what it holds"
-                );
+                let seqs = |log: &crate::events::EventLog| {
+                    log.recent()
+                        .iter()
+                        .map(|event| event.seq)
+                        .collect::<Vec<_>>()
+                };
+                assert_eq!(seqs(&owned), seqs(&log), "{context}: what it holds");
                 super::acp::window::assert_answers_as_reopened(&owned, &context);
             }
         }
     }
+    (windows, native_windows)
+}
+
+#[test]
+fn a_golden_acp_log_appended_again_answers_as_reopened_at_each_committed_turn() {
+    let (windows, _) = golden_log_appended_again_answers_as_reopened("acp");
     assert!(windows >= 5, "{windows} committed turns of an ACP agent");
+}
+
+#[test]
+fn a_golden_coding_log_appended_again_answers_as_reopened_at_each_turn_and_checkpoint() {
+    let (_, checkpoints) = golden_log_appended_again_answers_as_reopened("coding");
+    assert_eq!(checkpoints, 1);
+}
+
+#[test]
+fn a_golden_native_compaction_log_appended_again_answers_as_reopened() {
+    for scenario in ["native-compaction", "native-compaction-fallback"] {
+        let (_, checkpoints) = golden_log_appended_again_answers_as_reopened(scenario);
+        assert_eq!(checkpoints, 1, "{scenario}");
+    }
+}
+
+#[test]
+fn a_golden_replay_and_revert_log_appended_again_answers_as_reopened() {
+    for scenario in ["replay", "revert-fork"] {
+        golden_log_appended_again_answers_as_reopened(scenario);
+    }
+}
+
+#[test]
+fn a_golden_delegation_log_appended_again_answers_as_reopened() {
+    golden_log_appended_again_answers_as_reopened("delegation");
 }
 
 /// A window, a page, a count, and an event read as a pass over a golden log are

@@ -609,6 +609,11 @@ struct EventStorage {
     /// all: the rest are in the file, for a pass to read
     /// (`docs/site/specs/forever-sessions.md` sections 3.2 and 3.3).
     window: Option<u64>,
+    /// What the log holds is a native model's context: the window, which starts
+    /// where the latest checkpoint's context does, and before it the records
+    /// that what follows still names, which [`model_context::model_context`]
+    /// chose (section 5). Without it, a window holds nothing before its start.
+    context: bool,
     /// Where a view cache of a windowed log starts, which it cannot walk back
     /// from its end to find.
     view_start: Option<Box<CacheStartFold>>,
@@ -1162,8 +1167,9 @@ struct FoldedPrefix {
     index: EventIndex,
     physical_model_turns: u64,
     validation: ValidationState,
-    view_start: CacheStartFold,
+    view_start: Option<Box<CacheStartFold>>,
     window: Option<u64>,
+    context: bool,
     held: Vec<Arc<StoredEvent>>,
 }
 
@@ -1200,6 +1206,7 @@ impl EventStorage {
             creation: all.first().cloned(),
             all: Arc::new(all),
             window: None,
+            context: false,
             view_start: None,
             refused: Arc::default(),
             index: EventIndex::default(),
@@ -1236,7 +1243,9 @@ impl EventStorage {
         let Some(start) = self.index.window_start else {
             return;
         };
-        if self.lines.is_none() || self.window.is_some_and(|window| window >= start) {
+        if self.lines.is_none()
+            || (!self.context && self.window.is_some_and(|window| window >= start))
+        {
             return;
         }
         if self.window.is_none() {
@@ -1245,7 +1254,70 @@ impl EventStorage {
         let kept = self.all.partition_point(|event| event.seq < start);
         self.all = Arc::new(self.all[kept..].to_vec());
         self.window = Some(start);
+        self.context = false;
         self.let_go_of_lines();
+    }
+
+    /// Lets go of what a native model's context no longer needs, when the log
+    /// has a checkpoint and its file holds what it lets go of: the window then
+    /// starts where the checkpoint's context does, and holds before it only the
+    /// records [`model_context::model_context`] pins
+    /// (`docs/site/specs/forever-sessions.md` section 5). It applies at any
+    /// moment, so a log narrows so as a checkpoint commits and as it opens.
+    ///
+    /// A window an ACP agent's turn moved holds too little to choose from: the
+    /// log reads itself whole for a native model first
+    /// ([`EventLog::model_context_and_state`]). So does one whose context would
+    /// now start before what it holds, which only a provider window alone, as
+    /// builds before 1.29.0 wrote, can make it do.
+    fn narrow_to_context(&mut self) {
+        if self.index.window_start.is_some()
+            || self.lines.is_none()
+            || (self.window.is_some() && !self.context)
+        {
+            return;
+        }
+        let Some(start) = model_context::context_window_start(&self.all) else {
+            return;
+        };
+        if self.window.is_some_and(|window| start < window) {
+            self.context = false;
+            return;
+        }
+        let Some(selected) = model_context::model_context(&self.all, &self.index.state) else {
+            return;
+        };
+        if self.window.is_none() {
+            self.view_start = Some(Box::new(CacheStartFold::of(&self.all, VIEW_BUDGET)));
+        }
+        self.all = Arc::new(selected);
+        self.window = Some(start);
+        self.context = true;
+        self.let_go_of_lines();
+    }
+
+    /// Whether a native model's context must be read whole first: what an ACP
+    /// agent's window let go of may be in it.
+    fn reads_whole_for_its_model(&self) -> bool {
+        self.window.is_some() && !self.context && self.index.window_start.is_none()
+    }
+
+    /// Narrows as `record`, just pushed, moves the window: an ACP agent's
+    /// committed turn, or a checkpoint of a native model's.
+    fn narrow_after(&mut self, record: &StoredEvent) {
+        match &record.payload {
+            EventPayload::ModelTurnCommitted { .. } => self.narrow(),
+            EventPayload::ContextCheckpointCommitted { .. } => self.narrow_to_context(),
+            _ => {}
+        }
+    }
+
+    /// Where the window's records start in [`Self::all`], after what is pinned
+    /// before it.
+    fn window_position(&self) -> usize {
+        self.window.map_or(0, |window| {
+            self.all.partition_point(|event| event.seq < window)
+        })
     }
 
     /// Lets go of where the lines before what the log holds start, but for where a
@@ -1318,6 +1390,14 @@ impl EventStorage {
 
     fn snapshot(&self) -> EventSnapshot {
         self.all.clone()
+    }
+
+    /// The records from the window's start, without what is pinned before it.
+    fn recent(&self) -> EventSnapshot {
+        match self.window_position() {
+            0 => self.snapshot(),
+            pinned => Arc::new(self.all[pinned..].to_vec()),
+        }
     }
 }
 
@@ -2200,8 +2280,8 @@ impl EventLog {
         }
         events.push(event.clone());
         self.next_seq.store(event.seq + 1, Ordering::Release);
-        if written && is_model_turn(&event) {
-            self.narrow(&mut events);
+        if written {
+            self.narrow(&mut events, |storage| storage.narrow_after(&event));
         }
         Ok((event, commit))
     }
@@ -2212,8 +2292,9 @@ impl EventLog {
     /// are not the file's stay whole. A read-only log has what it opened with:
     /// one that read itself whole has a reason, damage or an older format, and
     /// no appends move its tip. An open that did not read a log whole holds only
-    /// its window ([`state_file`]).
-    fn narrow(&self, storage: &mut EventStorage) {
+    /// its window ([`state_file`]). `narrow` is how: at an ACP agent's committed
+    /// turn, at a native model's checkpoint, or both as a log opens.
+    fn narrow(&self, storage: &mut EventStorage, narrow: impl FnOnce(&mut EventStorage)) {
         if self.read_only
             || self.converted
             || self.render_only.is_some()
@@ -2223,15 +2304,16 @@ impl EventLog {
         }
         #[cfg(any(test, feature = "test-support"))]
         let (held, before) = (storage.snapshot(), storage.window);
-        storage.narrow();
+        narrow(storage);
         #[cfg(any(test, feature = "test-support"))]
-        if storage.window != before {
+        if storage.window != before || storage.all.len() != held.len() {
             self.assert_file_reads_as(storage, &held);
         }
     }
 
     /// Test-only: the records the window just let go of read from the file as
-    /// they were held, as every later pass over them expects.
+    /// they were held, as every later pass over them expects, and so do those it
+    /// pins before its start.
     #[cfg(any(test, feature = "test-support"))]
     fn assert_file_reads_as(&self, storage: &EventStorage, held: &[Arc<StoredEvent>]) {
         let Some(window) = storage.window else {
@@ -2244,33 +2326,35 @@ impl EventLog {
         let read = History::with_file(None, range, Arc::default(), 0, 0)
             .collect::<Result<Vec<_>, _>>()
             .expect("what the window lets go of reads from the file");
-        let let_go = held
+        let read = read
             .iter()
+            .map(|event| (event.seq, event))
+            .collect::<HashMap<_, _>>();
+        for held in held
+            .iter()
+            .chain(&storage.all[..storage.window_position()])
             .filter(|event| event.seq < window)
-            .collect::<Vec<_>>();
-        assert_eq!(
-            read.len(),
-            let_go.len(),
-            "the records the window lets go of"
-        );
-        for (read, held) in read.iter().zip(let_go) {
+        {
             assert!(
-                read == held,
+                read.get(&held.seq).is_some_and(|read| *read == held),
                 "record {} reads from the file otherwise than it was held",
                 held.seq
             );
         }
     }
 
-    /// Moves the log's window up to its latest committed turn, for what opened
-    /// the log once it has done with the whole list. A log that cannot have a
-    /// window stays as it is.
+    /// Moves the log's window up to its latest committed turn, or where its
+    /// native model's context starts, for what opened the log once it has done
+    /// with the whole list. A log that cannot have a window stays as it is.
     pub fn narrow_window(&self) {
         let _append = self
             .append
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        self.narrow(&mut self.storage());
+        self.narrow(&mut self.storage(), |storage| {
+            storage.narrow();
+            storage.narrow_to_context();
+        });
     }
 
     /// Where the file holds the records of sequences `from..until`, before the
@@ -2292,7 +2376,7 @@ impl EventLog {
         // knows when the file is cut.
         let held_from = storage
             .all
-            .first()
+            .get(storage.window_position())
             .filter(|_| self.read_only && storage.window.is_some())
             .and_then(|first| {
                 let lines = storage.lines.as_ref()?;
@@ -2575,7 +2659,7 @@ impl EventLog {
     /// anything older is [`Self::state`] or [`Self::history`].
     #[must_use]
     pub fn recent(&self) -> EventSnapshot {
-        self.storage().snapshot()
+        self.storage().recent()
     }
 
     /// What readers need of the whole log, as of its latest record.
@@ -2651,6 +2735,20 @@ impl EventLog {
             recent.iter().zip(&whole[held..]).all(|(a, b)| a == b),
             "the window is not the log's tail"
         );
+        {
+            let storage = self.storage();
+            let pinned = &storage.all[..storage.window_position()];
+            assert!(
+                storage.context || pinned.is_empty(),
+                "only a native model's context pins records"
+            );
+            assert!(
+                pinned.iter().all(|pinned| whole
+                    .binary_search_by_key(&pinned.seq, |event| event.seq)
+                    .is_ok_and(|index| whole[index] == *pinned)),
+                "a pinned record is not the log's"
+            );
+        }
         state::reference::assert_matches_scans(&state, &whole);
         self.validation
             .lock()
@@ -2734,7 +2832,7 @@ impl EventLog {
     #[must_use]
     pub fn recent_and_state(&self) -> (EventSnapshot, Arc<LogState>) {
         let storage = self.storage();
-        (storage.snapshot(), Arc::clone(&storage.index.state))
+        (storage.recent(), Arc::clone(&storage.index.state))
     }
 
     /// The events a native model's context is assembled from: pinned records
@@ -2751,19 +2849,58 @@ impl EventLog {
     pub fn model_context_and_state(&self) -> Result<(EventSnapshot, Arc<LogState>), EventLogError> {
         let held = {
             let storage = self.storage();
-            storage
-                .window
-                .is_none()
-                .then(|| (storage.snapshot(), Arc::clone(&storage.index.state)))
+            (storage.window.is_none() || storage.context).then(|| {
+                (
+                    storage.snapshot(),
+                    Arc::clone(&storage.index.state),
+                    storage.context,
+                )
+            })
         };
         let (whole, state) = match held {
-            Some(held) => held,
+            Some((held, state, _context)) => {
+                #[cfg(any(test, feature = "test-support"))]
+                if _context {
+                    self.assert_context_reads_as_whole(&held, &state);
+                }
+                (held, state)
+            }
             None => self.read_whole()?,
         };
         let selected = model_context::model_context(&whole, &state).map(Arc::new);
         #[cfg(any(test, feature = "test-support"))]
         self.assert_model_context_holds(&whole, &state, selected.as_ref());
         Ok((selected.unwrap_or(whole), state))
+    }
+
+    /// Test-only: what a native window gives is what the whole file gives, read
+    /// at the same moment (`docs/site/specs/forever-sessions.md` section 5.3).
+    #[cfg(any(test, feature = "test-support"))]
+    fn assert_context_reads_as_whole(&self, held: &[Arc<StoredEvent>], state: &LogState) {
+        let _append = self
+            .append
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let tip = held.last().map_or(0, |event| event.seq);
+        let Ok(whole) = self
+            .unnoted_pass(..=tip)
+            .and_then(Iterator::collect::<Result<Vec<_>, _>>)
+        else {
+            // A revert cut the file since.
+            return;
+        };
+        let expected = model_context::model_context(&whole, state).unwrap_or(whole);
+        let given = model_context::model_context(held, state).unwrap_or_else(|| held.to_vec());
+        assert!(
+            given.len() == expected.len()
+                && given
+                    .iter()
+                    .zip(&expected)
+                    .all(|(given, expected)| given == expected),
+            "a native window gives {:?}, a whole read of its file {:?}",
+            given.iter().map(|event| event.seq).collect::<Vec<_>>(),
+            expected.iter().map(|event| event.seq).collect::<Vec<_>>(),
+        );
     }
 
     /// Test-only: what a log that let go of everything [`model_context`] did
@@ -2835,7 +2972,11 @@ impl EventLog {
         if storage.index.window_start.is_none() {
             storage.all = Arc::clone(&whole);
             storage.window = None;
+            storage.context = false;
             storage.view_start = None;
+            // Holding then only what its model's context needs, when it has a
+            // checkpoint.
+            self.narrow(&mut storage, EventStorage::narrow_to_context);
         }
         Ok((whole, Arc::clone(&storage.index.state)))
     }
@@ -2933,6 +3074,8 @@ impl EventLog {
         let Some(window) = storage.window else {
             return Ok(History::new(events, start, end));
         };
+        // What is pinned before the window is read from the file with the rest.
+        let start = start.max(storage.window_position());
         // What precedes the window: the creation, held, and then the file.
         let creation = storage
             .creation
@@ -3285,7 +3428,10 @@ impl EventLog {
         Arc::make_mut(&mut storage.raw).rebase(&self.path, &lines);
         storage.lines = Some(lines);
         self.mark_persisted();
-        self.narrow(&mut storage);
+        self.narrow(&mut storage, |storage| {
+            storage.narrow();
+            storage.narrow_to_context();
+        });
     }
 
     /// Test-only: the log opened without reading its file whole: from its
@@ -3439,8 +3585,9 @@ impl EventLog {
                 events.truncate_lines(through_seq, cut_length);
                 events.index = folded.index;
                 events.physical_model_turns = folded.physical_model_turns;
-                events.view_start = folded.window.map(|_| Box::new(folded.view_start));
+                events.view_start = folded.view_start;
                 events.window = folded.window;
+                events.context = folded.context;
                 events.all = Arc::new(folded.held);
                 events.read_lines_again(&self.path, cut_length, let_go_lines)?;
                 folded.validation
@@ -3476,19 +3623,17 @@ impl EventLog {
     }
 
     /// Folds a windowed log's records through `through_seq` from a pass over it,
-    /// holding what the window it ends with holds (section 3.5). The caller holds
-    /// `append`.
+    /// holding what the window it ends with holds (section 3.5), as a live append
+    /// of each would: the window moves at each ACP agent's turn and each native
+    /// model's checkpoint. The caller holds `append`.
     fn fold_prefix(
         &self,
         through_seq: u64,
         mut validation: ValidationState,
     ) -> Result<FoldedPrefix, EventLogError> {
-        let mut index = EventIndex::default();
-        let mut physical_model_turns = 0;
-        let mut view_start = CacheStartFold::new(VIEW_BUDGET);
-        let mut held = Vec::new();
-        // The events held cover the whole prefix until a turn lets go of some.
-        let mut let_go = false;
+        let mut storage = EventStorage::new(Vec::new());
+        // What the window lets go of, it lets go of from the file.
+        storage.lines = Some(LineIndex::default());
         for record in self.pass(..=through_seq)? {
             let record = record?;
             validate_record_incremental(
@@ -3498,28 +3643,35 @@ impl EventLog {
                 &mut validation,
                 false,
             )?;
-            physical_model_turns += u64::from(is_model_turn(&record));
-            index.observe(&record);
-            view_start.observe(&record);
-            if index.window_start == Some(record.seq) {
-                held.clear();
-                let_go = true;
-            }
-            held.push(record);
+            storage.push(Arc::clone(&record));
+            storage.narrow_after(&record);
         }
         validation.finish_whole();
-        // Back before the window's first turn, or at a native run: whole.
-        let window = index.window_start;
-        if window.is_none() && let_go {
-            held = self.pass(..=through_seq)?.collect::<Result<Vec<_>, _>>()?;
+        // Native since an ACP agent's window, which held too little to choose a
+        // context from: whole, and then what its model's context needs.
+        if storage.reads_whole_for_its_model() {
+            storage.all = Arc::new(self.pass(..=through_seq)?.collect::<Result<Vec<_>, _>>()?);
+            storage.window = None;
+            storage.view_start = None;
+            storage.narrow_to_context();
         }
+        let EventStorage {
+            index,
+            physical_model_turns,
+            view_start,
+            window,
+            context,
+            all,
+            ..
+        } = storage;
         Ok(FoldedPrefix {
             index,
             physical_model_turns,
             validation,
-            view_start,
+            view_start: window.and(view_start),
             window,
-            held,
+            context,
+            held: Arc::unwrap_or_clone(all),
         })
     }
 

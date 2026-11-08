@@ -100,6 +100,13 @@ pub(in crate::runtime::tests) fn assert_answers_as_reopened(log: &Arc<EventLog>,
         reopened.event_snapshot().len() as u64,
         "{context}: the records"
     );
+    // A native model's context, whether the log holds only that or reads it whole.
+    let held = log.model_context_events().unwrap();
+    let whole = reopened.model_context_events().unwrap();
+    assert!(
+        held.len() == whole.len() && held.iter().zip(whole.iter()).all(|(a, b)| a == b),
+        "{context}: the model's context"
+    );
     let folded = crate::session::projection(Arc::clone(log)).unwrap();
     let whole = crate::session::projection(reopened).unwrap();
     assert_eq!(folded.meta, whole.meta, "{context}: the metadata");

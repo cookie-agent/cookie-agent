@@ -121,10 +121,18 @@ impl EventLog {
         );
         // A snapshot and its tail fold to what the whole file folds to a record at
         // a time, exactly: what each let go of is the same.
-        if self.opened_from_state
-            && let Some(folded) = fold_file(&self.path, self.session_id, TornTail::Ignore)
-        {
+        // But for a fold that turned native after an ACP agent's window let go of
+        // what its model's context needs: it reads itself whole for that model, as
+        // the log that wrote the file did, and holds and validates differently
+        // until then (`docs/site/specs/forever-sessions.md` section 12).
+        let folded = self
+            .opened_from_state
+            .then(|| fold_file(&self.path, self.session_id, TornTail::Ignore))
+            .flatten();
+        if folded.is_some() {
             EVENT_LOG_PARSES.with(|parses| parses.set(parses.get().saturating_sub(1)));
+        }
+        if let Some(folded) = folded.filter(|folded| !folded.storage.reads_whole_for_its_model()) {
             assert!(
                 *self.validation.lock().expect("validation lock poisoned") == folded.validation,
                 "the validation state differs from a fold of the whole file"

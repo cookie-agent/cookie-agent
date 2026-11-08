@@ -32,7 +32,7 @@ pub const STATE_FILE: &str = "state.json";
 /// or the file's shape does: a different one means folding the log from its
 /// start. The test `the_folds_of_the_golden_logs_match_their_recorded_digest`
 /// says when.
-pub const STATE_VERSION: u32 = 8;
+pub const STATE_VERSION: u32 = 9;
 
 /// How much of a log comes between two writes of [`STATE_FILE`] on a run's way,
 /// so a long run is covered and a turn does not pay for a write.
@@ -64,6 +64,12 @@ pub struct StateFile {
 pub(super) struct LogFolds {
     /// Where the window starts, which is at or before the record.
     window: Option<u64>,
+    /// The window is a native model's context, and `pinned` what it holds
+    /// before its start ([`EventStorage::context`]).
+    context: bool,
+    /// The records a native model's context holds before the window's start,
+    /// in order: what follows still names them (section 5.6).
+    pinned: Vec<Arc<StoredEvent>>,
     view_start: Option<Box<CacheStartFold>>,
     refused: Arc<Vec<u64>>,
     index: EventIndex,
@@ -307,9 +313,7 @@ impl Folding<'_> {
         {
             self.projection = None;
         }
-        if is_model_turn(&record) {
-            self.storage.narrow();
-        }
+        self.storage.narrow_after(&record);
         Some(())
     }
 
@@ -423,10 +427,19 @@ pub(super) fn open_from_state(
     let creation = creation.or_else(|| held.first().cloned())?;
     let covered = folds.lines.len;
     let raw = folds.raw.restore(&folds.lines, path)?;
+    if folds.pinned.iter().any(|pinned| pinned.seq >= first_seq)
+        || !folds.pinned.is_sorted_by_key(|pinned| pinned.seq)
+        || (!folds.context && !folds.pinned.is_empty())
+    {
+        return None;
+    }
+    let mut all = folds.pinned;
+    all.extend(held);
     let storage = EventStorage {
-        all: Arc::new(held),
+        all: Arc::new(all),
         creation: Some(creation),
         window: folds.window,
+        context: folds.context,
         view_start: folds.view_start,
         refused: folds.refused,
         index: folds.index,
@@ -495,11 +508,9 @@ fn window_start(
     let Some(window) = window else {
         return Some((None, 0, 0));
     };
-    let index = lines
-        .starts
-        .binary_search_by_key(&window, |(seq, _)| *seq)
-        .ok()?;
-    let start = lines.starts[index].1;
+    // A native model's context starts at a sequence, which need not be a record's.
+    let index = lines.starts.partition_point(|(seq, _)| *seq < window);
+    let (first, start) = *lines.starts.get(index)?;
     let mut cursor = LineCursor::open(path, 0)?;
     let creation = loop {
         if cursor.next()? != Next::Line {
@@ -519,7 +530,7 @@ fn window_start(
     let mut file = fs::File::open(path).ok()?;
     file.seek(io::SeekFrom::Start(start.checked_sub(1)?)).ok()?;
     file.read_exact(&mut before).ok()?;
-    (before == *b"\n").then_some((Some(Arc::new(creation)), start, window))
+    (before == *b"\n").then_some((Some(Arc::new(creation)), start, first))
 }
 
 /// Folds the log at `path` from its start, one record at a time, holding what the
@@ -592,8 +603,9 @@ pub(super) fn fold_file(
 
 impl EventLog {
     /// How much of the log came since [`STATE_FILE`] was last written, if this log
-    /// should have one: it has a window, as an ACP agent's does, and a file this
-    /// process owns (section 4.2). Native logs have none until phase 7.
+    /// should have one: it has a window, an ACP agent's or a native model's
+    /// context (sections 4.2 and 5.6), and a file this process owns. A native log
+    /// that holds itself whole, having no checkpoint, has none.
     #[must_use]
     pub fn state_behind(&self) -> Option<u64> {
         if self.read_only || self.converted || self.render_only.is_some() || !self.is_persisted() {
@@ -601,7 +613,9 @@ impl EventLog {
         }
         let storage = self.storage();
         storage.window?;
-        storage.index.window_start?;
+        if storage.index.window_start.is_none() && !storage.context {
+            return None;
+        }
         Some(
             storage
                 .lines
@@ -697,6 +711,8 @@ impl LogFolds {
         let lines = storage.lines.clone()?;
         Some(Self {
             window: storage.window,
+            context: storage.context,
+            pinned: storage.all[..storage.window_position()].to_vec(),
             view_start: storage.view_start.clone(),
             refused: Arc::clone(&storage.refused),
             index: storage.index.clone(),
