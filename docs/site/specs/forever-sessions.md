@@ -203,7 +203,10 @@ is covered and a turn does not pay for a write, and when a session leaves memory
 store's release counts as. Only the process that owns the log writes it, and only a log with a
 window has one, a native log once a checkpoint moved its window (section 5.6). The session's slot and the log's locks are
 held to copy what it holds; serializing and writing take no lock. A crash loses nothing: the log
-stays the only source of truth.
+stays the only source of truth. **A log shorter than 1 MiB has none** (`STATE_MIN_LOG_BYTES`, the user's choice of
+2026-11-08): folding it from its start takes a few milliseconds, and on yunhao-labserver's store the
+79 windowed logs under 1 MiB had 16.5 MB of files against 29.6 MB of log, the smallest larger than
+their logs.
 
 ### 4.3 Opening
 
@@ -1640,3 +1643,11 @@ delta between reviews. Open:
 - **Real logs were checked at their tips**, not at every turn boundary, after phase 4; the store's
   native forever agents, once one runs, should be measured as section 8 asks for phase 7.
 
+**Storage, measured after phase 8** (2026-11-08, a converted copy of yunhao-labserver's store, every
+windowed log opened and sent out of memory): 161 `state.json` files took 49.1 MB, 13.4% of the 366.2
+MB of logs (blobs 287.3 MB). By log size: 27 logs under 200 KB had 4.1 MB of files for 2.2 MB of log,
+52 of 200 KB to 1 MB had 12.4 MB for 27.4 MB, 69 of 1 to 5 MB had 25.1 MB for 167.9 MB, and 13 over
+5 MB had 7.5 MB for 106.8 MB. So logs under 1 MiB no longer get one, which leaves about 32.6 MB. What
+grows with a log: a native checkpoint's records (memory 6.7 KB, `AGENTS.md` 0.7 KB a record at the
+median, and a composed prompt of at most 7 KB when it changed), and the reviewer's log, at 2 to 6 KB
+a review in the golden scenario.

@@ -38,6 +38,33 @@ pub const STATE_VERSION: u32 = 9;
 /// so a long run is covered and a turn does not pay for a write.
 const WRITE_AFTER_BYTES: u64 = 1024 * 1024;
 
+/// A log shorter than this has no [`STATE_FILE`]: folding it from its start takes
+/// a few milliseconds, and the file would be about as large as the log, or larger.
+pub const STATE_MIN_LOG_BYTES: u64 = 1024 * 1024;
+
+/// The shortest log a test lets have a [`STATE_FILE`]: none, so that every test's
+/// logs go through one, unless a test of the rule sets it.
+#[cfg(any(test, feature = "test-support"))]
+static TEST_MIN_LOG_BYTES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Test-only: makes logs shorter than `bytes` have no [`STATE_FILE`] in this
+/// process, as [`STATE_MIN_LOG_BYTES`] does in a build without `test-support`.
+#[cfg(any(test, feature = "test-support"))]
+pub fn set_state_min_log_bytes_for_test(bytes: u64) {
+    TEST_MIN_LOG_BYTES.store(bytes, Ordering::Release);
+}
+
+fn state_min_log_bytes() -> u64 {
+    #[cfg(any(test, feature = "test-support"))]
+    {
+        TEST_MIN_LOG_BYTES.load(Ordering::Acquire)
+    }
+    #[cfg(not(any(test, feature = "test-support")))]
+    {
+        STATE_MIN_LOG_BYTES
+    }
+}
+
 /// The record a [`StateFile`] is as of.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
 struct StateAt {
@@ -604,8 +631,9 @@ pub(super) fn fold_file(
 impl EventLog {
     /// How much of the log came since [`STATE_FILE`] was last written, if this log
     /// should have one: it has a window, an ACP agent's or a native model's
-    /// context (sections 4.2 and 5.6), and a file this process owns. A native log
-    /// that holds itself whole, having no checkpoint, has none.
+    /// context (sections 4.2 and 5.6), a file this process owns, and at least
+    /// [`STATE_MIN_LOG_BYTES`] of it. A native log that holds itself whole, having
+    /// no checkpoint, has none.
     #[must_use]
     pub fn state_behind(&self) -> Option<u64> {
         if self.read_only || self.converted || self.render_only.is_some() || !self.is_persisted() {
@@ -616,13 +644,11 @@ impl EventLog {
         if storage.index.window_start.is_none() && !storage.context {
             return None;
         }
-        Some(
-            storage
-                .lines
-                .as_ref()?
-                .len
-                .saturating_sub(self.state_written.load(Ordering::Acquire)),
-        )
+        let len = storage.lines.as_ref()?.len;
+        if len < state_min_log_bytes() {
+            return None;
+        }
+        Some(len.saturating_sub(self.state_written.load(Ordering::Acquire)))
     }
 
     /// Whether a committed turn should write [`STATE_FILE`] now.

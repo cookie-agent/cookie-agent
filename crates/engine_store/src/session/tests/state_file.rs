@@ -146,3 +146,36 @@ fn a_store_that_only_reads_a_session_writes_no_state_file() {
     let dir = store.resolve_dir(root).expect("a session");
     assert!(!dir.join(STATE_FILE).exists());
 }
+
+/// A log shorter than the least that has a state file leaves memory without
+/// writing one, and opens by folding; one as long writes it.
+#[test]
+fn a_log_shorter_than_the_least_has_no_state_file() {
+    let temporary = private_tempdir();
+    let (root, _) = golden_acp_tree(&temporary);
+    let store = store_in(&temporary);
+    let dir = store.resolve_dir(root).expect("a session");
+    let length = fs::metadata(dir.join(crate::session::EVENTS_FILE))
+        .expect("the log")
+        .len();
+
+    crate::events::state_file::set_state_min_log_bytes_for_test(length + 1);
+    store.open_for_write(root).expect("an adoption");
+    assert!(store.evict(root).expect("an eviction"));
+    assert!(
+        !dir.join(STATE_FILE).exists(),
+        "a log one byte short has none"
+    );
+    let log = crate::events::EventLog::open_read_only(dir.join(crate::session::EVENTS_FILE), root)
+        .expect("the log opens");
+    assert!(!log.opened_from_state_for_test());
+
+    crate::events::state_file::set_state_min_log_bytes_for_test(length);
+    store.open_for_write(root).expect("an adoption");
+    assert!(store.evict(root).expect("an eviction"));
+    crate::events::state_file::set_state_min_log_bytes_for_test(0);
+    assert!(
+        dir.join(STATE_FILE).is_file(),
+        "a log as long as the least has one"
+    );
+}
