@@ -225,3 +225,47 @@ fn a_revert_cuts_the_reviewer_log_a_fork_copies_it_and_a_delete_takes_it() {
     assert!(!directory.exists());
     assert!(!store.reviewer_log_is_open_for_test(fork));
 }
+
+/// A session that does not leave memory keeps its reviewer log. An eviction that
+/// evicted nothing let go of it all the same, so a review's turn found no log to
+/// go to, and the next lookup opened a second log on the same file while the first
+/// could still be held (review, 2026-11-08).
+#[test]
+fn an_eviction_that_evicts_nothing_keeps_the_reviewer_log() {
+    let temporary = private_tempdir();
+    let cwd = temporary.path().join("workspace");
+    create_private_test_dir_all(&cwd);
+    let store = SessionStore::open(&temporary.path().join("data"), &cwd).expect("store");
+    let session = reviewed_session(&store, 4);
+    store
+        .create_reviewer_log(session, vec![turn(3, true)])
+        .expect("a reviewer log");
+    assert!(store.evict(session).expect("an eviction"));
+    assert!(
+        !store.reviewer_log_is_open_for_test(session),
+        "it leaves memory with its session"
+    );
+
+    // Opened again while its session is out of memory: an eviction evicts nothing.
+    let open = store
+        .reviewer_log(session)
+        .expect("a lookup")
+        .expect("its log");
+    assert!(
+        !store.evict(session).expect("an eviction"),
+        "nothing evicted"
+    );
+    assert!(
+        store.reviewer_log_is_open_for_test(session),
+        "the log stays open"
+    );
+    store
+        .append_reviewer(session, turn(5, false))
+        .expect("a turn through the log it holds");
+    let again = store
+        .reviewer_log(session)
+        .expect("a lookup")
+        .expect("its log");
+    assert!(Arc::ptr_eq(&open, &again), "one log on its file");
+    assert_eq!(cuts(&open), [3, 5]);
+}

@@ -347,12 +347,21 @@ impl SessionStore {
         Ok(event)
     }
 
-    /// Lets go of `parent`'s reviewer log as `parent` leaves memory, writing
-    /// its `state.json` first.
-    pub(super) fn release_reviewer(&self, parent: SessionId) {
-        if let Some(open) = self.reviewers.remove(parent) {
+    /// Brings `parent`'s reviewer log's `state.json` up to the log, as `parent`
+    /// is about to leave memory: before any store lock, as the session's own.
+    pub(super) fn write_reviewer_state(&self, parent: SessionId) {
+        if let Some(open) = self.reviewers.get(parent) {
             open.write_state();
         }
+    }
+
+    /// Lets go of `parent`'s reviewer log once `parent` left memory, and only
+    /// then: a session that stays keeps the one log its reviews append to, and
+    /// a lookup does not open a second on the same file. Its `state.json` was
+    /// written just before ([`Self::write_reviewer_state`]); a turn recorded
+    /// since leaves the file behind, which an open reads as its tail.
+    pub(super) fn release_reviewer(&self, parent: SessionId) {
+        self.reviewers.remove(parent);
     }
 
     /// Lets go of every reviewer log, as the store releases its trees.

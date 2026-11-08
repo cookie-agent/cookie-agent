@@ -1726,3 +1726,15 @@ a review in the golden scenario.
   leaving it to the next sync, which covers the same file
   (`a_revert_that_cannot_read_its_line_index_again_completes_without_it`, through a test-only
   failure of the next line scan; the syncs' failures were not provoked).
+- **A reviewer log leaves memory only with its session.** `SessionStore::evict` let go of the
+  session's reviewer log before `evict_locked` said whether the session left memory, which it
+  does not when it is not resident, and an error before it (`flush_stale_meta_cache`) left it
+  resident too. The log was then gone from the store while the session stayed: a review's
+  `append_reviewer` found none (`Missing`, so its turn was not recorded), and the next lookup
+  opened a second log on the same file while the first could still be held. Two writers needed
+  more: an append through the first, already looked up, racing a revert or fork that opened the
+  second, whose owned open could cut the first's record in flight as a torn tail or append under
+  the same sequence. Not seen, but nothing prevented it. The state file is still written before
+  any lock, and the log is let go of only once the session left memory
+  (`an_eviction_that_evicts_nothing_keeps_the_reviewer_log`). The engine's own first-turn memory
+  is the engine's to clear.

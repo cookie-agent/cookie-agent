@@ -2111,9 +2111,8 @@ impl SessionStore {
 
     pub fn evict(&self, id: SessionId) -> Result<bool, SessionError> {
         // The next open is a cold one: it reads the view cache and the state
-        // file, brought up to the log before any lock. The session's reviewer
-        // log leaves memory with it.
-        self.release_reviewer(id);
+        // files, the reviewer log's too, brought up to the log before any lock.
+        self.write_reviewer_state(id);
         self.refresh_resident_view(id);
         self.refresh_state(id, |log| {
             log.state_behind().is_some_and(|behind| behind > 0)
@@ -2127,6 +2126,10 @@ impl SessionStore {
         // Persisted child caches are refreshed after the residency guard drops.
         let parent_root = self.parent_root_of(id);
         let evicted = self.evict_locked(id)?;
+        // The session's reviewer log leaves memory with it, and only then.
+        if evicted {
+            self.release_reviewer(id);
+        }
         if evicted && let Some(root) = parent_root {
             self.persist_subagent_index(root)?;
         }
