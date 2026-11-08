@@ -344,6 +344,61 @@ fn a_state_file_that_does_not_match_its_log_folds_the_log_from_its_start() {
     assert!(opened_from_state(&path), "the file as it was written");
 }
 
+/// A file whose line index does not reach back to its window would open a window
+/// missing its first records, read from the first line the index holds. No build
+/// writes one now, but one did (review, 2026-11-08): it folds the log from its
+/// start, whether the index starts after the window or skips its first line.
+#[test]
+fn a_state_file_whose_line_index_misses_its_window_folds_the_log_from_its_start() {
+    for log in [acp_log(), golden("coding")] {
+        let (_directory, path) = copy_of(&log);
+        let session = session_of(&path);
+        // As the session leaves memory: the file of its tip, past its window.
+        let latest = {
+            let owned = EventLog::open(path.clone(), session).expect("an open");
+            let folds = projection(Arc::clone(&owned)).expect("a projection");
+            owned.state_file(&folds).expect("a windowed log has a file")
+        };
+        let window = latest.folds.window.expect("a window");
+        let starts = &latest.folds.lines.starts;
+        let at_window = starts
+            .iter()
+            .position(|(seq, _)| *seq >= window)
+            .expect("the window's line");
+        assert_eq!(starts[at_window].0, window, "the window starts at a record");
+        assert!(
+            starts.len() > at_window + 1,
+            "{}: lines after the window's",
+            log.display()
+        );
+        // The index from a later line on, and the index without the window's line.
+        let edits: [(&str, &dyn Fn(usize) -> bool); 2] = [
+            ("starts after it", &|index| index > at_window),
+            ("skips its line", &|index| index != at_window),
+        ];
+        for (what, keep) in edits {
+            let mut state = latest.clone();
+            let mut index = 0;
+            state.folds.lines.starts.retain(|_| {
+                index += 1;
+                keep(index - 1)
+            });
+            write_state(&path, &state);
+            assert!(
+                !opened_from_state(&path),
+                "{}: an index that {what}",
+                log.display()
+            );
+        }
+        write_state(&path, &latest);
+        assert!(
+            opened_from_state(&path),
+            "{}: the file as it was written",
+            log.display()
+        );
+    }
+}
+
 /// An older file that still matches its log is the file of a long run: what came
 /// after it is the tail, whatever its length.
 #[test]

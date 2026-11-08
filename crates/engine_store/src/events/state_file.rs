@@ -538,6 +538,17 @@ fn window_start(
     // A native model's context starts at a sequence, which need not be a record's.
     let index = lines.starts.partition_point(|(seq, _)| *seq < window);
     let (first, start) = *lines.starts.get(index)?;
+    // The index holds every line from the window on, so a sequence between the
+    // two is one the file skips. One that starts later would open a window
+    // missing its first records, which a build wrote for a while.
+    if first > window
+        && !lines
+            .gaps
+            .iter()
+            .any(|(skipped, through)| *skipped <= window && first - 1 <= *through)
+    {
+        return None;
+    }
     let mut cursor = LineCursor::open(path, 0)?;
     let creation = loop {
         if cursor.next()? != Next::Line {

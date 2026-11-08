@@ -1682,3 +1682,12 @@ a review in the golden scenario.
   an attempt becomes a base only while it is in flight
   (`a_replay_base_stays_however_many_attempts_end_after_it_unevaluated`). `STATE_VERSION` rose from
   9 to 10, the digest test insisting.
+- **A `state.json` whose line index misses its window folds from the start.** `window_start` took
+  the first line the index holds at or after the window without checking the index reached it,
+  so a file whose index starts later, or skips the window's line, opened a window missing its
+  first records. An intermediate build wrote such files, and only scratch copies ran it. Now a
+  sequence between the window and the first line the index holds must be one the file skips
+  (`LineIndex::gaps`), or the file is a mismatch
+  (`a_state_file_whose_line_index_misses_its_window_folds_the_log_from_its_start`). A stricter
+  check of validity changes nothing a fold gives, so the digest held and `STATE_VERSION` did not
+  rise for it.
