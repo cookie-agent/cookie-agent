@@ -936,6 +936,128 @@ async fn a_failed_first_review_is_read_on_from_rather_than_passed_over_again() {
     fixture.engine.shutdown().await;
 }
 
+/// A failed first review's turn, kept in memory, does not outlive a revert of
+/// what it read: after the revert and a reopen of the session's log, whose cut
+/// count starts over, the next review passes over the log as it stands rather
+/// than read on from the reverted turn's cut, which would show reverted events
+/// and skip new ones.
+#[tokio::test]
+async fn a_failed_first_reviews_turn_does_not_outlive_a_revert_and_a_reopen() {
+    let (endpoint, captured) = scripted_evaluated_writes_server(
+        &[
+            "not a verdict",
+            r#"{"decision":"allow","reason":"Routine write."}"#,
+        ],
+        &[1, 1],
+    )
+    .await;
+    let (fixture, selection) = custom_fixture_with_endpoint_primary_and_internal(
+        &endpoint,
+        "---\ndescription: Approval test agent\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  write: ask\n---\nTest approval flow.\n",
+        Some((
+            "approval.md",
+            "---\ndescription: Persistent approval evaluator\nmode: internal\nenabled: true\nmodels: [{ model: \"${parent_model}\" }]\nlimits: { timeout_ms: 30000, max_output_tokens: 128 }\npermissions: {}\n---\nEvaluate approval requests conservatively.\n",
+        )),
+        None,
+        false,
+    );
+    fixture.engine.register_tool_provider(
+        crate::ToolLayer::Local,
+        Arc::new(TestWriteProvider {
+            executed: Arc::new(TestFlag::default()),
+        }),
+    );
+    let session = fixture
+        .engine
+        .create_session(selection.clone())
+        .expect("session")
+        .session_id;
+    fixture
+        .engine
+        .set_permission_mode(
+            session,
+            PermissionMode::AutoApproveN,
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
+        .await
+        .expect("auto_approve_n");
+    let start = |id: &'static str, content: &'static str| {
+        let engine = fixture.engine.clone();
+        let selection = selection.clone();
+        async move {
+            engine
+                .start_run(
+                    RunStartParams {
+                        reset_fallback: false,
+                        session_id: session,
+                        client_run_id: ClientRunId::new(id).expect("run ID"),
+                        selection,
+                        content: content.to_owned().into(),
+                    },
+                    cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+                )
+                .await
+                .expect("run");
+            await_projection(&engine, session, "the run's end", |projection| {
+                projection.status == SessionStatus::Completed
+            })
+            .await;
+        }
+    };
+    start("first", "the reverted request").await;
+    let reads = |engine: &crate::Engine| {
+        std::mem::take(&mut *engine.inner.test_hooks.reviewer_reads.lock().unwrap())
+    };
+    assert_eq!(reads(&fixture.engine).len(), 1, "the failed review");
+
+    // The revert keeps the run's request and cuts its call and the review.
+    let attempt = fixture
+        .engine
+        .inner
+        .store
+        .get(session)
+        .expect("projection")
+        .log
+        .events()
+        .iter()
+        .find(|event| matches!(event.payload, EventPayload::ModelAttemptStarted { .. }))
+        .expect("the first attempt")
+        .seq;
+    fixture
+        .engine
+        .revert_session(
+            session,
+            attempt,
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+            None,
+        )
+        .await
+        .expect("reverted");
+    // The session leaves memory and comes back with a log of its own.
+    let evicted = fixture
+        .engine
+        .evict_idle_roots_with(std::time::Duration::ZERO)
+        .await
+        .expect("evicted");
+    assert!(evicted.contains(&session), "{evicted:?}");
+
+    start("second", "the kept request").await;
+    let reads = reads(&fixture.engine);
+    assert_eq!(reads.len(), 1);
+    assert_eq!(reads[0].0, 1, "the review passes over the log as it stands");
+    let turns = reviewer_turns(&fixture.engine, session);
+    assert_eq!(turns.len(), 1);
+    assert!(turns[0].request.contains("the kept request"));
+    assert_eq!(
+        turns[0].request.matches("[tool call] write").count(),
+        0,
+        "the reverted call does not show: {}",
+        turns[0].request
+    );
+    let _ = with_watchdog("captured fixture completion", captured).await;
+    fixture.engine.shutdown().await;
+}
+
 #[tokio::test]
 async fn ask_permission_mode_escalates_without_starting_internal_approval_agent() {
     let (endpoint, captured) = scripted_approval_server(r#"{"decision":"allow"}"#).await;

@@ -130,7 +130,10 @@ pub(crate) struct ApprovalRuntimeState {
     pub(crate) reviews: Mutex<HashMap<SessionId, Arc<tokio::sync::Mutex<()>>>>,
     /// A session's first reviewer turn that was sent and not recorded, as its
     /// review failed, with how many cuts its log had then: the next review
-    /// reads on from its cut rather than pass over the whole log again.
+    /// reads on from its cut rather than pass over the whole log again. The
+    /// count is the open log's own, so a revert, and the session leaving
+    /// memory or being deleted, forgets the turn ([`Engine::forget_reviews`]):
+    /// a log opened again counts its cuts from zero.
     pub(crate) unrecorded: Mutex<HashMap<SessionId, (u64, cookie_agent_protocol::ReviewerTurn)>>,
 }
 
@@ -697,7 +700,8 @@ impl Engine {
     }
 
     /// Keeps `pending`, a log's first turn whose review gave no verdict to
-    /// record, for the next review to read on from.
+    /// record, for the next review to read on from, unless a revert cut the
+    /// session's log since the review read it.
     fn keep_unrecorded_turn(&self, session: SessionId, pending: PendingReviewTurn) {
         let PendingReviewTurn {
             _review,
@@ -705,7 +709,13 @@ impl Engine {
             create,
             cuts,
         } = pending;
-        if !create {
+        if !create
+            || self
+                .inner
+                .store
+                .log(session)
+                .map_or(true, |log| log.cut_count() != cuts)
+        {
             return;
         }
         if let Some(turn) = prepared.into_unrecorded() {
@@ -716,6 +726,28 @@ impl Engine {
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .insert(session, (cuts, turn));
         }
+    }
+
+    /// Forgets the reviews of `sessions`, which a revert cut, or which left
+    /// memory or were deleted: the first reviewer turn kept for each, whose cut
+    /// count a log opened again would match from zero, and each review gate
+    /// no review holds.
+    pub(in crate::runtime) fn forget_reviews(
+        &self,
+        sessions: &std::collections::HashSet<SessionId>,
+    ) {
+        self.inner
+            .approvals
+            .unrecorded
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .retain(|session, _| !sessions.contains(session));
+        self.inner
+            .approvals
+            .reviews
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .retain(|session, gate| !sessions.contains(session) || Arc::strong_count(gate) > 1);
     }
 
     /// Records `pending`, the turn a review sent, with `verdict`, which the

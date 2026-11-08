@@ -498,6 +498,7 @@ impl Engine {
                 });
         });
         self.inner.memory_seen.forget_sessions(&members);
+        self.forget_reviews(&members);
         self.inner
             .sessions
             .forks
@@ -603,6 +604,7 @@ impl Engine {
         self.inner
             .memory_seen
             .forget_sessions(&HashSet::from([session_id]));
+        self.forget_reviews(&HashSet::from([session_id]));
         let mut steer_order = self
             .inner
             .sessions

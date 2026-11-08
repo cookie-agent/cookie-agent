@@ -1763,3 +1763,10 @@ a review in the golden scenario.
   commit, and a machine's memories added in place or in `attach_machine`'s result; the last marks only
   the machine memories it shows, not the user's, agent's, or project's memories its snapshot read
   (`a_compaction_that_records_nothing_leaves_memory_unseen`).
+- **A failed first review's turn goes with what it read.** The turn was kept in memory with the session
+  log's cut count, which is the open log's own and starts at zero when a log opens again, and nothing
+  forgot it: a revert, then the session leaving memory, let the next review take a turn showing reverted
+  events and read on from its old cut, skipping new ones. A revert of the session now forgets it, and so
+  do the session leaving memory and its deletion (`Engine::forget_reviews`), which also drop the
+  session's review gate when no review holds it; a turn whose review read the log before a revert is not
+  kept (`a_failed_first_reviews_turn_does_not_outlive_a_revert_and_a_reopen`).

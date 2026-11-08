@@ -690,6 +690,7 @@ impl Engine {
             .retain(|child| !deleted.contains(child));
         self.inner.delegation_events.forget_sessions(deleted);
         self.inner.memory_seen.forget_sessions(deleted);
+        self.forget_reviews(deleted);
         self.forget_live_waiting(deleted);
         self.inner.store.forget_marks(deleted);
         self.delete_crons_targeting(deleted);
@@ -859,6 +860,8 @@ impl Engine {
                         }
                     }
                     engine.inner.store.truncate(session, cut)?;
+                    // A failed first review's turn may hold what the cut removed.
+                    engine.forget_reviews(&HashSet::from([session]));
                     // The cut can fall inside a run, with its tool calls, internal
                     // agents or approvals still open: close them as a restart would.
                     engine.reconcile_session_with(session, "session reverted")?;
