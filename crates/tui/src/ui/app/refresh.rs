@@ -482,7 +482,9 @@ impl App {
                 session_id,
                 before,
                 page,
-            } => self.store.apply_history_page(session_id, before, page),
+            } => {
+                self.store.apply_history_page(session_id, before, page);
+            }
             RpcUpdate::CutResultLoaded {
                 session_id,
                 call_id,

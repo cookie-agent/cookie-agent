@@ -70,6 +70,33 @@ fn open(store: &mut StateStore, events: &[Arc<StoredEvent>], window: Window) -> 
     session_id
 }
 
+/// The daemon's answer to `params` from `events`.
+fn page(events: &[Arc<StoredEvent>], params: &EventsPageParams, budget: usize) -> EventsPage {
+    let before = params.before;
+    let page = display_view::older_page(events, before, EventsView::Display, budget);
+    let header = match params.header {
+        PageHeader::Full => page.header,
+        PageHeader::None => Vec::new(),
+        PageHeader::Delta => display_view::header_delta(
+            &display_view::state_events(
+                &events[..events.partition_point(|event| event.seq < before)],
+            ),
+            page.header,
+        ),
+    };
+    EventsPage {
+        events: page
+            .events
+            .iter()
+            .map(|event| (**event).clone().into())
+            .collect(),
+        header: header.iter().map(|event| (**event).clone()).collect(),
+        header_kind: params.header,
+        older_cursor: page.older_cursor,
+        cut: page.cut,
+    }
+}
+
 /// Reads the history `before` stands for from `events`, as the daemon
 /// answers `events.page`.
 fn load(
@@ -83,31 +110,10 @@ fn load(
         .request_history(session_id, before)
         .expect("the history is not loaded");
     assert_eq!(params.before, before);
-    let page = display_view::older_page(events, before, EventsView::Display, budget);
-    let header = match params.header {
-        PageHeader::Full => page.header,
-        PageHeader::None => Vec::new(),
-        PageHeader::Delta => display_view::header_delta(
-            &display_view::state_events(
-                &events[..events.partition_point(|event| event.seq < before)],
-            ),
-            page.header,
-        ),
-    };
-    store.apply_history_page(
-        session_id,
-        before,
-        Ok(EventsPage {
-            events: page
-                .events
-                .iter()
-                .map(|event| (**event).clone().into())
-                .collect(),
-            header: header.iter().map(|event| (**event).clone()).collect(),
-            header_kind: params.header,
-            older_cursor: page.older_cursor,
-            cut: page.cut,
-        }),
+    let page = page(events, &params, budget);
+    assert!(
+        store.apply_history_page(session_id, before, Ok(page)),
+        "the page went in"
     );
 }
 
@@ -308,6 +314,39 @@ fn a_page_nothing_waits_for_is_dropped_and_a_failed_one_shows() {
     store.apply_history_page(session_id, before, Err("late".into()));
     assert_eq!(store.sessions[&session_id].version, version);
     assert!(store.request_history(session_id, before).is_some());
+}
+
+#[test]
+fn only_the_page_a_read_waits_for_goes_in() {
+    let events = log(CODING);
+    let budget = 16 * 1024;
+    let mut store = StateStore::default();
+    let window = display_view::tail_window(&events, EventsView::Display, budget);
+    let session_id = open(&mut store, &events, window);
+    let before = store.next_history(session_id).unwrap();
+    let params = store.request_history(session_id, before).unwrap();
+    // A failure shows on the row; no rows go in.
+    assert!(!store.apply_history_page(session_id, before, Err("timed out".into())));
+    // Nothing waits for a page now.
+    assert!(!store.apply_history_page(session_id, before, Ok(page(&events, &params, budget))));
+    assert_eq!(
+        store.sessions[&session_id].history.older_cursor,
+        Some(before)
+    );
+    let params = store.request_history(session_id, before).unwrap();
+    // Nor for one of another session.
+    assert!(!store.apply_history_page(
+        SessionId::new_v7(),
+        before,
+        Ok(page(&events, &params, budget))
+    ));
+    assert!(store.apply_history_page(session_id, before, Ok(page(&events, &params, budget))));
+    assert_ne!(
+        store.sessions[&session_id].history.older_cursor,
+        Some(before)
+    );
+    // The same answer again is dropped.
+    assert!(!store.apply_history_page(session_id, before, Ok(page(&events, &params, budget))));
 }
 
 #[test]

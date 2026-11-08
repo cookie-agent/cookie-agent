@@ -438,23 +438,26 @@ impl StateStore {
     /// The answer to [`Self::request_history`]'s request for `before`:
     /// the page is held and everything held folds again, or the failure
     /// shows on the row. An answer nothing waits for any more is dropped.
+    /// Whether the page's rows went in: `false` for a failure and for an
+    /// answer dropped.
     pub fn apply_history_page(
         &mut self,
         session_id: SessionId,
         before: u64,
         page: Result<EventsPage, String>,
-    ) {
+    ) -> bool {
         let waiting = self
             .sessions
             .get(&session_id)
             .is_some_and(|state| state.history.loading == Some(before));
         let Some(held) = self.histories.get_mut(&session_id).filter(|_| waiting) else {
-            return;
+            return false;
         };
         match page {
             Ok(page) => {
                 held.add_page(before, page);
                 self.refold(session_id);
+                true
             }
             Err(error) => {
                 if let Some(state) = self.sessions.get_mut(&session_id) {
@@ -462,6 +465,7 @@ impl StateStore {
                     state.history.failed = Some(error);
                     bump_history_row(state, before);
                 }
+                false
             }
         }
     }

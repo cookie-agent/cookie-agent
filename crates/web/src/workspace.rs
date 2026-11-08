@@ -3026,8 +3026,14 @@ impl Workspace {
                 .events_page(params)
                 .await
                 .map_err(|error| crate::errors::describe_full(&error));
-            crate::browser::page_arriving(before);
-            self.update_store(|store| store.apply_history_page(session_id, before, page));
+            let arrived =
+                self.update_store(|store| store.apply_history_page(session_id, before, page));
+            // Its rows draw in the next frames. A page that did not go in,
+            // or is for a session no longer shown, draws nothing, and the
+            // transcript shown keeps its anchoring.
+            if arrived && self.selected.get_untracked() == Some(session_id) {
+                crate::browser::page_arriving(before);
+            }
         });
     }
 

@@ -1434,6 +1434,58 @@ def history_reconnect(browser):
     print("a click while reconnecting read nothing; after the reconnect a click read the page")
 
 
+# Holds back the page's events.page requests by arguments[0] ms, and counts
+# their answers in window.__pageAnswers.
+DELAY_AND_COUNT_PAGES = """
+const ms = arguments[0];
+window.__send = window.__send || WebSocket.prototype.send;
+const send = window.__send;
+window.__pageAnswers = 0;
+WebSocket.prototype.send = function (data) {
+    if (typeof data === 'string' && data.includes('events.page')) {
+        const id = JSON.parse(data).id;
+        const answer = (event) => {
+            if (typeof event.data === 'string' && JSON.parse(event.data).id === id) {
+                window.__pageAnswers += 1;
+                this.removeEventListener('message', answer);
+            }
+        };
+        this.addEventListener('message', answer);
+        setTimeout(() => send.call(this, data), ms);
+    } else {
+        send.call(this, data);
+    }
+};
+"""
+
+
+def history_page_elsewhere(browser):
+    """A page of history that lands once its session is no longer shown
+    leaves the shown transcript's scroll anchoring on."""
+    row = "#transcript [data-history]"
+    reopen_newest_first(browser)
+    browser.script(DELAY_AND_COUNT_PAGES, 3000)
+    try:
+        browser.click(row)
+        browser.wait("the read", lambda: count(browser, "#transcript [data-history-loading]") == 1, timeout=10)
+        browser.click("aside [data-new-session]")
+        browser.wait("the new session", lambda: "New session" in browser.text("#session-title"))
+        browser.script(
+            "window.__anchoring = [];"
+            "new MutationObserver((records) => { for (const record of records) {"
+            "  if (record.target.hasAttribute('data-page-arriving')) window.__anchoring.push(record.target.id); } })"
+            ".observe(document.body, {subtree: true, attributes: true, attributeFilter: ['data-page-arriving']})"
+        )
+        assert browser.script("return window.__pageAnswers") == 0, "the page landed before the session was left"
+        browser.wait("the page's answer", lambda: browser.script("return window.__pageAnswers") >= 1, timeout=15)
+        time.sleep(1)
+    finally:
+        browser.script("WebSocket.prototype.send = window.__send")
+    turned_off = browser.script("return window.__anchoring")
+    assert turned_off == [], "a page for a session not shown turned anchoring off in %s" % turned_off
+    print("a page that landed after its session was left left the shown transcript's anchoring on")
+
+
 def session_list_older(browser):
     """The session list shows the last 7 days (the filter's default), and
     an unread session whatever its age, with no Show older: a longer date
@@ -7406,6 +7458,7 @@ SCENARIOS = [
     ("newest_first", newest_first, "long", []),
     # It pauses its daemon.
     ("history_reconnect", history_reconnect, "long", ["newest_first"]),
+    ("history_page_elsewhere", history_page_elsewhere, "long", ["newest_first"]),
     ("near_view", near_view, "long", []),
     # Its daemon has sessions last active months ago (test-web-page.sh).
     ("session_list_older", session_list_older, "long", []),
