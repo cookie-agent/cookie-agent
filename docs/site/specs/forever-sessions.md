@@ -1400,7 +1400,8 @@ compared with a fold of the whole file exactly, as before. The producer fold is 
   window and holdings. `a_native_log_holds_its_context_once_a_checkpoint_commits_and_its_file_the_pins`,
   `a_synthetic_native_log_holds_its_context_and_answers_as_its_file` (16 runs, 17 checkpoints, 53 turns,
   each checked, with skills, elisions, background jobs, delegations, and producer messages across
-  checkpoints), `a_revert_of_a_native_window_folds_what_stays_as_its_file_does`,
+  checkpoints), `a_revert_of_a_native_window_folds_what_stays_as_its_file_does` (a fork through the
+  window, and reverts into it, to before its latest checkpoint, and to before its first),
   `a_switch_between_an_acp_agent_and_a_native_one_with_a_checkpoint_windows_either_way` (ACP to native,
   its checkpoint, back to ACP, and native again, through the engine), and
   `a_native_log_that_compacts_costs_no_more_at_four_times_its_length`.
