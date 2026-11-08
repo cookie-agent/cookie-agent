@@ -227,34 +227,29 @@ Read a file or a directory. A text file comes back as numbered lines, `N: text`,
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `limit` | `integer` | no | The most lines, or directory entries, to return. Defaults to 2000. |
-| `offset` | `integer` | no | The 1-based line, or directory entry, to start at. Defaults to 1. |
+| `limit` | `integer` | no | The most lines, or directory entries, to return. Defaults to 2000. Default: `2000`. |
+| `offset` | `integer` | no | The 1-based line, or directory entry, to start at. Defaults to 1. Default: `1`. |
 | `path` | `string` | yes | Path to the file or directory. Relative paths resolve against the session working directory. |
 
 ??? note "Parameters JSON Schema"
 
     ```json
     {
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
       "properties": {
         "limit": {
+          "default": 2000,
           "description": "The most lines, or directory entries, to return. Defaults to 2000.",
           "format": "uint",
-          "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
+          "minimum": 1,
+          "type": "integer"
         },
         "offset": {
+          "default": 1,
           "description": "The 1-based line, or directory entry, to start at. Defaults to 1.",
           "format": "uint",
-          "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
+          "minimum": 1,
+          "type": "integer"
         },
         "path": {
           "description": "Path to the file or directory. Relative paths resolve against the session working directory.",
@@ -264,7 +259,6 @@ Read a file or a directory. A text file comes back as numbered lines, `N: text`,
       "required": [
         "path"
       ],
-      "title": "ReadArgs",
       "type": "object"
     }
     ```
@@ -294,7 +288,6 @@ Write a whole file: create it, or replace everything it holds with `content`, ov
 
     ```json
     {
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
       "properties": {
         "content": {
@@ -310,7 +303,6 @@ Write a whole file: create it, or replace everything it holds with `content`, ov
         "path",
         "content"
       ],
-      "title": "WriteArgs",
       "type": "object"
     }
     ```
@@ -342,7 +334,6 @@ Replace exact text in a UTF-8 text file, atomically. `old_string` is matched exa
 
     ```json
     {
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
       "properties": {
         "new_string": {
@@ -350,7 +341,7 @@ Replace exact text in a UTF-8 text file, atomically. `old_string` is matched exa
           "type": "string"
         },
         "old_string": {
-          "description": "The exact text to replace, whitespace and indentation included; not\nempty. It must occur exactly once in the file unless `replace_all` is\nset.",
+          "description": "The exact text to replace, whitespace and indentation included; not empty. It must occur exactly once in the file unless `replace_all` is set.",
           "type": "string"
         },
         "path": {
@@ -359,7 +350,7 @@ Replace exact text in a UTF-8 text file, atomically. `old_string` is matched exa
         },
         "replace_all": {
           "default": false,
-          "description": "Replace every occurrence of `old_string` instead of exactly one.\nDefaults to false.",
+          "description": "Replace every occurrence of `old_string` instead of exactly one. Defaults to false.",
           "type": "boolean"
         }
       },
@@ -368,7 +359,6 @@ Replace exact text in a UTF-8 text file, atomically. `old_string` is matched exa
         "old_string",
         "new_string"
       ],
-      "title": "EditArgs",
       "type": "object"
     }
     ```
@@ -520,16 +510,17 @@ Run one Git Bash command in the working directory. Single-quote native Windows p
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `command` | `string` | yes |  |
+| `command` | `string` | yes | The command to run with bash in the working directory. |
 | `timeout` | `integer` | no | Milliseconds before the command is killed; 0 or less never times out. Default: `120000`. |
 
 ??? note "Parameters JSON Schema"
 
     ```json
     {
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
       "properties": {
         "command": {
+          "description": "The command to run with bash in the working directory.",
           "type": "string"
         },
         "timeout": {
@@ -542,7 +533,6 @@ Run one Git Bash command in the working directory. Single-quote native Windows p
       "required": [
         "command"
       ],
-      "title": "BashArgs",
       "type": "object"
     }
     ```
@@ -613,28 +603,28 @@ Fetch an HTTP or HTTPS URL. Output has final_url, status_code, content_type, and
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `raw` | `boolean` | no | Default: `false`. |
-| `url` | `string` | yes |  |
+| `raw` | `boolean` | no | Return HTML as it is instead of as plain text. Default: `false`. |
+| `url` | `string` | yes | The `http://` or `https://` URL to fetch. |
 
 ??? note "Parameters JSON Schema"
 
     ```json
     {
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
       "properties": {
         "raw": {
           "default": false,
+          "description": "Return HTML as it is instead of as plain text.",
           "type": "boolean"
         },
         "url": {
+          "description": "The `http://` or `https://` URL to fetch.",
           "type": "string"
         }
       },
       "required": [
         "url"
       ],
-      "title": "WebfetchArgs",
       "type": "object"
     }
     ```
@@ -755,7 +745,6 @@ Stop a call running in the background. It returns once the call has ended; its <
 
     ```json
     {
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
       "properties": {
         "job": {
@@ -766,7 +755,6 @@ Stop a call running in the background. It returns once the call has ended; its <
       "required": [
         "job"
       ],
-      "title": "StopBackgroundArgs",
       "type": "object"
     }
     ```
@@ -893,15 +881,14 @@ Always, whatever the agent's permission rules: it reads only output retained by 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `artifact` | `string` | yes | The artifact's lowercase hex SHA-256 digest, as a truncation hint names it, or its first 8 or more digits, as a file label shows them. |
-| `limit` | `integer` | no | The most lines to return. Defaults to 2000. |
-| `offset` | `integer` | no | The 1-based line to start at. Defaults to 1. |
+| `limit` | `integer` | no | The most lines to return. Defaults to 2000. Default: `2000`. |
+| `offset` | `integer` | no | The 1-based line to start at. Defaults to 1. Default: `1`. |
 | `stream` | `string` | no | Named stream of a multi-stream output, such as `stdout`, as a truncation hint names it. |
 
 ??? note "Parameters JSON Schema"
 
     ```json
     {
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
       "properties": {
         "artifact": {
@@ -909,35 +896,27 @@ Always, whatever the agent's permission rules: it reads only output retained by 
           "type": "string"
         },
         "limit": {
+          "default": 2000,
           "description": "The most lines to return. Defaults to 2000.",
           "format": "uint",
-          "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
+          "minimum": 1,
+          "type": "integer"
         },
         "offset": {
+          "default": 1,
           "description": "The 1-based line to start at. Defaults to 1.",
           "format": "uint",
-          "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
+          "minimum": 1,
+          "type": "integer"
         },
         "stream": {
           "description": "Named stream of a multi-stream output, such as `stdout`, as a truncation hint names it.",
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         }
       },
       "required": [
         "artifact"
       ],
-      "title": "ReadArtifactArgs",
       "type": "object"
     }
     ```
@@ -1072,16 +1051,12 @@ Only when the request defers a tool: on a model that loads deferred tools, when 
 
     ```json
     {
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
       "properties": {
         "limit": {
           "description": "At most how many keyword matches to load; 5 when absent, and every match when 0 or less. A select: query loads every name it lists.",
           "format": "int64",
-          "type": [
-            "integer",
-            "null"
-          ]
+          "type": "integer"
         },
         "query": {
           "description": "\"select:<name>,<name>\" loads those tools by exact name; any other text is keywords, such as \"browser click\", and loads the best matches. \"+word\" requires the word in a tool's name, as in \"+slack send\".",
@@ -1091,7 +1066,6 @@ Only when the request defers a tool: on a model that loads deferred tools, when 
       "required": [
         "query"
       ],
-      "title": "ToolSearchArgs",
       "type": "object"
     }
     ```
@@ -1141,9 +1115,7 @@ Only in a root session. An ACP agent's root session has them only while the user
 
     ```json
     {
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
-      "title": "GoalGetParams",
       "type": "object"
     }
     ```
@@ -1193,9 +1165,7 @@ Only in a root session. An ACP agent's root session has them only while the user
           "type": "object"
         }
       },
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
-      "description": "`goal_set` starts a goal on the agent's own initiative, as the user's\n`/goal` does, when the root session has no active or paused goal. It may\nset the first checklist in the same call.",
       "properties": {
         "items": {
           "description": "The first checklist; leave it out to set it later with `goal_update`.",
@@ -1212,7 +1182,6 @@ Only in a root session. An ACP agent's root session has them only while the user
       "required": [
         "objective"
       ],
-      "title": "GoalSetParams",
       "type": "object"
     }
     ```
@@ -1237,7 +1206,7 @@ Only in a root session. An ACP agent's root session has them only while the user
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `items` | `object[]` | yes |  |
+| `items` | `object[]` | yes | The full checklist, replacing the current one. |
 
 ??? note "Parameters JSON Schema"
 
@@ -1261,11 +1230,10 @@ Only in a root session. An ACP agent's root session has them only while the user
           "type": "object"
         }
       },
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
-      "description": "`goal_update` replaces the current root goal's checklist at actor execution,\neven if the goal changed since the calling run started. It is never a lifecycle\ncommand. The engine rejects absent/terminal goals and blank descriptions.\nReplacements are serialized; the last accepted update wins. Duplicate descriptions\nare allowed. Empty items preserve active/paused status. A nonempty\nall-finished update completes even while paused, without scheduling a wake.",
       "properties": {
         "items": {
+          "description": "The full checklist, replacing the current one.",
           "items": {
             "$ref": "#/$defs/GoalItem"
           },
@@ -1275,7 +1243,6 @@ Only in a root session. An ACP agent's root session has them only while the user
       "required": [
         "items"
       ],
-      "title": "GoalUpdateParams",
       "type": "object"
     }
     ```
@@ -1363,7 +1330,6 @@ Only when at least one skill is visible to the session.
 
     ```json
     {
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
       "properties": {
         "args": {
@@ -1379,7 +1345,6 @@ Only when at least one skill is visible to the session.
       "required": [
         "name"
       ],
-      "title": "SkillArgs",
       "type": "object"
     }
     ```
@@ -1404,43 +1369,52 @@ Only when the agent can delegate to at least one subagent at this depth. The `ag
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `agent_type` | `"<subagent id>"` | yes |  |
+| `agent_type` | `"<subagent id>"` | yes | The agent to start, from `list_agents` with for="delegate" |
 | `capabilities` | `object[]` | no | Optional. Leave it out and the subagent inherits this session's attachments. Each item gives the subagent one runtime capability to work through, at `workspace` when the capability takes one. These are runtime capabilities, where the subagent works, not its tools or permissions. Write each as the full `<runtime_id>/<capability_id>`, from a `<runtime id=…>` and one of its `<capability id=…>` in `list_runtimes`, e.g. `labpc/coding`. The subagent also has `global` whenever this session does. Cannot be combined with `resume_session_id`. |
 | `description` | `string` | yes | Short (3-5 words) summary of the task |
-| `inherit_context` | `boolean` | no | Default: `false`. |
+| `inherit_context` | `boolean` | no | Start a new subagent with this conversation's user and assistant text (no tool calls or results, at most 64 KiB, oldest dropped first). Cannot be combined with `resume_session_id`. Default: `false`. |
 | `prompt` | `string` | yes | Full task brief with objective, context, and deliverable |
-| `resume_session_id` | `string` | no | Optional. Handle or UUID of an existing subagent of yours to resume, e.g. "explore_1a2b3c4d". Only subagents you delegated are valid. |
+| `resume_session_id` | `string` | no | The session ID, such as `explore_1a2b3c4d`, or full UUID of an existing subagent of yours to resume. Only subagents you delegated are valid. |
 
 ??? note "Parameters JSON Schema"
 
     ```json
     {
+      "$defs": {
+        "CapabilityArg": {
+          "additionalProperties": false,
+          "properties": {
+            "capability": {
+              "description": "`<runtime_id>/<capability_id>`, from `list_runtimes`, e.g. `labpc/coding`",
+              "type": "string"
+            },
+            "workspace": {
+              "description": "Directory on that runtime's machine; required when the capability takes a workspace",
+              "type": "string"
+            }
+          },
+          "required": [
+            "capability"
+          ],
+          "type": "object"
+        }
+      },
       "additionalProperties": false,
       "properties": {
         "agent_type": {
+          "description": "The agent to start, from `list_agents` with for=\"delegate\"",
           "enum": [
             "<subagent id>"
           ],
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[a-z0-9](?:[a-z0-9]|-(?=[a-z0-9]))*$",
           "type": "string"
         },
         "capabilities": {
           "description": "Optional. Leave it out and the subagent inherits this session's attachments. Each item gives the subagent one runtime capability to work through, at `workspace` when the capability takes one. These are runtime capabilities, where the subagent works, not its tools or permissions. Write each as the full `<runtime_id>/<capability_id>`, from a `<runtime id=…>` and one of its `<capability id=…>` in `list_runtimes`, e.g. `labpc/coding`. The subagent also has `global` whenever this session does. Cannot be combined with `resume_session_id`.",
           "items": {
-            "additionalProperties": false,
-            "properties": {
-              "capability": {
-                "description": "`<runtime_id>/<capability_id>`, from `list_runtimes`, e.g. `labpc/coding`",
-                "type": "string"
-              },
-              "workspace": {
-                "description": "Directory on that runtime's machine; required when the capability takes a workspace",
-                "type": "string"
-              }
-            },
-            "required": [
-              "capability"
-            ],
-            "type": "object"
+            "$ref": "#/$defs/CapabilityArg"
           },
           "minItems": 1,
           "type": "array"
@@ -1451,6 +1425,7 @@ Only when the agent can delegate to at least one subagent at this depth. The `ag
         },
         "inherit_context": {
           "default": false,
+          "description": "Start a new subagent with this conversation's user and assistant text (no tool calls or results, at most 64 KiB, oldest dropped first). Cannot be combined with `resume_session_id`.",
           "type": "boolean"
         },
         "prompt": {
@@ -1458,7 +1433,7 @@ Only when the agent can delegate to at least one subagent at this depth. The `ag
           "type": "string"
         },
         "resume_session_id": {
-          "description": "Optional. Handle or UUID of an existing subagent of yours to resume, e.g. \"explore_1a2b3c4d\". Only subagents you delegated are valid.",
+          "description": "The session ID, such as `explore_1a2b3c4d`, or full UUID of an existing subagent of yours to resume. Only subagents you delegated are valid.",
           "type": "string"
         }
       },
@@ -1493,7 +1468,7 @@ Only when the agent can delegate to at least one subagent at this depth.
 |---|---|---|---|
 | `limit` | `integer` | no | The most lines to return. Defaults to 2000. Default: `2000`. |
 | `offset` | `integer` | no | The 1-based line of the result to start at. Defaults to 1. Default: `1`. |
-| `session_id` | `string` | yes | Handle (agent_type + 8 hex, e.g. "coder_9f8e7d6b") or full UUID of one of your subagents. |
+| `session_id` | `string` | yes | The session ID, such as `explore_1a2b3c4d`, or full UUID of one of your subagents. |
 
 ??? note "Parameters JSON Schema"
 
@@ -1504,19 +1479,19 @@ Only when the agent can delegate to at least one subagent at this depth.
         "limit": {
           "default": 2000,
           "description": "The most lines to return. Defaults to 2000.",
-          "maximum": 4294967295,
+          "format": "uint32",
           "minimum": 1,
           "type": "integer"
         },
         "offset": {
           "default": 1,
           "description": "The 1-based line of the result to start at. Defaults to 1.",
-          "maximum": 4294967295,
+          "format": "uint32",
           "minimum": 1,
           "type": "integer"
         },
         "session_id": {
-          "description": "Handle (agent_type + 8 hex, e.g. \"coder_9f8e7d6b\") or full UUID of one of your subagents.",
+          "description": "The session ID, such as `explore_1a2b3c4d`, or full UUID of one of your subagents.",
           "type": "string"
         }
       },
@@ -1573,27 +1548,34 @@ Send a message to another agent in your session tree: `to` is its session ID, su
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `body` | `string` | yes |  |
-| `mode` | `"steer" \| "queue"` | no | Default: `"steer"`. |
+| `body` | `string` | yes | The message, not empty. |
+| `mode` | `"steer" \| "queue"` | no | `steer` (the default) joins the recipient's current turn; `queue` waits for it to end. Default: `"steer"`. |
 | `to` | `string` | yes | Handle or full UUID of the recipient agent. |
 
 ??? note "Parameters JSON Schema"
 
     ```json
     {
-      "additionalProperties": false,
-      "properties": {
-        "body": {
-          "minLength": 1,
-          "type": "string"
-        },
-        "mode": {
-          "default": "steer",
+      "$defs": {
+        "ProducerDeliveryMode": {
           "enum": [
             "steer",
             "queue"
           ],
           "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "properties": {
+        "body": {
+          "description": "The message, not empty.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "mode": {
+          "$ref": "#/$defs/ProducerDeliveryMode",
+          "default": "steer",
+          "description": "`steer` (the default) joins the recipient's current turn; `queue` waits for it to end."
         },
         "to": {
           "description": "Handle or full UUID of the recipient agent.",
@@ -1633,7 +1615,7 @@ Failures are explicit tool errors with stable codes:
 | Code | Meaning |
 |---|---|
 | `send_message:disabled` | `[messaging] enabled = false` |
-| `send_message:invalid_arguments` | Missing, unknown, or wrongly typed arguments, including the removed `recipient_session_id` spelling |
+| `send_message:invalid_arguments` | Missing, unknown, or wrongly typed arguments, including the removed `recipient_session_id` spelling; the code is followed by `: ` and the member at fault, such as ``send_message:invalid_arguments: missing `to` `` |
 | `send_message:invalid_body` | Empty body or body over `max_body_bytes` |
 | `send_message:unknown_session` | Well-formed recipient UUID that names no session |
 | `send_message:not_tree_peer` | Well-formed recipient UUID in a different delegation tree |
@@ -1707,7 +1689,7 @@ Only when the session has the `global` runtime attached and no `"*": deny` for `
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `layer` | `"user" \| "agent" \| "machine" \| "project"` | no | Only search this layer. |
-| `limit` | `integer` | no | The most results to return: 1 to 25. Defaults to 10. |
+| `limit` | `integer` | no | The most results to return: 1 to 25. Defaults to 10. Default: `10`. |
 | `query` | `string` | yes | Search terms, separated by whitespace: 1 to 200 characters. |
 
 ??? note "Parameters JSON Schema"
@@ -1716,7 +1698,6 @@ Only when the session has the `global` runtime attached and no `"*": deny` for `
     {
       "$defs": {
         "LayerArg": {
-          "description": "The layer a search narrows to.",
           "enum": [
             "user",
             "agent",
@@ -1726,29 +1707,19 @@ Only when the session has the `global` runtime attached and no `"*": deny` for `
           "type": "string"
         }
       },
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
       "properties": {
         "layer": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/LayerArg"
-            },
-            {
-              "type": "null"
-            }
-          ],
+          "$ref": "#/$defs/LayerArg",
           "description": "Only search this layer."
         },
         "limit": {
+          "default": 10,
           "description": "The most results to return: 1 to 25. Defaults to 10.",
           "format": "uint32",
           "maximum": 25,
           "minimum": 1,
-          "type": [
-            "integer",
-            "null"
-          ]
+          "type": "integer"
         },
         "query": {
           "description": "Search terms, separated by whitespace: 1 to 200 characters.",
@@ -1760,7 +1731,6 @@ Only when the session has the `global` runtime attached and no `"*": deny` for `
       "required": [
         "query"
       ],
-      "title": "SearchArgs",
       "type": "object"
     }
     ```
@@ -1785,34 +1755,29 @@ Only when the session has the `global` runtime attached and no `"*": deny` for `
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `limit` | `integer` | no | The most body lines to return. Defaults to 2000. |
-| `offset` | `integer` | no | The 1-based body line to start at. Defaults to 1. |
+| `limit` | `integer` | no | The most body lines to return. Defaults to 2000. Default: `2000`. |
+| `offset` | `integer` | no | The 1-based body line to start at. Defaults to 1. Default: `1`. |
 | `url` | `string` | yes | The memory URL. |
 
 ??? note "Parameters JSON Schema"
 
     ```json
     {
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
       "properties": {
         "limit": {
+          "default": 2000,
           "description": "The most body lines to return. Defaults to 2000.",
           "format": "uint",
-          "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
+          "minimum": 1,
+          "type": "integer"
         },
         "offset": {
+          "default": 1,
           "description": "The 1-based body line to start at. Defaults to 1.",
           "format": "uint",
-          "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
+          "minimum": 1,
+          "type": "integer"
         },
         "url": {
           "description": "The memory URL.",
@@ -1822,7 +1787,6 @@ Only when the session has the `global` runtime attached and no `"*": deny` for `
       "required": [
         "url"
       ],
-      "title": "ReadArgs",
       "type": "object"
     }
     ```
@@ -1858,7 +1822,6 @@ Only when `memory_read` is sent too and some memory URL is both readable and wri
 
     ```json
     {
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
       "properties": {
         "body": {
@@ -1866,11 +1829,8 @@ Only when `memory_read` is sent too and some memory URL is both readable and wri
           "type": "string"
         },
         "description": {
-          "description": "One line, 1 to 200 characters, that states the memory's fact; shown\nin indexes and search results. Required except for agent:// and a\nproject's overview, whose description the daemon sets.",
-          "type": [
-            "string",
-            "null"
-          ]
+          "description": "One line, 1 to 200 characters, that states the memory's fact; shown in indexes and search results. Required except for agent:// and a project's overview, whose description the daemon sets.",
+          "type": "string"
         },
         "keywords": {
           "anyOf": [
@@ -1884,18 +1844,15 @@ Only when `memory_read` is sent too and some memory URL is both readable and wri
               "type": "string"
             }
           ],
-          "description": "Up to 32 keywords of 1 to 64 characters a later search would use,\nas a list or one comma-separated string; none when left out."
+          "description": "Up to 32 keywords of 1 to 64 characters a later search would use, as a list or one comma-separated string; none when left out."
         },
         "new": {
-          "description": "True to create a memory that looks like ones that exist, after\nchecking it is new; needs `reason`.",
+          "description": "True to create a memory that looks like ones that exist, after checking it is new; needs `reason`.",
           "type": "boolean"
         },
         "reason": {
           "description": "With `new`: one line saying why it is not one of the near memories.",
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "url": {
           "description": "The memory URL.",
@@ -1906,7 +1863,6 @@ Only when `memory_read` is sent too and some memory URL is both readable and wri
         "url",
         "body"
       ],
-      "title": "WriteArgs",
       "type": "object"
     }
     ```
@@ -1939,7 +1895,6 @@ Only when `memory_read` is sent too and some memory URL is both readable and wri
 
     ```json
     {
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
       "properties": {
         "new_string": {
@@ -1960,7 +1915,6 @@ Only when `memory_read` is sent too and some memory URL is both readable and wri
         "old_string",
         "new_string"
       ],
-      "title": "EditArgs",
       "type": "object"
     }
     ```
@@ -1991,7 +1945,6 @@ Only when `memory_read` is sent too and some memory URL is both readable and wri
 
     ```json
     {
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
       "properties": {
         "url": {
@@ -2002,7 +1955,6 @@ Only when `memory_read` is sent too and some memory URL is both readable and wri
       "required": [
         "url"
       ],
-      "title": "DeleteArgs",
       "type": "object"
     }
     ```
@@ -2053,10 +2005,7 @@ Only when the session has the `global` runtime attached and no `"*": deny` for `
 
     ```json
     {
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
-      "description": "`list_runtimes` takes no arguments.",
-      "title": "ListRuntimesArgs",
       "type": "object"
     }
     ```
@@ -2115,15 +2064,20 @@ Only when the session has the `global` runtime attached and the run is offered `
 
     ```json
     {
-      "additionalProperties": false,
-      "properties": {
-        "for": {
-          "description": "List only the agents usable for this",
+      "$defs": {
+        "Use": {
           "enum": [
             "delegate",
             "cron"
           ],
           "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "properties": {
+        "for": {
+          "$ref": "#/$defs/Use",
+          "description": "List only the agents usable for this"
         }
       },
       "type": "object"
@@ -2175,33 +2129,27 @@ Only when the session has the `global` runtime attached and no `"*": deny` for `
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `capability` | `string` | yes | `<runtime_id>/<capability_id>`, from list_runtimes, e.g. `labpc/coding` |
+| `capability` | `string` | yes | `<runtime_id>/<capability_id>`, from `list_runtimes`, e.g. `labpc/coding` |
 | `workspace` | `string` | no | Directory on that runtime's machine; required when the capability takes a workspace |
 
 ??? note "Parameters JSON Schema"
 
     ```json
     {
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
-      "description": "`attach_machine`'s arguments.",
       "properties": {
         "capability": {
-          "description": "`<runtime_id>/<capability_id>`, from list_runtimes, e.g. `labpc/coding`",
+          "description": "`<runtime_id>/<capability_id>`, from `list_runtimes`, e.g. `labpc/coding`",
           "type": "string"
         },
         "workspace": {
-          "description": "Directory on that runtime's machine; required when the capability\ntakes a workspace",
-          "type": [
-            "string",
-            "null"
-          ]
+          "description": "Directory on that runtime's machine; required when the capability takes a workspace",
+          "type": "string"
         }
       },
       "required": [
         "capability"
       ],
-      "title": "AttachArgs",
       "type": "object"
     }
     ```
@@ -2241,9 +2189,7 @@ Only when the session has the `global` runtime attached and no `"*": deny` for `
 
     ```json
     {
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
-      "description": "`detach_machine`'s arguments.",
       "properties": {
         "capability": {
           "description": "`<runtime_id>/<capability_id>`, as attach_machine took it",
@@ -2253,7 +2199,6 @@ Only when the session has the `global` runtime attached and no `"*": deny` for `
       "required": [
         "capability"
       ],
-      "title": "DetachArgs",
       "type": "object"
     }
     ```
@@ -2283,7 +2228,7 @@ Only when the session has the `global` runtime and a machine whose runtime takes
 |---|---|---|---|
 | `from` | `object \| object` | yes | Where the bytes come from: `{"machine", "path"}` for a file or folder on a machine, or `{"artifact"}` (a file label's digest, a longer prefix, or the full digest) with an optional `stream` |
 | `overwrite` | `boolean` | no | Replace an existing file, or merge into an existing folder. Defaults to false: an existing destination is an error |
-| `to` | `object` | yes | A path on one of the session's machines. |
+| `to` | `object` | yes | Where they go: `{"machine", "path"}`, the path the copy will have |
 
 ??? note "Parameters JSON Schema"
 
@@ -2292,7 +2237,6 @@ Only when the session has the `global` runtime and a machine whose runtime takes
       "$defs": {
         "ArtifactSource": {
           "additionalProperties": false,
-          "description": "An artifact of this session.",
           "properties": {
             "artifact": {
               "description": "Its digest, or the first 8 or more hex digits of it",
@@ -2300,10 +2244,7 @@ Only when the session has the `global` runtime and a machine whose runtime takes
             },
             "stream": {
               "description": "One stream of retained tool output, such as `stdout`",
-              "type": [
-                "string",
-                "null"
-              ]
+              "type": "string"
             }
           },
           "required": [
@@ -2313,7 +2254,6 @@ Only when the session has the `global` runtime and a machine whose runtime takes
         },
         "MachinePath": {
           "additionalProperties": false,
-          "description": "A path on one of the session's machines.",
           "properties": {
             "machine": {
               "description": "A machine of this session",
@@ -2341,16 +2281,14 @@ Only when the session has the `global` runtime and a machine whose runtime takes
           ]
         }
       },
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
-      "description": "`transfer`'s arguments.",
       "properties": {
         "from": {
           "$ref": "#/$defs/Source",
-          "description": "Where the bytes come from: `{\"machine\", \"path\"}` for a file or folder\non a machine, or `{\"artifact\"}` (a file label's digest, a longer\nprefix, or the full digest) with an optional `stream`"
+          "description": "Where the bytes come from: `{\"machine\", \"path\"}` for a file or folder on a machine, or `{\"artifact\"}` (a file label's digest, a longer prefix, or the full digest) with an optional `stream`"
         },
         "overwrite": {
-          "description": "Replace an existing file, or merge into an existing folder. Defaults\nto false: an existing destination is an error",
+          "description": "Replace an existing file, or merge into an existing folder. Defaults to false: an existing destination is an error",
           "type": "boolean"
         },
         "to": {
@@ -2362,7 +2300,6 @@ Only when the session has the `global` runtime and a machine whose runtime takes
         "from",
         "to"
       ],
-      "title": "TransferArgs",
       "type": "object"
     }
     ```
@@ -2399,7 +2336,7 @@ Agents never set a job's permission mode or pin its model.
 <!-- generated: tool cron_create -->
 
 ```text
-cron_create(delivery?: "queue" | "steer", max_runs?: integer, name?: string, prompt: string, schedule: object | object, target?: string | object)
+cron_create(delivery?: "steer" | "queue", max_runs?: integer, name?: string, prompt: string, schedule: object | object, target?: string | object)
 ```
 
 Description sent to the model:
@@ -2412,44 +2349,113 @@ Only when the session has the `global` runtime attached and no `"*": deny` for `
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `delivery` | `"queue" \| "steer"` | no |  |
+| `delivery` | `"steer" \| "queue"` | no | In-session jobs: "queue" (the default) waits for the current turn, "steer" joins it |
 | `max_runs` | `integer` | no | Cron schedules only: how many fires before the job finishes, default 1; 0 or less runs until the job is deleted or disabled |
 | `name` | `string` | no | A short name, at most 80 characters |
 | `prompt` | `string` | yes | What to do at each fire |
 | `schedule` | `object \| object` | yes | {"cron": "<minute hour day-of-month month day-of-week>"} in host local time, or {"in": "<n>s\|m\|h\|d"} to fire once after a delay (1s to 365d) |
-| `target` | `string \| object` | no | "self" (the default), a subagent's session ID, or {"new": {...}} |
+| `target` | `string \| object` | no | "self" (the default), a subagent's session ID, or {"new": {...}} Default: `"self"`. |
 
 ??? note "Parameters JSON Schema"
 
     ```json
     {
-      "additionalProperties": false,
-      "properties": {
-        "delivery": {
+      "$defs": {
+        "CapabilityArg": {
+          "additionalProperties": false,
+          "properties": {
+            "capability": {
+              "description": "`<runtime_id>/<capability_id>`, from `list_runtimes`, e.g. `labpc/coding`",
+              "type": "string"
+            },
+            "workspace": {
+              "description": "Directory on that runtime's machine; required when the capability takes a workspace",
+              "type": "string"
+            }
+          },
+          "required": [
+            "capability"
+          ],
+          "type": "object"
+        },
+        "EffectArg": {
           "enum": [
-            "queue",
-            "steer"
+            "allow",
+            "ask",
+            "deny"
           ],
           "type": "string"
         },
-        "max_runs": {
-          "description": "Cron schedules only: how many fires before the job finishes, default 1; 0 or less runs until the job is deleted or disabled",
-          "maximum": 4294967295,
-          "type": "integer"
+        "NewArg": {
+          "additionalProperties": false,
+          "properties": {
+            "agent": {
+              "description": "The agent each new session runs; this session's agent when omitted",
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^[a-z0-9](?:[a-z0-9]|-(?=[a-z0-9]))*$",
+              "type": "string"
+            },
+            "capabilities": {
+              "description": "The runtime capabilities each new session works through, as `delegate_subagent` takes them; this session's when omitted. Each session also has `global` exactly when this one does.",
+              "items": {
+                "$ref": "#/$defs/CapabilityArg"
+              },
+              "type": "array"
+            },
+            "permission_rules": {
+              "description": "Rules added to each new session, e.g. {\"action\": \"bash\", \"resource\": \"git *\", \"effect\": \"allow\"}",
+              "items": {
+                "$ref": "#/$defs/RuleArg"
+              },
+              "type": "array"
+            },
+            "project": {
+              "description": "A project's name; this session's project when omitted",
+              "type": "string"
+            }
+          },
+          "type": "object"
         },
-        "name": {
-          "description": "A short name, at most 80 characters",
+        "ProducerDeliveryMode": {
+          "enum": [
+            "steer",
+            "queue"
+          ],
           "type": "string"
         },
-        "prompt": {
-          "description": "What to do at each fire",
-          "type": "string"
+        "RuleArg": {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "description": "The permission action, such as `bash`, `read`, or `write`",
+              "type": "string"
+            },
+            "effect": {
+              "$ref": "#/$defs/EffectArg",
+              "description": "What a matching call does"
+            },
+            "resource": {
+              "description": "What the rule matches, such as a command or a path: `*` matches any characters and `?` one",
+              "type": "string"
+            },
+            "runtime": {
+              "description": "Only this runtime's tools; every runtime's when omitted",
+              "type": "string"
+            }
+          },
+          "required": [
+            "action",
+            "resource",
+            "effect"
+          ],
+          "type": "object"
         },
-        "schedule": {
-          "description": "{\"cron\": \"<minute hour day-of-month month day-of-week>\"} in host local time, or {\"in\": \"<n>s|m|h|d\"} to fire once after a delay (1s to 365d)",
+        "ScheduleArg": {
           "oneOf": [
             {
               "additionalProperties": false,
+              "description": "A five-field cron expression, `<minute hour day-of-month month day-of-week>`, in host local time",
               "properties": {
                 "cron": {
                   "type": "string"
@@ -2462,6 +2468,7 @@ Only when the session has the `global` runtime attached and no `"*": deny` for `
             },
             {
               "additionalProperties": false,
+              "description": "`<n>s|m|h|d`: fire once after this delay, 1s to 365d",
               "properties": {
                 "in": {
                   "type": "string"
@@ -2474,80 +2481,17 @@ Only when the session has the `global` runtime attached and no `"*": deny` for `
             }
           ]
         },
-        "target": {
-          "description": "\"self\" (the default), a subagent's session ID, or {\"new\": {...}}",
-          "oneOf": [
+        "TargetArg": {
+          "anyOf": [
             {
+              "description": "`\"self\"` or a subagent's session ID, such as `explore_1a2b3c4d`",
               "type": "string"
             },
             {
-              "additionalProperties": false,
+              "description": "A new root session per fire",
               "properties": {
                 "new": {
-                  "additionalProperties": false,
-                  "properties": {
-                    "agent": {
-                      "description": "The agent each new session runs; this session's agent when omitted",
-                      "type": "string"
-                    },
-                    "capabilities": {
-                      "description": "The runtime capabilities each new session works through, as `delegate_subagent` takes them; this session's when omitted. Each session also has `global` exactly when this one does.",
-                      "items": {
-                        "additionalProperties": false,
-                        "properties": {
-                          "capability": {
-                            "description": "`<runtime_id>/<capability_id>`, from `list_runtimes`, e.g. `labpc/coding`",
-                            "type": "string"
-                          },
-                          "workspace": {
-                            "description": "Directory on that runtime's machine; required when the capability takes a workspace",
-                            "type": "string"
-                          }
-                        },
-                        "required": [
-                          "capability"
-                        ],
-                        "type": "object"
-                      },
-                      "type": "array"
-                    },
-                    "permission_rules": {
-                      "description": "Rules added to each new session, e.g. {\"action\": \"bash\", \"resource\": \"git *\", \"effect\": \"allow\"}",
-                      "items": {
-                        "properties": {
-                          "action": {
-                            "type": "string"
-                          },
-                          "effect": {
-                            "enum": [
-                              "allow",
-                              "ask",
-                              "deny"
-                            ],
-                            "type": "string"
-                          },
-                          "resource": {
-                            "type": "string"
-                          },
-                          "runtime": {
-                            "type": "string"
-                          }
-                        },
-                        "required": [
-                          "action",
-                          "resource",
-                          "effect"
-                        ],
-                        "type": "object"
-                      },
-                      "type": "array"
-                    },
-                    "project": {
-                      "description": "A project's name; this session's project when omitted",
-                      "type": "string"
-                    }
-                  },
-                  "type": "object"
+                  "$ref": "#/$defs/NewArg"
                 }
               },
               "required": [
@@ -2556,6 +2500,36 @@ Only when the session has the `global` runtime attached and no `"*": deny` for `
               "type": "object"
             }
           ]
+        }
+      },
+      "additionalProperties": false,
+      "properties": {
+        "delivery": {
+          "$ref": "#/$defs/ProducerDeliveryMode",
+          "description": "In-session jobs: \"queue\" (the default) waits for the current turn, \"steer\" joins it"
+        },
+        "max_runs": {
+          "description": "Cron schedules only: how many fires before the job finishes, default 1; 0 or less runs until the job is deleted or disabled",
+          "format": "int64",
+          "maximum": 4294967295,
+          "type": "integer"
+        },
+        "name": {
+          "description": "A short name, at most 80 characters",
+          "type": "string"
+        },
+        "prompt": {
+          "description": "What to do at each fire",
+          "type": "string"
+        },
+        "schedule": {
+          "$ref": "#/$defs/ScheduleArg",
+          "description": "{\"cron\": \"<minute hour day-of-month month day-of-week>\"} in host local time, or {\"in\": \"<n>s|m|h|d\"} to fire once after a delay (1s to 365d)"
+        },
+        "target": {
+          "$ref": "#/$defs/TargetArg",
+          "default": "self",
+          "description": "\"self\" (the default), a subagent's session ID, or {\"new\": {...}}"
         }
       },
       "required": [
@@ -2586,21 +2560,27 @@ Only next to the other cron tools. It needs no rule of its own: it lists the job
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `target` | `"session" \| "subagent" \| "new"` | no |  |
+| `target` | `"session" \| "subagent" \| "new"` | no | Only this kind: "session" for jobs that fire into an existing session (such as those created with target "self"), "subagent", or "new" |
 
 ??? note "Parameters JSON Schema"
 
     ```json
     {
-      "additionalProperties": false,
-      "properties": {
-        "target": {
+      "$defs": {
+        "CronTargetKind": {
           "enum": [
             "session",
             "subagent",
             "new"
           ],
           "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "properties": {
+        "target": {
+          "$ref": "#/$defs/CronTargetKind",
+          "description": "Only this kind: \"session\" for jobs that fire into an existing session (such as those created with target \"self\"), \"subagent\", or \"new\""
         }
       },
       "type": "object"
@@ -2614,7 +2594,7 @@ Only next to the other cron tools. It needs no rule of its own: it lists the job
 <!-- generated: tool cron_update -->
 
 ```text
-cron_update(delivery?: "queue" | "steer", enabled?: boolean, id: string, max_runs?: integer, name?: string, prompt?: string, schedule?: object | object, target?: string | object)
+cron_update(delivery?: "steer" | "queue", enabled?: boolean, id: string, max_runs?: integer, name?: string, prompt?: string, schedule?: object | object, target?: string | object)
 ```
 
 Description sent to the model:
@@ -2627,12 +2607,12 @@ Only when the session has the `global` runtime attached and no `"*": deny` for `
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `delivery` | `"queue" \| "steer"` | no |  |
-| `enabled` | `boolean` | no |  |
+| `delivery` | `"steer" \| "queue"` | no | In-session jobs: "queue" waits for the current turn, "steer" joins it |
+| `enabled` | `boolean` | no | false pauses the job; true re-enables it and resets its failure count |
 | `id` | `string` | yes | The job's ID, e.g. "k3v9q2xa" |
-| `max_runs` | `integer` | no | Cron schedules only: how many fires before the job finishes, default 1; 0 or less runs until the job is deleted or disabled |
-| `name` | `string` | no |  |
-| `prompt` | `string` | no |  |
+| `max_runs` | `integer` | no | Cron schedules only: how many fires before the job finishes; 0 or less runs until the job is deleted or disabled |
+| `name` | `string` | no | A short name, at most 80 characters |
+| `prompt` | `string` | no | What to do at each fire |
 | `schedule` | `object \| object` | no | {"cron": "<minute hour day-of-month month day-of-week>"} in host local time, or {"in": "<n>s\|m\|h\|d"} to fire once after a delay (1s to 365d) |
 | `target` | `string \| object` | no | "self", a subagent's session ID, or {"new": {...}}; unchanged when omitted |
 
@@ -2640,38 +2620,102 @@ Only when the session has the `global` runtime attached and no `"*": deny` for `
 
     ```json
     {
-      "additionalProperties": false,
-      "properties": {
-        "delivery": {
+      "$defs": {
+        "CapabilityArg": {
+          "additionalProperties": false,
+          "properties": {
+            "capability": {
+              "description": "`<runtime_id>/<capability_id>`, from `list_runtimes`, e.g. `labpc/coding`",
+              "type": "string"
+            },
+            "workspace": {
+              "description": "Directory on that runtime's machine; required when the capability takes a workspace",
+              "type": "string"
+            }
+          },
+          "required": [
+            "capability"
+          ],
+          "type": "object"
+        },
+        "EffectArg": {
           "enum": [
-            "queue",
-            "steer"
+            "allow",
+            "ask",
+            "deny"
           ],
           "type": "string"
         },
-        "enabled": {
-          "type": "boolean"
+        "NewArg": {
+          "additionalProperties": false,
+          "properties": {
+            "agent": {
+              "description": "The agent each new session runs; this session's agent when omitted",
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^[a-z0-9](?:[a-z0-9]|-(?=[a-z0-9]))*$",
+              "type": "string"
+            },
+            "capabilities": {
+              "description": "The runtime capabilities each new session works through, as `delegate_subagent` takes them; this session's when omitted. Each session also has `global` exactly when this one does.",
+              "items": {
+                "$ref": "#/$defs/CapabilityArg"
+              },
+              "type": "array"
+            },
+            "permission_rules": {
+              "description": "Rules added to each new session, e.g. {\"action\": \"bash\", \"resource\": \"git *\", \"effect\": \"allow\"}",
+              "items": {
+                "$ref": "#/$defs/RuleArg"
+              },
+              "type": "array"
+            },
+            "project": {
+              "description": "A project's name; this session's project when omitted",
+              "type": "string"
+            }
+          },
+          "type": "object"
         },
-        "id": {
-          "description": "The job's ID, e.g. \"k3v9q2xa\"",
+        "ProducerDeliveryMode": {
+          "enum": [
+            "steer",
+            "queue"
+          ],
           "type": "string"
         },
-        "max_runs": {
-          "description": "Cron schedules only: how many fires before the job finishes, default 1; 0 or less runs until the job is deleted or disabled",
-          "maximum": 4294967295,
-          "type": "integer"
+        "RuleArg": {
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "description": "The permission action, such as `bash`, `read`, or `write`",
+              "type": "string"
+            },
+            "effect": {
+              "$ref": "#/$defs/EffectArg",
+              "description": "What a matching call does"
+            },
+            "resource": {
+              "description": "What the rule matches, such as a command or a path: `*` matches any characters and `?` one",
+              "type": "string"
+            },
+            "runtime": {
+              "description": "Only this runtime's tools; every runtime's when omitted",
+              "type": "string"
+            }
+          },
+          "required": [
+            "action",
+            "resource",
+            "effect"
+          ],
+          "type": "object"
         },
-        "name": {
-          "type": "string"
-        },
-        "prompt": {
-          "type": "string"
-        },
-        "schedule": {
-          "description": "{\"cron\": \"<minute hour day-of-month month day-of-week>\"} in host local time, or {\"in\": \"<n>s|m|h|d\"} to fire once after a delay (1s to 365d)",
+        "ScheduleArg": {
           "oneOf": [
             {
               "additionalProperties": false,
+              "description": "A five-field cron expression, `<minute hour day-of-month month day-of-week>`, in host local time",
               "properties": {
                 "cron": {
                   "type": "string"
@@ -2684,6 +2728,7 @@ Only when the session has the `global` runtime attached and no `"*": deny` for `
             },
             {
               "additionalProperties": false,
+              "description": "`<n>s|m|h|d`: fire once after this delay, 1s to 365d",
               "properties": {
                 "in": {
                   "type": "string"
@@ -2696,80 +2741,17 @@ Only when the session has the `global` runtime attached and no `"*": deny` for `
             }
           ]
         },
-        "target": {
-          "description": "\"self\", a subagent's session ID, or {\"new\": {...}}; unchanged when omitted",
-          "oneOf": [
+        "TargetArg": {
+          "anyOf": [
             {
+              "description": "`\"self\"` or a subagent's session ID, such as `explore_1a2b3c4d`",
               "type": "string"
             },
             {
-              "additionalProperties": false,
+              "description": "A new root session per fire",
               "properties": {
                 "new": {
-                  "additionalProperties": false,
-                  "properties": {
-                    "agent": {
-                      "description": "The agent each new session runs; this session's agent when omitted",
-                      "type": "string"
-                    },
-                    "capabilities": {
-                      "description": "The runtime capabilities each new session works through, as `delegate_subagent` takes them; this session's when omitted. Each session also has `global` exactly when this one does.",
-                      "items": {
-                        "additionalProperties": false,
-                        "properties": {
-                          "capability": {
-                            "description": "`<runtime_id>/<capability_id>`, from `list_runtimes`, e.g. `labpc/coding`",
-                            "type": "string"
-                          },
-                          "workspace": {
-                            "description": "Directory on that runtime's machine; required when the capability takes a workspace",
-                            "type": "string"
-                          }
-                        },
-                        "required": [
-                          "capability"
-                        ],
-                        "type": "object"
-                      },
-                      "type": "array"
-                    },
-                    "permission_rules": {
-                      "description": "Rules added to each new session, e.g. {\"action\": \"bash\", \"resource\": \"git *\", \"effect\": \"allow\"}",
-                      "items": {
-                        "properties": {
-                          "action": {
-                            "type": "string"
-                          },
-                          "effect": {
-                            "enum": [
-                              "allow",
-                              "ask",
-                              "deny"
-                            ],
-                            "type": "string"
-                          },
-                          "resource": {
-                            "type": "string"
-                          },
-                          "runtime": {
-                            "type": "string"
-                          }
-                        },
-                        "required": [
-                          "action",
-                          "resource",
-                          "effect"
-                        ],
-                        "type": "object"
-                      },
-                      "type": "array"
-                    },
-                    "project": {
-                      "description": "A project's name; this session's project when omitted",
-                      "type": "string"
-                    }
-                  },
-                  "type": "object"
+                  "$ref": "#/$defs/NewArg"
                 }
               },
               "required": [
@@ -2778,6 +2760,46 @@ Only when the session has the `global` runtime attached and no `"*": deny` for `
               "type": "object"
             }
           ]
+        }
+      },
+      "additionalProperties": false,
+      "properties": {
+        "delivery": {
+          "$ref": "#/$defs/ProducerDeliveryMode",
+          "description": "In-session jobs: \"queue\" waits for the current turn, \"steer\" joins it"
+        },
+        "enabled": {
+          "description": "false pauses the job; true re-enables it and resets its failure count",
+          "type": "boolean"
+        },
+        "id": {
+          "description": "The job's ID, e.g. \"k3v9q2xa\"",
+          "maxLength": 8,
+          "minLength": 1,
+          "pattern": "^[a-z0-9]{8}$",
+          "type": "string"
+        },
+        "max_runs": {
+          "description": "Cron schedules only: how many fires before the job finishes; 0 or less runs until the job is deleted or disabled",
+          "format": "int64",
+          "maximum": 4294967295,
+          "type": "integer"
+        },
+        "name": {
+          "description": "A short name, at most 80 characters",
+          "type": "string"
+        },
+        "prompt": {
+          "description": "What to do at each fire",
+          "type": "string"
+        },
+        "schedule": {
+          "$ref": "#/$defs/ScheduleArg",
+          "description": "{\"cron\": \"<minute hour day-of-month month day-of-week>\"} in host local time, or {\"in\": \"<n>s|m|h|d\"} to fire once after a delay (1s to 365d)"
+        },
+        "target": {
+          "$ref": "#/$defs/TargetArg",
+          "description": "\"self\", a subagent's session ID, or {\"new\": {...}}; unchanged when omitted"
         }
       },
       "required": [
@@ -2817,6 +2839,9 @@ Only when the session has the `global` runtime attached and no `"*": deny` for `
       "properties": {
         "id": {
           "description": "The job's ID, e.g. \"k3v9q2xa\"",
+          "maxLength": 8,
+          "minLength": 1,
+          "pattern": "^[a-z0-9]{8}$",
           "type": "string"
         }
       },
@@ -2857,6 +2882,9 @@ Only when the session has the `global` runtime attached and no `"*": deny` for `
       "properties": {
         "id": {
           "description": "The job's ID, e.g. \"k3v9q2xa\"",
+          "maxLength": 8,
+          "minLength": 1,
+          "pattern": "^[a-z0-9]{8}$",
           "type": "string"
         }
       },
@@ -2904,7 +2932,7 @@ Only when the session has the `global` runtime attached and no `"*": deny` for `
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `asset` | `string` | no | The handle of an asset to replace. Omit it to save a new asset |
-| `machine` | `string` | no | A machine of this session, as the machines block names it. Defaults to the default machine the machines block marks |
+| `machine` | `string` | no | Machine to read the file from, by its name in the machines block. Default: the machine the machines block marks default. |
 | `path` | `string` | yes | The file to save: relative to the machine's working directory, absolute, or under `~` |
 | `scope` | `"session" \| "project"` | no | `session` (default): this conversation's, deleted with it. `project`: kept in the project's assets. Only for a new asset |
 | `title` | `string` | no | Shown with the asset. Defaults to the file name for a new asset, and to the current title when replacing |
@@ -2913,6 +2941,15 @@ Only when the session has the `global` runtime attached and no `"*": deny` for `
 
     ```json
     {
+      "$defs": {
+        "ScopeArg": {
+          "enum": [
+            "session",
+            "project"
+          ],
+          "type": "string"
+        }
+      },
       "additionalProperties": false,
       "properties": {
         "asset": {
@@ -2920,7 +2957,7 @@ Only when the session has the `global` runtime attached and no `"*": deny` for `
           "type": "string"
         },
         "machine": {
-          "description": "A machine of this session, as the machines block names it. Defaults to the default machine the machines block marks",
+          "description": "Machine to read the file from, by its name in the machines block. Default: the machine the machines block marks default.",
           "type": "string"
         },
         "path": {
@@ -2928,12 +2965,8 @@ Only when the session has the `global` runtime attached and no `"*": deny` for `
           "type": "string"
         },
         "scope": {
-          "description": "`session` (default): this conversation's, deleted with it. `project`: kept in the project's assets. Only for a new asset",
-          "enum": [
-            "session",
-            "project"
-          ],
-          "type": "string"
+          "$ref": "#/$defs/ScopeArg",
+          "description": "`session` (default): this conversation's, deleted with it. `project`: kept in the project's assets. Only for a new asset"
         },
         "title": {
           "description": "Shown with the asset. Defaults to the file name for a new asset, and to the current title when replacing",
@@ -2969,8 +3002,8 @@ Only when the session has the `global` runtime attached and no `"*": deny` for `
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `asset` | `string` | yes | The asset's handle |
-| `limit` | `integer` | no | Lines, for text |
-| `offset` | `integer` | no | 1-based first line, for text |
+| `limit` | `integer` | no | The most lines to return, for text. Defaults to 2000. Default: `2000`. |
+| `offset` | `integer` | no | The 1-based line to start at, for text. Defaults to 1. Default: `1`. |
 
 ??? note "Parameters JSON Schema"
 
@@ -2983,12 +3016,16 @@ Only when the session has the `global` runtime attached and no `"*": deny` for `
           "type": "string"
         },
         "limit": {
-          "description": "Lines, for text",
+          "default": 2000,
+          "description": "The most lines to return, for text. Defaults to 2000.",
+          "format": "uint",
           "minimum": 1,
           "type": "integer"
         },
         "offset": {
-          "description": "1-based first line, for text",
+          "default": 1,
+          "description": "The 1-based line to start at, for text. Defaults to 1.",
+          "format": "uint",
           "minimum": 1,
           "type": "integer"
         }
@@ -3026,15 +3063,20 @@ Only when the session has the `global` runtime attached and no `"*": deny` for `
 
     ```json
     {
-      "additionalProperties": false,
-      "properties": {
-        "scope": {
-          "description": "Only that scope; both when omitted",
+      "$defs": {
+        "ScopeArg": {
           "enum": [
             "session",
             "project"
           ],
           "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "properties": {
+        "scope": {
+          "$ref": "#/$defs/ScopeArg",
+          "description": "Only that scope; both when omitted"
         }
       },
       "type": "object"
@@ -3102,20 +3144,14 @@ Only when the session has the `global` runtime attached and no `"*": deny` for `
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `asset` | `string` | yes | The asset's handle |
-| `expires_in` | `"1d" \| "7d" \| "30d" \| "never"` | no | How long the link works: `7d` (default), `1d`, `30d`, or `never` |
+| `expires_in` | `"1d" \| "7d" \| "30d" \| "never"` | no | How long the link works: `7d` (default), `1d`, `30d`, or `never` Default: `"7d"`. |
 
 ??? note "Parameters JSON Schema"
 
     ```json
     {
-      "additionalProperties": false,
-      "properties": {
-        "asset": {
-          "description": "The asset's handle",
-          "type": "string"
-        },
-        "expires_in": {
-          "description": "How long the link works: `7d` (default), `1d`, `30d`, or `never`",
+      "$defs": {
+        "ShareLifetime": {
           "enum": [
             "1d",
             "7d",
@@ -3123,6 +3159,18 @@ Only when the session has the `global` runtime attached and no `"*": deny` for `
             "never"
           ],
           "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "properties": {
+        "asset": {
+          "description": "The asset's handle",
+          "type": "string"
+        },
+        "expires_in": {
+          "$ref": "#/$defs/ShareLifetime",
+          "default": "7d",
+          "description": "How long the link works: `7d` (default), `1d`, `30d`, or `never`"
         }
       },
       "required": [

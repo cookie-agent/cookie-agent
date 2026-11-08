@@ -1125,3 +1125,10 @@ async fn a_directory_page_counts_entries_from_one_and_says_where_to_continue() {
         )
     );
 }
+
+#[test]
+fn the_camel_case_path_before_the_rename_stays_accepted() {
+    let args: super::ReadArgs =
+        crate::parse_args("read", serde_json::json!({"filePath": "a.txt"})).expect("filePath");
+    assert_eq!(args.file_path, "a.txt");
+}

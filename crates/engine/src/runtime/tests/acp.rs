@@ -1254,7 +1254,7 @@ async fn an_acp_agents_runtime_tools_take_machine_from_the_first_machine() {
     // A call on the agent's own machine runs: nothing refuses it.
     let call = format!(
         "mcp call bash {}",
-        serde_json::json!({"command": "echo on-the-host", "description": "echo"})
+        serde_json::json!({"command": "echo on-the-host"})
     );
     let answer = final_text(&turn(engine, session, "host", &call).await);
     assert!(answer.contains("on-the-host"), "{answer}");
@@ -1303,7 +1303,7 @@ fn shell_path_end(path: &std::path::Path, components: usize) -> String {
 }
 
 fn bash_call(verb: &str, command: &str, machine: Option<&str>) -> String {
-    let mut arguments = serde_json::json!({"command": command, "description": "run"});
+    let mut arguments = serde_json::json!({"command": command});
     if let Some(machine) = machine {
         arguments["machine"] = serde_json::json!(machine);
     }
@@ -1458,14 +1458,14 @@ async fn a_bridged_call_runs_unless_a_deny_rule_matches() {
     let session = engine.create_session(selection()).unwrap().session_id;
     let call = format!(
         "mcp call bash {}",
-        serde_json::json!({"command": "echo asked-nobody", "description": "echo"})
+        serde_json::json!({"command": "echo asked-nobody"})
     );
     let answer = final_text(&turn(engine, session, "ask-rule", &call).await);
     assert!(answer.contains("asked-nobody"), "{answer}");
     assert!(answer.ends_with("error: False"), "{answer}");
     let call = format!(
         "mcp call bash {}",
-        serde_json::json!({"command": "rm -rf build", "description": "clean"})
+        serde_json::json!({"command": "rm -rf build"})
     );
     let answer = final_text(&turn(engine, session, "deny-rule", &call).await);
     assert!(answer.ends_with("error: True"), "{answer}");
@@ -1478,12 +1478,7 @@ async fn a_request_for_cookies_tool_is_decided_on_the_calls_own_row() {
     let acp = acp_fixture(&[], &[("fixture.md", document)]).await;
     let engine = acp.engine();
     let session = engine.create_session(selection()).unwrap().session_id;
-    let ask = |command: &str| {
-        format!(
-            "mcp ask bash {}",
-            serde_json::json!({"command": command, "description": "run"})
-        )
-    };
+    let ask = |command: &str| format!("mcp ask bash {}", serde_json::json!({"command": command}));
     // `allow` and `deny` answer without an approval.
     let answer = final_text(&turn(engine, session, "allowed", &ask("echo from-request")).await);
     assert!(answer.starts_with("permission: yes"), "{answer}");
@@ -1692,7 +1687,7 @@ async fn a_bridged_call_of_a_streaming_tool_returns_its_output() {
     let session = engine.create_session(selection()).unwrap().session_id;
     let call = format!(
         "mcp call bash {}",
-        serde_json::json!({"command": "echo bridged-out", "description": "echo"})
+        serde_json::json!({"command": "echo bridged-out"})
     );
     let answer = final_text(&turn(engine, session, "bash", &call).await);
     assert!(answer.contains("bridged-out"), "{answer}");

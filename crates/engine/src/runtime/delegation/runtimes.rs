@@ -32,13 +32,15 @@ pub(crate) fn has_global(attachments: &[RuntimeAttachment]) -> bool {
 }
 
 /// One runtime capability a tool call names, as `delegate_subagent`'s
-/// `capabilities`, `cron_create`'s `runtimes`, and `attach_machine` take
+/// `capabilities`, a cron job's `target.new.capabilities`, and `attach_machine` take
 /// it.
-#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct CapabilityArg {
-    /// `<runtime_id>/<capability_id>`.
+    /// `<runtime_id>/<capability_id>`, from `list_runtimes`, e.g. `labpc/coding`
     pub(crate) capability: String,
+    /// Directory on that runtime's machine; required when the capability
+    /// takes a workspace
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) workspace: Option<String>,
 }
@@ -47,19 +49,6 @@ impl CapabilityArg {
     /// The capability checked by [`parse_capability`].
     pub(crate) fn parse(&self) -> Result<DelegatedCapability, String> {
         parse_capability(&self.capability, self.workspace.clone())
-    }
-
-    /// The JSON schema of one item.
-    pub(crate) fn item_schema() -> serde_json::Value {
-        serde_json::json!({
-            "type":"object",
-            "additionalProperties":false,
-            "required":["capability"],
-            "properties":{
-                "capability":{"type":"string","description":"`<runtime_id>/<capability_id>`, from `list_runtimes`, e.g. `labpc/coding`"},
-                "workspace":{"type":"string","description":"Directory on that runtime's machine; required when the capability takes a workspace"}
-            }
-        })
     }
 }
 

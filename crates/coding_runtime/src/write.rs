@@ -35,7 +35,7 @@ pub struct WriteTool {
 struct WriteArgs {
     #[serde(
         rename = "path",
-        alias = "path",
+        alias = "filePath",
         deserialize_with = "crate::path_args::deserialize"
     )]
     /// Path to the file. Relative paths resolve against the session working directory.
@@ -357,6 +357,16 @@ mod tests {
     use cookie_agent_runtime_api::{ToolCall, ToolError, ToolPreparationContext, ToolProvider};
 
     use super::WriteTool;
+
+    #[test]
+    fn the_camel_case_path_before_the_rename_stays_accepted() {
+        let args: super::WriteArgs = crate::parse_args(
+            "write",
+            serde_json::json!({"filePath": "a.txt", "content": "x"}),
+        )
+        .expect("filePath");
+        assert_eq!(args.file_path, "a.txt");
+    }
 
     #[test]
     fn permission_resource_is_the_file_path() {

@@ -915,3 +915,12 @@ async fn zero_timeout_never_times_out() {
     let completion = Box::new(executor).execute(context).await.unwrap();
     assert_eq!(completion.result.metadata["status"], 3);
 }
+
+#[test]
+fn bash_refuses_arguments_it_does_not_take() {
+    crate::parse_args::<super::BashArgs>(
+        "bash",
+        serde_json::json!({"command": "ls", "cwd": "/tmp"}),
+    )
+    .expect_err("an unknown argument");
+}

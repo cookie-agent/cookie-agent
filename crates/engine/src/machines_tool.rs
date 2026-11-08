@@ -42,16 +42,9 @@ const ATTACH_DESCRIPTION: &str = "Attach a machine to this session: one runtime 
 const DETACH_DESCRIPTION: &str = "Detach a machine's runtime capability from this session, written `<runtime_id>/<capability_id>` as `attach_machine` took it. Its tools leave the session; refused while one of its background calls still runs.";
 
 /// `attach_machine`'s arguments.
-#[derive(Debug, Deserialize, JsonSchema, Serialize)]
-#[serde(deny_unknown_fields)]
-struct AttachArgs {
-    /// `<runtime_id>/<capability_id>`, from list_runtimes, e.g. `labpc/coding`
-    capability: String,
-    /// Directory on that runtime's machine; required when the capability
-    /// takes a workspace
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    workspace: Option<String>,
-}
+/// `attach_machine`'s arguments: one runtime capability, as
+/// `delegate_subagent`'s `capabilities` items name them.
+type AttachArgs = crate::runtime::delegation::runtimes::CapabilityArg;
 
 /// `detach_machine`'s arguments.
 #[derive(Debug, Deserialize, JsonSchema, Serialize)]

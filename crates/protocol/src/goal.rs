@@ -63,6 +63,7 @@ pub struct GoalGetResult {
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct GoalUpdateParams {
+    /// The full checklist, replacing the current one.
     pub items: Vec<GoalItem>,
 }
 

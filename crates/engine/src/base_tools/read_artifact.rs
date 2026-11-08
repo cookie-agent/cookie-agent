@@ -37,8 +37,10 @@ struct ReadArtifactArgs {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     stream: Option<String>,
     /// The 1-based line to start at. Defaults to 1.
+    #[schemars(range(min = 1), extend("default" = 1))]
     offset: Option<usize>,
     /// The most lines to return. Defaults to 2000.
+    #[schemars(range(min = 1), extend("default" = cookie_agent_runtime_api::text_tools::DEFAULT_LIMIT))]
     limit: Option<usize>,
 }
 

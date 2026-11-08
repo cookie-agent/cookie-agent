@@ -249,7 +249,7 @@ struct SearchArgs {
     layer: Option<LayerArg>,
     /// The most results to return: 1 to 25. Defaults to 10.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(range(min = 1, max = 25))]
+    #[schemars(range(min = 1, max = 25), extend("default" = DEFAULT_LIMIT))]
     limit: Option<u32>,
 }
 
@@ -260,9 +260,11 @@ struct ReadArgs {
     url: String,
     /// The 1-based body line to start at. Defaults to 1.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(range(min = 1), extend("default" = 1))]
     offset: Option<usize>,
     /// The most body lines to return. Defaults to 2000.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(range(min = 1), extend("default" = cookie_agent_runtime_api::text_tools::DEFAULT_LIMIT))]
     limit: Option<usize>,
 }
 

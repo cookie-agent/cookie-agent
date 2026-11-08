@@ -22,13 +22,132 @@ fn tool_error(error: impl std::fmt::Display) -> ToolError {
     ToolError::execution(error.to_string())
 }
 
-/// The JSON Schema of a tool's parameters type. Generated once per type:
-/// providers publish their tools at every model step.
+/// The JSON Schema of a tool's parameters type, as a model reads it: without
+/// the meta-schema, the type's title, and the doc comments of the type and
+/// of the types it refers to (written for whoever reads the code: the tool's
+/// description says what it takes, and each member's doc comment what that
+/// member is); without `x-` extension keywords; an optional member as its
+/// type alone, not that type or `null`; and descriptions with the line
+/// breaks of wrapped doc comments joined, paragraphs kept. Generated once
+/// per type: providers publish their tools at every model step.
 #[must_use]
 pub fn schema<T: JsonSchema + 'static>() -> serde_json::Value {
     memoized::<T>(false, || {
-        serde_json::to_value(schemars::schema_for!(T)).expect("tool schemas serialize")
+        let mut schema =
+            serde_json::to_value(schemars::schema_for!(T)).expect("tool schemas serialize");
+        if let Some(root) = schema.as_object_mut() {
+            for keyword in ["$schema", "title", "description"] {
+                root.remove(keyword);
+            }
+            if let Some(definitions) = root
+                .get_mut("$defs")
+                .and_then(serde_json::Value::as_object_mut)
+            {
+                for definition in definitions.values_mut() {
+                    if let Some(definition) = definition.as_object_mut() {
+                        definition.remove("description");
+                    }
+                }
+            }
+        }
+        tidy(&mut schema);
+        schema
     })
+}
+
+/// Tidies `schema` and every schema below it as [`schema`] describes.
+fn tidy(schema: &mut serde_json::Value) {
+    let Some(object) = schema.as_object_mut() else {
+        return;
+    };
+    object.retain(|keyword, _| !keyword.starts_with("x-"));
+    if let Some(serde_json::Value::String(description)) = object.get_mut("description") {
+        *description = join_wrapped_lines(description);
+    }
+    let required: Vec<String> = object
+        .get("required")
+        .and_then(serde_json::Value::as_array)
+        .map(|required| {
+            required
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default();
+    if let Some(properties) = object
+        .get_mut("properties")
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        for (name, property) in properties.iter_mut() {
+            if !required.contains(name) {
+                drop_null(property);
+            }
+        }
+    }
+    for (keyword, value) in object.iter_mut() {
+        match keyword.as_str() {
+            "properties" | "$defs" | "definitions" => {
+                if let Some(schemas) = value.as_object_mut() {
+                    schemas.values_mut().for_each(tidy);
+                }
+            }
+            "oneOf" | "anyOf" | "allOf" | "prefixItems" => {
+                if let Some(schemas) = value.as_array_mut() {
+                    schemas.iter_mut().for_each(tidy);
+                }
+            }
+            "items" | "additionalProperties" | "not" => tidy(value),
+            _ => {}
+        }
+    }
+}
+
+/// An optional member's schema without the `null` an `Option` adds: a
+/// `["T", "null"]` type becomes `"T"`, an `anyOf` of one schema and
+/// `{"type": "null"}` becomes that schema, keeping the member's own keywords,
+/// and a `null` default goes. Leaving the member out means the same, and
+/// serde still takes `null`.
+fn drop_null(property: &mut serde_json::Value) {
+    let Some(object) = property.as_object_mut() else {
+        return;
+    };
+    if object.get("default") == Some(&serde_json::Value::Null) {
+        object.remove("default");
+    }
+    if let Some(serde_json::Value::Array(types)) = object.get("type") {
+        let other: Vec<&serde_json::Value> = types.iter().filter(|kind| *kind != "null").collect();
+        if other.len() == 1 && types.len() == 2 {
+            let kind = other[0].clone();
+            object.insert("type".into(), kind);
+        }
+        return;
+    }
+    let Some(serde_json::Value::Array(branches)) = object.get("anyOf") else {
+        return;
+    };
+    let is_null = |branch: &serde_json::Value| *branch == serde_json::json!({"type": "null"});
+    if branches.len() != 2 || branches.iter().filter(|branch| is_null(branch)).count() != 1 {
+        return;
+    }
+    let Some(serde_json::Value::Object(kept)) = branches.iter().find(|branch| !is_null(branch))
+    else {
+        return;
+    };
+    let kept = kept.clone();
+    object.remove("anyOf");
+    for (keyword, value) in kept {
+        object.entry(keyword).or_insert(value);
+    }
+}
+
+/// `text` with each single line break, as a wrapped doc comment leaves,
+/// joined into a space; a blank line between paragraphs stays.
+fn join_wrapped_lines(text: &str) -> String {
+    text.split("\n\n")
+        .map(|paragraph| paragraph.replace('\n', " "))
+        .collect::<Vec<_>>()
+        .join("\n\n")
 }
 
 /// The schema of arguments [`parse_args_strict`] reads: every object that
@@ -210,4 +329,63 @@ pub fn prepared_resource(
         boundary,
         source,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use schemars::JsonSchema;
+    use serde::Deserialize;
+
+    /// The arguments' own doc comment.
+    #[derive(Deserialize, JsonSchema)]
+    #[allow(dead_code)]
+    struct Args {
+        /// A wrapped
+        /// doc comment.
+        ///
+        /// Second paragraph.
+        name: String,
+        /// Optional text.
+        #[serde(default)]
+        note: Option<String>,
+        /// Optional with a serde default.
+        #[serde(default)]
+        #[schemars(extend("default" = null))]
+        defaulted: Option<String>,
+        /// Optional enum.
+        #[serde(default)]
+        kind: Option<Kind>,
+    }
+
+    /// A doc comment for whoever reads the code.
+    #[derive(Deserialize, JsonSchema)]
+    #[serde(rename_all = "snake_case")]
+    #[schemars(extend("x-open" = true))]
+    #[allow(dead_code)]
+    enum Kind {
+        One,
+        Two,
+    }
+
+    #[test]
+    fn schema_drops_meta_and_null_and_joins_wrapped_lines() {
+        let schema = super::schema::<Args>();
+        let root = schema.as_object().unwrap();
+        for keyword in ["$schema", "title", "description"] {
+            assert!(!root.contains_key(keyword), "{keyword} kept");
+        }
+        let properties = &schema["properties"];
+        assert_eq!(
+            properties["name"]["description"],
+            "A wrapped doc comment.\n\nSecond paragraph."
+        );
+        assert_eq!(properties["note"]["type"], "string");
+        assert!(properties["defaulted"].get("default").is_none());
+        assert_eq!(properties["kind"]["$ref"], "#/$defs/Kind");
+        assert_eq!(properties["kind"]["description"], "Optional enum.");
+        assert!(properties["kind"].get("anyOf").is_none());
+        let kind = &schema["$defs"]["Kind"];
+        assert!(kind.get("description").is_none());
+        assert!(kind.get("x-open").is_none());
+    }
 }

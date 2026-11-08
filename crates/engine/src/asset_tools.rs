@@ -31,8 +31,9 @@ use cookie_agent_runtime_api::{
     PreparedExecutor, PreparedTool, ResourceScope, SessionToolContext, ToolCall, ToolCompletion,
     ToolConcurrency, ToolError, ToolExecutionContext, ToolPreparationContext, ToolProvider,
     ToolResultTruncationPolicy, ToolSpec,
-    authoring::{parse_args, prepared_operation, prepared_resource, safe_title},
+    authoring::{parse_args, prepared_operation, prepared_resource, safe_title, schema},
 };
+use schemars::JsonSchema;
 use serde::Deserialize;
 
 use crate::{
@@ -65,45 +66,73 @@ const SHARE_DESCRIPTION: &str = "Make a public link to an asset, for the user to
 
 const DELETE_DESCRIPTION: &str = "Delete an asset by its handle. Every place it was shown then says it was deleted, and it cannot be brought back.";
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct WriteArgs {
+    /// The file to save: relative to the machine's working directory,
+    /// absolute, or under `~`
     path: String,
+    /// Machine to read the file from, by its name in the machines block.
+    /// Default: the machine the machines block marks default.
     #[serde(default)]
     machine: Option<String>,
+    /// The handle of an asset to replace. Omit it to save a new asset
     #[serde(default)]
     asset: Option<String>,
+    /// Shown with the asset. Defaults to the file name for a new asset, and
+    /// to the current title when replacing
     #[serde(default)]
+    #[schemars(length(max = ASSET_TITLE_MAX_CHARS))]
     title: Option<String>,
+    /// `session` (default): this conversation's, deleted with it.
+    /// `project`: kept in the project's assets. Only for a new asset
     #[serde(default)]
+    #[schemars(with = "Option<ScopeArg>")]
     scope: Option<AssetScope>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct ReadArgs {
+    /// The asset's handle
     asset: String,
+    /// The 1-based line to start at, for text. Defaults to 1.
     #[serde(default)]
+    #[schemars(range(min = 1), extend("default" = 1))]
     offset: Option<usize>,
+    /// The most lines to return, for text. Defaults to 2000.
     #[serde(default)]
+    #[schemars(range(min = 1), extend("default" = cookie_agent_runtime_api::text_tools::DEFAULT_LIMIT))]
     limit: Option<usize>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct ListArgs {
+    /// Only that scope; both when omitted
     #[serde(default)]
+    #[schemars(with = "Option<ScopeArg>")]
     scope: Option<AssetScope>,
 }
 
-#[derive(Debug, Deserialize)]
+/// [`AssetScope`] as the tools' schemas list it, without its documentation.
+#[derive(JsonSchema)]
+#[serde(rename_all = "snake_case")]
+#[allow(dead_code)]
+enum ScopeArg {
+    Session,
+    Project,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct DeleteArgs {
+    /// The asset's handle
     asset: String,
 }
 
 /// How long a link `share_link` makes lasts.
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq)]
 enum ShareLifetime {
     #[serde(rename = "1d")]
     Day,
@@ -130,11 +159,14 @@ impl ShareLifetime {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct ShareArgs {
+    /// The asset's handle
     asset: String,
+    /// How long the link works: `7d` (default), `1d`, `30d`, or `never`
     #[serde(default)]
+    #[schemars(extend("default" = "7d"))]
     expires_in: ShareLifetime,
 }
 
@@ -164,79 +196,12 @@ pub(crate) fn specs() -> Vec<ToolSpec> {
 }
 
 fn build_specs() -> Vec<ToolSpec> {
-    let handle = |description: &str| {
-        serde_json::json!({
-            "type": "string",
-            "description": description,
-        })
-    };
-    let scope = |description: &str| {
-        serde_json::json!({
-            "type": "string",
-            "enum": ["session", "project"],
-            "description": description,
-        })
-    };
     vec![
-        spec(
-            WRITE,
-            WRITE_DESCRIPTION,
-            serde_json::json!({
-                "type": "object", "additionalProperties": false,
-                "required": ["path"],
-                "properties": {
-                    "path": {"type": "string", "description": "The file to save: relative to the machine's working directory, absolute, or under `~`"},
-                    "machine": {"type": "string", "description": "A machine of this session, as the machines block names it. Defaults to the default machine the machines block marks"},
-                    "asset": handle("The handle of an asset to replace. Omit it to save a new asset"),
-                    "title": {"type": "string", "maxLength": ASSET_TITLE_MAX_CHARS, "description": "Shown with the asset. Defaults to the file name for a new asset, and to the current title when replacing"},
-                    "scope": scope("`session` (default): this conversation's, deleted with it. `project`: kept in the project's assets. Only for a new asset"),
-                }
-            }),
-        ),
-        spec(
-            READ,
-            READ_DESCRIPTION,
-            serde_json::json!({
-                "type": "object", "additionalProperties": false,
-                "required": ["asset"],
-                "properties": {
-                    "asset": handle("The asset's handle"),
-                    "offset": {"type": "integer", "minimum": 1, "description": "1-based first line, for text"},
-                    "limit": {"type": "integer", "minimum": 1, "description": "Lines, for text"},
-                }
-            }),
-        ),
-        spec(
-            LIST,
-            LIST_DESCRIPTION,
-            serde_json::json!({
-                "type": "object", "additionalProperties": false,
-                "properties": {
-                    "scope": scope("Only that scope; both when omitted"),
-                }
-            }),
-        ),
-        spec(
-            DELETE,
-            DELETE_DESCRIPTION,
-            serde_json::json!({
-                "type": "object", "additionalProperties": false,
-                "required": ["asset"],
-                "properties": {"asset": handle("The asset's handle")}
-            }),
-        ),
-        spec(
-            SHARE,
-            SHARE_DESCRIPTION,
-            serde_json::json!({
-                "type": "object", "additionalProperties": false,
-                "required": ["asset"],
-                "properties": {
-                    "asset": handle("The asset's handle"),
-                    "expires_in": {"type": "string", "enum": ["1d", "7d", "30d", "never"], "description": "How long the link works: `7d` (default), `1d`, `30d`, or `never`"},
-                }
-            }),
-        ),
+        spec(WRITE, WRITE_DESCRIPTION, schema::<WriteArgs>()),
+        spec(READ, READ_DESCRIPTION, schema::<ReadArgs>()),
+        spec(LIST, LIST_DESCRIPTION, schema::<ListArgs>()),
+        spec(DELETE, DELETE_DESCRIPTION, schema::<DeleteArgs>()),
+        spec(SHARE, SHARE_DESCRIPTION, schema::<ShareArgs>()),
     ]
 }
 

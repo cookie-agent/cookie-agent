@@ -1878,8 +1878,6 @@ impl Drop for DetachRegistration<'_> {
     }
 }
 
-/// Adds the host-owned `background` argument to a background-capable tool's
-/// parameters; composition has already refused a tool that declares one.
 /// The host-owned argument a routed tool takes
 /// (`docs/site/specs/machines-on-demand.md` section 5.1).
 pub(crate) const MACHINE_ARGUMENT: &str = "machine";
@@ -1948,6 +1946,10 @@ fn declared_defaults(
     }
 }
 
+/// Adds the host-owned `background` argument to a background-capable tool's
+/// parameters; composition has already refused a tool that declares one. Its
+/// description defers to the tool's own, which says so when a background
+/// call returns something other than a job ID (`delegate_subagent`).
 fn add_background_argument(parameters: &mut Value, default: bool) {
     let Some(object) = parameters.as_object_mut() else {
         return;
@@ -1961,7 +1963,7 @@ fn add_background_argument(parameters: &mut Value, default: bool) {
             serde_json::json!({
                 "type": "boolean",
                 "default": default,
-                "description": "Run in the background: the call returns at once with a job ID, and a <background_result> with its result arrives when it finishes.",
+                "description": "Run in the background: the call returns at once instead of waiting. Unless this tool's description says otherwise, it returns a job ID, and a <background_result> with its result arrives when it finishes.",
             }),
         );
     }

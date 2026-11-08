@@ -51,7 +51,9 @@ pub struct BashTool {
 }
 
 #[derive(Debug, Deserialize, JsonSchema, Serialize)]
+#[serde(deny_unknown_fields)]
 struct BashArgs {
+    /// The command to run with bash in the working directory.
     command: String,
     /// Milliseconds before the command is killed; 0 or less never times out.
     #[serde(default = "default_timeout")]

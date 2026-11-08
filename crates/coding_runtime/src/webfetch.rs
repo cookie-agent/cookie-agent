@@ -61,7 +61,9 @@ impl WebfetchTool {
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct WebfetchArgs {
+    /// The `http://` or `https://` URL to fetch.
     url: String,
+    /// Return HTML as it is instead of as plain text.
     #[serde(default)]
     raw: bool,
 }

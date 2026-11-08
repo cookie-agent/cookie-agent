@@ -30,7 +30,7 @@ pub struct EditTool {
 struct EditArgs {
     #[serde(
         rename = "path",
-        alias = "path",
+        alias = "filePath",
         deserialize_with = "crate::path_args::deserialize"
     )]
     /// Path to the file. Relative paths resolve against the session working directory.
@@ -38,14 +38,14 @@ struct EditArgs {
     /// The exact text to replace, whitespace and indentation included; not
     /// empty. It must occur exactly once in the file unless `replace_all` is
     /// set.
-    #[serde(alias = "old_string")]
+    #[serde(alias = "oldString")]
     old_string: String,
     /// The text that replaces it.
-    #[serde(alias = "new_string")]
+    #[serde(alias = "newString")]
     new_string: String,
     /// Replace every occurrence of `old_string` instead of exactly one.
     /// Defaults to false.
-    #[serde(alias = "replace_all", default)]
+    #[serde(alias = "replaceAll", default)]
     replace_all: bool,
 }
 
@@ -422,6 +422,24 @@ mod tests {
     #[cfg(any(unix, windows))]
     use cookie_agent_runtime_api::ToolExecutionContext;
     use cookie_agent_runtime_api::{ToolCall, ToolError, ToolPreparationContext, ToolProvider};
+
+    #[test]
+    fn the_camel_case_names_before_the_rename_stay_accepted() {
+        let args: super::EditArgs = crate::parse_args(
+            "edit",
+            serde_json::json!({"filePath": "a.txt", "oldString": "x", "newString": "y", "replaceAll": true}),
+        )
+        .expect("the camelCase names");
+        assert_eq!(
+            (
+                args.file_path.as_str(),
+                args.old_string.as_str(),
+                args.new_string.as_str()
+            ),
+            ("a.txt", "x", "y")
+        );
+        assert!(args.replace_all);
+    }
 
     use super::EditTool;
 

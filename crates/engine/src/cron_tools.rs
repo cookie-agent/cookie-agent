@@ -29,8 +29,11 @@ use cookie_agent_runtime_api::{
     PreparedExecutor, PreparedTool, SessionToolContext, ToolCall, ToolCompletion, ToolConcurrency,
     ToolError, ToolExecutionContext, ToolPreparationContext, ToolProvider,
     ToolResultTruncationPolicy, ToolSpec,
-    authoring::{parse_args, prepared_operation, prepared_resource, safe_title},
+    authoring::{
+        parse_args, parse_args_strict, prepared_operation, prepared_resource, safe_title, schema,
+    },
 };
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -68,10 +71,13 @@ const DELETE_DESCRIPTION: &str = "Delete a cron job. Sessions its fires started 
 const RUN_DESCRIPTION: &str = "Run a cron job now. An in-session job fires into its session as a scheduled fire would. A new-session job runs as your subagent with the job's agent, rules, and runtimes and the prompt as its first input: in the foreground (default) the call waits for its first turn and returns the result; in the background it returns the subagent's session ID at once and its turns arrive as <subagent_report>s. A run now counts toward neither max_runs nor the failure count.";
 
 /// `schedule` as a tool takes it.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 enum ScheduleArg {
+    /// A five-field cron expression, `<minute hour day-of-month month
+    /// day-of-week>`, in host local time
     Cron(String),
+    /// `<n>s|m|h|d`: fire once after this delay, 1s to 365d
     In(String),
 }
 
@@ -85,14 +91,13 @@ impl From<ScheduleArg> for CronSchedule {
 }
 
 /// `target` as a tool takes it.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
 #[serde(untagged)]
 enum TargetArg {
-    /// `"self"` or a session handle.
+    /// `"self"` or a subagent's session ID, such as `explore_1a2b3c4d`
     Session(String),
-    New {
-        new: NewArg,
-    },
+    /// A new root session per fire
+    New { new: NewArg },
 }
 
 impl TargetArg {
@@ -102,117 +107,130 @@ impl TargetArg {
     }
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, JsonSchema, Serialize)]
 #[serde(deny_unknown_fields)]
 struct NewArg {
+    /// The agent each new session runs; this session's agent when omitted
     #[serde(default, skip_serializing_if = "Option::is_none")]
     agent: Option<AgentId>,
+    /// Rules added to each new session, e.g. {"action": "bash",
+    /// "resource": "git *", "effect": "allow"}
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Option<Vec<RuleArg>>")]
     permission_rules: Option<Vec<PermissionRule>>,
+    /// The runtime capabilities each new session works through, as
+    /// `delegate_subagent` takes them; this session's when omitted. Each
+    /// session also has `global` exactly when this one does.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     capabilities: Option<Vec<CapabilityArg>>,
-    /// A project's name or ID.
+    /// A project's name; this session's project when omitted
     #[serde(default, skip_serializing_if = "Option::is_none")]
     project: Option<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+/// A [`PermissionRule`] as the tools' schemas describe it, for the model
+/// rather than the protocol reference. Strict parsing checks a rule against
+/// this schema, so its members and effects match [`PermissionRule`]'s.
+#[derive(JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[allow(dead_code)]
+struct RuleArg {
+    /// The permission action, such as `bash`, `read`, or `write`
+    action: String,
+    /// What the rule matches, such as a command or a path: `*` matches any
+    /// characters and `?` one
+    resource: String,
+    /// What a matching call does
+    effect: EffectArg,
+    /// Only this runtime's tools; every runtime's when omitted
+    #[serde(default)]
+    runtime: Option<String>,
+}
+
+/// [`PermissionEffect`]'s values.
+#[derive(JsonSchema)]
+#[serde(rename_all = "snake_case")]
+#[allow(dead_code)]
+enum EffectArg {
+    Allow,
+    Ask,
+    Deny,
+}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
 #[serde(deny_unknown_fields)]
 struct CreateArgs {
+    /// What to do at each fire
     prompt: String,
+    /// {"cron": "<minute hour day-of-month month day-of-week>"} in host
+    /// local time, or {"in": "<n>s|m|h|d"} to fire once after a delay (1s to
+    /// 365d)
     schedule: ScheduleArg,
-    /// 0 or less runs without a limit.
+    /// Cron schedules only: how many fires before the job finishes, default
+    /// 1; 0 or less runs until the job is deleted or disabled
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(range(max = 4_294_967_295_i64))]
     max_runs: Option<i64>,
+    /// A short name, at most 80 characters
     #[serde(default, skip_serializing_if = "Option::is_none")]
     name: Option<String>,
-    /// `"self"` when omitted (decided 2026-10-23).
+    /// "self" (the default), a subagent's session ID, or {"new": {...}}
     #[serde(default = "TargetArg::own_session")]
     target: TargetArg,
+    /// In-session jobs: "queue" (the default) waits for the current turn,
+    /// "steer" joins it
     #[serde(default, skip_serializing_if = "Option::is_none")]
     delivery: Option<ProducerDeliveryMode>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
 #[serde(deny_unknown_fields)]
 struct UpdateArgs {
+    /// The job's ID, e.g. "k3v9q2xa"
     id: CronJobId,
+    /// What to do at each fire
     #[serde(default, skip_serializing_if = "Option::is_none")]
     prompt: Option<String>,
+    /// {"cron": "<minute hour day-of-month month day-of-week>"} in host
+    /// local time, or {"in": "<n>s|m|h|d"} to fire once after a delay (1s to
+    /// 365d)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     schedule: Option<ScheduleArg>,
-    /// 0 or less runs without a limit.
+    /// Cron schedules only: how many fires before the job finishes; 0 or
+    /// less runs until the job is deleted or disabled
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(range(max = 4_294_967_295_i64))]
     max_runs: Option<i64>,
+    /// A short name, at most 80 characters
     #[serde(default, skip_serializing_if = "Option::is_none")]
     name: Option<String>,
+    /// "self", a subagent's session ID, or {"new": {...}}; unchanged when
+    /// omitted
     #[serde(default, skip_serializing_if = "Option::is_none")]
     target: Option<TargetArg>,
+    /// In-session jobs: "queue" waits for the current turn, "steer" joins it
     #[serde(default, skip_serializing_if = "Option::is_none")]
     delivery: Option<ProducerDeliveryMode>,
+    /// false pauses the job; true re-enables it and resets its failure count
     #[serde(default, skip_serializing_if = "Option::is_none")]
     enabled: Option<bool>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
 #[serde(deny_unknown_fields)]
 struct IdArgs {
+    /// The job's ID, e.g. "k3v9q2xa"
     id: CronJobId,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, JsonSchema, Serialize)]
 #[serde(deny_unknown_fields)]
 struct ListArgs {
+    /// Only this kind: "session" for jobs that fire into an existing
+    /// session (such as those created with target "self"), "subagent", or
+    /// "new"
     #[serde(default, skip_serializing_if = "Option::is_none")]
     target: Option<CronTargetKind>,
-}
-
-fn schedule_schema() -> serde_json::Value {
-    serde_json::json!({
-        "description": "{\"cron\": \"<minute hour day-of-month month day-of-week>\"} in host local time, or {\"in\": \"<n>s|m|h|d\"} to fire once after a delay (1s to 365d)",
-        "oneOf": [
-            {"type": "object", "additionalProperties": false, "required": ["cron"],
-             "properties": {"cron": {"type": "string"}}},
-            {"type": "object", "additionalProperties": false, "required": ["in"],
-             "properties": {"in": {"type": "string"}}}
-        ]
-    })
-}
-
-/// `description` says what an omitted `target` means.
-fn target_schema(description: &str) -> serde_json::Value {
-    serde_json::json!({
-        "description": description,
-        "oneOf": [
-            {"type": "string"},
-            {"type": "object", "additionalProperties": false, "required": ["new"],
-             "properties": {"new": {
-                "type": "object", "additionalProperties": false,
-                "properties": {
-                    "agent": {"type": "string", "description": "The agent each new session runs; this session's agent when omitted"},
-                    "permission_rules": {"type": "array", "description": "Rules added to each new session, e.g. {\"action\": \"bash\", \"resource\": \"git *\", \"effect\": \"allow\"}",
-                        "items": {"type": "object", "required": ["action", "resource", "effect"],
-                            "properties": {
-                                "action": {"type": "string"},
-                                "runtime": {"type": "string"},
-                                "resource": {"type": "string"},
-                                "effect": {"type": "string", "enum": ["allow", "ask", "deny"]}
-                            }}},
-                    "capabilities": {"type": "array", "description": "The runtime capabilities each new session works through, as `delegate_subagent` takes them; this session's when omitted. Each session also has `global` exactly when this one does.",
-                        "items": CapabilityArg::item_schema()},
-                    "project": {"type": "string", "description": "A project's name; this session's project when omitted"}
-                }
-             }}}
-        ]
-    })
-}
-
-fn max_runs_schema() -> serde_json::Value {
-    serde_json::json!({
-        "type": "integer",
-        "maximum": 4_294_967_295_u64,
-        "description": "Cron schedules only: how many fires before the job finishes, default 1; 0 or less runs until the job is deleted or disabled"
-    })
 }
 
 /// A tool's `max_runs`: 0 or less is no limit.
@@ -263,82 +281,36 @@ pub(crate) fn specs() -> Vec<ToolSpec> {
 
 fn build_specs() -> Vec<ToolSpec> {
     let cron = Some(PermissionAction::CRON.as_str());
-    let delivery = serde_json::json!({"type": "string", "enum": ["queue", "steer"]});
-    let id =
-        serde_json::json!({"type": "string", "description": "The job's ID, e.g. \"k3v9q2xa\""});
     vec![
         spec(
             CREATE,
             create_description(),
             cron,
             false,
-            serde_json::json!({
-                "type": "object", "additionalProperties": false,
-                "required": ["prompt", "schedule"],
-                "properties": {
-                    "prompt": {"type": "string", "description": "What to do at each fire"},
-                    "schedule": schedule_schema(),
-                    "max_runs": max_runs_schema(),
-                    "name": {"type": "string", "description": "A short name, at most 80 characters"},
-                    "target": target_schema("\"self\" (the default), a subagent's session ID, or {\"new\": {...}}"),
-                    "delivery": delivery,
-                }
-            }),
+            schema::<CreateArgs>(),
         ),
         spec(
             LIST,
             LIST_DESCRIPTION.into(),
             None,
             false,
-            serde_json::json!({
-                "type": "object", "additionalProperties": false,
-                "properties": {
-                    "target": {"type": "string", "enum": ["session", "subagent", "new"]}
-                }
-            }),
+            schema::<ListArgs>(),
         ),
         spec(
             UPDATE,
             update_description(),
             cron,
             false,
-            serde_json::json!({
-                "type": "object", "additionalProperties": false,
-                "required": ["id"],
-                "properties": {
-                    "id": id,
-                    "prompt": {"type": "string"},
-                    "schedule": schedule_schema(),
-                    "max_runs": max_runs_schema(),
-                    "name": {"type": "string"},
-                    "target": target_schema("\"self\", a subagent's session ID, or {\"new\": {...}}; unchanged when omitted"),
-                    "delivery": delivery,
-                    "enabled": {"type": "boolean"},
-                }
-            }),
+            schema::<UpdateArgs>(),
         ),
         spec(
             DELETE,
             DELETE_DESCRIPTION.into(),
             cron,
             false,
-            serde_json::json!({
-                "type": "object", "additionalProperties": false,
-                "required": ["id"],
-                "properties": {"id": id}
-            }),
+            schema::<IdArgs>(),
         ),
-        spec(
-            RUN,
-            RUN_DESCRIPTION.into(),
-            cron,
-            true,
-            serde_json::json!({
-                "type": "object", "additionalProperties": false,
-                "required": ["id"],
-                "properties": {"id": id}
-            }),
-        ),
+        spec(RUN, RUN_DESCRIPTION.into(), cron, true, schema::<IdArgs>()),
     ]
 }
 
@@ -810,7 +782,7 @@ impl ToolProvider for CronTools {
         permission_name(&call.name)?;
         let (call_kind, kinds) = match call.name.as_str() {
             CREATE => {
-                let args: CreateArgs = parse_args(CREATE, call.arguments.clone())?;
+                let args: CreateArgs = parse_args_strict(CREATE, call.arguments.clone())?;
                 let caller = engine.cron_agent(ctx.session, ctx.run)?;
                 let target = engine.resolve_tool_target(&caller, args.target)?;
                 let kind = target.kind();
@@ -834,7 +806,7 @@ impl ToolProvider for CronTools {
                 (CronCall::List(args.target), Vec::new())
             }
             UPDATE => {
-                let args: UpdateArgs = parse_args(UPDATE, call.arguments.clone())?;
+                let args: UpdateArgs = parse_args_strict(UPDATE, call.arguments.clone())?;
                 let job = engine
                     .cron_store()
                     .job(&args.id)
@@ -1059,7 +1031,37 @@ impl Engine {
 mod tests {
     use cookie_agent_protocol::CronMaxRuns;
 
-    use super::{CreateArgs, TargetArg, max_runs_arg};
+    use cookie_agent_runtime_api::authoring::parse_args_strict;
+
+    use super::{CREATE, CreateArgs, TargetArg, UpdateArgs, max_runs_arg};
+
+    /// A create whose new-session target carries `rule`.
+    fn create_with_rule(rule: serde_json::Value) -> serde_json::Value {
+        serde_json::json!({
+            "prompt": "check the build",
+            "schedule": {"cron": "0 3 * * *"},
+            "target": {"new": {"permission_rules": [rule]}},
+        })
+    }
+
+    #[test]
+    fn a_new_session_rule_with_an_unknown_member_or_effect_is_refused() {
+        for rule in [
+            serde_json::json!({"action": "bash", "resource": "git *", "effect": "allow", "runtme": "labpc"}),
+            serde_json::json!({"action": "bash", "resource": "git *", "effect": "alow"}),
+        ] {
+            let create = create_with_rule(rule.clone());
+            parse_args_strict::<CreateArgs>(CREATE, create.clone())
+                .expect_err(&format!("{rule} refused by cron_create"));
+            let mut update = create;
+            update["id"] = serde_json::json!("k3v9q2xa");
+            update.as_object_mut().unwrap().remove("schedule");
+            parse_args_strict::<UpdateArgs>("cron_update", update)
+                .expect_err(&format!("{rule} refused by cron_update"));
+        }
+        let rule = serde_json::json!({"action": "bash", "resource": "git *", "effect": "allow", "runtime": "labpc"});
+        parse_args_strict::<CreateArgs>(CREATE, create_with_rule(rule)).expect("a valid rule");
+    }
 
     #[test]
     fn a_create_without_a_target_fires_into_its_own_session() {

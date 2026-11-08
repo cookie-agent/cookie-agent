@@ -9,6 +9,7 @@ use cookie_agent_runtime_api::{
     PreparedExecutor, PreparedTool, SessionToolContext, ToolCall, ToolCompletion, ToolError,
     ToolExecutionContext, ToolPreparationContext, ToolProvider, ToolSpec,
 };
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use super::{base_presentation, prepared_operation, prepared_resource, safe_title};
@@ -17,12 +18,16 @@ fn default_mode() -> ProducerDeliveryMode {
     ProducerDeliveryMode::Steer
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, JsonSchema, Serialize)]
 #[serde(deny_unknown_fields)]
 struct MessageArgs {
-    /// The recipient's session ID, such as `explore_1a2b3c4d`, or full UUID.
+    /// Handle or full UUID of the recipient agent.
     to: String,
+    /// The message, not empty.
+    #[schemars(length(min = 1))]
     body: String,
+    /// `steer` (the default) joins the recipient's current turn; `queue`
+    /// waits for it to end.
     #[serde(default = "default_mode")]
     mode: ProducerDeliveryMode,
 }
@@ -52,22 +57,42 @@ impl MessageToolProvider {
             name: "send_message".into(),
             permission_name: Some("message".into()),
             description: "Send a message to another agent in your session tree: `to` is its session ID, such as `explore_1a2b3c4d`, or its full UUID.".into(),
-            parameters: serde_json::json!({
-                "type":"object","additionalProperties":false,
-                "properties":{
-                    "to":{"type":"string","description":"Handle or full UUID of the recipient agent."},
-                    "body":{"type":"string","minLength":1},
-                    "mode":{"type":"string","enum":["steer","queue"],"default":"steer"}
-                },"required":["to","body"]
-            }),
+            parameters: cookie_agent_runtime_api::authoring::schema::<MessageArgs>(),
         }
     }
 
-    /// Parses one call, mapping every malformed shape onto a stable code so the
+    /// Parses one call, mapping every malformed shape onto a stable code, with
+    /// a detail naming the member at fault that this tool writes itself: the
     /// text a sending model sees never depends on serde's message formatting.
     fn parse(args: &serde_json::Value) -> Result<MessageArgs, ToolError> {
+        let invalid =
+            |detail: String| ToolError::execution(format!("{MESSAGE_INVALID_ARGUMENTS}: {detail}"));
+        let Some(members) = args.as_object() else {
+            return Err(invalid("the arguments must be an object".into()));
+        };
+        match cookie_agent_protocol::strict::check_command_params::<MessageArgs>(args) {
+            Err(cookie_agent_protocol::strict::CommandDecodeError::UnknownField { field }) => {
+                return Err(invalid(format!("unknown member `{field}`")));
+            }
+            Err(cookie_agent_protocol::strict::CommandDecodeError::UnknownVariant {
+                field,
+                ..
+            }) => {
+                return Err(invalid(format!("`{field}` must be `steer` or `queue`")));
+            }
+            Err(cookie_agent_protocol::strict::CommandDecodeError::Invalid(_)) | Ok(()) => {}
+        }
+        for member in ["to", "body"] {
+            match members.get(member) {
+                None => return Err(invalid(format!("missing `{member}`"))),
+                Some(value) if !value.is_string() => {
+                    return Err(invalid(format!("`{member}` must be a string")));
+                }
+                Some(_) => {}
+            }
+        }
         let value: MessageArgs = serde_json::from_value(args.clone())
-            .map_err(|_| ToolError::execution(MESSAGE_INVALID_ARGUMENTS))?;
+            .map_err(|_| invalid("`mode` must be `steer` or `queue`".into()))?;
         if value.body.trim().is_empty() {
             return Err(ToolError::execution(MESSAGE_INVALID_BODY));
         }
@@ -323,11 +348,31 @@ mod tests {
             &serde_json::json!({"to":recipient.to_string(),"body":"mail","mode":"later"}),
             &serde_json::json!([]),
         ] {
-            assert_eq!(
-                rejection(arguments),
-                crate::MESSAGE_INVALID_ARGUMENTS,
-                "unstable parse error for {arguments}"
+            let rejection = rejection(arguments);
+            assert!(
+                rejection.starts_with(&format!("{}: ", crate::MESSAGE_INVALID_ARGUMENTS)),
+                "unstable parse error for {arguments}: {rejection}"
             );
+        }
+    }
+
+    #[test]
+    fn a_malformed_call_names_the_member_at_fault() {
+        let recipient = SessionId::new_v7().to_string();
+        for (arguments, member) in [
+            (
+                serde_json::json!({"to": recipient, "body": "mail", "extra": true}),
+                "`extra`",
+            ),
+            (serde_json::json!({"body": "mail"}), "`to`"),
+            (serde_json::json!({"to": recipient, "body": 42}), "`body`"),
+            (
+                serde_json::json!({"to": recipient, "body": "mail", "mode": "later"}),
+                "`mode`",
+            ),
+        ] {
+            let rejection = rejection(&arguments);
+            assert!(rejection.contains(member), "{arguments}: {rejection}");
         }
     }
 

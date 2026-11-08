@@ -417,3 +417,83 @@ fn tool_reference_page_matches_published_specs() {
          {UPDATE_ENV}=1 cargo test -p cookie_agent --test integration tool_reference"
     );
 }
+
+/// Every schema object below `schema`, `schema` included, with its JSON path.
+fn schema_objects<'a>(
+    path: String,
+    schema: &'a Value,
+    found: &mut Vec<(String, &'a serde_json::Map<String, Value>)>,
+) {
+    let Some(object) = schema.as_object() else {
+        return;
+    };
+    found.push((path.clone(), object));
+    for (keyword, value) in object {
+        match keyword.as_str() {
+            "properties" | "$defs" => {
+                for (name, schema) in value.as_object().into_iter().flatten() {
+                    schema_objects(format!("{path}/{keyword}/{name}"), schema, found);
+                }
+            }
+            "oneOf" | "anyOf" | "allOf" | "prefixItems" => {
+                for (index, schema) in value.as_array().into_iter().flatten().enumerate() {
+                    schema_objects(format!("{path}/{keyword}/{index}"), schema, found);
+                }
+            }
+            "items" | "additionalProperties" | "not" => {
+                schema_objects(format!("{path}/{keyword}"), value, found);
+            }
+            _ => {}
+        }
+    }
+}
+
+/// The rules every built-in tool's parameters keep, whichever way the schema
+/// is written: unknown arguments refused, nothing a model need not read (the
+/// meta-schema, Rust type names, extension keywords), every argument
+/// described, descriptions without the line breaks of wrapped doc comments,
+/// and 1-based paging arguments that say so.
+#[test]
+fn built_in_tool_schemas_keep_one_shape() {
+    let mut faults = Vec::new();
+    for spec in documented_specs() {
+        let name = &spec.name;
+        let root = spec.parameters.as_object().expect("an object schema");
+        if root.get("additionalProperties") != Some(&Value::Bool(false)) {
+            faults.push(format!("{name}: unknown arguments are not refused"));
+        }
+        for keyword in ["$schema", "title", "description"] {
+            if root.contains_key(keyword) {
+                faults.push(format!("{name}: `{keyword}` at the root"));
+            }
+        }
+        for (argument, schema) in root
+            .get("properties")
+            .and_then(Value::as_object)
+            .into_iter()
+            .flatten()
+        {
+            if schema.get("description").and_then(Value::as_str).is_none() {
+                faults.push(format!("{name}: `{argument}` has no description"));
+            }
+            if matches!(argument.as_str(), "offset" | "limit")
+                && name != "tool_search"
+                && schema.get("minimum").and_then(Value::as_u64) != Some(1)
+            {
+                faults.push(format!("{name}: `{argument}` is not at least 1"));
+            }
+        }
+        let mut objects = Vec::new();
+        schema_objects(String::new(), &spec.parameters, &mut objects);
+        for (path, object) in objects {
+            if let Some(keyword) = object.keys().find(|keyword| keyword.starts_with("x-")) {
+                faults.push(format!("{name}{path}: extension keyword `{keyword}`"));
+            }
+            let description = object.get("description").and_then(Value::as_str);
+            if description.is_some_and(|text| text.replace("\n\n", "").contains('\n')) {
+                faults.push(format!("{name}{path}: a wrapped line in its description"));
+            }
+        }
+    }
+    assert!(faults.is_empty(), "{}", faults.join("\n"));
+}

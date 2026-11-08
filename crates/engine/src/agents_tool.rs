@@ -24,8 +24,9 @@ use cookie_agent_runtime_api::{
     PreparedExecutor, PreparedTool, SessionToolContext, ToolCall, ToolCompletion, ToolConcurrency,
     ToolError, ToolExecutionContext, ToolPreparationContext, ToolProvider,
     ToolResultTruncationPolicy, ToolSpec,
-    authoring::{parse_args, prepared_operation, prepared_resource, safe_title},
+    authoring::{parse_args, prepared_operation, prepared_resource, safe_title, schema},
 };
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::{Engine, runtime::Inner};
@@ -37,16 +38,17 @@ pub(crate) const LIST_AGENTS: &str = "list_agents";
 const DESCRIPTION: &str = "List the agents you can pick: for `delegate` the subagents `delegate_subagent` can start from here, for `cron` the agents a new-session cron job can run. Each shows its mode, description, presets, models, and the permission rules its document declares, with the actions left to the daemon's defaults on one `defaults:` line; the defaults themselves are listed once at the end. An ACP agent (an external agent such as Claude Code, marked `acp`) shows the runtimes that offer it and whether it runs here, on the one attached runtime that offers it. Leave `for` out to list both.";
 
 /// What an agent is listed for.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum Use {
     Delegate,
     Cron,
 }
 
-#[derive(Debug, Default, Deserialize, Serialize)]
+#[derive(Debug, Default, Deserialize, JsonSchema, Serialize)]
 #[serde(deny_unknown_fields)]
 struct ListAgentsArgs {
+    /// List only the agents usable for this
     #[serde(default, rename = "for", skip_serializing_if = "Option::is_none")]
     use_for: Option<Use>,
 }
@@ -86,13 +88,7 @@ impl AgentsTool {
             name: LIST_AGENTS.into(),
             permission_name: None,
             description: DESCRIPTION.into(),
-            parameters: serde_json::json!({
-                "type": "object", "additionalProperties": false,
-                "properties": {
-                    "for": {"type": "string", "enum": ["delegate", "cron"],
-                        "description": "List only the agents usable for this"}
-                }
-            }),
+            parameters: schema::<ListAgentsArgs>(),
         }
     }
 }

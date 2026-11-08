@@ -39,14 +39,16 @@ pub struct ReadTool {
 struct ReadArgs {
     #[serde(
         rename = "path",
-        alias = "path",
+        alias = "filePath",
         deserialize_with = "crate::path_args::deserialize"
     )]
     /// Path to the file or directory. Relative paths resolve against the session working directory.
     file_path: String,
     /// The most lines, or directory entries, to return. Defaults to 2000.
+    #[schemars(range(min = 1), extend("default" = text_tools::DEFAULT_LIMIT))]
     limit: Option<usize>,
     /// The 1-based line, or directory entry, to start at. Defaults to 1.
+    #[schemars(range(min = 1), extend("default" = 1))]
     offset: Option<usize>,
 }
 

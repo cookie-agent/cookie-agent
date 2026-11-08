@@ -8,6 +8,7 @@ use cookie_agent_runtime_api::{
     PreparedExecutor, PreparedTool, PromptSection, SessionToolContext, ToolCall, ToolError,
     ToolExecutionContext, ToolPreparationContext, ToolProvider, ToolSpec,
 };
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use super::{base_presentation, prepared_operation, prepared_resource};
@@ -29,17 +30,27 @@ pub struct DelegateToolProvider {
     engine: Engine,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, JsonSchema, Serialize)]
 #[serde(deny_unknown_fields)]
 struct DelegateArgs {
+    /// Short (3-5 words) summary of the task
     description: String,
+    /// Full task brief with objective, context, and deliverable
     prompt: String,
+    /// The agent to start, from `list_agents` with for="delegate"
     agent_type: AgentId,
-    /// The session ID, such as `explore_1a2b3c4d`, or full UUID of an existing subagent to resume.
+    /// The session ID, such as `explore_1a2b3c4d`, or full UUID of an
+    /// existing subagent of yours to resume. Only subagents you delegated
+    /// are valid.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     resume_session_id: Option<String>,
+    /// Start a new subagent with this conversation's user and assistant text
+    /// (no tool calls or results, at most 64 KiB, oldest dropped first).
+    /// Cannot be combined with `resume_session_id`.
     #[serde(default)]
     inherit_context: bool,
     /// The runtime capabilities the subagent works through; a root only.
+    /// [`DelegateToolProvider::specs`] describes it per session.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     capabilities: Option<Vec<CapabilityArg>>,
 }
@@ -47,14 +58,19 @@ struct DelegateArgs {
 /// What each `capabilities` item does and how to write it.
 const CAPABILITY_ITEMS: &str = "Each item gives the subagent one runtime capability to work through, at `workspace` when the capability takes one. These are runtime capabilities, where the subagent works, not its tools or permissions. Write each as the full `<runtime_id>/<capability_id>`, from a `<runtime id=…>` and one of its `<capability id=…>` in `list_runtimes`, e.g. `labpc/coding`. The subagent also has `global` whenever this session does. Cannot be combined with `resume_session_id`.";
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, JsonSchema, Serialize)]
 #[serde(deny_unknown_fields)]
 struct GetResultArgs {
-    /// The session ID, such as `explore_1a2b3c4d`, or full UUID of one of your subagents.
+    /// The session ID, such as `explore_1a2b3c4d`, or full UUID of one of
+    /// your subagents.
     session_id: String,
-    /// The 1-based line to start at; 1 when left out.
+    /// The 1-based line of the result to start at. Defaults to 1.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(range(min = 1), extend("default" = 1))]
     offset: Option<u32>,
+    /// The most lines to return. Defaults to 2000.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(range(min = 1), extend("default" = DEFAULT_RESULT_LIMIT))]
     limit: Option<u32>,
 }
 
@@ -80,17 +96,10 @@ impl DelegateToolProvider {
     /// Delegation tool specs; `agent_type` enumerates `targets`, and
     /// `delegate_subagent` has `capabilities` as `capabilities` says.
     pub(crate) fn specs(targets: &[&str], capabilities: CapabilitiesParam) -> Vec<ToolSpec> {
-        let mut properties = serde_json::json!({
-            "description":{"type":"string","description":"Short (3-5 words) summary of the task"},
-            "prompt":{"type":"string","description":"Full task brief with objective, context, and deliverable"},
-            "agent_type":{"type":"string","enum":targets},
-            "resume_session_id":{
-                "type":"string",
-                "description":"Optional. Handle or UUID of an existing subagent of yours to resume, e.g. \"explore_1a2b3c4d\". Only subagents you delegated are valid."
-            },
-            "inherit_context":{"type":"boolean","default":false}
-        });
-        let mut required = vec!["description", "prompt", "agent_type"];
+        let mut parameters = cookie_agent_runtime_api::authoring::schema::<DelegateArgs>();
+        let properties = &mut parameters["properties"];
+        properties["agent_type"]["enum"] = serde_json::json!(targets);
+        let mut required = Vec::new();
         let when = match capabilities {
             CapabilitiesParam::Absent => None,
             CapabilitiesParam::Optional => {
@@ -103,13 +112,24 @@ impl DelegateToolProvider {
                 )
             }
         };
-        if let Some(when) = when {
-            properties["capabilities"] = serde_json::json!({
-                "type":"array",
-                "minItems":1,
-                "description":format!("{when} {CAPABILITY_ITEMS}"),
-                "items":CapabilityArg::item_schema()
-            });
+        match when {
+            Some(when) => {
+                let capabilities = &mut properties["capabilities"];
+                capabilities["minItems"] = serde_json::json!(1);
+                capabilities["description"] =
+                    serde_json::json!(format!("{when} {CAPABILITY_ITEMS}"));
+            }
+            None => {
+                if let Some(properties) = properties.as_object_mut() {
+                    properties.remove("capabilities");
+                }
+                if let Some(parameters) = parameters.as_object_mut() {
+                    parameters.remove("$defs");
+                }
+            }
+        }
+        if let Some(listed) = parameters["required"].as_array_mut() {
+            listed.extend(required.into_iter().map(serde_json::Value::from));
         }
         vec![
         ToolSpec {
@@ -122,11 +142,7 @@ impl DelegateToolProvider {
             name: "delegate_subagent".into(),
             permission_name: Some("delegate".into()),
             description: "Delegate a self-contained task to a specialist agent. In the foreground (default) the call waits for the subagent's first turn and returns its result. In the background it returns at once with the subagent's session ID. Every later turn of the subagent, and the first one when it runs in the background, arrives as a <subagent_report> that wakes this session, so to wait for one, tell the user and end your turn. To continue an existing subagent, pass its session ID as `resume_session_id`, or send it a message.".into(),
-            parameters: serde_json::json!({
-                "type":"object","additionalProperties":false,
-                "properties":properties,
-                "required":required
-            }),
+            parameters,
         },
         ToolSpec {
             background: false,
@@ -138,24 +154,7 @@ impl DelegateToolProvider {
             name: "get_subagent_result".into(),
             permission_name: Some("delegate".into()),
             description: "Read the current status and latest result of a subagent you delegated, such as the full output a <subagent_report> cut short. This call returns immediately; it never waits. Name the subagent by its session ID, such as `explore_1a2b3c4d`. Only your own subagents are visible. The result comes back as numbered lines, `N: text`, counting from 1, as `read` returns a file: `offset` is the 1-based line to start at (default 1) and `limit` the most lines to return (default 2000); a line longer than 4 KiB is cut, and a page that leaves lines out ends with a note such as `[120 more lines; continue with offset=2001]`. A <subagent_report> cut short names the offset to continue from.".into(),
-            parameters: serde_json::json!({
-                "type":"object","additionalProperties":false,
-                "properties":{
-                    "session_id":{
-                        "type":"string",
-                        "description":"Handle (agent_type + 8 hex, e.g. \"coder_9f8e7d6b\") or full UUID of one of your subagents."
-                    },
-                    "offset":{
-                        "type":"integer","minimum":1,"maximum":4_294_967_295_u64,"default":1,
-                        "description":"The 1-based line of the result to start at. Defaults to 1."
-                    },
-                    "limit":{
-                        "type":"integer","minimum":1,"maximum":4_294_967_295_u64,"default":2000,
-                        "description":"The most lines to return. Defaults to 2000."
-                    }
-                },
-                "required":["session_id"]
-            }),
+            parameters: cookie_agent_runtime_api::authoring::schema::<GetResultArgs>(),
         },
     ]
     }
@@ -598,8 +597,8 @@ pub(crate) fn subagent_detachable(
 }
 
 fn parse_delegate(arguments: &serde_json::Value) -> Result<DelegateArgs, ToolError> {
-    let args: DelegateArgs = serde_json::from_value(arguments.clone())
-        .map_err(|error| ToolError::execution(error.to_string()))?;
+    let args: DelegateArgs =
+        cookie_agent_runtime_api::authoring::parse_args("delegate_subagent", arguments.clone())?;
     if Engine::is_reserved_staged_skill_prompt(&args.prompt) {
         return Err(ToolError::execution(
             "delegate prompt uses a reserved staged-skill prefix",
@@ -614,8 +613,7 @@ fn parse_delegate(arguments: &serde_json::Value) -> Result<DelegateArgs, ToolErr
 }
 
 fn parse_result(arguments: &serde_json::Value) -> Result<GetResultArgs, ToolError> {
-    serde_json::from_value(arguments.clone())
-        .map_err(|error| ToolError::execution(error.to_string()))
+    cookie_agent_runtime_api::authoring::parse_args("get_subagent_result", arguments.clone())
 }
 
 #[cfg(test)]
