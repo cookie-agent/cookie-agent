@@ -1753,3 +1753,13 @@ a review in the golden scenario.
   `STATE_VERSION` rose from 9 to 10 with the replay base above, and the digest with both
   (`a_message_that_just_settled_is_kept_whatever_its_acceptance`,
   `a_fire_settling_with_many_later_messages_records_its_run_end`).
+- **A compaction that records nothing leaves memory unseen.** A checkpoint takes its memory snapshot as
+  compaction starts, and taking it marked every memory it showed as seen by the session (and read, for
+  the read times) before anything was recorded. A compaction that then recorded nothing (nothing to
+  summarise, a failed or empty summary, budgets that do not fit, a commit that does not validate) left
+  the model its old memory turn while `memory_write` took the newer revision as seen, and let a
+  replacement over another session's or the user's edit through. Taking a snapshot now marks nothing:
+  `saw_memories` marks what it showed once its record is appended, at a run's admission, a checkpoint's
+  commit, and a machine's memories added in place or in `attach_machine`'s result; the last marks only
+  the machine memories it shows, not the user's, agent's, or project's memories its snapshot read
+  (`a_compaction_that_records_nothing_leaves_memory_unseen`).

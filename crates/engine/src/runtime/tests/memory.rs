@@ -1239,6 +1239,76 @@ async fn a_finished_compaction_takes_a_new_snapshot_at_the_next_run() {
     fixture.engine.shutdown().await;
 }
 
+/// A compaction that records nothing leaves the session having seen the memory
+/// turn its model still reads, so a replacement of a memory edited since is
+/// refused as unseen rather than written over the edit.
+#[tokio::test]
+async fn a_compaction_that_records_nothing_leaves_memory_unseen() {
+    let (endpoint, responses, _captured) = scripted_channel_server(2).await;
+    let (fixture, selection) = custom_fixture_with_endpoint_and_primary_agent(
+        &endpoint,
+        &agent("{ memory: allow, memory_write: deny, cron: deny, asset: deny, share: deny }"),
+    );
+    let session = fixture
+        .engine
+        .create_session(selection.clone())
+        .unwrap()
+        .session_id;
+    user_write(&fixture, "user://feedback", "Feedback", "- first\n");
+    let first = fixture
+        .engine
+        .memory_root()
+        .read(&url("user://feedback"))
+        .unwrap()
+        .entry
+        .revision;
+    responses
+        .send(MatchedScriptedResponse::last_message_contains(
+            "before compaction",
+            scripted_text_body("done"),
+        ))
+        .unwrap();
+    run(&fixture, session, &selection, "one", "before compaction").await;
+    assert_eq!(
+        fixture
+            .engine
+            .inner
+            .memory_seen
+            .seen(session, &url("user://feedback")),
+        Some(first.clone())
+    );
+
+    // The user edits it, and a compaction reads the edit as it starts, but its
+    // summary is empty, so it records neither the snapshot nor a checkpoint.
+    user_write(&fixture, "user://feedback", "Feedback", "- edited later\n");
+    responses
+        .send(MatchedScriptedResponse::last_message_role(
+            "user",
+            scripted_text_body(" "),
+        ))
+        .unwrap();
+    let compacted = fixture
+        .engine
+        .compact_session(session, None, origin())
+        .await;
+    assert!(!matches!(compacted, Ok(true)), "{compacted:?}");
+    assert_eq!(
+        snapshots(&fixture, session).len(),
+        1,
+        "no snapshot recorded"
+    );
+    assert_eq!(
+        fixture
+            .engine
+            .inner
+            .memory_seen
+            .seen(session, &url("user://feedback")),
+        Some(first),
+        "the model still reads the first revision"
+    );
+    fixture.engine.shutdown().await;
+}
+
 /// Runs a root run of an agent with `permissions` on a fresh fixture whose
 /// user memory holds one feedback line, and returns its snapshots, the
 /// memory tools of its request, and the request.

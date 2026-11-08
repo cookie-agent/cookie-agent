@@ -78,6 +78,24 @@ impl SeenMemories {
     }
 }
 
+/// The memories a snapshot showed, at the revisions it showed them, and when
+/// it read them. The session has seen them only once the snapshot is recorded
+/// ([`Engine::saw_memories`]): one taken for a compaction that then records
+/// nothing never reaches the model, which still reads the turn it had.
+#[derive(Debug, Default)]
+pub(in crate::runtime) struct ShownMemories {
+    memories: Vec<(MemoryUrl, MemoryRevision)>,
+    at: jiff::Timestamp,
+}
+
+/// A snapshot taken, whether the turn the model reads changed with it, and
+/// what it showed.
+struct TakenMemory {
+    snapshot: MemorySnapshot,
+    changed: bool,
+    shown: ShownMemories,
+}
+
 /// What a run may do with memory.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct MemoryAccess {
@@ -413,7 +431,11 @@ impl Engine {
         policy: &FrozenRunPolicy,
         mode: SnapshotMode,
     ) -> Result<bool, EngineError> {
-        let Some((snapshot, changed)) = self.take_memory_snapshot(session, policy, mode).await?
+        let Some(TakenMemory {
+            snapshot,
+            changed,
+            shown,
+        }) = self.take_memory_snapshot(session, policy, mode).await?
         else {
             return Ok(false);
         };
@@ -427,7 +449,26 @@ impl Engine {
             },
         )
         .await?;
+        self.saw_memories(session, shown).await;
         Ok(changed)
+    }
+
+    /// Records that `session` saw what a snapshot it just recorded showed, and
+    /// when those memories were read.
+    pub(in crate::runtime) async fn saw_memories(&self, session: SessionId, shown: ShownMemories) {
+        if shown.memories.is_empty() {
+            return;
+        }
+        for (url, revision) in &shown.memories {
+            self.inner
+                .memory_seen
+                .saw(session, url.clone(), revision.clone());
+        }
+        let root = self.memory_root().clone();
+        let _ = tokio::task::spawn_blocking(move || {
+            root.record_reads(shown.memories.iter().map(|(url, _)| url), shown.at);
+        })
+        .await;
     }
 
     /// The snapshot a checkpoint records just before it commits, as it
@@ -435,17 +476,18 @@ impl Engine {
     /// section 5.2): one taken as a refresh takes it, or, when it cannot be
     /// read, the latest record's again, as the checkpoint pins nothing from
     /// before it. `None` when there is nothing to record: memory is not
-    /// available and the model reads none.
+    /// available and the model reads none. With it, what it showed, which the
+    /// session sees only once the checkpoint records it.
     pub(in crate::runtime) async fn checkpoint_memory_snapshot(
         &self,
         session: SessionId,
         policy: &FrozenRunPolicy,
-    ) -> Result<Option<MemorySnapshot>, EngineError> {
+    ) -> Result<Option<(MemorySnapshot, ShownMemories)>, EngineError> {
         match self
             .take_memory_snapshot_or_fail(session, policy, SnapshotMode::Refresh)
             .await?
         {
-            Ok(taken) => Ok(taken.map(|(snapshot, _)| snapshot)),
+            Ok(taken) => Ok(taken.map(|taken| (taken.snapshot, taken.shown))),
             Err(()) => Ok(self
                 .inner
                 .store
@@ -453,7 +495,9 @@ impl Engine {
                 .log
                 .last_memory_loaded()
                 .and_then(|(event, _)| match &event.payload {
-                    Event::MemoryLoaded { snapshot, .. } => Some(snapshot.clone()),
+                    Event::MemoryLoaded { snapshot, .. } => {
+                        Some((snapshot.clone(), ShownMemories::default()))
+                    }
                     _ => None,
                 })),
         }
@@ -468,7 +512,7 @@ impl Engine {
         session: SessionId,
         policy: &FrozenRunPolicy,
         mode: SnapshotMode,
-    ) -> Result<Option<(MemorySnapshot, bool)>, EngineError> {
+    ) -> Result<Option<TakenMemory>, EngineError> {
         Ok(self
             .take_memory_snapshot_or_fail(session, policy, mode)
             .await?
@@ -476,13 +520,14 @@ impl Engine {
     }
 
     /// [`Self::take_memory_snapshot`], with `Err(())` for a snapshot that
-    /// could not be read, which this reports.
+    /// could not be read, which this reports. Nothing is marked seen or read:
+    /// the caller does that once it records the snapshot.
     async fn take_memory_snapshot_or_fail(
         &self,
         session: SessionId,
         policy: &FrozenRunPolicy,
         mode: SnapshotMode,
-    ) -> Result<Result<Option<(MemorySnapshot, bool)>, ()>, EngineError> {
+    ) -> Result<Result<Option<TakenMemory>, ()>, EngineError> {
         let projection = self.inner.store.get(session)?;
         // An ACP agent's own subagent gets what its agent gives it, never a
         // snapshot of cookie's: none is recorded as though it had.
@@ -530,9 +575,9 @@ impl Engine {
             SnapshotMode::Refresh if access.available => SnapshotChange::Take,
             _ => snapshot_change(latest_snapshot(latest.as_ref()), &facts),
         };
-        let snapshot = match change {
+        let (snapshot, shown_memories) = match change {
             SnapshotChange::Keep => return Ok(Ok(None)),
-            SnapshotChange::Clear => MemorySnapshot::unavailable(),
+            SnapshotChange::Clear => (MemorySnapshot::unavailable(), ShownMemories::default()),
             SnapshotChange::Take => {
                 let caller = MemoryCaller {
                     agent: policy.agent.clone(),
@@ -551,20 +596,15 @@ impl Engine {
                     rules: Some(facts.rules),
                 };
                 let root = self.memory_root().clone();
-                let now = request.now;
-                match tokio::task::spawn_blocking(move || {
-                    let taken = root.snapshot(&request)?;
-                    root.record_reads(taken.shown.iter().map(|(url, _)| url), now);
-                    Ok::<_, crate::memory::MemoryError>(taken)
-                })
-                .await
-                {
-                    Ok(Ok(taken)) => {
-                        for (url, revision) in taken.shown {
-                            self.inner.memory_seen.saw(session, url, revision);
-                        }
-                        taken.snapshot
-                    }
+                let at = request.now;
+                match tokio::task::spawn_blocking(move || root.snapshot(&request)).await {
+                    Ok(Ok(taken)) => (
+                        taken.snapshot,
+                        ShownMemories {
+                            memories: taken.shown,
+                            at,
+                        },
+                    ),
                     Ok(Err(error)) => {
                         eprintln!("cookie-agent: memory snapshot of session {session}: {error}");
                         return Ok(Err(()));
@@ -577,17 +617,22 @@ impl Engine {
             }
         };
         let changed = crate::memory::render::snapshot_turn(&snapshot) != shown;
-        Ok(Ok(Some((snapshot, changed))))
+        Ok(Ok(Some(TakenMemory {
+            snapshot,
+            changed,
+            shown: shown_memories,
+        })))
     }
 
     /// The memories of the machines `session` has now that `before` lacked,
     /// when the session's model reads memory and they hold any: a snapshot
-    /// of those machines only.
+    /// of those machines only, with what it showed, which the session sees
+    /// once the caller shows it ([`Self::saw_memories`]).
     pub(in crate::runtime) async fn attached_machine_memories(
         &self,
         session: SessionId,
         before: &[MachineName],
-    ) -> Result<Option<MemorySnapshot>, EngineError> {
+    ) -> Result<Option<(MemorySnapshot, ShownMemories)>, EngineError> {
         let projection = self.inner.store.get(session)?;
         if projection.log.is_acp_subagent()
             || matches!(projection.meta.origin, SessionOrigin::Delegated { .. })
@@ -644,14 +689,8 @@ impl Engine {
             rules: Some(rules),
         };
         let root = self.memory_root().clone();
-        let now = request.now;
-        let taken = match tokio::task::spawn_blocking(move || {
-            let taken = root.snapshot(&request)?;
-            root.record_reads(taken.shown.iter().map(|(url, _)| url), now);
-            Ok::<_, crate::memory::MemoryError>(taken)
-        })
-        .await
-        {
+        let at = request.now;
+        let taken = match tokio::task::spawn_blocking(move || root.snapshot(&request)).await {
             Ok(Ok(taken)) => taken,
             Ok(Err(error)) => {
                 eprintln!("cookie-agent: machine memories of session {session}: {error}");
@@ -662,19 +701,26 @@ impl Engine {
                 return Ok(None);
             }
         };
-        for (url, revision) in taken.shown {
-            self.inner.memory_seen.saw(session, url, revision);
-        }
         // Only the machines: the rest of the memory turn stands.
         let mut snapshot = taken.snapshot;
         snapshot.user.clear();
         snapshot.user_omitted.clear();
         snapshot.user_listed.clear();
         snapshot.project = None;
+        // What the turn shows: the user's, the agent's, and the project's
+        // memories stand as the session's memory turn shows them.
+        let shown = ShownMemories {
+            memories: taken
+                .shown
+                .into_iter()
+                .filter(|(url, _)| matches!(url, MemoryUrl::Machine { .. }))
+                .collect(),
+            at,
+        };
         Ok(
             cookie_agent_protocol::model_text::machine_memory_turn(&snapshot)
                 .is_some()
-                .then_some(snapshot),
+                .then_some((snapshot, shown)),
         )
     }
 

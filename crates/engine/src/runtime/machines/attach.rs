@@ -98,14 +98,20 @@ impl Engine {
         // Its AGENTS.md and the memories of a machine new to the session
         // reach the model in the tool's result, where it attached them
         // (frozen context spec, section 6.3).
-        let memories = self
+        let memories = match self
             .attached_machine_memories(session, &machines_before)
             .await
-            .unwrap_or_else(|error| {
+        {
+            Ok(Some((snapshot, shown))) => {
+                self.saw_memories(session, shown).await;
+                cookie_agent_protocol::model_text::machine_memory_turn(&snapshot)
+            }
+            Ok(None) => None,
+            Err(error) => {
                 eprintln!("cookie-agent: session {session}: machine memories not read: {error}");
                 None
-            })
-            .and_then(|snapshot| cookie_agent_protocol::model_text::machine_memory_turn(&snapshot));
+            }
+        };
         let agent_md = match self.inner.runtimes.instance(&attachment) {
             Some(instance) if attachment.workspace.is_some() => instance
                 .agent_md(preset)

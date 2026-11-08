@@ -323,7 +323,7 @@ impl Engine {
             .filter(|(_, on)| on.iter().any(|name| !attached.contains(name)))
             .map(|(machine, _)| machine)
             .collect::<Vec<_>>();
-        if let Some(snapshot) = self.attached_machine_memories(session, &before).await? {
+        if let Some((snapshot, shown)) = self.attached_machine_memories(session, &before).await? {
             self.append(
                 session,
                 Some(run),
@@ -334,6 +334,7 @@ impl Engine {
                 },
             )
             .await?;
+            self.saw_memories(session, shown).await;
         }
         Ok(())
     }

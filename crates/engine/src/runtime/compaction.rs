@@ -932,7 +932,7 @@ impl Engine {
         }
         // What it read as it began, then the checkpoint, so a compaction that
         // fails before here leaves no trace.
-        let records = fresh.records();
+        let (records, memory_shown) = fresh.records();
         let (session, run, origin) = (input.session, input.run, input.origin.clone());
         self.on_actor(session, move |engine| {
             for (origin, event) in records {
@@ -946,6 +946,7 @@ impl Engine {
             )
         })
         .await?;
+        self.saw_memories(session, memory_shown).await;
         // A checkpoint inside a run composes the run's system prompt afresh,
         // as the run's admission did, for its next request; between runs, the
         // next run composes it (forever sessions spec, section 5.2).
@@ -1018,11 +1019,12 @@ impl Engine {
         } else {
             Vec::new()
         };
-        let memory = if policy.acp_agent().is_none() {
+        let (memory, memory_shown) = if policy.acp_agent().is_none() {
             self.checkpoint_memory_snapshot(input.session, policy)
                 .await?
+                .unzip()
         } else {
-            None
+            (None, None)
         };
         let turns = model_history::FreshTurns {
             agent_md: model_history::fresh_agent_md_turn(&agent_md),
@@ -1033,6 +1035,7 @@ impl Engine {
         Ok(CheckpointContext {
             agent_md,
             memory,
+            memory_shown: memory_shown.unwrap_or_default(),
             turns,
         })
     }
@@ -1350,14 +1353,23 @@ impl Engine {
 struct CheckpointContext {
     agent_md: Vec<super::agent_md::AttachmentAgentMd>,
     memory: Option<cookie_agent_protocol::MemorySnapshot>,
+    /// What the snapshot showed, which the session sees only once it is
+    /// recorded: a compaction that records nothing leaves the model the memory
+    /// turn it had.
+    memory_shown: super::memory::runs::ShownMemories,
     /// What they render to, for the budgets.
     turns: model_history::FreshTurns,
 }
 
 impl CheckpointContext {
     /// The records, with their origins, in the order a run's admission
-    /// appends them.
-    fn records(self) -> Vec<(&'static str, Event)> {
+    /// appends them, and what the memory snapshot among them showed.
+    fn records(
+        self,
+    ) -> (
+        Vec<(&'static str, Event)>,
+        super::memory::runs::ShownMemories,
+    ) {
         let mut records = Vec::new();
         for loaded in self.agent_md {
             if !loaded.entries.is_empty() {
@@ -1387,7 +1399,7 @@ impl CheckpointContext {
                 },
             ));
         }
-        records
+        (records, self.memory_shown)
     }
 }
 
