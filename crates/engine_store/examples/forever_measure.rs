@@ -4,8 +4,11 @@
 //!
 //!     forever_measure generate <dir> <times> [<delegations a run> [native]]
 //!     forever_measure open <dir> [parts]
+//!     forever_measure parse <dir>
 //!
-//! `native` makes it a native model's session that compacts (section 5).
+//! `native` makes it a native model's session that compacts (section 5), and
+//! `native-whole` one with compaction off. `FOREVER_SESSION=<id>` opens that
+//! session of a copied store instead of the synthetic one.
 //!
 //! Live heap and peak are by a counting allocator. Scratch data goes under `<dir>`.
 
@@ -63,8 +66,12 @@ fn store(dir: &Path) -> std::sync::Arc<SessionStore> {
     SessionStore::open(&dir.join("data"), &cwd).expect("a store")
 }
 
+/// The synthetic session, or the one `FOREVER_SESSION` names, of a copied store.
 fn session() -> SessionId {
-    SESSION.parse().expect("a session")
+    std::env::var("FOREVER_SESSION")
+        .unwrap_or_else(|_| SESSION.to_owned())
+        .parse()
+        .expect("a session")
 }
 
 /// Sizes in bytes of what `state.json` holds, largest first, by the JSON of each
@@ -135,8 +142,16 @@ fn main() {
             if let Some(rate) = arguments.get(3) {
                 mix.delegations = rate.parse().expect("delegations a run");
             }
-            if arguments.get(4).is_some_and(|kind| kind == "native") {
-                mix = mix.native();
+            match arguments.get(4).map(String::as_str) {
+                Some("native") => mix = mix.native(),
+                // A native model's session with compaction off: it holds it all.
+                Some("native-whole") => {
+                    mix = Mix {
+                        checkpoint_bytes: Some(u64::MAX),
+                        ..mix
+                    };
+                }
+                _ => {}
             }
             let (bytes, records) = write_file(&mix, &log).expect("a log");
             println!(
@@ -166,8 +181,13 @@ fn main() {
             }
             let records = projection.log.record_count();
             let window = projection.log.recent().len();
+            let pinned = projection.log.storage_len_for_test() - window;
+            let context = projection
+                .log
+                .model_context_events()
+                .map_or(0, |context| context.len());
             println!(
-                "open {}: {:.0} ms, live {:.2} MB, peak {:.2} MB, {records} records, {window} held, {} runs",
+                "open {}: {:.0} ms, live {:.2} MB, peak {:.2} MB, {records} records, {window} held and {pinned} pinned, a model context of {context}, {} runs",
                 if had_file {
                     "from state.json"
                 } else {
@@ -198,6 +218,44 @@ fn main() {
                     }
                 }
             }
+        }
+        // The session's own log read whole, as a native log was held before its
+        // window (phase 7): what the window saves, for comparison.
+        "parse" => {
+            let path = store(dir).root_dir_for_test(session()).join("events.jsonl");
+            let before = LIVE.load(Ordering::Relaxed);
+            PEAK.store(before, Ordering::Relaxed);
+            let start = Instant::now();
+            let log =
+                cookie_agent_engine_store::events::EventLog::parsed_read_only(path, session())
+                    .expect("a parse");
+            println!(
+                "parse whole: {:.0} ms, live {:.2} MB, peak {:.2} MB, {} records",
+                start.elapsed().as_secs_f64() * 1000.0,
+                megabytes(LIVE.load(Ordering::Relaxed) - before),
+                megabytes(PEAK.load(Ordering::Relaxed) - before),
+                log.record_count(),
+            );
+            drop(log);
+            // And the log alone opened as an owner opens it, without its tree.
+            let path = store(dir).root_dir_for_test(session()).join("events.jsonl");
+            let before = LIVE.load(Ordering::Relaxed);
+            PEAK.store(before, Ordering::Relaxed);
+            let start = Instant::now();
+            let log = cookie_agent_engine_store::events::EventLog::open_read_only(path, session())
+                .expect("an open");
+            println!(
+                "open alone {}: {:.0} ms, live {:.2} MB, peak {:.2} MB, {} held",
+                if log.opened_from_state_for_test() {
+                    "from state.json"
+                } else {
+                    "by fold"
+                },
+                start.elapsed().as_secs_f64() * 1000.0,
+                megabytes(LIVE.load(Ordering::Relaxed) - before),
+                megabytes(PEAK.load(Ordering::Relaxed) - before),
+                log.storage_len_for_test(),
+            );
         }
         // A store's copy, converted to this build's format, each log opened a record
         // at a time and then from its state.json, each compared with a parse by
