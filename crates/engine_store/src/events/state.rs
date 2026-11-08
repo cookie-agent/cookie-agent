@@ -340,6 +340,16 @@ impl LogState {
             .filter(|event| event.run_id == Some(run))
     }
 
+    /// The latest `system_prompt_composed` of `run`, when it is the log's
+    /// latest run and a checkpoint inside it composed its system prompt
+    /// afresh: the prompt its requests carry instead of its `run_started`
+    /// one (`docs/site/specs/forever-sessions.md` section 5.2).
+    #[must_use]
+    pub fn run_prompt(&self, run: RunId) -> Option<&Arc<StoredEvent>> {
+        self.run_started(run)?;
+        self.run.prompt.as_ref()
+    }
+
     /// Whether the user's goal was active or paused as the latest run started.
     #[must_use]
     pub fn goal_open_at_run_start(&self) -> bool {
@@ -807,6 +817,10 @@ impl InputFold {
 #[derive(Clone, Debug, Default, serde::Deserialize, serde::Serialize)]
 struct RunFold {
     started: Option<Arc<StoredEvent>>,
+    /// The latest run's latest `system_prompt_composed`: the system prompt
+    /// its requests carry, when a checkpoint inside it composed one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    prompt: Option<Arc<StoredEvent>>,
     goal_open_at_start: bool,
     /// A run ended.
     ended: bool,
@@ -837,6 +851,7 @@ impl RunFold {
             EventPayload::RunStarted { .. } => {
                 if event.run_id.is_some() {
                     self.started = Some(Arc::clone(event));
+                    self.prompt = None;
                     self.goal_open_at_start = producers.goal_is_open();
                     self.machines_changed_before_start =
                         self.ended.then_some(self.machines_changed_since_end);
@@ -870,6 +885,9 @@ impl RunFold {
                 self.attached_since_end.insert(name.clone());
             }
             EventPayload::RuntimeDetached { .. } => self.machines_changed_since_end = true,
+            EventPayload::SystemPromptComposed { .. } if own => {
+                self.prompt = Some(Arc::clone(event));
+            }
             EventPayload::UserInputAdmitted { .. } => {
                 if event.run_id.is_none() {
                     self.runless.push(Arc::clone(event));

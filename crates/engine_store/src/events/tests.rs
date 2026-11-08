@@ -722,6 +722,18 @@ fn reference_validate_records(
                 }
                 active_run = Some(run_id);
             }
+            // A checkpoint inside a running run composed its system prompt
+            // afresh: its later attempts carry the new prompt's fingerprint.
+            EventPayload::SystemPromptComposed {
+                prompt_fingerprint, ..
+            } => {
+                let run_id = require_started_run(path, &runs, record.run_id)?;
+                let run = runs.get_mut(&run_id).expect("started run is indexed");
+                if run.ended_seq.is_some() {
+                    return corrupt(path, "SystemPromptComposed after its run ended");
+                }
+                run.prompt_fingerprint = prompt_fingerprint.clone();
+            }
             EventPayload::SessionTitleCommitted { change, .. } => {
                 let user = matches!(
                     change,
@@ -1309,6 +1321,95 @@ fn assert_storage_matches_full_projection(storage: &mut EventStorage) {
     );
 }
 
+/// `records`, the first attempt of `attribution_records`' run, then a prompt
+/// a checkpoint inside the run composed, an attempt carrying its fingerprint,
+/// and one carrying the run's own again.
+fn composed_prompt_records() -> (Vec<StoredEvent>, Sha256Digest) {
+    let mut records = attribution_records()[..4].to_vec();
+    let session_id = records[0].session_id;
+    let run_id = records[1].run_id.expect("run id");
+    let EventPayload::RunStarted { agent, .. } = &records[1].payload else {
+        unreachable!("run started at index 1");
+    };
+    let started = agent.prompt_fingerprint.clone();
+    let composed = Sha256Digest::of_bytes(b"composed at a checkpoint");
+    push_run_event(
+        &mut records,
+        session_id,
+        run_id,
+        EventPayload::SystemPromptComposed {
+            composed_prompt: "composed at a checkpoint".into(),
+            prompt_fingerprint: composed.clone(),
+            blocks: None,
+        },
+    );
+    let suffix = [fallback_binding("fallback-zero")];
+    push_abandoned_attempt(
+        &mut records,
+        session_id,
+        run_id,
+        &suffix,
+        &composed,
+        (11, 2, 0, 1),
+    );
+    push_abandoned_attempt(
+        &mut records,
+        session_id,
+        run_id,
+        &suffix,
+        &started,
+        (12, 3, 0, 2),
+    );
+    (records, composed)
+}
+
+/// A run's attempts after a prompt a checkpoint inside it composed carry that
+/// prompt's fingerprint, not its `run_started` one; such a record names a
+/// started run that has not ended.
+#[test]
+fn attempts_after_a_composed_prompt_carry_its_fingerprint() {
+    let (records, _) = composed_prompt_records();
+    let path = Path::new("composed-prompt.jsonl");
+    let session_id = records[0].session_id;
+    let mut state = ValidationState::new(ValidationTaint::default());
+    let outcomes = records
+        .iter()
+        .map(|record| {
+            validate_record_incremental(path, session_id, record, &mut state, true).is_ok()
+        })
+        .collect::<Vec<_>>();
+    // The attempt with the run's own fingerprint, after the composed prompt,
+    // is refused, and so its abandonment.
+    assert_eq!(
+        outcomes,
+        [true, true, true, true, true, true, true, false, false]
+    );
+
+    let mut state = ValidationState::new(ValidationTaint::default());
+    for record in &records[..2] {
+        validate_record_incremental(path, session_id, record, &mut state, true).unwrap();
+    }
+    let run_id = records[1].run_id;
+    let finished = event(
+        session_id,
+        run_id,
+        3,
+        EventPayload::run_finished(cookie_agent_protocol::RunOutcome::Completed {
+            final_text: None,
+        }),
+    );
+    validate_record_incremental(path, session_id, &finished, &mut state, true).unwrap();
+    let late = event(session_id, run_id, 4, records[4].payload.clone());
+    assert!(validate_record_incremental(path, session_id, &late, &mut state, true).is_err());
+    let unknown_run = event(
+        session_id,
+        Some(RunId::new_v7()),
+        4,
+        records[4].payload.clone(),
+    );
+    assert!(validate_record_incremental(path, session_id, &unknown_run, &mut state, true).is_err());
+}
+
 #[test]
 fn incremental_validation_matches_historical_reference_corpus() {
     let valid = attribution_records();
@@ -1484,6 +1585,12 @@ fn incremental_validation_matches_historical_reference_corpus() {
             true,
         ),
         ("admission", admission, ValidationTaint::default(), true),
+        (
+            "composed_prompt",
+            composed_prompt_records().0,
+            ValidationTaint::default(),
+            true,
+        ),
         (
             "missing_admission",
             missing_admission,

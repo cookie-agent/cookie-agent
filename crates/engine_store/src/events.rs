@@ -261,6 +261,23 @@ impl PromptBlockFold {
                         .map(|blocks| blocks.iter().cloned().collect()),
                 };
             }
+            // A checkpoint inside the run composed its prompt afresh: its
+            // blocks are the run's now, and the model knows them as they are.
+            EventPayload::SystemPromptComposed {
+                composed_prompt,
+                blocks,
+                ..
+            } => {
+                self.prompt = None;
+                self.known_at_start = None;
+                self.run_blocks = blocks
+                    .as_ref()
+                    .and_then(|blocks| prompt_block_texts(composed_prompt, blocks));
+                self.known = self
+                    .run_blocks
+                    .as_ref()
+                    .map(|blocks| blocks.iter().cloned().collect());
+            }
             EventPayload::ContextCheckpointCommitted { .. } => {
                 self.checkpoint_since_run = true;
                 // Announcements before a checkpoint are left out of history.
@@ -5224,6 +5241,18 @@ fn validate_record(
                 return corrupt(path, "run_id has more than one RunStarted event");
             }
             *active_run = Some(run_id);
+        }
+        // A checkpoint inside a running run composed its system prompt
+        // afresh: its later attempts carry the new prompt's fingerprint.
+        EventPayload::SystemPromptComposed {
+            prompt_fingerprint, ..
+        } => {
+            let run_id = require_started_run(path, runs, record.run_id)?;
+            let run = runs.get_mut(&run_id).expect("started run is indexed");
+            if run.ended_seq.is_some() {
+                return corrupt(path, "SystemPromptComposed after its run ended");
+            }
+            run.prompt_fingerprint = prompt_fingerprint.clone();
         }
         EventPayload::SessionTitleCommitted { change, .. } => {
             let user = matches!(

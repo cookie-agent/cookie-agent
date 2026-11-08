@@ -12,8 +12,9 @@
 //! - **producer messages not yet consumed:** each one's acceptance and
 //!   admission, and the acceptance of a message admitted in the window;
 //! - **what assembly reads beside what it renders:** the latest run's
-//!   `run_started`, which every record of the run names, and the replay cut
-//!   that reaches furthest;
+//!   `run_started`, which every record of the run names, its latest
+//!   `system_prompt_composed`, the system prompt its requests carry, and the
+//!   replay cut that reaches furthest;
 //! - **under a checkpoint without `context_fresh`**, which an earlier build
 //!   wrote, every loaded skill and the latest `AGENTS.md` and memory records,
 //!   as that build pinned them. A checkpoint with it recorded its own just
@@ -142,6 +143,28 @@ pub fn current_agent_md_positions<E: Borrow<StoredEvent>>(events: &[E]) -> Vec<u
     latest
 }
 
+/// The latest run's latest `system_prompt_composed` in `events`: the system
+/// prompt its requests carry, composed afresh at a checkpoint inside it,
+/// instead of its `run_started` one (`docs/site/specs/forever-sessions.md`
+/// section 5.2). `None` when the run recorded none.
+pub fn latest_composed_prompt<E: Borrow<StoredEvent>>(events: &[E]) -> Option<&E> {
+    let mut composed = None::<&E>;
+    for event in events.iter().rev() {
+        match &event.borrow().payload {
+            EventPayload::SystemPromptComposed { .. } if composed.is_none() => {
+                composed = Some(event);
+            }
+            EventPayload::RunStarted { .. } => {
+                let run = event.borrow().run_id;
+                return composed
+                    .filter(|composed| Borrow::<StoredEvent>::borrow(*composed).run_id == run);
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 /// Where in `events` the latest `memory_loaded` before the conversation is,
 /// empty or not.
 pub fn latest_memory_position<E: Borrow<StoredEvent>>(events: &[E]) -> Option<usize> {
@@ -188,6 +211,9 @@ pub fn model_context(held: &[Arc<StoredEvent>], state: &LogState) -> Option<Vec<
         .find(|event| matches!(event.payload, EventPayload::RunStarted { .. }))
     {
         pin(run.seq, &mut kept, &mut queue);
+    }
+    if let Some(prompt) = latest_composed_prompt(held) {
+        pin(prompt.seq, &mut kept, &mut queue);
     }
     if let Some(cut) = held
         .iter()

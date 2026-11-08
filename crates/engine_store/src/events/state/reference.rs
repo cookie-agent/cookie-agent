@@ -684,6 +684,20 @@ pub fn latest_run_started(events: &Events) -> Option<&Arc<StoredEvent>> {
         .find(|event| event.run_id.is_some() && matches!(event.payload, Event::RunStarted { .. }))
 }
 
+/// The latest `system_prompt_composed` of the latest run, as
+/// `run_agent_prompt` looked for it.
+#[must_use]
+pub fn run_prompt(events: &Events) -> Option<&Arc<StoredEvent>> {
+    let run = latest_run_started(events)?.run_id;
+    events
+        .iter()
+        .rev()
+        .take_while(|event| !matches!(event.payload, Event::RunStarted { .. }))
+        .find(|event| {
+            event.run_id == run && matches!(event.payload, Event::SystemPromptComposed { .. })
+        })
+}
+
 /// What `acp_machines_note` decided from.
 #[must_use]
 pub fn machines_changed_before(events: &Events, run: RunId) -> Option<bool> {
@@ -1089,6 +1103,11 @@ pub fn differences(state: &LogState, events: &Events) -> Vec<&'static str> {
         state.latest_run_started().map(|event| event.seq) == started.map(|event| event.seq),
     );
     if let Some(run) = started.and_then(|event| event.run_id) {
+        check(
+            "run prompt",
+            state.run_prompt(run).map(|event| event.seq)
+                == run_prompt(events).map(|event| event.seq),
+        );
         let finished = events.iter().any(|event| {
             event.run_id == Some(run) && matches!(event.payload, Event::RunFinished { .. })
         });
