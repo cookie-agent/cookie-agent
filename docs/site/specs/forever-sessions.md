@@ -274,7 +274,7 @@ Read at `b339c902e`, it needs:
 | The latest `AGENTS.md` and memory records | Latest of their kind, from the run's start | **Read fresh at each checkpoint** (section 5.2) |
 | Producer admissions not yet consumed | Of any age | Pinned records, chosen by the fold of section 3.1, with each one's acceptance, and the acceptance of a message admitted in the window (section 12) |
 | What `close_event_dependencies` pulls in: an applied input's submission, a started call's turn, a terminated call's start | "Late tool completions can refer to events before the retained range" | At a checkpoint, pin the closure. Afterwards, open calls' records and inputs not yet applied are pinned, so any later reference resolves |
-| Latest `NativeReplayCut`, `ToolCallLinked`, `ToolOutputElided`, whether any producer message exists | `assemble_history_with_replay`'s forward pass over everything | The cut that reaches furthest is pinned, and so is the latest `run_started` (section 12). Links and elisions matter only for calls in view, which the window and pins hold |
+| Latest `NativeReplayCut`, `ToolCallLinked`, `ToolOutputElided`, whether any producer message exists | `assemble_history_with_replay`'s forward pass over everything | The cut that reaches furthest is pinned, and so are the latest `run_started` and its latest `system_prompt_composed` (section 12). Links and elisions matter only for calls in view, which the window and pins hold |
 | The loop guard's last 64 calls, the doom-loop count | Read back to a run's start, which can precede the window | Folds, as a ring of digests |
 
 So `model_context_events()` returns **pinned records and the window, in order**, and
@@ -289,8 +289,8 @@ user, 2026-11-06; ACP sessions are the opposite, section 3.4).
 
 | Part | When it is read | Today |
 |---|---|---|
-| System prompt, with its skill listing | At the next run, which composes it afresh (section 12) | The same |
-| Tool round | At the checkpoint | The same |
+| System prompt, with its skill listing | At the checkpoint, inside a run; between runs, at the next run (section 12) | At the next run, so a run that never ends keeps the prompt it started with |
+| Tool round | At the checkpoint, for the request right after it | At the request after that one |
 | `AGENTS.md`, from every coding attachment | At the checkpoint | At the next run, so a compaction mid-run keeps the old one until then |
 | Memory snapshot | At the checkpoint | The same as `AGENTS.md` |
 | A skill's body | **Only when `/skill` or the skill tool is called** | Read when called, then pinned forever |
@@ -323,6 +323,13 @@ What follows from that:
 - **What a load granted stays.** A skill's permission overlay and model, in memory by session
   (`skills_runtime`), survive a refresh point (the user, 2026-11-06), so no approval prompt
   appears mid-task because of compaction.
+
+**The system prompt** is composed again right after a checkpoint inside a run commits, as the run's
+admission composes it: the agent's body as its document reads now, the runtimes, attachments, tool
+instructions, and skills blocks, and the plugins' system-prompt hooks. When it differs from the
+prompt in force it is recorded as `system_prompt_composed`, and the run's later requests carry it
+(section 12). The run's agent otherwise stays as it was admitted: its permissions, models, and
+limits come from the run's frozen policy, which only the next run freezes again.
 
 **`AGENTS.md` and memory** are read as compaction starts, as their size counts in its budgets, and
 held in memory. They are written just before the commit, so a compaction that fails leaves no
@@ -1127,7 +1134,8 @@ compared with a fold of the whole file exactly, as before. The producer fold is 
   - **what assembly reads beside what it renders**, against section 5.1's "the latest cut is
     a fold" and "its producer fold and replay cut come from `state()`": the latest
     `run_started` (its run decides which unconsumed admissions render, and whose `AGENTS.md`
-    is current) and the `native_replay_cut` that reaches furthest. Pinning these records
+    is current), its latest `system_prompt_composed` (the prompt its requests carry; see
+    below), and the `native_replay_cut` that reaches furthest. Pinning these records
     lets assembly stay one function of a slice; the store's producer fold cannot serve it,
     as it lets go of settled messages whose bodies a window still renders;
   - **under a checkpoint without `context_fresh`**, every `skill_loaded` before the window,
@@ -1154,16 +1162,73 @@ compared with a fold of the whole file exactly, as before. The producer fold is 
   current record, and a snapshot that cannot be read writes the latest record again.
   "The current `AGENTS.md`" is the latest run's records, or, after a checkpoint with
   `context_fresh` in that run, those after its `input_through_seq`.
-- **The system prompt is not composed again at a checkpoint in the middle of a run**, against
-  section 5.2's table, which said it already was. A run's prompt is frozen into its
-  `run_started` at admission (frozen context spec, phase 3), and a checkpoint mid-run leaves
-  it to the next run, which composes it afresh (`checkpoint_since_run`), skill listing
-  included. The tool round does start over at the checkpoint. Composing the prompt mid-run
-  would need a record of a new prompt inside a run, which `run_agent_prompt`, the prompt
-  blocks, and the prefix fingerprints all read: a protocol addition the spec did not
-  describe, so it was not done. **For a run that never ends, the system prompt and its skill
-  listing stay as the run started them.** The table is corrected; this is for the user to
-  decide.
+- **The system prompt at a checkpoint inside a run, as built** (after the user decided that
+  everything refreshes at a checkpoint; client protocol 1.91.0, plugin protocol 1.45.0). The
+  first cut of phase 6 left the prompt frozen in `run_started` until the next run, so a run
+  that never ended kept the prompt it started with. Now:
+  - **The record** is a new audit event, `system_prompt_composed { composed_prompt,
+    prompt_fingerprint, blocks? }`, written right after the checkpoint commits, in the run,
+    only when the composed prompt or its blocks differ from the ones in force. Neither
+    `context_refreshed` nor `prompt_blocks_recorded` fits: the first is a client row with a
+    closed reason a compaction never had (the compaction has its own row), and the second
+    carries spans against the run's `run_started` prompt and is absent when a plugin replaced
+    it, where this record must still carry the prompt. It is audit, as `prompt_blocks_recorded`
+    is: only its own run reads it, a run does not outlive its engine, and the next run after a
+    checkpoint composes its prompt afresh, so an engine that does not know it builds nothing
+    differently. Writing it after the commit, not with the `AGENTS.md` and memory records
+    before it, lets the prompt be composed as the run's admission composes it after a
+    checkpoint: with the new round's deferral (the tool instructions block depends on which
+    providers are deferred) and with the plugins' hooks, which are async. A compaction whose
+    prompt cannot then be composed (`ToolPrompt`, too long or invalid, or a blocking hook that
+    failed) keeps its checkpoint and leaves the prompt in force; the compaction's own budgets
+    count the prompt it started with.
+  - **What it composes** is what a run's admission composes live: the agent's body as the
+    live registry holds it for the run's preset (the frozen one when the agent is gone or is
+    an ACP agent now), the `runtimes`, `attachments`, `tool_instructions`, and `skills`
+    blocks, then the `agent_before_start` hooks with `input` absent. A message a hook injects
+    is not taken: injections join a run at its start. **What stays frozen** is everything else
+    in the run's policy: permissions and the memory access they give, the model chain and
+    limits, delegation targets (so the delegate section lists the targets the run started
+    with), goal tools, the internal agents. The policy decides what the run may do, and
+    changing it mid-run would let a document edit grant a running run new permissions; the
+    prompt only says what the session looks like.
+  - **Readers of the prompt in force:** each request takes it from the model context it is
+    assembled from (`model_history::prompt_in_force`), as does the attempt's
+    `prompt_fingerprint`; `run_agent_prompt` (compaction, `get_history`) reads
+    `LogState::run_prompt`; `context_composition` takes the previous run's latest prompt and
+    blocks; the prompt block fold treats the record's blocks as the run's and as what the
+    model knows, so the next request announces nothing that the new prompt already says;
+    validation lets the run's later attempts carry its fingerprint; the display view's header
+    holds the latest run's latest one, and the clients show it in the system prompt row.
+  - **`model_context_events()` pins** the latest run's latest record before the window, as it
+    pins the run's `run_started`. A later checkpoint in the same run that composes the same
+    prompt records none, so the one in force can be older than the window; the long scenario
+    checks that case, and turning the pin off fails it.
+  - **The tool round** now starts over for the request right after the checkpoint: the tools
+    are published again when a checkpoint committed since they were (in both compaction
+    paths, and after an overflow's), with every tool up front when the attempt was a retry
+    after a refusal of deferred tools. The first cut published them again only at the next
+    loop pass, so the request after a checkpoint declared the old round and the one after
+    that the new, which moved the prefix twice.
+  - **Reasoning and caching.** The request after a checkpoint already starts from the summary,
+    so the prefix and its cached part change there anyway; a recomposed prompt moves the
+    change up to the system prompt, once, and is recorded only when something changed. On a
+    model that binds its reasoning, the stale-reasoning cut of the frozen context spec
+    (section 4) cuts the kept turns' reasoning with cause `compaction`, as before. The approval
+    reviewer does not read the session's system prompt (its own prompt, and the session's
+    `AGENTS.md` records), so it is unaffected. ACP sessions are unaffected: their runs neither
+    use `maybe_compact_context` nor record the event.
+  - **Tests:** `a_checkpoint_inside_a_run_composes_its_system_prompt_afresh` (a tool
+    provider's section changed between runs reaches the request after the run's checkpoint,
+    with the record, the attempt fingerprints, the new round before that request, no
+    announcement, and the same assembled history from a reopened engine);
+    `auto_compaction_commits_checkpoint_before_the_attempt_that_uses_it` now also checks that
+    an unchanged prompt records nothing and the round starts before the next attempt; the
+    long scenario records prompts inside runs and checks the fold and the pin at every record;
+    `attempts_after_a_composed_prompt_carry_its_fingerprint` and a case of the differential
+    validation test; the protocol's and the display view's tests; and the client's
+    `a_prompt_composed_inside_a_run_is_the_one_its_row_shows`. A plugin hook at a checkpoint
+    is not tested on its own: it is the admission's code path, run with no input.
 - **The next run takes `AGENTS.md` and memory once more,** as the first run after a checkpoint
   always did. So a compaction between runs reads them twice, once for the checkpoint and once
   for the run.
@@ -1233,7 +1298,8 @@ compared with a fold of the whole file exactly, as before. The producer fold is 
   under a provider window alone (older logs), which reads the whole log on a model that cannot
   use it.
 - `state.json` for a native log must carry the pinned records, as section 5.6 says; the folds
-  that choose them (`calls`, `inputs.submitted`, the producer fold) are already there.
+  that choose them (`calls`, `inputs.submitted`, the producer fold, and the run fold's latest
+  `system_prompt_composed`) are already there.
 - Native validation must keep what a pinned or windowed record can name: an elision now names
   only a call in view, a replay base an earlier attempt of its run, a late termination an open
   call.

@@ -187,9 +187,14 @@ attachment, and a new memory snapshot. The refresh points are:
   memory snapshot as compaction starts, counts them in its budgets, records
   them just before it commits (`context_fresh`), and pins nothing older,
   loaded skills included (section 6.4). What cannot be read is recorded
-  again as it was. The next request starts a new tool round, and the system
-  prompt, frozen into the run's `run_started`, is composed afresh at the next
-  run. An ACP agent's context stays frozen for the life of its ACP session;
+  again as it was. Since client protocol 1.91.0 a checkpoint inside a run
+  also composes the system prompt afresh right after it commits, as the
+  run's admission does (the agent's body as it reads now, the blocks, and
+  the plugins' system-prompt hooks), records it as `system_prompt_composed`
+  when it differs from the prompt in force, and the run's later requests
+  carry it; the request right after the checkpoint starts the new tool
+  round. Between runs, the next run composes the prompt. An ACP agent's
+  context stays frozen for the life of its ACP session;
 - **an eager tool change,** checked before each request:
   - the live parameter schema of an eager tool differs from the round's
     (an engine build or a runtime changed it). A changed description alone
@@ -230,8 +235,9 @@ the compaction has its own row.
 
 - **The system prompt** is the previous run's, byte for byte, on every model
   except an ACP agent: the agent's body, its blocks, and plugin
-  composition. The system-prompt hooks of plugins run at refresh points
-  only; message injections run as today.
+  composition. The system-prompt hooks of plugins take effect at refresh
+  points, and at a checkpoint inside a run, only; message injections run as
+  today, at a run's start.
 - **Prompt block changes** (`runtimes`, `tool_instructions`, `skills`) are
   announced as today (`prompt_blocks_announced`), now on every model.
 - **The `AGENTS.md` turn** is not reloaded. A root run no longer appends
@@ -445,8 +451,12 @@ spec index.
     (the `AGENTS.md` and memory rows), so the row does not repeat them.
 - **Forever sessions phase 6** (2026-11-07) changed sections 6.1 and 6.4: a
   native checkpoint composes `AGENTS.md` and memory afresh in the run that
-  compacts and pins nothing older, skills included. A mid-run checkpoint does
-  not compose the system prompt again: the run keeps the one frozen into its
-  `run_started`, as phase 3 above made a refresh a run's admission, and the
-  next run composes it afresh. See that spec's section 12.
+  compacts and pins nothing older, skills included. A checkpoint inside a run
+  then also composes the system prompt afresh (client protocol 1.91.0),
+  against phase 3 above, which made a refresh only a run's admission: the
+  run's prompt is no longer fixed by its `run_started`, but is its latest
+  `system_prompt_composed` when it has one. Only the prompt changes; the
+  run's permissions, models, and limits stay frozen. A refresh that is not a
+  checkpoint is still decided only at a run's admission. See that spec's
+  section 12.
 
