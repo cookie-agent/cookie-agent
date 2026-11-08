@@ -716,6 +716,7 @@ fn reference_validate_records(
                     active_attempt: None,
                     ordering_tainted: false,
                     ended_seq: None,
+                    replay_base: None,
                 };
                 if runs.insert(run_id, attribution).is_some() {
                     return corrupt(path, "run_id has more than one RunStarted event");
@@ -4024,6 +4025,101 @@ fn a_replay_evaluation_base_must_be_an_earlier_attempt_of_its_run_and_model() {
             "{rejected} must not be accepted as a base"
         );
     }
+}
+
+/// A run's replay base is the attempt its loop evaluated last, which stays
+/// however many attempts end after it without an evaluation, as unlimited
+/// overload retries can make before a stream starts: validation that lets go of
+/// what settled keeps it, and the next evaluation naming it validates (review,
+/// 2026-11-08).
+#[test]
+fn a_replay_base_stays_however_many_attempts_end_after_it_unevaluated() {
+    let base = attribution_records();
+    let session = base[0].session_id;
+    let run = base[1].run_id.expect("run id");
+    let suffix = [fallback_binding("fallback-zero")];
+    let resolved_model = wire_resolved(&suffix[0]);
+    let prompt_fingerprint = match &base[1].payload {
+        EventPayload::RunStarted { agent, .. } => agent.prompt_fingerprint.clone(),
+        _ => unreachable!(),
+    };
+    let evaluated =
+        |attempt: u128, base_attempt_id: Option<u128>| EventPayload::ModelReplayEvaluated {
+            attempt_id: AttemptId(Uuid::from_u128(attempt)),
+            resolved_model: resolved_model.clone(),
+            ordered_decisions: Vec::new(),
+            base_attempt_id: base_attempt_id.map(|base| AttemptId(Uuid::from_u128(base))),
+        };
+    let mut records = vec![base[0].clone(), base[1].clone()];
+    // The loop evaluates its first attempt, whose stream then fails.
+    push_run_event(
+        &mut records,
+        session,
+        run,
+        EventPayload::ModelAttemptStarted {
+            attempt_id: AttemptId(Uuid::from_u128(1)),
+            attempt_ordinal: 1,
+            fallback_index: 0,
+            retry_ordinal: 0,
+            resolved_model: resolved_model.clone(),
+            prompt_fingerprint: prompt_fingerprint.clone(),
+        },
+    );
+    push_run_event(&mut records, session, run, evaluated(1, None));
+    push_run_event(
+        &mut records,
+        session,
+        run,
+        EventPayload::AttemptAbandoned {
+            attempt_id: AttemptId(Uuid::from_u128(1)),
+            model_error: None,
+        },
+    );
+    // More retries than validation keeps of what ended, each refused before its
+    // stream started, so none is evaluated.
+    let retries = SETTLED_KEPT as u32 + 4;
+    for retry in 1..=retries {
+        push_abandoned_attempt(
+            &mut records,
+            session,
+            run,
+            &suffix,
+            &prompt_fingerprint,
+            (u128::from(retry) + 1, retry + 1, 0, retry),
+        );
+    }
+    let last = u128::from(retries) + 2;
+    push_run_event(
+        &mut records,
+        session,
+        run,
+        EventPayload::ModelAttemptStarted {
+            attempt_id: AttemptId(Uuid::from_u128(last)),
+            attempt_ordinal: retries + 2,
+            fallback_index: 0,
+            retry_ordinal: retries + 1,
+            resolved_model: resolved_model.clone(),
+            prompt_fingerprint,
+        },
+    );
+    push_run_event(&mut records, session, run, evaluated(last, Some(1)));
+
+    let path = Path::new("events.jsonl");
+    // A native log whose checkpoint started its model's context lets go of what
+    // settled after every record (`docs/site/specs/forever-sessions.md` section 12).
+    let mut state = ValidationState::new(ValidationTaint::default());
+    state.letting_go.context_from = Some(1);
+    for record in &records {
+        validate_record_incremental(path, session, record, &mut state, true).unwrap_or_else(
+            |error| panic!("record {} ({:?}): {error}", record.seq, record.payload),
+        );
+    }
+    assert!(state.let_go, "it let go of attempts that ended");
+    let mut whole = rebuild_whole(path, session, &records, &ValidationTaint::default())
+        .expect("the log validates whole");
+    whole.letting_go.context_from = Some(1);
+    whole.finish_whole();
+    state.assert_agrees_with_whole(&whole, "a whole read", true);
 }
 
 /// The line index cuts a revert where scanning the file's sequences would,

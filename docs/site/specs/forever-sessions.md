@@ -1359,8 +1359,9 @@ compared with a fold of the whole file exactly, as before. The producer fold is 
   - *Turns, their models, usage, call owners:* the native loop commits a turn, starts its calls, and
     records its usage at once (`model_loop.rs`), so each names the latest turn: the last 16 stay.
   - *Attempts:* lifecycle records name the attempt in flight; a replay's base is the attempt the run's
-    loop evaluated last (`ReplayEvaluationBase` holds only that one), so the latest 16 that ended hold
-    it; an abandon follows its commit at once.
+    loop evaluated last (`ReplayEvaluationBase` holds only that one), which each run keeps whatever
+    its age (corrected after review, below: the latest 16 that ended did not always hold it); an
+    abandon follows its commit at once.
   - *Calls:* a late completion, a background job's end, and a link name an open call, which stays. An
     ended call is named again only by an elision, which native compaction writes from the model context
     (`stage_tool_output_elision`), so of calls in view: those whose end is in the window, which is
@@ -1672,3 +1673,12 @@ a review in the golden scenario.
   `assert_window_reads_as_reopened` no longer skips a log holding its records whose validation
   let go, and for a native model's log it also compares validation under the native rule, which
   keeps the calls in view; with the fixes turned off it fails right after the revert.
+- **A run keeps its replay base.** Phase 7 held that the latest 16 attempts that ended hold a
+  replay's base, but an attempt abandoned before its stream started ends without an evaluation and
+  does not move the base, so with unlimited overload retries 17 such attempts let the base go and
+  the next `model_replay_evaluated` was refused, failing the run. Each run's validation now notes
+  the attempt it evaluated last (`RunAttribution::replay_base`), and that attempt stays while its
+  run does, beside the latest 16 that ended. A record at a time and a whole read keep the same, as
+  an attempt becomes a base only while it is in flight
+  (`a_replay_base_stays_however_many_attempts_end_after_it_unevaluated`). `STATE_VERSION` rose from
+  9 to 10, the digest test insisting.

@@ -3901,6 +3901,10 @@ struct RunAttribution {
     ordering_tainted: bool,
     /// The record that ended it, when one did.
     ended_seq: Option<u64>,
+    /// The attempt whose replay evaluation the run recorded last: the base its
+    /// loop's next evaluation may name, however many attempts end after it
+    /// without one.
+    replay_base: Option<AttemptId>,
 }
 
 #[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
@@ -4217,12 +4221,16 @@ impl ValidationState {
         }) {
             self.runs.remove(&run);
         }
-        // An attempt goes with its run, and once it ended, as its run's do.
+        // An attempt goes with its run, and once it ended, as its run's do, but
+        // for the one its run's next replay evaluation may name as its base.
         let runs = &self.runs;
         self.attempts
             .retain(|_, attempt| runs.contains_key(&attempt.run_id));
-        for attempt in settled_beyond(&self.attempts, SETTLED_KEPT, |_, attempt| {
-            attempt.finished.then_some(attempt.started_seq)
+        let replay_base = |id: &AttemptId, run: &RunId| {
+            runs.get(run).and_then(|run| run.replay_base) == Some(*id)
+        };
+        for attempt in settled_beyond(&self.attempts, SETTLED_KEPT, |id, attempt| {
+            (attempt.finished && !replay_base(id, &attempt.run_id)).then_some(attempt.started_seq)
         }) {
             self.attempts.remove(&attempt);
         }
@@ -5587,6 +5595,7 @@ fn validate_record(
                 active_attempt: None,
                 ordering_tainted: false,
                 ended_seq: None,
+                replay_base: None,
             };
             if runs.insert(run_id, attribution).is_some() {
                 return corrupt(path, "run_id has more than one RunStarted event");
@@ -5722,6 +5731,9 @@ fn validate_record(
                 validate_attempt_model(path, attempts, *attempt_id, record.run_id, resolved_model)?;
             if let Some(base) = base_attempt_id {
                 validate_replay_base(path, attempts, *attempt_id, *base, run, resolved_model)?;
+            }
+            if let Some(run) = runs.get_mut(&run) {
+                run.replay_base = Some(*attempt_id);
             }
         }
         EventPayload::ModelTurnCommitted {
