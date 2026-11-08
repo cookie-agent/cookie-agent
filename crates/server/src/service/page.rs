@@ -25,11 +25,7 @@ pub(super) async fn page(method: Method, uri: Uri, headers: HeaderMap) -> Respon
     }
     let path = uri.path().strip_prefix('/').unwrap_or(uri.path());
     let path = if path.is_empty() { "index.html" } else { path };
-    let policy = if path == cookie_agent_web_assets::VIEWER_PATH {
-        cookie_agent_web_assets::VIEWER_POLICY
-    } else {
-        cookie_agent_web_assets::content_security_policy()
-    };
+    let policy = cookie_agent_web_assets::policy_of(path);
     match file(path, &headers, policy) {
         Some(response) => response,
         None => StatusCode::NOT_FOUND.into_response(),

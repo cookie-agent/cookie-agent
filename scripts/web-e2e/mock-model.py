@@ -37,6 +37,7 @@ otherwise the last user text decides.
   containing "save a project report": a `write_asset` of `report.md` kept
   for the project, titled "Shared report"; after any of these, the reply
   names the asset's handle, and shows a new one with `<attach asset/>`;
+- containing "save a paper": a `write_asset` of `paper.pdf`;
 - containing "show two images": `write_asset`s of `one.png` and
   `two.png`, then a reply that shows both, next to each other;
 - containing "attach a file": a reply that attaches `report.md` and a
@@ -255,6 +256,8 @@ def reply(request):
     if "replace the figure" in text:
         handle = re.search(r"asset_[0-9a-f]{8}", text)
         return tool_reply("write_asset", {"path": "report.md", "asset": handle.group(0) if handle else ""})
+    if "save a paper" in text:
+        return tool_reply("write_asset", {"path": "paper.pdf", "title": "Paper draft"})
     if "save a project report" in text:
         return tool_reply("write_asset", {"path": "report.md", "scope": "project", "title": "Shared report"})
     if "show two images" in text:

@@ -1,0 +1,318 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<!-- The same policy the daemon sends with this file, for a bundle on a
+     static host; there the iframe's sandbox alone isolates the page.
+     docs/site/specs/asset-opening.md section 6.2. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src blob: 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'unsafe-inline'; img-src blob: data:; font-src blob: data:; connect-src blob: data:; form-action 'none'">
+<meta name="referrer" content="no-referrer">
+<title>PDF</title>
+<style>
+:root { color-scheme: light; --ground: #e4e4e7; --bar: #ffffff; --fg: #18181b; --muted: #71717a; --line: rgb(9 9 11 / 0.1); --hover: rgb(9 9 11 / 0.06); }
+:root[data-theme="dark"] { color-scheme: dark; --ground: #0a0a0c; --bar: #17171a; --fg: #ededef; --muted: #86868f; --line: rgb(255 255 255 / 0.08); --hover: rgb(255 255 255 / 0.07); }
+html, body { height: 100%; margin: 0; }
+body { display: flex; flex-direction: column; background: var(--ground); color: var(--fg); font: 13px/1.4 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; }
+#bar { flex-shrink: 0; display: flex; align-items: center; justify-content: center; gap: 2px; padding: 3px 6px; background: var(--bar); border-bottom: 1px solid var(--line); user-select: none; }
+#bar[hidden] { display: none; }
+#bar button { display: inline-flex; align-items: center; justify-content: center; min-width: 32px; height: 32px; padding: 0 8px; border: 0; border-radius: 6px; background: transparent; color: var(--fg); font: inherit; cursor: pointer; }
+#bar button:hover { background: var(--hover); }
+#bar button:disabled { opacity: 0.35; cursor: default; background: transparent; }
+#bar svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round; }
+#bar .num { font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--muted); padding: 0 6px; min-width: 4.5em; text-align: center; font-variant-numeric: tabular-nums; }
+#bar .sep { width: 1px; height: 18px; background: var(--line); margin: 0 4px; }
+#pages { flex: 1; min-height: 0; overflow: auto; scrollbar-gutter: stable; display: flex; flex-direction: column; align-items: safe center; gap: 14px; padding: 16px; }
+body.thumb #pages { overflow: hidden; padding: 6% 8% 0; gap: 0; }
+.page { position: relative; flex-shrink: 0; background: #fff; box-shadow: 0 1px 4px rgb(0 0 0 / 0.25); }
+.page canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+.textLayer { position: absolute; inset: 0; overflow: hidden; line-height: 1; text-size-adjust: none; forced-color-adjust: none; transform-origin: 0 0; z-index: 1; }
+.textLayer span, .textLayer br { color: transparent; position: absolute; white-space: pre; cursor: text; transform-origin: 0% 0%; }
+.textLayer ::selection { background: rgb(0 90 255 / 0.25); }
+.links { position: absolute; inset: 0; z-index: 2; pointer-events: none; }
+.links a { position: absolute; pointer-events: auto; }
+.links a:hover { background: rgb(255 210 0 / 0.2); }
+#note { margin: auto; padding: 24px; color: var(--muted); text-align: center; }
+</style>
+</head>
+<body>
+<div id="bar" hidden>
+  <button id="previous" type="button" title="Previous page" aria-label="Previous page"><svg viewBox="0 0 24 24"><path d="m18 15-6-6-6 6"/></svg></button>
+  <span class="num" id="number">–</span>
+  <button id="next" type="button" title="Next page" aria-label="Next page"><svg viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg></button>
+  <span class="sep"></span>
+  <button id="out" type="button" title="Zoom out" aria-label="Zoom out"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/><path d="M8 11h6"/></svg></button>
+  <span class="num" id="zoom">Fit</span>
+  <button id="in" type="button" title="Zoom in" aria-label="Zoom in"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/><path d="M11 8v6"/><path d="M8 11h6"/></svg></button>
+  <button id="fit" type="button" title="Fit the width">Fit width</button>
+</div>
+<div id="pages"></div>
+<script>
+// The viewer of a PDF asset (docs/site/specs/asset-opening.md section 6.2).
+// It holds nothing and reaches no network: the page that frames it reads the
+// PDF and pdf.js's two files over its own connection and sends all three
+// here with a token. pdf.js runs from `blob:` URLs of this frame's opaque
+// origin, its worker's code on this thread, and draws the pages: all of them, each when it
+// nears the view, or only the first, for a card's thumbnail. The page count
+// and a failure go back to the parent tagged with the token.
+(function () {
+  "use strict";
+  var token = null;
+  var pages = document.getElementById("pages");
+  function tell(message) {
+    message.token = token;
+    parent.postMessage(message, "*");
+  }
+  function fail(error) {
+    pages.innerHTML = "";
+    var note = document.createElement("p");
+    note.id = "note";
+    note.textContent = "This PDF could not be shown: " + (error && error.message ? error.message : String(error));
+    pages.appendChild(note);
+    tell({ type: "cookie-pdf-failed", message: note.textContent });
+  }
+  addEventListener("message", function (event) {
+    var data = event.data;
+    if (event.source !== parent || parent === window || !data || typeof data !== "object"
+        || data.type !== "cookie-pdf" || typeof data.token !== "string" || token !== null
+        || !(data.pdf instanceof Blob) || !(data.library instanceof Blob) || !(data.worker instanceof Blob)) {
+      return;
+    }
+    token = data.token;
+    document.documentElement.dataset.theme = data.dark ? "dark" : "light";
+    show(data).catch(fail);
+  });
+
+  async function show(data) {
+    var thumb = data.mode === "thumb";
+    if (thumb) {
+      document.body.classList.add("thumb");
+    }
+    var library = await import(URL.createObjectURL(data.library));
+    // A sandboxed frame without its origin may not start workers, so
+    // pdf.js runs its worker's code on this frame's thread, which a
+    // browser that isolates sandboxed frames keeps off the page's.
+    globalThis.pdfjsWorker = await import(URL.createObjectURL(data.worker));
+    var bytes = new Uint8Array(await data.pdf.arrayBuffer());
+    var pdf = await library.getDocument({
+      data: bytes,
+      isEvalSupported: false,
+      enableXfa: false,
+      stopAtErrors: false,
+    }).promise;
+    tell({ type: "cookie-pdf-pages", pages: pdf.numPages });
+    if (thumb) {
+      await thumbnail(pdf);
+    } else {
+      await reader(library, pdf);
+    }
+  }
+
+  // A card's thumbnail: the first page, as wide as the frame allows.
+  async function thumbnail(pdf) {
+    var page = await pdf.getPage(1);
+    var base = page.getViewport({ scale: 1 });
+    var width = pages.clientWidth * 0.84;
+    var viewport = page.getViewport({ scale: width / base.width });
+    var box = sheet(viewport);
+    pages.appendChild(box);
+    await draw(page, viewport, box);
+  }
+
+  function sheet(viewport) {
+    var box = document.createElement("div");
+    box.className = "page";
+    box.style.width = Math.floor(viewport.width) + "px";
+    box.style.height = Math.floor(viewport.height) + "px";
+    return box;
+  }
+
+  async function draw(page, viewport, box) {
+    var ratio = window.devicePixelRatio || 1;
+    var canvas = document.createElement("canvas");
+    canvas.width = Math.floor(viewport.width * ratio);
+    canvas.height = Math.floor(viewport.height * ratio);
+    box.appendChild(canvas);
+    await page.render({
+      canvas: canvas,
+      viewport: viewport,
+      transform: ratio === 1 ? null : [ratio, 0, 0, ratio, 0, 0],
+    }).promise;
+  }
+
+  // The whole PDF: its pages one under another, each drawn when it nears
+  // the view, with the bar's page number, steps, and zoom.
+  async function reader(library, pdf) {
+    var bar = document.getElementById("bar");
+    var number = document.getElementById("number");
+    var zoomLabel = document.getElementById("zoom");
+    bar.hidden = false;
+    var first = await pdf.getPage(1);
+    var base = first.getViewport({ scale: 1 });
+    // The zoom against the page's own size; `null` fits the width.
+    var zoom = null;
+    var boxes = [];
+    var observer = null;
+    var current = 1;
+    function fitted() {
+      return Math.max(0.25, (pages.clientWidth - 32) / base.width);
+    }
+    function scale() {
+      return zoom === null ? fitted() : zoom;
+    }
+    function layout() {
+      var at = current;
+      if (observer) {
+        observer.disconnect();
+      }
+      pages.innerHTML = "";
+      boxes = [];
+      var s = scale();
+      zoomLabel.textContent = zoom === null ? "Fit" : Math.round(s * 100) + "%";
+      observer = new IntersectionObserver(function (entries) {
+        entries.forEach(function (entry) {
+          if (entry.isIntersecting) {
+            observer.unobserve(entry.target);
+            render(entry.target);
+          }
+        });
+      }, { root: pages, rootMargin: "100% 0px" });
+      for (var n = 1; n <= pdf.numPages; n++) {
+        // Every page sized as the first until it is drawn at its own size.
+        var box = sheet(base.clone({ scale: s }));
+        box.dataset.page = n;
+        pages.appendChild(box);
+        boxes.push(box);
+        observer.observe(box);
+      }
+      go(at, false);
+    }
+    async function render(box) {
+      var page = await pdf.getPage(Number(box.dataset.page));
+      var viewport = page.getViewport({ scale: scale() });
+      box.style.width = Math.floor(viewport.width) + "px";
+      box.style.height = Math.floor(viewport.height) + "px";
+      box.style.setProperty("--total-scale-factor", String(viewport.scale));
+      await draw(page, viewport, box);
+      var text = document.createElement("div");
+      text.className = "textLayer";
+      box.appendChild(text);
+      new library.TextLayer({
+        textContentSource: page.streamTextContent(),
+        container: text,
+        viewport: viewport,
+      }).render().catch(function () {});
+      links(page, viewport, box);
+    }
+    // A link of the PDF opens in a new tab; a link inside it goes to its page.
+    async function links(page, viewport, box) {
+      var annotations = await page.getAnnotations({ intent: "display" });
+      var layer = null;
+      annotations.forEach(function (note) {
+        if (note.subtype !== "Link" || (!note.url && !note.dest)) {
+          return;
+        }
+        var rect = viewport.convertToViewportRectangle(note.rect);
+        var link = document.createElement("a");
+        link.style.left = Math.min(rect[0], rect[2]) + "px";
+        link.style.top = Math.min(rect[1], rect[3]) + "px";
+        link.style.width = Math.abs(rect[2] - rect[0]) + "px";
+        link.style.height = Math.abs(rect[3] - rect[1]) + "px";
+        if (note.url && /^(https?:|mailto:)/i.test(note.url)) {
+          link.href = note.url;
+          link.target = "_blank";
+          link.rel = "noopener noreferrer";
+          link.title = note.url;
+        } else if (note.dest) {
+          link.href = "#";
+          link.addEventListener("click", function (event) {
+            event.preventDefault();
+            var dest = typeof note.dest === "string" ? pdf.getDestination(note.dest) : Promise.resolve(note.dest);
+            dest.then(function (target) {
+              return target ? pdf.getPageIndex(target[0]) : null;
+            }).then(function (index) {
+              if (index !== null) {
+                go(index + 1, true);
+              }
+            }).catch(function () {});
+          });
+        } else {
+          return;
+        }
+        if (!layer) {
+          layer = document.createElement("div");
+          layer.className = "links";
+          box.appendChild(layer);
+        }
+        layer.appendChild(link);
+      });
+    }
+    function go(n, smooth) {
+      n = Math.min(Math.max(1, n), pdf.numPages);
+      current = n;
+      var box = boxes[n - 1];
+      if (box) {
+        pages.scrollTo({ top: box.offsetTop - 16, behavior: smooth ? "smooth" : "auto" });
+      }
+      mark(n);
+    }
+    function mark(n) {
+      number.textContent = n + " / " + pdf.numPages;
+      document.getElementById("previous").disabled = n <= 1;
+      document.getElementById("next").disabled = n >= pdf.numPages;
+    }
+    // The page in view is the one across the middle of the frame.
+    pages.addEventListener("scroll", function () {
+      var middle = pages.scrollTop + pages.clientHeight / 2;
+      for (var i = 0; i < boxes.length; i++) {
+        var box = boxes[i];
+        if (box.offsetTop + box.offsetHeight + 7 >= middle) {
+          if (current !== i + 1) {
+            current = i + 1;
+            mark(current);
+          }
+          break;
+        }
+      }
+    }, { passive: true });
+    function setZoom(next) {
+      zoom = next === null ? null : Math.min(5, Math.max(0.25, next));
+      layout();
+    }
+    document.getElementById("previous").onclick = function () { go(current - 1, true); };
+    document.getElementById("next").onclick = function () { go(current + 1, true); };
+    document.getElementById("in").onclick = function () { setZoom(scale() * 1.25); };
+    document.getElementById("out").onclick = function () { setZoom(scale() / 1.25); };
+    document.getElementById("fit").onclick = function () { setZoom(null); };
+    addEventListener("keydown", function (event) {
+      if (event.ctrlKey || event.metaKey || event.altKey) {
+        return;
+      }
+      if (event.key === "+" || event.key === "=") {
+        setZoom(scale() * 1.25);
+      } else if (event.key === "-") {
+        setZoom(scale() / 1.25);
+      } else if (event.key === "0") {
+        setZoom(null);
+      } else if (event.key === "PageDown" || event.key === "n") {
+        go(current + 1, true);
+      } else if (event.key === "PageUp" || event.key === "p") {
+        go(current - 1, true);
+      } else {
+        return;
+      }
+      event.preventDefault();
+    });
+    // Fitted, the pages follow the frame's width.
+    var width = pages.clientWidth;
+    addEventListener("resize", function () {
+      if (zoom === null && Math.abs(pages.clientWidth - width) > 8) {
+        width = pages.clientWidth;
+        layout();
+      }
+    });
+    layout();
+  }
+})();
+</script>
+</body>
+</html>

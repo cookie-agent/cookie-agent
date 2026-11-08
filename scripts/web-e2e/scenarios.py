@@ -1875,6 +1875,22 @@ def assets_tab(browser):
     )
     browser.click("#media-viewer-close")
     browser.wait("the closed viewer", lambda: count(browser, "#media-viewer") == 0)
+    # A PDF is a document: its card draws its first page and says how many
+    # it has, and its page holds the PDF viewer.
+    view(browser, "chat")
+    send(browser, "save a paper")
+    idle(browser, "the paper")
+    view(browser, "assets")
+    browser.click("#assets-page [data-asset-kind='Documents']")
+    paper = "#assets-page [data-asset-row]:has([data-asset-type='application/pdf'])"
+    browser.wait("the paper's card", lambda: count(browser, paper) == 1, timeout=30)
+    browser.wait("its page count", lambda: browser.text(paper + " [data-pdf-pages]") == "1 page", timeout=60)
+    browser.shot("assets-pdf-card")
+    browser.click(paper)
+    browser.wait("the PDF viewer", lambda: count(browser, "#asset-page-body iframe[data-pdf-frame]") == 1, timeout=30)
+    time.sleep(1)
+    browser.shot("assets-pdf-page")
+    browser.click("#asset-page-back")
     view(browser, "chat")
     print("the Assets tab lists, filters, opens, renames, and deletes assets, and steps through its pictures")
 

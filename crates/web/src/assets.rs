@@ -58,11 +58,23 @@ thread_local! {
     /// The HTML frames shown, by their token.
     static FRAMES: RefCell<HashMap<String, web_sys::Element>> = RefCell::new(HashMap::new());
     static LISTENING: RefCell<bool> = const { RefCell::new(false) };
+    /// pdf.js and its worker's code, read once from the page's own files
+    /// for the PDF viewer (`docs/site/specs/asset-opening.md` section 6.2).
+    static PDF_LIBRARY: RefCell<Option<(web_sys::Blob, web_sys::Blob)>> = const { RefCell::new(None) };
 }
+
+/// Where the page keeps pdf.js and its worker's code.
+const PDF_LIBRARY_PATH: &str = "pdf.min.mjs";
+const PDF_WORKER_PATH: &str = "pdf.worker.min.mjs";
+/// The PDF viewer's file, beside the page.
+const PDF_VIEWER: &str = "pdf-viewer.html";
 
 #[derive(Clone)]
 struct Content {
     url: String,
+    /// The bytes the URL names, to send a PDF to its viewer: the page's
+    /// policy does not let it read its own `blob:` URLs back.
+    blob: web_sys::Blob,
     text: Option<std::rc::Rc<str>>,
     media_type: String,
 }
@@ -255,6 +267,11 @@ pub fn tab_thumbnail_html(asset: &Asset) -> String {
         (
             "thumb",
             "<span class=\"absolute inset-0 flex items-center justify-center\" data-asset-body></span>",
+        )
+    } else if media == "application/pdf" && asset.byte_length <= BUDGET_BYTES {
+        (
+            "pdf",
+            "<span class=\"absolute inset-0 overflow-hidden bg-sunken\" data-asset-body></span><span class=\"pointer-events-none absolute bottom-2 left-2 z-10 hidden rounded-md bg-black/60 px-1.5 py-0.5 font-mono text-[0.6875rem] text-white\" data-pdf-pages></span>",
         )
     } else if media == "text/html" && asset.byte_length <= BUDGET_BYTES {
         (
@@ -853,6 +870,7 @@ async fn fill(element: web_sys::Element, shown: Placeholder, workspace: Workspac
             Some(text) => excerpt(&target, text),
             None => target.set_text_content(Some("too large to show")),
         },
+        "pdf" => pdf_frame(&target, &content, PdfMode::Thumbnail),
         "audio" => crate::media::show(&target, &content.url, &content.media_type, &asset.title),
         "panel" => panel(&target, &content, &asset),
         "source" => {
@@ -901,6 +919,7 @@ fn figure_body(target: &web_sys::Element, content: &Content, asset: &Asset) {
 fn panel(target: &web_sys::Element, content: &Content, asset: &Asset) {
     match (content.media_type.as_str(), &content.text) {
         ("text/html", Some(text)) => frame(target, text, Some(Fixed::Filling)),
+        ("application/pdf", _) => pdf_frame(target, content, PdfMode::Reader),
         ("text/markdown", Some(text)) => {
             target.set_inner_html(&format!(
                 "<div class=\"markdown mx-auto w-full max-w-3xl p-4\" data-asset-document>{}</div>",
@@ -1227,6 +1246,151 @@ fn thumbnail_style(target: &web_sys::Element) -> String {
     )
 }
 
+/// How a PDF's frame draws it.
+#[derive(Clone, Copy)]
+enum PdfMode {
+    /// A card's thumbnail: the first page, taking no input.
+    Thumbnail,
+    /// The asset page's reader: every page, with its bar.
+    Reader,
+}
+
+/// A PDF in a frame of `pdf-viewer.html`, which gets the PDF and pdf.js
+/// once it loads, with this frame's token, and says back how many pages
+/// the PDF has.
+fn pdf_frame(target: &web_sys::Element, content: &Content, mode: PdfMode) {
+    let Some(document) = target.owner_document() else {
+        return;
+    };
+    let Ok(iframe) = document.create_element("iframe") else {
+        return;
+    };
+    let token = uuid::Uuid::now_v7().simple().to_string();
+    let (class, sandbox) = match mode {
+        PdfMode::Thumbnail => (
+            "pointer-events-none absolute inset-0 block h-full w-full border-0",
+            "allow-scripts",
+        ),
+        PdfMode::Reader => (
+            "block min-h-0 w-full flex-1 border-0",
+            "allow-scripts allow-popups",
+        ),
+    };
+    for (name, value) in [
+        ("sandbox", sandbox),
+        ("referrerpolicy", "no-referrer"),
+        ("src", PDF_VIEWER),
+        ("title", "PDF"),
+        ("data-pdf-frame", token.as_str()),
+        ("class", class),
+    ] {
+        let _ = iframe.set_attribute(name, value);
+    }
+    if matches!(mode, PdfMode::Thumbnail) {
+        let _ = iframe.set_attribute("tabindex", "-1");
+        let _ = iframe.set_attribute("aria-hidden", "true");
+    } else {
+        let _ = iframe.set_attribute("style", "height: 100%");
+    }
+    let pdf = content.blob.clone();
+    let sent = token.clone();
+    let frame = iframe.clone();
+    let on_load = Closure::<dyn Fn()>::new(move || {
+        spawn_local(send_pdf(frame.clone(), pdf.clone(), sent.clone(), mode));
+    });
+    let _ = iframe.add_event_listener_with_callback("load", on_load.as_ref().unchecked_ref());
+    on_load.forget();
+    FRAMES.with(|frames| frames.borrow_mut().insert(token, iframe.clone()));
+    let _ = target.append_child(&iframe);
+}
+
+/// A file of the page's own origin as a `Blob`.
+async fn fetch_blob(url: &str) -> Result<web_sys::Blob, JsValue> {
+    let window = web_sys::window().ok_or_else(|| JsValue::from_str("no window"))?;
+    let response: web_sys::Response =
+        wasm_bindgen_futures::JsFuture::from(window.fetch_with_str(url))
+            .await?
+            .dyn_into()?;
+    if !response.ok() {
+        return Err(JsValue::from_str(&format!("{url}: {}", response.status())));
+    }
+    wasm_bindgen_futures::JsFuture::from(response.blob()?)
+        .await?
+        .dyn_into()
+}
+
+/// pdf.js and its worker's code, read the first time a PDF is shown.
+async fn pdf_library() -> Result<(web_sys::Blob, web_sys::Blob), JsValue> {
+    if let Some(library) = PDF_LIBRARY.with(|library| library.borrow().clone()) {
+        return Ok(library);
+    }
+    let library = (
+        fetch_blob(PDF_LIBRARY_PATH).await?,
+        fetch_blob(PDF_WORKER_PATH).await?,
+    );
+    PDF_LIBRARY.with(|kept| *kept.borrow_mut() = Some(library.clone()));
+    Ok(library)
+}
+
+/// Sends the PDF `pdf` and pdf.js to the frame `frame`, with `token`.
+async fn send_pdf(frame: web_sys::Element, pdf: web_sys::Blob, token: String, mode: PdfMode) {
+    let sent = async {
+        let (library, worker) = pdf_library().await?;
+        let window = content_window(&frame).ok_or_else(|| JsValue::from_str("no frame"))?;
+        let dark = web_sys::window()
+            .and_then(|window| window.document())
+            .and_then(|document| document.document_element())
+            .is_some_and(|root| root.class_list().contains("dark"));
+        let message = js_sys::Object::new();
+        for (name, value) in [
+            ("type", JsValue::from_str("cookie-pdf")),
+            ("token", JsValue::from_str(&token)),
+            (
+                "mode",
+                JsValue::from_str(match mode {
+                    PdfMode::Thumbnail => "thumb",
+                    PdfMode::Reader => "full",
+                }),
+            ),
+            ("dark", JsValue::from_bool(dark)),
+            ("pdf", pdf.into()),
+            ("library", library.into()),
+            ("worker", worker.into()),
+        ] {
+            js_sys::Reflect::set(&message, &name.into(), &value)?;
+        }
+        let post: js_sys::Function =
+            js_sys::Reflect::get(&window, &"postMessage".into())?.dyn_into()?;
+        post.call2(&window, &message, &"*".into())?;
+        Ok::<(), JsValue>(())
+    }
+    .await;
+    if sent.is_err() {
+        frame.set_outer_html(&format!(
+            "<span class=\"p-3 {NOTE}\">the PDF viewer could not be loaded</span>"
+        ));
+    }
+}
+
+/// The page count a PDF's frame said, on its card.
+fn show_pages(frame: &web_sys::Element, pages: f64) {
+    let Some(badge) = frame
+        .closest("[data-asset]")
+        .ok()
+        .flatten()
+        .and_then(|card| card.query_selector("[data-pdf-pages]").ok().flatten())
+    else {
+        return;
+    };
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let pages = pages as u64;
+    badge.set_text_content(Some(&format!(
+        "{pages} page{}",
+        if pages == 1 { "" } else { "s" }
+    )));
+    let _ = badge.class_list().remove_1("hidden");
+}
+
 fn send_page(frame: &web_sys::Element, html: &str, token: &str) {
     let Some(window) = content_window(frame) else {
         return;
@@ -1268,16 +1432,20 @@ fn listen() {
                     .ok()
                     .and_then(|value| value.as_string())
             };
-            if text("type").as_deref() != Some("cookie-asset-height") {
-                return;
-            }
+            // A page's height, and a PDF's page count.
+            let kind = text("type");
+            let field = match kind.as_deref() {
+                Some("cookie-asset-height") => "height",
+                Some("cookie-pdf-pages") => "pages",
+                _ => return,
+            };
             let Some(token) = text("token") else {
                 return;
             };
-            let Some(height) = js_sys::Reflect::get(&data, &"height".into())
+            let Some(number) = js_sys::Reflect::get(&data, &field.into())
                 .ok()
                 .and_then(|value| value.as_f64())
-                .filter(|height| height.is_finite() && *height > 0.0)
+                .filter(|number| number.is_finite() && *number > 0.0)
             else {
                 return;
             };
@@ -1289,8 +1457,14 @@ fn listen() {
                 (Some(source), Some(window)) => js_sys::Object::is(&source, &window),
                 _ => false,
             };
-            if from_frame {
-                size_frame(&frame, height);
+            // Each frame speaks only of its own kind.
+            if !from_frame {
+                return;
+            }
+            match field {
+                "height" if frame.has_attribute("data-asset-frame") => size_frame(&frame, number),
+                "pages" if frame.has_attribute("data-pdf-frame") => show_pages(&frame, number),
+                _ => {}
             }
         });
     let _ = window.add_event_listener_with_callback("message", on_message.as_ref().unchecked_ref());
@@ -1439,10 +1613,11 @@ async fn content(asset: &Asset, source: &Source, workspace: Workspace) -> Result
         .then(|| String::from_utf8(bytes.clone()).ok())
         .flatten()
         .map(std::rc::Rc::from);
-    let url =
+    let (blob, url) =
         blob_url(&bytes, &media_type).map_err(|_| "the asset could not be shown".to_owned())?;
     let content = Content {
         url,
+        blob,
         text,
         media_type,
     };
@@ -1460,7 +1635,8 @@ async fn content(asset: &Asset, source: &Source, workspace: Workspace) -> Result
     Ok(content)
 }
 
-fn blob_url(bytes: &[u8], media_type: &str) -> Result<String, JsValue> {
+/// A `Blob` of `bytes` and its URL.
+fn blob_url(bytes: &[u8], media_type: &str) -> Result<(web_sys::Blob, String), JsValue> {
     let array = js_sys::Uint8Array::from(bytes);
     let parts = js_sys::Array::of1(&array);
     let options = web_sys::BlobPropertyBag::new();
@@ -1471,7 +1647,8 @@ fn blob_url(bytes: &[u8], media_type: &str) -> Result<String, JsValue> {
         media_type
     });
     let blob = web_sys::Blob::new_with_u8_array_sequence_and_options(&parts, &options)?;
-    web_sys::Url::create_object_url_with_blob(&blob)
+    let url = web_sys::Url::create_object_url_with_blob(&blob)?;
+    Ok((blob, url))
 }
 
 /// Saves `asset`'s current content as a file: read, then handed to the

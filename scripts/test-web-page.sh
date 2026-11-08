@@ -245,6 +245,28 @@ top.postMessage({type: "cookie-asset-height", token: "guess", height: 9999}, "*"
 </script></body></html>
 HTML
     printf '# Report\n\nAll good.\n' >"$allowing/workspace/report.md"
+    # A one-page PDF, which the PDF viewer draws.
+    python3 - "$allowing/workspace/paper.pdf" <<'PY'
+import sys
+stream = b"BT /F1 24 Tf 72 720 Td (Paper draft) Tj ET"
+objects = [
+    b"<< /Type /Catalog /Pages 2 0 R >>",
+    b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+    b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>",
+    b"<< /Length %d >>\nstream\n" % len(stream) + stream + b"\nendstream",
+    b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+]
+pdf = b"%PDF-1.4\n"
+offsets = []
+for number, body in enumerate(objects, 1):
+    offsets.append(len(pdf))
+    pdf += b"%d 0 obj\n" % number + body + b"\nendobj\n"
+xref = len(pdf)
+pdf += b"xref\n0 %d\n0000000000 65535 f \n" % (len(objects) + 1)
+pdf += b"".join(b"%010d 00000 n \n" % offset for offset in offsets)
+pdf += b"trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n" % (len(objects) + 1, xref)
+open(sys.argv[1], "wb").write(pdf)
+PY
     # The runtime_mcp group's `local` runtime hosts the stdio fixture MCP
     # server, one that cannot start, and the fixture once for the runtime
     # (`scope = "runtime"`), which the runtime panels list.

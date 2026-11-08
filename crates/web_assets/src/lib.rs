@@ -51,6 +51,30 @@ pub const VIEWER_POLICY: &str = "default-src * data: blob: 'unsafe-inline' 'unsa
      frame-src * data: blob: about:; object-src 'none'; form-action 'none'; \
      frame-ancestors 'self'; sandbox allow-scripts allow-popups";
 
+/// The page a PDF asset is drawn in (`docs/site/specs/asset-opening.md`
+/// section 6.2), served with [`PDF_VIEWER_POLICY`].
+pub const PDF_VIEWER_PATH: &str = "pdf-viewer.html";
+
+/// The Content-Security-Policy of [`PDF_VIEWER_PATH`]: sandboxed without
+/// `allow-same-origin` like [`VIEWER_POLICY`], framed only by the page,
+/// and closed to the network: it runs pdf.js from the `blob:` URLs of
+/// what the page sends it, and a PDF reaches nothing.
+pub const PDF_VIEWER_POLICY: &str = "default-src 'none'; \
+     script-src blob: 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'unsafe-inline'; \
+     img-src blob: data:; font-src blob: data:; connect-src blob: data:; \
+     form-action 'none'; frame-ancestors 'self'; sandbox allow-scripts allow-popups";
+
+/// The Content-Security-Policy the file of the page at `path` is served
+/// with: a viewer's own, or the page's.
+#[must_use]
+pub fn policy_of(path: &str) -> &'static str {
+    match path {
+        VIEWER_PATH => VIEWER_POLICY,
+        PDF_VIEWER_PATH => PDF_VIEWER_POLICY,
+        _ => content_security_policy(),
+    }
+}
+
 /// The Content-Security-Policy the page is served with: its own origin,
 /// its inline scripts by hash, WebAssembly, `blob:` media, WebSocket
 /// connections to any daemon, and its service worker from its own origin.
@@ -93,5 +117,22 @@ mod tests {
         assert!(policy.contains("form-action 'none'"), "{policy}");
         // An agent's page reaches the network.
         assert!(policy.contains("connect-src * ws: wss:"), "{policy}");
+    }
+
+    #[test]
+    fn the_pdf_viewer_is_sandboxed_and_reaches_no_network() {
+        let policy = super::policy_of(super::PDF_VIEWER_PATH);
+        assert!(
+            policy.contains("sandbox allow-scripts allow-popups"),
+            "{policy}"
+        );
+        assert!(!policy.contains("allow-same-origin"), "{policy}");
+        assert!(policy.contains("frame-ancestors 'self'"), "{policy}");
+        assert!(policy.contains("default-src 'none'"), "{policy}");
+        assert!(!policy.contains('*'), "{policy}");
+        assert_eq!(
+            super::policy_of("index.html"),
+            super::content_security_policy()
+        );
     }
 }

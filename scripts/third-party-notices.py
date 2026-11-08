@@ -1,7 +1,7 @@
 """Writes THIRD-PARTY-NOTICES.txt: every third-party crate the `cookie`
 binary and the web client are built from, with its version, license, and
 source, the license texts those crates ship, and the web client's bundled
-font, icons, and highlighter.
+font, icons, highlighter, and PDF viewer.
 
 Release archives include the file, the daemon serves it beside the web
 page, and the TUI's /about shows it. Run it after changing dependencies;
@@ -62,6 +62,12 @@ ASSETS = [
         "BSD-3-Clause",
         "crates/web/assets/vendor/highlight.js-LICENSE.txt",
         "https://github.com/highlightjs/highlight.js",
+    ),
+    (
+        "PDF.js 6.5.438 (PDF viewer), by Mozilla",
+        "Apache-2.0",
+        "crates/web/assets/vendor/pdfjs-LICENSE.txt",
+        "https://github.com/mozilla/pdf.js",
     ),
 ]
 

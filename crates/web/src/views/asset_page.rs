@@ -70,6 +70,10 @@ fn Page(workspace: Workspace, asset: Asset) -> impl IntoView {
             workspace.asset_page.set(next);
         }
     };
+    let stepping = move || deck.with(|deck| deck.len() > 1) && at.get().is_some();
+    // Whether it is the last of them; outside `view!`, whose tags a `>`
+    // would end.
+    let at_end = move || at.get().is_none_or(|at| at + 1 >= deck.with(Vec::len));
     let reload = move || {
         if let Some(frame) = body
             .get_untracked()
@@ -118,7 +122,10 @@ fn Page(workspace: Workspace, asset: Asset) -> impl IntoView {
     };
     let kind = cookie_agent_client_state::assets::AssetKind::of(&asset.media_type);
     let has_tabs = open.has_source() && !source_only;
-    let fills = matches!(asset.media_type.as_str(), "text/html" | "text/markdown");
+    let fills = matches!(
+        asset.media_type.as_str(),
+        "text/html" | "text/markdown" | "application/pdf"
+    );
     let is_html = asset.media_type == "text/html";
     let place = super::assets::place_of(workspace, &asset);
     let age = cookie_agent_protocol::memory_age(asset.updated.at, jiff::Timestamp::now());
@@ -228,7 +235,7 @@ fn Page(workspace: Workspace, asset: Asset) -> impl IntoView {
                     </span>
                     <span class="mx-1 hidden h-5 w-px bg-line-2 sm:block"></span>
                 </Show>
-                <Show when=move || deck.with(|deck| deck.len() > 1) && at.get().is_some()>
+                <Show when=stepping>
                     <span class="hidden shrink-0 items-center sm:flex">
                         <button
                             type="button"
@@ -250,7 +257,7 @@ fn Page(workspace: Workspace, asset: Asset) -> impl IntoView {
                             id="asset-page-next"
                             aria-label="Next"
                             title="Next (j)"
-                            disabled=move || at.get().map(|at| at + 1) >= Some(deck.with(Vec::len))
+                            disabled=at_end
                             on:click=move |_| step(1)
                         >
                             <Glyph icon=icondata::LuChevronDown />

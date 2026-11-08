@@ -1,6 +1,6 @@
 # Opening assets: a gallery, the media viewer, and an asset page
 
-Status: **approved** (2026-11-08), being implemented. The user approved the
+Status: **implemented** (2026-11-08; no protocol change). The user approved the
 mockup [`asset-opening/preview.html`](asset-opening/preview.html) and asked
 for PDF and office files to be Documents. This revises
 [assets](assets.md) section 8.3 (the Assets tab). The shelf, the side panel,

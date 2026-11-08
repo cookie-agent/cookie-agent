@@ -1397,14 +1397,10 @@ mod authentication_tests {
                 asset.path
             );
             assert_eq!(body, asset.bytes, "{}", asset.path);
-            // The viewer of HTML assets has a policy of its own.
+            // The viewers of HTML and PDF assets have policies of their own.
             assert_eq!(
                 headers["content-security-policy"],
-                if asset.path == cookie_agent_web_assets::VIEWER_PATH {
-                    cookie_agent_web_assets::VIEWER_POLICY
-                } else {
-                    cookie_agent_web_assets::content_security_policy()
-                },
+                cookie_agent_web_assets::policy_of(asset.path),
                 "{}",
                 asset.path
             );

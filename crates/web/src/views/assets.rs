@@ -294,7 +294,6 @@ pub fn assets_page(workspace: Workspace) -> impl IntoView {
             .into_any()
         }
     };
-    let observer = lazy_thumbnails(workspace);
     let filter_open = move || workspace.asset_filter_open.get();
     let narrowed = move || workspace.asset_filter.with(AssetFilter::changes) > 0;
     let layout_button = move |as_list: bool| {
@@ -328,7 +327,7 @@ pub fn assets_page(workspace: Workspace) -> impl IntoView {
         }
     };
     view! {
-        <div class="flex flex-col gap-2" id="assets-page" data-assets-page node_ref=observer>
+        <div class="flex flex-col gap-2" id="assets-page" data-assets-page>
             <div class="flex min-w-0 items-center gap-2">
                 <button
                     type="button"
@@ -383,78 +382,68 @@ pub fn assets_page(workspace: Workspace) -> impl IntoView {
     }
 }
 
-/// Reads each card's thumbnail once it comes within a screen of the view:
-/// the returned node is the tab, whose cards it watches as they are drawn.
-fn lazy_thumbnails(workspace: Workspace) -> NodeRef<html::Div> {
-    let root = NodeRef::<html::Div>::new();
-    let observer = StoredValue::new_local(
-        None::<(
-            web_sys::IntersectionObserver,
-            Closure<dyn Fn(js_sys::Array, web_sys::IntersectionObserver)>,
-        )>,
-    );
-    let made = move || {
-        if let Some(existing) = observer
-            .try_with_value(|made| made.as_ref().map(|(observer, _)| observer.clone()))
-            .flatten()
-        {
-            return Some(existing);
-        }
-        let seen = Closure::<dyn Fn(js_sys::Array, web_sys::IntersectionObserver)>::new(
-            move |entries: js_sys::Array, observer: web_sys::IntersectionObserver| {
-                for entry in entries.iter() {
-                    let Ok(entry) = entry.dyn_into::<web_sys::IntersectionObserverEntry>() else {
-                        continue;
+/// What a thumbnail's observer calls back.
+type Seen = Closure<dyn Fn(js_sys::Array, web_sys::IntersectionObserver)>;
+
+thread_local! {
+    /// The one observer of every card's thumbnail, for the page's life:
+    /// it reads a thumbnail once it comes within a screen of the view.
+    static THUMBNAILS: std::cell::RefCell<Option<(web_sys::IntersectionObserver, Seen)>> = const { std::cell::RefCell::new(None) };
+    /// The workspace the observer fills thumbnails for.
+    static THUMBNAILS_FOR: std::cell::Cell<Option<Workspace>> = const { std::cell::Cell::new(None) };
+}
+
+/// Reads the thumbnail `thumb` of a card once it comes into view, or
+/// near it, and forgets it once it leaves the page.
+fn watch_thumbnail(thumb: &web_sys::Element, workspace: Workspace) {
+    THUMBNAILS_FOR.with(|kept| kept.set(Some(workspace)));
+    THUMBNAILS.with(|observer| {
+        let mut observer = observer.borrow_mut();
+        if observer.is_none() {
+            let seen = Seen::new(
+                |entries: js_sys::Array, observer: web_sys::IntersectionObserver| {
+                    let Some(workspace) = THUMBNAILS_FOR.with(std::cell::Cell::get) else {
+                        return;
                     };
-                    if entry.is_intersecting() {
+                    for entry in entries.iter() {
+                        let Ok(entry) = entry.dyn_into::<web_sys::IntersectionObserverEntry>()
+                        else {
+                            continue;
+                        };
                         let target = entry.target();
-                        observer.unobserve(&target);
-                        crate::assets::show_within(&target, workspace);
+                        if entry.is_intersecting() {
+                            observer.unobserve(&target);
+                            crate::assets::show_within(&target, workspace);
+                        } else if !target.is_connected() {
+                            observer.unobserve(&target);
+                        }
                     }
-                }
-            },
-        );
-        let options = web_sys::IntersectionObserverInit::new();
-        options.set_root_margin(READ_AHEAD);
-        let made = web_sys::IntersectionObserver::new_with_options(
-            seen.as_ref().unchecked_ref(),
-            &options,
-        )
-        .ok()?;
-        observer.set_value(Some((made.clone(), seen)));
-        Some(made)
-    };
-    // Each time the cards are drawn anew, the new ones are watched.
-    Effect::new(move |_| {
-        workspace.asset_list.track();
-        workspace.asset_query.track();
-        workspace.asset_kind.track();
-        workspace.asset_rows.track();
-        workspace.asset_list_layout.track();
-        request_animation_frame(move || {
-            let (Some(root), Some(observer)) = (root.get_untracked(), made()) else {
-                return;
-            };
-            let Ok(thumbs) = root.query_selector_all("[data-thumb]:not([data-watched])") else {
-                return;
-            };
-            for at in 0..thumbs.length() {
-                if let Some(thumb) = thumbs
-                    .item(at)
-                    .and_then(|node| node.dyn_into::<web_sys::Element>().ok())
-                {
-                    let _ = thumb.set_attribute("data-watched", "");
-                    observer.observe(&thumb);
-                }
+                },
+            );
+            let options = web_sys::IntersectionObserverInit::new();
+            options.set_root_margin(READ_AHEAD);
+            if let Ok(made) = web_sys::IntersectionObserver::new_with_options(
+                seen.as_ref().unchecked_ref(),
+                &options,
+            ) {
+                *observer = Some((made, seen));
             }
-        });
-    });
-    on_cleanup(move || {
-        if let Some(Some((observer, _))) = observer.try_update_value(Option::take) {
-            observer.disconnect();
+        }
+        if let Some((observer, _)) = observer.as_ref() {
+            observer.observe(thumb);
         }
     });
-    root
+}
+
+/// A card's thumbnail: `html`, read by [`watch_thumbnail`] once mounted.
+fn thumbnail(workspace: Workspace, html: String, class: &'static str) -> impl IntoView {
+    let node = NodeRef::<html::Span>::new();
+    Effect::new(move |_| {
+        if let Some(thumb) = node.get() {
+            watch_thumbnail(&thumb, workspace);
+        }
+    });
+    view! { <span node_ref=node class=class data-thumb inner_html=html></span> }
 }
 
 /// Where `asset` lives: its project, and a session's own asset's session,
@@ -702,7 +691,7 @@ fn item(
     let label =
         crate::render::attachments::type_label_of(asset.filename.as_deref(), &asset.media_type);
     let age = cookie_agent_protocol::memory_age(asset.updated.at, jiff::Timestamp::now());
-    let thumbnail = crate::assets::tab_thumbnail_html(&asset);
+    let thumbnail_html = crate::assets::tab_thumbnail_html(&asset);
     let handle = asset.handle.to_string();
     let copy = handle.clone();
     let row_attrs = (handle.clone(), asset.title.clone());
@@ -720,7 +709,11 @@ fn item(
                 on:keydown=on_keydown
                 on:contextmenu=on_contextmenu
             >
-                <span class="relative aspect-[4/3] w-16 shrink-0 overflow-hidden rounded-md bg-sunken shadow-[0_0_0_1px_var(--color-line)] [&_[data-asset-icon]_span]:hidden [&_[data-asset-icon]_svg]:text-xl" data-thumb inner_html=thumbnail></span>
+                {thumbnail(
+                    workspace,
+                    thumbnail_html,
+                    "relative aspect-[4/3] w-16 shrink-0 overflow-hidden rounded-md bg-sunken shadow-[0_0_0_1px_var(--color-line)] [&_[data-asset-icon]_span]:hidden [&_[data-asset-icon]_svg]:text-xl",
+                )}
                 <span class="flex min-w-0 flex-1 flex-col gap-0.5">
                     {title_line}
                     {where_}
@@ -749,7 +742,7 @@ fn item(
                 on:contextmenu=on_contextmenu
             >
                 <span class=CARD_BOX>
-                    <span class="relative block aspect-[4/3] overflow-hidden bg-sunken" data-thumb inner_html=thumbnail></span>
+                    {thumbnail(workspace, thumbnail_html, "relative block aspect-[4/3] overflow-hidden bg-sunken")}
                     <span class="flex min-w-0 flex-col gap-0.5 px-2.5 pt-2 pb-2.5">
                         {title_line}
                         <span class=format!("truncate {NOTE}")>
