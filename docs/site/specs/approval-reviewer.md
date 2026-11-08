@@ -1,6 +1,9 @@
 # Approval reviewer: context, caching, and verdicts
 
-Status: **implemented** (2026-10-24); approved 2026-10-24, with the deviations in section 15. Revises the built-in
+Status: **implemented** (2026-10-24); approved 2026-10-24, with the deviations in section 15.
+Since 2026-11-08 the conversation is kept in the reviewer's own log instead of rendered from the
+session's log at each review ([Sessions that run forever](forever-sessions.md) section 5.5; section
+15 here). Revises the built-in
 `approval` internal agent ([Agents: internal agents](../extend/agents.md))
 and the approval flow of the [permission consolidation](permission-consolidation.md)
 spec, which left approvals out of scope.
@@ -161,11 +164,12 @@ user       <context_delta> …
   - The output contract stays in the request block, as today
     (`APPROVAL_USER_REQUEST_PREFIX`), so a custom `approval.md` cannot break
     parsing.
-- **Rendered from the event log, deterministically.** The engine rebuilds the
-  conversation from the session's events and the reviewer's own earlier
-  verdict events.
-  - It is not stored separately: after a daemon restart it renders the same
-    bytes, and the provider cache still hits.
+- **Rendered from the event log, deterministically, and kept as sent.** Each
+  turn is rendered from the session's events, and since 2026-11-08 stored in
+  the reviewer's own log (section 15): after a daemon restart the next review
+  sends the stored bytes, and the provider cache still hits. When this spec
+  was implemented it was not stored separately, and each review rendered the
+  whole conversation again.
   - A revert truncates the log, so it truncates the conversation; the prefix
     before the revert point still hits.
 - **One conversation per session.** A delegated child has its own (section
@@ -385,7 +389,9 @@ engine's estimates.
 - **Epochs.** Any drop rewrites earlier context, so it can only happen when
   the conversation starts over. A new **epoch** begins when the next request
   would not fit the window.
-  - The engine renders a fresh conversation from the log within the budgets.
+  - The engine renders a fresh conversation within the budgets: since
+    2026-11-08 from what the reviewer's own log kept, reading `AGENTS.md`
+    afresh (section 15).
   - It carries forward the last five verdicts as trajectory entries.
   - That costs one full cache write. No summarising call is made and nothing
     is summarised.
@@ -647,3 +653,34 @@ the first `[instructions from the parent agent]`, a delegated session's
 own task. The trajectory halves as often as it takes to fit. A new
 epoch's first turn says the conversation started over; the five carried
 verdicts read `[your earlier verdict] on <tool>: {…}`.
+
+**The reviewer's own log (2026-11-08,** [Sessions that run forever](forever-sessions.md)
+**section 5.5 and section 12, phase 8).** Rendering the conversation from the session's log took a
+pass over the whole log at every escalated approval, which a session that runs forever cannot
+afford. As built:
+
+- **A hidden child session.** The conversation is a log of its own, `reviewer/events.jsonl` in the
+  reviewed session's folder, with its own `session_created` (the session's, as a root) and one
+  `reviewer_turn_recorded { turn }` per review that gave a verdict (client protocol 1.92.0): the
+  `user` turn and the verdict as they were sent, the entries the turn rendered, and a cursor of what
+  the next review needs of the session's log before its cut. Nothing that lists or walks sessions
+  looks there, and usage stays on the session as `internal_agent_usage_recorded`.
+- **Each review renders only its delta** (section 4.1's turns): it reads the session's log after the
+  previous turn's cut, with that turn's cursor, and records its turn once the session's log has
+  evaluated the verdict, in the same order the evaluations come. One review runs at a time per
+  session.
+- **An epoch** (section 6) is a fresh turn rendered from what the log kept: the epoch's first turn
+  holds the messages and tool calls a later fresh turn can still keep within the budgets, and the
+  verdicts it carries. The log's window starts there, so the log holds one epoch in memory and in
+  its `state.json`. A root session's `AGENTS.md` is read afresh at each epoch, the newest run's
+  before its cut, where the render kept those before the first review; a delegated session keeps
+  what it inherited of its root, read once when its log was created.
+- **What it sends is what this spec's render gives** for the same reviews, at every review of every
+  golden log and of the tests, epochs included, with the exceptions above and these: a session with
+  no reviewer log starts one at its next review with a fresh turn carrying its last verdicts, a turn
+  stays as it was sent when the reviewer's bounds change, and a verdict the daemon stopped before
+  recording is no turn. The render stays as the test-only reference.
+- **Revert and fork.** A revert of the session drops the turns whose verdicts it cuts (the epoch they
+  started with them); a fork copies its source's turns whose verdicts it keeps, from their latest
+  epoch, so its conversation continues as the source's did.
+

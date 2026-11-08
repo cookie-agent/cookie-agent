@@ -329,12 +329,15 @@ session and drive the run loop:
   user, reject automatically, or approve once automatically according to the
   mode, and a failed review (`internal_agent_failed`) is never approved for
   the user. Each session has one append-only reviewer conversation
-  (`crates/engine/src/runtime/approval/context.rs`), rendered from the event
-  log alone: the session's labelled user messages, the agent's tool calls
-  with their outcomes, users' decisions, the root's `AGENTS.md`, the
-  reviewer's earlier verdicts, and a request block per call, bounded by
-  budgets and restarted as a new epoch when it outgrows the reviewer's
-  window. Each request ends with a rolling cache marker whose lifetime is
+  (`crates/engine/src/runtime/approval/context.rs`): the session's labelled
+  user messages, the agent's tool calls with their outcomes, users'
+  decisions, the root's `AGENTS.md`, the reviewer's earlier verdicts, and a
+  request block per call, bounded by budgets and restarted as a new epoch
+  when it outgrows the reviewer's window. It is kept in the reviewer's own
+  log, a hidden child session in the session's folder
+  (`reviewer/events.jsonl`, `crates/engine_store/src/session/reviewer.rs`)
+  that no listing or client reads: each turn is stored as it was sent, and
+  a review reads the session's log only after the previous review's cut. Each request ends with a rolling cache marker whose lifetime is
   `[approval] cache_ttl`. `ask` skips the reviewer, and `yolo` approves
   immediately. A doom-loop guard rejects repeated identical approvals. The
   tree's permission mode is recorded in the root's log

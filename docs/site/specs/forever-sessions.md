@@ -1,7 +1,7 @@
 # Sessions that run forever: recent events in memory, opening without a full parse
 
-Status: **approved** by the user on 2026-11-06. Being drafted on the `forever-sessions` branch;
-not on `main`. See [section 11](#11-decisions).
+Status: **approved** by the user on 2026-11-06. Built on the `forever-sessions` branch, all eight
+phases (section 12, with what remains open at its end); not on `main`. See [section 11](#11-decisions).
 
 ## 1. Problem
 
@@ -395,6 +395,13 @@ It gets its own context and durable log, and the same refresh flow (the user, 20
 - Usage stays recorded on the parent as `internal_agent_usage_recorded`, and clients keep hiding the
   child from the session tree.
 
+As built (section 12, phase 8): the child is `reviewer/events.jsonl` in the reviewed session's own
+folder, where nothing that lists or walks sessions looks, and its records are
+`reviewer_turn_recorded`. A review reads the session's log after the previous turn's cut, the nearest
+point a pass can start, not a run boundary. The epoch's first turn holds what the log kept and is
+where its window starts, as a checkpoint is a native model's. A revert drops the turns whose verdicts
+it cuts, and a fork copies those it keeps.
+
 ### 5.6 `state.json`
 
 The same file, adding the pinned records, written after a checkpoint commits and per 1 MiB
@@ -476,7 +483,7 @@ Each ships on its own and leaves things working.
    checkpoint, so its numbers come from the scenario, and from a real native forever agent
    once one runs.
 8. **The reviewer's own log** (section 5.5), comparing its verdict turns with today's render on
-   the golden logs.
+   the golden logs (as built, section 12).
 
 ## 9. Left out
 
@@ -1456,3 +1463,180 @@ native children have no checkpoint, so no file, and the tree load parses them.
 - `EventStorage::context`, `LettingGo`, `narrow_to_context`, and `reads_whole_for_its_model` are where a
   native window is decided; `model_context` is still the only selection, so a change to it changes what
   every native log holds, and the digest test and `assert_context_reads_as_whole` say so.
+
+**Phase 8** (2026-11-08), read against the code at `bcfda059c`.
+
+- **The hidden child session, as built** (`engine_store/src/session/reviewer.rs`). It is
+  `reviewer/events.jsonl` in the reviewed session's own folder (a root's `<month>/<id>/`, a child's
+  `subagents/<id>/`), with an id of its own (a new UUIDv7, read back from its first line), a
+  `session_created` copied from the session's with origin `root` and no cron, and after it one
+  `reviewer_turn_recorded { turn }` per review that gave a verdict: a runless state event (client
+  protocol 1.92.0, plugin protocol 1.46.0). It is hidden by where it is, not by a flag: children are
+  filed under `subagents/` and found through its index, and the store opens a reviewer log only when
+  a review asks for it (`SessionStore::reviewer_log`), holding it beside its session. So, place by
+  place:
+  - *the tree load* reads `subagents/index.json` and the folders under `subagents/`, and *the index*
+    is rebuilt from those folders: neither looks inside a member's folder;
+  - *the root listing and the activity journal* list the roots of the month folders;
+  - *`all`, `children`, `tree`, `tree_summaries`, `session_exists`, `resolve_dir`* (and its
+    `locate_child`) answer from residency and `subagents/`, and the store test asserts each leaves it
+    out (`a_reviewer_log_is_hidden_narrows_at_each_epoch_and_reopens_from_its_file`);
+  - *unread and pinned marks, push signals* are of sessions the store lists; the log has no runs,
+    approvals, producers, or subscribers;
+  - *usage*: the reviewer's model calls are recorded on the session as `internal_agent_usage_recorded`,
+    as before, and its log records no usage;
+  - *delete*: a root's tree goes with its folder (`forget_tree` forgets the open log), and a child's
+    folder with `delete_children`, which does too;
+  - *export*: no session export exists in this workspace;
+  - *the TUI and web trees* are drawn from the daemon's tree and listing, which never hold it, so no
+    client changed;
+  - *a history format conversion* (`convert_tree`) converts the root's and `subagents/` logs only. The
+    one gap: at a future format bump, a reviewer log of the older format fails to open owned, is
+    removed, and its next review starts one over with a pass over the session's log;
+  - *a root publishing into a scaffold*: the folder is made only for a persisted session.
+  The golden scenario's snapshot and `subagents/index.json` name none of its ids.
+- **A turn** holds the review's `approval_id`, its cut (the session's `approval_requested`), the
+  session's `evaluated` step of the verdict, the tool's name, the `user` turn and the verdict as sent,
+  the entries it rendered since the previous turn, and a cursor of what the next delta needs of what
+  came before: the run count and the latest 64 runs (numbered by first appearance, and whether an
+  input came in each yet), the calls still open with the entry each renders as for each way it can
+  end (the outcome is all a termination adds), producer messages accepted and not consumed with their
+  rendered bodies (at most 256), the attachments, and the newest run's `AGENTS.md` (a delegated
+  session: what it inherited). A turn that starts an epoch holds `epoch` instead of entries: the
+  messages and trajectory a later fresh turn can still keep, what was left out before them, and the
+  verdicts it carried.
+- **Each review reads only its delta.** `prepare_review` (`approval/flow.rs`) takes the turns since
+  the log's latest epoch from the reviewer log's window, finds its cut in the session's model context,
+  the call's start in `state()` and its arguments in the committed turn the context pins, and reads
+  `history_range(previous cut + 1 ..= cut)`: from the window when it holds that, else from the file's
+  nearest line-index mark. Only the first turn of a log reads from the log's start, once. The turn is
+  recorded after the session's log evaluated the verdict, with that step's sequence; one review runs at
+  a time per session, from reading the reviewer's log to recording its turn, so the turns follow the
+  evaluations' order. A revert since the review read the log leaves its turn out.
+  `repeated_approvals_build_one_append_only_reviewer_conversation` asserts, through the engine and a
+  restart, that the first review reads from sequence 1 and every later one from the previous cut plus
+  one, exactly the records between the two cuts, and that the third request after the restart is the
+  stored bytes of the first two turns plus its own.
+- **A failed first review** (no verdict, so no turn) would have made the next review pass over the
+  whole log again. Its turn is kept in memory with the session's cut count, and the next review renders
+  a fresh turn from what that pass kept and the delta since its cut, which is what a pass over the
+  whole log gives (`a_failed_first_review_is_read_on_from_rather_than_passed_over_again`). After a
+  restart such a session's next review passes over its log once more. A failed review after the first
+  needs nothing: its entries fall into the next turn's delta, from the last recorded cut.
+- **The epoch is a checkpoint of the reviewer's log.** `context_window_start` takes the latest turn
+  with `epoch` as where the window starts, `LettingGo` reads it as `context_from`, and `narrow_after`
+  narrows at it: the log holds its creation and its turns since the epoch, with nothing pinned (it has
+  no runs, calls, or inputs). The store writes its `state.json` at each epoch and as its session leaves
+  memory (`evict`, `release_ownership`), and it opens from that file. `STATE_VERSION` stays 9: no log an
+  earlier build wrote holds the record, and the folds of every earlier log are unchanged; the digest
+  test's digest was recorded again for the new golden scenario's logs.
+- **A fresh turn from kept entries gives the render's turn.** The render budgeted every entry of the
+  log; the epoch keeps fewer, and it is exact because what it lets go of no later fresh turn keeps,
+  under the same bounds. Messages: the tasks (the first three with the user's authority, the first
+  instructions) are the same for every later epoch, and the newest kept start no earlier than the last
+  epoch's did, as the walk from the newest breaks at the first that does not fit; so the epoch keeps
+  what its fresh turn kept, with the count, tokens, and first position of what it left out for the
+  marker and the total. Trajectory: halving keeps a suffix whose length depends on the total count, so
+  the epoch keeps the newest entries up to the first that puts them over the budget and the count of
+  the rest; any half that fits starts after that entry, and any half reaching it is over the budget.
+  Carried verdicts are the last five of the epoch's and the turns since. A property test over six
+  generated logs of 60 steps, with both budgets dropping entries and several epochs each
+  (`the_log_sends_what_the_render_gives_across_epochs_and_budgets`), checks every review.
+- **A delegated session's opening** (`root_messages_until`, passes over its root's and ancestors'
+  logs) is read once, at its log's first turn: its messages are the epoch's first, at position 0, and
+  its root's `AGENTS.md` is the cursor's `inherited`, so no later review reads another log.
+- **Existing sessions** have no reviewer log: the next review passes over the session's log once,
+  sends a fresh turn, which says the conversation started over and carries the last five verdicts the
+  log records when it records any, and records it as the log's first epoch
+  (`a_session_with_no_reviewer_log_starts_one_with_a_fresh_turn_carrying_its_verdicts`). The
+  provider's cache misses once. Nothing is converted.
+- **Revert and fork, decided here.** A revert of the session through a sequence keeps the turns whose
+  `evaluated_seq` it keeps, cutting the reviewer log after the last of them (`truncate_after`, whose
+  native fold moves the window back to the epoch they are in) and writing its `state.json` again; a
+  revert before every verdict leaves the creation alone, and the next review starts over from a pass.
+  The render did the same: a review whose evaluated step a revert cut has no verdict. A fork copies its
+  source's turns with `evaluated_seq` at or before its point, from the latest epoch among them, into a
+  reviewer log of its own (a new id), so the fork's conversation goes on as the source's did, and as
+  the render of the fork's log would have. Either failing leaves no log, so the next review starts one
+  over. `a_revert_cuts_the_reviewer_log_a_fork_copies_it_and_a_delete_takes_it` tests the store, and
+  the golden scenario records both through the engine.
+- **The comparison with today's render.** `render` and what it calls stay as a test-only reference
+  (`approval/context/reference.rs`); the new code shares only the formatting of entries and the request
+  block. Every reviewer test now also drives the reviewer's log over its log, as the flow does, turns
+  round-tripped through JSON, and asserts it sends the render's conversation for that review
+  (`context/tests/log_sends.rs`), epochs and budgets included, and so does every review of every golden
+  log with roomy bounds and with bounds that start an epoch at nearly every review
+  (`golden_logs_send_from_the_reviewer_log_what_the_render_gives`). The golden logs before this phase
+  hold 13 reviews and 3 verdicts, all in format 1, as their scripted reviewer failed; so a new scenario,
+  `history/3/reviewer`, records verdicts of each kind, a user's answer, enough reviews to start over, a
+  fork after them, a revert before them, and a delegated child's review, and every turn its reviewer
+  logs hold is what the render of the session's log gives with the same bounds
+  (`the_golden_reviewer_logs_hold_what_the_render_gives`: 11 turns, 3 of them an epoch's first, one of
+  them started over with five verdicts). **Where they differ, by design:**
+  - a root session's fresh turn after its first reads the newest run's `AGENTS.md` before its cut,
+    where the render kept the one before the first review for every epoch: the user's "read fresh"
+    (`an_epoch_reads_agents_md_afresh_where_the_render_kept_the_first` shows the turns equal but for
+    those lines). A delegated session keeps what it inherited when its log was created, where the
+    render read the root's log again at each review (the same text, unless the root's log was reverted
+    before the delegation);
+  - a session with no reviewer log starts with a fresh turn, where the render would have sent every
+    turn since its first review;
+  - a turn stays as it was sent: when the reviewer model changes window, the render's epochs move
+    retroactively and its fresh turns could reach entries the earlier bounds dropped, while the log's
+    next epoch renders from what it kept;
+  - the cursor keeps the latest 64 runs, 256 open calls, and 256 waiting messages: past those, a run
+    would be numbered anew, a call's end or a message's consumption would have no entry;
+  - a verdict the daemon stopped before recording is no turn, as a failed review's is;
+  - concurrent reviews of one session wait for each other, where the render let a later review render
+    while an earlier one was in flight.
+  The system prompt is read at each review, as before: with the turns stored, a changed `approval.md`
+  changes only the system turn, which the next review sends and whose cache then misses.
+- **Measured** on 2026-11-08 in a release build, on the synthetic native log of phase 7
+  (`forever_measure generate <dir> <times> 0 native`), each review given a verdict so the reviewer's log
+  holds a turn per review, the last review timed both ways, the reviewer's window at 122,000 tokens
+  (`reviewer_measure.rs`, three runs each, spread under 10%):
+
+  | Length | Log | Reviews | Today: time | Today: records read | Log: time | Log: records read | Turns held |
+  |---|---|---|---|---|---|---|---|
+  | 1x | 15.1 MB, 7,903 records | 30 | 108 to 110 ms | 7,903 (15.7 MB as JSON) | 0.82 to 0.90 ms | 39 (56 KB) | 29, 0.66 MB |
+  | 10x | 155 MB, 80,731 records | 306 | 1,216 to 1,260 ms | 80,731 (160 MB) | 1.52 to 1.55 ms | 45 (84 KB) | 34 since the 9th epoch, 1.33 MB |
+
+  **So an escalated approval's review now costs about a millisecond and reads the records between two
+  reviews, where it read the whole log, 0.1 s at today's largest and growing with it.** What the
+  reviewer's log holds is the turns since its latest epoch, bounded by the reviewer model's window (the
+  turns, the entries they repeat, and the epoch's kept entries): 0.66 MB and 1.33 MB here. The model
+  call itself is not counted, and is the same either way; a log's first review costs one pass, as every
+  review did. Daemon RSS was not measured.
+- **Not done or not verified.** The engine's revert and fork of a session with a reviewer log are tested
+  through the golden scenario and the store, not by a test of their own; a reviewer log of a session
+  that is not persisted is never created (a review runs after the session's first input persisted it);
+  the cursor's bounds were chosen, not measured on real logs, as no real reviewer log exists yet.
+
+**Closing note: what the branch did, and what remains open.** Phases 1 to 8 made a session's memory
+follow what it uses rather than its log: an ACP session holds about one turn and its `state()` folds, a
+native one the model's context since its last checkpoint and what that pins, and the reviewer the turns
+since its last epoch; each opens from `state.json` without a full parse, the bounds of section 6 keep
+the folds and the file flat to 100 times today's largest log, and an ordinary turn, a compaction, and an
+escalated approval read no pass over the whole log. Measured: an ACP session's live heap fell by 74 to 81
+percent and its open's peak by 85 to 90; a synthetic log at 100 times holds under 2 MB without
+delegations; a native log that compacts holds 1.0 to 2.7 MB from 1 to 100 times; a review reads the
+delta between reviews. Open:
+
+- **The harvest's delegation records still grow** with the log (phase 5): about 26 MB of heap at 100
+  times the stress rate. Bounding them is the delegation registry's change.
+- **A damaged log reads whole**, at the old peak (phase 4), and so does a log of an older history format
+  on a read-only open; so does a native log that went from ACP to native at its first model context.
+- **Native children with no checkpoint parse at each tree load**, as they have no `state.json`, and so
+  does any child this process never owned (phases 4 and 7).
+- **The long native scenario of phase 6 does not go through a real log** (phase 7): its through-disk
+  counterpart is the synthetic native log.
+- **Daemon RSS was not measured for native sessions**, nor for phase 5's bounds or the reviewer's log;
+  the ACP numbers are phase 3's and 4's.
+- **The log's size on disk grows forever** (section 9), and with it older pages and a fold from the
+  start; only sealed chunks would bound it.
+- **The reviewer's log**: a future history format bump starts reviewer logs over instead of converting
+  them; a session whose reviewer keeps failing passes over its log once more after each restart; the
+  cursor's bounds are chosen, not measured.
+- **Real logs were checked at their tips**, not at every turn boundary, after phase 4; the store's
+  native forever agents, once one runs, should be measured as section 8 asks for phase 7.
+

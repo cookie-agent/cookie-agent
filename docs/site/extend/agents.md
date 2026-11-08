@@ -675,9 +675,11 @@ permissions: {}
 
 The `approval` agent decides the `ask` calls of the `auto_approve`,
 `auto_approve_n`, and `auto_approve_y` modes. Each session has one reviewer
-conversation, rendered from the session's event log alone, so a daemon
-restart renders the same bytes and the provider's prompt cache keeps
-hitting. Each review adds one `user` turn and the reviewer's answer:
+conversation, kept in a log of its own beside the session's, which no
+session list or tree shows: each turn is stored as it was sent, so a daemon
+restart sends the same bytes and the provider's prompt cache keeps hitting,
+and each review reads only what happened in the session since the previous
+one. Each review adds one `user` turn and the reviewer's answer:
 
 - **The first turn** opens with the project's instructions (the root
   session's `AGENTS.md`, at most 4,000 tokens) and everything so far;
@@ -721,13 +723,15 @@ call whose review failed.
 The conversation's window is the reviewer model's context window (128,000
 tokens when the catalog gives none), net of its output reserve (the agent's
 `max_output_tokens`, else 4,000) and a 2,000-token margin. When the next
-turn would not fit, the conversation starts over from a fresh render of the
-log, in which user messages keep to 30% of the window (the first three with
-your authority, a subagent's first instructions, and the newest, with a
-block from the middle dropped), the tool calls keep to 50% (the oldest half
-dropped as often as it takes), and the last five verdicts come along as
-entries. Nothing is summarised, and the boundary is the same after a
-restart. Its cache lifetime is [`[approval] cache_ttl`](../engine/approval.md#the-reviewers-cache).
+turn would not fit, the conversation starts over from a fresh turn rendered
+from what its log kept, in which user messages keep to 30% of the window
+(the first three with your authority, a subagent's first instructions, and
+the newest, with a block from the middle dropped), the tool calls keep to
+50% (the oldest half dropped as often as it takes), and the last five
+verdicts come along as entries; a root session's `AGENTS.md` is read afresh
+there. Nothing is summarised, and no model is called for it. A session
+reviewed before the reviewer kept its own log starts one at its next
+review, with a fresh turn. Its cache lifetime is [`[approval] cache_ttl`](../engine/approval.md#the-reviewers-cache).
 
 ### Inheriting an agent
 
