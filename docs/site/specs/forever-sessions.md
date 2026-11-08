@@ -1798,3 +1798,10 @@ a review in the golden scenario.
   `run_outcome`, as the other readers of an older run do, and so does a cron fire's settling of its run
   (`a_report_of_a_run_the_child_let_go_of_is_still_delivered`, with a test hook that holds a report's
   delivery).
+- **An ACP `/compact` finds its run's end after a racing revert.** It read the log's tip before starting
+  the agent's `compact` run and looked for the run's `run_finished` only after that tip, so a revert in
+  between, which reuses the sequences it cuts, left it waiting forever. It now reads from the run's own
+  `run_started`, taken once the run started (the whole log should another run have followed it already),
+  and a run that a later revert cut away ends the wait as not compacted
+  (`a_compaction_after_a_racing_revert_finds_its_run_end`, with a test hook that holds the compaction
+  before its run).

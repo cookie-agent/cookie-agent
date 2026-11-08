@@ -43,3 +43,42 @@ async fn compaction_goes_to_the_agent_as_its_compact_command() {
         EventPayload::ContextCheckpointCommitted { .. }
     )));
 }
+
+/// A revert between the compaction's checks and its run reuses sequences, so
+/// the run's end is looked for from the run's own start, not from the tip the
+/// compaction saw first: it is found, and the compaction ends.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_compaction_after_a_racing_revert_finds_its_run_end() {
+    let acp = acp_fixture(&[("ACP_FIXTURE_FORK", "1")], &[]).await;
+    let engine = acp.engine();
+    let session = engine.create_session(selection()).unwrap().session_id;
+    for round in 0..3 {
+        turn(engine, session, &format!("turn-{round}"), "work").await;
+    }
+    let first_end = events(engine, session)
+        .iter()
+        .find(|event| matches!(event.payload, EventPayload::RunFinished { .. }))
+        .expect("the first run's end")
+        .seq;
+    let (reached, release) = engine.install_acp_compaction_start_hook();
+    let compacting = engine.clone();
+    let compaction = tokio::spawn(async move {
+        compacting
+            .compact_session_result(session, None, origin())
+            .await
+    });
+    with_watchdog("the compaction's checks", reached)
+        .await
+        .expect("held");
+    engine
+        .revert_session(session, first_end, origin(), None)
+        .await
+        .expect("reverted");
+    release.notify_one();
+    let result = tokio::time::timeout(std::time::Duration::from_secs(20), compaction)
+        .await
+        .expect("the compaction ends")
+        .expect("the task")
+        .expect("forwarded");
+    assert!(result.compacted);
+}

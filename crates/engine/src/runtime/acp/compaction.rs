@@ -44,8 +44,8 @@ impl Engine {
             Some(focus) => format!("/compact {focus}"),
             None => "/compact".to_owned(),
         };
-        // The run's records come after this, which is all that is read of the log.
-        let tip = projection.log.physical_tip_seq();
+        #[cfg(test)]
+        self.wait_for_acp_compaction_start_hook().await;
         // Watched before the run starts, so its end cannot slip past.
         let mut changes = self.watch_subagent(session);
         let run = self
@@ -62,6 +62,17 @@ impl Engine {
             )
             .await?
             .run_id;
+        // The run's records start at its `run_started`, which is all that is
+        // read of the log: a revert before the run started reuses sequences
+        // below the tip as it was, so this is read once it has. A run that
+        // already gave way to another is looked for in the whole log.
+        let start = self
+            .inner
+            .store
+            .log(session)?
+            .state()
+            .run_started(run)
+            .map(|event| event.seq);
         loop {
             // Woken by every change of the session: the log is read only
             // once the projection has the run ended.
@@ -73,15 +84,32 @@ impl Engine {
             // A queued input can have started another run, so this one's end may
             // be older than the latest turn.
             let outcome = if ended {
-                projection
-                    .log
-                    .history_range(tip + 1..)?
-                    .last_map_ok(|event| match &event.payload {
+                let records = match start {
+                    Some(start) => projection.log.history_range(start..)?,
+                    None => projection.log.history()?,
+                };
+                let (mut started, mut outcome) = (false, None);
+                for event in records {
+                    let event = event?;
+                    if event.run_id != Some(run) {
+                        continue;
+                    }
+                    match &event.payload {
+                        Event::RunStarted { .. } => started = true,
                         Event::RunFinished {
-                            outcome: cookie_agent_protocol::Open::Known(outcome),
-                        } if event.run_id == Some(run) => Some(outcome.clone()),
-                        _ => None,
-                    })?
+                            outcome: cookie_agent_protocol::Open::Known(finished),
+                        } => outcome = Some(finished.clone()),
+                        _ => {}
+                    }
+                }
+                // A revert since cut the run away: it ended with nothing to show.
+                if !started {
+                    return Ok(Some(SessionCompactResult {
+                        compacted: false,
+                        cancellation_reason: Some("compaction reverted".to_owned()),
+                    }));
+                }
+                outcome
             } else {
                 None
             };
