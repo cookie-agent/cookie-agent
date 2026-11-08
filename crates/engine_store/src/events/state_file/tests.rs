@@ -16,10 +16,11 @@ use crate::session::projection;
 /// and the [`STATE_VERSION`] it was recorded under. Recorded again, under the same
 /// version, when the golden `reviewer` scenario was added: what the folds give on
 /// the earlier logs did not change, and no earlier build wrote a reviewer's log.
-/// Version 10: validation keeps each run's replay base.
+/// Version 10: validation keeps each run's replay base, and the producer fold
+/// records when each message it holds settled.
 const RECORDED_DIGEST: (u32, &str) = (
     10,
-    "61b151ef6047535b97246073f78511c512925eaa9f7259c3c8ba5e1a35d00cbf",
+    "813068d261f7c56ce2f95b36d338dd9ee5dcb6bfa11ca56047fe328e3ba29fba",
 );
 
 fn golden_root() -> PathBuf {

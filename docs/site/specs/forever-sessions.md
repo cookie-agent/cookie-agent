@@ -1738,3 +1738,18 @@ a review in the golden scenario.
   any lock, and the log is let go of only once the session left memory
   (`an_eviction_that_evicts_nothing_keeps_the_reviewer_log`). The engine's own first-turn memory
   is the engine's to clear.
+
+**Fixes after review (2026-11-08), engine.**
+
+- **A message that just settled stays in the producer fold.** The fold kept the newest 16 settled
+  messages by when they were accepted, so one accepted early that settled after 16 or more accepted
+  later (a run taking many subagent reports, delegation completions, or agent mail) went in the same
+  fold that settled it, and a cron fire never found where its prompt landed: its run's end was never
+  recorded, `max_consecutive_failures` never counted, and every later run's end tried again. The fold
+  now records the record at which each message it holds settled (`settled_at`) and lets one go only
+  once 16 others settled after it, so what settled together stays together until then. The other
+  readers of settled messages read open ones, a key (`accepted`), or the fold's settled keys, but for
+  a producer's discard of its own message that settled long ago, which answers that it is not found.
+  `STATE_VERSION` rose from 9 to 10 with the replay base above, and the digest with both
+  (`a_message_that_just_settled_is_kept_whatever_its_acceptance`,
+  `a_fire_settling_with_many_later_messages_records_its_run_end`).

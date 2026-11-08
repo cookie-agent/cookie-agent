@@ -1785,6 +1785,101 @@ async fn a_steered_fire_joins_the_running_turn_and_follows_its_outcome() {
     assert!(requests[1].contains("Steered into the turn."));
 }
 
+/// A fire's prompt that a run took with many reports accepted after it all
+/// settle at that run's end: the fire still records it and resets the count,
+/// though the producer fold keeps only the newest of what settled.
+#[tokio::test]
+async fn a_fire_settling_with_many_later_messages_records_its_run_end() {
+    let (endpoint, responses, _captured) = scripted_channel_server(2).await;
+    let (fixture, selection) = custom_fixture_with_endpoint(&endpoint);
+    let engine = &fixture.engine;
+    let session = engine.create_session(selection.clone()).unwrap().session_id;
+    let mut create = params(
+        "Steered in before the reports.",
+        daily(),
+        CronTarget::Session(session),
+    );
+    create.max_runs = Some(CronMaxRuns::Unlimited);
+    create.delivery = Some(ProducerDeliveryMode::Steer);
+    let job = engine.create_cron(create).await.unwrap();
+    let target = job.id.clone();
+    engine
+        .crons_now(move |_, jobs| {
+            jobs.iter_mut()
+                .find(|job| job.id == target)
+                .unwrap()
+                .consecutive_failures = 2;
+            Ok(())
+        })
+        .unwrap();
+
+    let busy = start(engine, session, &selection, "busy", "the busy turn").await;
+    await_event(engine, session, "the busy turn's request", |event| {
+        event.run_id == Some(busy)
+            && matches!(event.payload, EventPayload::ModelAttemptStarted { .. })
+    })
+    .await;
+    fire_now(engine, &job.id).await;
+    await_job(engine, &job.id, "the steered fire", |job| {
+        job.history
+            .last()
+            .is_some_and(|fire| fire.outcome == StoredOutcome::Delivered)
+    })
+    .await;
+    // Twenty reports accepted after the fire's prompt join the same run.
+    let authority = super::producers::producer_authority();
+    let registration = engine
+        .register_producer(session, authority.clone())
+        .await
+        .expect("registration");
+    for report in 0..20 {
+        engine
+            .send_producer_message(
+                session,
+                authority.clone(),
+                registration,
+                ProducerDeliveryMode::Steer,
+                super::producers::producer_key(&format!("report-{report}")),
+                cookie_agent_protocol::SafeDisplayText::new("Report").unwrap(),
+                format!("report number {report}."),
+            )
+            .await
+            .expect("report sent");
+    }
+    responses
+        .send(MatchedScriptedResponse::last_message_contains(
+            "the busy turn",
+            scripted_text_body("busy done"),
+        ))
+        .unwrap();
+    responses
+        .send(MatchedScriptedResponse::last_message_contains(
+            "report number 19.",
+            scripted_text_body("reports read"),
+        ))
+        .unwrap();
+    await_projection(engine, session, "the run's end", |projection| {
+        projection.status == SessionStatus::Completed
+    })
+    .await;
+    let settled = await_job(engine, &job.id, "the fire's run end", |job| {
+        job.history
+            .last()
+            .is_some_and(|fire| fire.run_end.is_some())
+    })
+    .await;
+    let fire = settled.history.last().unwrap();
+    assert_eq!(fire.run_id, Some(busy));
+    assert_eq!(
+        fire.run_end.as_ref().unwrap().status,
+        SessionStatus::Completed
+    );
+    assert_eq!(
+        settled.consecutive_failures, 0,
+        "a success resets the count"
+    );
+}
+
 fn turn_context(
     policy: &crate::policy::FrozenRunPolicy,
 ) -> std::sync::Arc<crate::TurnAgentContext> {

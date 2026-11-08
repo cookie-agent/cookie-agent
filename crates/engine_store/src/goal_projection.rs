@@ -236,11 +236,18 @@ pub struct GoalProducerFold {
     /// The runs that ended, oldest first, of those `terminal_runs` keeps: the
     /// newest [`SETTLED_KEPT`], and any a message it holds names.
     terminal_order: VecDeque<RunId>,
+    /// Of the messages held that settled, the sequence of the record at whose
+    /// fold each was first found settled: a log's own fold lets go of them in
+    /// that order, not in the order they were accepted.
+    #[serde(with = "crate::events::sorted::map")]
+    settled_at: HashMap<ProducerMessageId, u64>,
 }
 
 /// How many settled messages, and ended runs, a log's own fold keeps beyond what
 /// it must: what settles is read back for a moment, as a cron job reads where its
-/// message landed once that run ended.
+/// message landed once that run ended. A message settled is kept until this many
+/// others settled after it, so one accepted early that settles late, or among
+/// more than this many at one run's end, is still there just after.
 const SETTLED_KEPT: usize = 16;
 
 impl GoalProducerFold {
@@ -581,18 +588,20 @@ impl GoalProducerFold {
             event.payload,
             EventPayload::RunFinished { .. } | EventPayload::ModelTurnCommitted { .. }
         ) {
-            self.let_go_settled();
+            self.let_go_settled(event.seq);
         }
     }
 
-    /// Lets go of the messages that settled, but for the newest [`SETTLED_KEPT`]:
-    /// those consumed and recorded, or discarded, with no claim, whose run ended,
-    /// so no record can change them. Their keys stay, as a digest, and so does
-    /// whether one was a goal's consumed reminder. Then of the ended runs, those
-    /// no message held names, but for the newest [`SETTLED_KEPT`]: a message is
-    /// admitted to the run that starts, so only a held message asks of an older one.
-    fn let_go_settled(&mut self) {
+    /// Lets go of the messages that settled, those consumed and recorded, or
+    /// discarded, with no claim, whose run ended, so no record can change them,
+    /// once [`SETTLED_KEPT`] others settled after them: what settled at the record
+    /// `seq` is kept, whenever it was accepted. Their keys stay, as a digest, and
+    /// so does whether one was a goal's consumed reminder. Then of the ended runs,
+    /// those no message held names, but for the newest [`SETTLED_KEPT`]: a message
+    /// is admitted to the run that starts, so only a held message asks of an older one.
+    fn let_go_settled(&mut self, seq: u64) {
         let ended = |run: &RunId| self.terminal_runs.contains(run);
+        let settled_at = &mut self.settled_at;
         let mut settled = self
             .projection
             .messages
@@ -606,15 +615,34 @@ impl GoalProducerFold {
                         || (message.discarded
                             && message.admission.as_ref().is_none_or(|(run, _)| ended(run))))
             })
-            .map(|(index, message)| (message.accepted_seq, index))
+            .map(|(index, message)| (*settled_at.entry(message.message_id).or_insert(seq), index))
             .collect::<Vec<_>>();
-        if settled.len() > SETTLED_KEPT {
-            settled.sort_unstable();
-            settled.truncate(settled.len() - SETTLED_KEPT);
-            let gone = settled
-                .into_iter()
-                .map(|(_, index)| index)
+        // No valid record opens a settled message again; should one, it is
+        // found settled anew when it settles again.
+        if settled_at.len() != settled.len() {
+            let held = settled
+                .iter()
+                .map(|(_, index)| self.projection.messages[*index].message_id)
                 .collect::<HashSet<_>>();
+            settled_at.retain(|message, _| held.contains(message));
+        }
+        let mut gone = HashSet::new();
+        if settled.len() > SETTLED_KEPT {
+            // Newest first: a message goes once SETTLED_KEPT settled after it.
+            settled.sort_unstable_by_key(|(at, _)| std::cmp::Reverse(*at));
+            let mut later = 0;
+            for group in settled.chunk_by(|left, right| left.0 == right.0) {
+                if later >= SETTLED_KEPT {
+                    gone.extend(group.iter().map(|(_, index)| *index));
+                }
+                later += group.len();
+            }
+        }
+        if !gone.is_empty() {
+            for index in &gone {
+                self.settled_at
+                    .remove(&self.projection.messages[*index].message_id);
+            }
             let projection = self.projection_mut();
             let mut index = 0;
             let mut keys = Vec::new();
@@ -647,6 +675,12 @@ impl GoalProducerFold {
                 }
             }
         }
+        self.let_go_ended_runs();
+    }
+
+    /// Of the ended runs, lets go of those no message held names, but for the
+    /// newest [`SETTLED_KEPT`].
+    fn let_go_ended_runs(&mut self) {
         if self.terminal_order.len() > SETTLED_KEPT {
             let named = self
                 .projection

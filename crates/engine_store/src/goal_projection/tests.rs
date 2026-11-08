@@ -846,3 +846,150 @@ fn committed(seq: u64, run: RunId, input_through_seq: u64) -> StoredEvent {
         },
     )
 }
+
+fn consumption_marked(seq: u64, run: RunId, message_id: ProducerMessageId) -> StoredEvent {
+    event(
+        seq,
+        Some(run),
+        EventPayload::ProducerMessageConsumed {
+            message_id,
+            run_id: run,
+        },
+    )
+}
+
+fn finished(seq: u64, run: RunId) -> StoredEvent {
+    event(
+        seq,
+        Some(run),
+        EventPayload::run_finished(cookie_agent_protocol::RunOutcome::Completed {
+            final_text: None,
+        }),
+    )
+}
+
+/// Appends to `events` a run that takes `messages` (accepted earlier or now,
+/// by `accept`), consumes them in one committed turn, records each, and ends.
+fn run_taking(
+    events: &mut Vec<StoredEvent>,
+    run: RunId,
+    messages: &[ProducerMessageId],
+    accept: impl Fn(&ProducerMessageId) -> bool,
+) {
+    let owner = ProducerOwner::Delegation {
+        invocation_id: cookie_agent_protocol::InvocationId::new_v7(),
+    };
+    let mut seq = events.last().map_or(0, |event| event.seq);
+    let mut next = || {
+        seq += 1;
+        seq
+    };
+    for message in messages {
+        if accept(message) {
+            let key = message.to_string();
+            events.push(accepted(
+                next(),
+                *message,
+                owner.clone(),
+                &key,
+                "a report",
+                None,
+            ));
+        }
+        events.push(admitted(next(), run, *message));
+    }
+    let through = events.last().expect("an admission").seq;
+    events.push(committed(next(), run, through));
+    for message in messages {
+        events.push(consumption_marked(next(), run, *message));
+    }
+    events.push(finished(next(), run));
+}
+
+/// The log's own fold, letting go of what settled, through `events`.
+fn letting_go(events: &[StoredEvent]) -> super::GoalProducerFold {
+    let mut fold = super::GoalProducerFold::default();
+    for event in events {
+        fold.observe_letting_go(event);
+    }
+    fold
+}
+
+/// A message accepted early that settles after many accepted later is still
+/// there just after it settles, as a cron job reads where its message landed
+/// once its run ended; it goes once enough settled after it.
+#[test]
+fn a_message_that_just_settled_is_kept_whatever_its_acceptance() {
+    // One run takes the early message and twenty accepted after it, so all
+    // settle at its end.
+    let early = ProducerMessageId::new_v7();
+    let owner = ProducerOwner::Delegation {
+        invocation_id: cookie_agent_protocol::InvocationId::new_v7(),
+    };
+    let mut events = vec![accepted(1, early, owner.clone(), "early", "the fire", None)];
+    let run = RunId::new_v7();
+    let reports = (0..20)
+        .map(|_| ProducerMessageId::new_v7())
+        .collect::<Vec<_>>();
+    let taken = std::iter::once(early)
+        .chain(reports.iter().copied())
+        .collect::<Vec<_>>();
+    run_taking(&mut events, run, &taken, |message| *message != early);
+    let fold = letting_go(&events);
+    assert!(fold.projection().invalid.is_empty());
+    let record = fold
+        .message(&early)
+        .expect("the early message, just settled");
+    assert_eq!(record.consumed_run, Some(run));
+
+    // A message accepted before seventeen that settle in earlier runs, and
+    // settling after them, is kept too.
+    let queued = ProducerMessageId::new_v7();
+    let mut events = vec![accepted(1, queued, owner, "queued", "the fire", None)];
+    for _ in 0..17 {
+        run_taking(
+            &mut events,
+            RunId::new_v7(),
+            &[ProducerMessageId::new_v7()],
+            |_| true,
+        );
+    }
+    let run = RunId::new_v7();
+    run_taking(&mut events, run, &[queued], |_| false);
+    let fold = letting_go(&events);
+    assert!(fold.projection().invalid.is_empty());
+    assert_eq!(
+        fold.message(&queued)
+            .expect("the queued message, just settled")
+            .consumed_run,
+        Some(run)
+    );
+
+    // Once sixteen settled after it, it goes, and its key still answers.
+    for _ in 0..16 {
+        run_taking(
+            &mut events,
+            RunId::new_v7(),
+            &[ProducerMessageId::new_v7()],
+            |_| true,
+        );
+    }
+    let fold = letting_go(&events);
+    assert!(
+        fold.message(&queued).is_none(),
+        "let go once 16 settled after it"
+    );
+    assert!(fold.projection().messages.len() <= 16);
+    let owner_key = match &events[0].payload {
+        EventPayload::ProducerMessageAccepted {
+            producer_owner,
+            idempotency_key,
+            ..
+        } => (producer_owner.clone(), idempotency_key.clone()),
+        _ => unreachable!("the first event is the acceptance"),
+    };
+    assert_eq!(
+        fold.projection().accepted(&owner_key.0, &owner_key.1),
+        Some(queued)
+    );
+}
