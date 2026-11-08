@@ -201,7 +201,7 @@ stands outside the compatibility rules.
 After a committed turn, when over 1 MiB of log came since the last write, so a long run
 is covered and a turn does not pay for a write, and when a session leaves memory, which the
 store's release counts as. Only the process that owns the log writes it, and only a log with a
-window has one (a native log gets one from phase 7). The session's slot and the log's locks are
+window has one, a native log once a checkpoint moved its window (section 5.6). The session's slot and the log's locks are
 held to copy what it holds; serializing and writing take no lock. A crash loses nothing: the log
 stays the only source of truth.
 
@@ -362,11 +362,12 @@ switch (as built, section 12).
 
 ### 5.4 Switching agents
 
-- **ACP to native.** With no checkpoint, a native model's context is the whole log: its
-  first `model_context_events()` after the native run's start reads it and the log holds it until the
-  next checkpoint (until phase 7, for good) or an ACP agent's next committed turn. Nothing is lost,
-  and it is no worse than today. Asked of a session whose agent is still ACP, as `get_history` can,
-  it reads whole and the log keeps its window.
+- **ACP to native.** Its first `model_context_events()` after the native run's start reads the log
+  whole, and the log then holds what the model's context needs: with no checkpoint, the whole log,
+  until the next checkpoint or an ACP agent's next committed turn; after an earlier checkpoint, the
+  context since that one at once (as built, section 12). Nothing is lost, and it is no worse than
+  today. Asked of a session whose agent is still ACP, as `get_history` can, it reads whole and the log
+  keeps its window.
 - **Native to ACP.** The window narrows at the next committed turn.
 
 ### 5.5 The approval reviewer gets its own log
@@ -397,8 +398,10 @@ It gets its own context and durable log, and the same refresh flow (the user, 20
 ### 5.6 `state.json`
 
 The same file, adding the pinned records, written after a checkpoint commits and per 1 MiB
-of log. A session with no checkpoint yet has a whole window, so opening reads the log, which
-its context limit bounds.
+of log, and as the session leaves memory. A session with no checkpoint yet has a whole window, so
+opening reads the log, which its context limit bounds. As built (section 12): the file holds the
+pinned records themselves and says the window is a model's context, and an open reads the window
+from the file as an ACP agent's does and puts the pinned records before it.
 
 ## 6. What else grows with the log
 
@@ -409,7 +412,7 @@ holds them, so they cost twice: in memory, and in writing the file.
 |---|---|---|
 | `SessionProjection.runs`: agent copy, input, final text | Run | Unfinished runs, those a pending call or an open delegation holds, and the latest 16 that ended; older ones read from `history()` (`run_outcome`) |
 | `ProjectionFoldState.tool_names` | Tool call | The last 16 committed turns' |
-| `tool_starts`, `terminated_tools`, `elided_tools`, call owners | Tool call | Open calls, the latest 16 that ended, and the owners of the last 16 turns. A record naming an older one is refused: the "before the floor" rule |
+| `tool_starts`, `terminated_tools`, `elided_tools`, call owners | Tool call | Open calls, the latest 16 that ended, every call that ended since a native model's context started (phase 7), and the owners of the last 16 turns. A record naming an older one is refused: the "before the floor" rule |
 | `turns`, `turn_models`, `usage_turns`, `attempts` | Turn | The last 16 turns; unfinished attempts and the latest 16 that ended, of the runs kept, under the same rule |
 | `admissions` | Input | The latest 256 |
 | `runs` attribution, `approval_owners`, `internal_runs`, `delegations` | Run or call | Open ones, whatever their age, and the latest 16 of each that settled |
@@ -500,7 +503,9 @@ Older pages, and a session's first open after `STATE_VERSION` rises, take time
 proportional to the log, but no memory beyond a page.
 
 A native session holds its context since the last checkpoint, and its pinned records,
-whatever its log's length. That is not measured.
+whatever its log's length. Measured by phase 7 on a synthetic native log (section 12): 1.0 to 2.7 MB
+of live heap from 1 to 100 times this store's largest log, where one with compaction off holds 36 MB
+at 1 time and 362 MB at 10.
 
 What a single result holds still counts while it is in the window. It is bounded by the
 size of one result, and goes with the next turn.
@@ -1304,3 +1309,149 @@ compared with a fold of the whole file exactly, as before. The producer fold is 
   only a call in view, a replay base an earlier attempt of its run, a late termination an open
   call.
 - The reviewer then reads its session as a file pass per escalated approval, until phase 8.
+
+**Phase 7** (2026-11-07), read against the code at `d5afe91f8`.
+
+- **The window, as built.** `EventStorage` gains `context`: what it holds is a native model's
+  context, the window from where the latest checkpoint's context starts and, before it, the records
+  `model_context` pins, in order. `narrow_to_context` applies `model_context` to what the log holds,
+  as phase 6 left it to: when a checkpoint commits (`narrow_after`, from an append, a fold of the
+  file, an open from `state.json`, and a revert's fold of what stays), as an owned log opens
+  (`narrow_window`, `mark_written`), and after a native model's first read of a log an ACP agent's
+  window narrowed (`read_whole`). `storage.window` is the context's start itself, which need not be a
+  record's sequence. A pass reads what is pinned from the file with the rest, and `recent()` leaves
+  the pins out, so its one caller, an ACP claim, reads what it read. `model_context_events()` reads
+  what the log holds when it holds the whole log or a context, and reads the log whole only when an
+  ACP agent's window let go of what the model may need. An ACP agent's committed turn narrows a native
+  window to its own and drops the pins.
+- **What stays whole.** A native log with no checkpoint, so one with compaction off; a log whose
+  context would start before what it holds, which only a provider window alone after a summary, as
+  builds before 1.29.0 wrote, could make it do (it reads whole at its next model context instead); and,
+  as for ACP logs, a buffered, converted, render-only, or read-only log that read itself whole.
+- **A fold of a log that went from ACP to native cannot narrow at its checkpoints**, as what the ACP
+  agent's window let go of is gone by then. It stays as it was, and reads the log whole at its first
+  `model_context_events()`, as the log that wrote it did. So a live log and a fold of its file can
+  hold differently for a while, with the same answers; the state file's exact comparison with a fold
+  skips that case (`reads_whole_for_its_model`). When the context then starts before the lines the
+  ACP agent's window kept, the line index is read again from the file (`lines_fall_short`), or
+  `state.json` would open the window from the wrong line; a view cache's start that falls behind them
+  does not count, as before.
+- **`state.json` for native logs** (section 5.6): `LogFolds` holds `context` and `pinned`, the
+  records themselves, and an open puts them before the window it reads from the file, checking they
+  precede it in order. Written after each checkpoint commits, after a committed turn past 1 MiB, and
+  as the session leaves memory, by the same code as an ACP log's. `STATE_VERSION` rose from 7 to 8 for
+  the validation and projection change below, and to 9 for the window, the digest test insisting each
+  time; the digest's boundaries now include checkpoints.
+- **The bounds, per map: what a native append can name, read from the append rules in the code.**
+  Native validation and the projection's runs now let go once a checkpoint has started the model's
+  context (`LettingGo`: an ACP agent's window, or a native log with a checkpoint); a native log with
+  none keeps every map, as its model reads all of it and an elision may name any call.
+  - *Turns, their models, usage, call owners:* the native loop commits a turn, starts its calls, and
+    records its usage at once (`model_loop.rs`), so each names the latest turn: the last 16 stay.
+  - *Attempts:* lifecycle records name the attempt in flight; a replay's base is the attempt the run's
+    loop evaluated last (`ReplayEvaluationBase` holds only that one), so the latest 16 that ended hold
+    it; an abandon follows its commit at once.
+  - *Calls:* a late completion, a background job's end, and a link name an open call, which stays. An
+    ended call is named again only by an elision, which native compaction writes from the model context
+    (`stage_tool_output_elision`), so of calls in view: those whose end is in the window, which is
+    every call that ended since the context's start. **These stay whatever their age and whatever their
+    run**: an elision names its call's run, and validation checks that against the call, not against
+    the run's own record. The context's start is folded from the checkpoints (`context_from`) and never
+    moves back, so a record-at-a-time validation and a whole one keep the same.
+  - *Runs, approvals, delegations, internal agents:* as for an ACP agent's log. A native background job
+    or delegation holds its run open; the compaction's summary agent, a title's, and the reviewer's are
+    internal agents, open until they finish; a checkpoint, an abandon, or a composed prompt follows by a
+    moment, inside a run that is still open.
+  - *Admissions:* a recall names an input while it waits: the latest 256. An applied input's submission
+    is pinned while it is unapplied and named from the window otherwise.
+  - *What else a native record names before the window:* a replay cut names the tip, a checkpoint's
+    boundaries and a composed prompt are not validated against records, a message's admission names its
+    acceptance, which is pinned. None needs a map.
+  - *Projection runs:* the native readers of a run ask of the run they are in, a child's, or a retry,
+    and `run_outcome` reads the log for an older one, as phase 5 found; so they let go under the same rule.
+  - *Line index:* from the window or a view cache's start, with marks before, as for ACP logs.
+  - *From ACP to native:* the ACP agent's window let go of ended calls that the native context, starting
+    at an earlier checkpoint or at the log's start, still holds, so the first `model_context_events()`
+    validates whole again, as phase 5 did, and lets go by the native rule from there.
+  - The reference comparison of a fold with a whole read lets go of what settled without the native
+    rule (`let_go_settled_keeping(None)`), as a whole read keeps an ACP agent's calls that a fold let go
+    of and the native context still holds.
+- **Every reader of a native log, checked:** each reader of `model_context_events()` (compaction and its
+  elision, `compaction_tail_candidates`, `get_history`'s assembled view, `context_composition`, a native
+  claim, the tool round's refresh) gets what it got in phase 6, which every test now asserts against a
+  whole read of the file at each call (`assert_context_reads_as_whole`) besides the engine's assembly
+  check, whose whole log is now a pass over the file. The loop guard, the doom loop, `cache_expiry`,
+  titles, `run_agent_prompt`, and the prompt in force are folds. `get_history`'s full view, revert, fork,
+  older pages, `event.read`, the delegation prompt, and the approval reviewer are passes, which read the
+  file. `cut_native_replay` reads the tip. In-stream compaction's backstop is an ordinary checkpoint, so
+  such a session's window moves only when it fires.
+- **Passes a native session still takes:** none on an ordinary turn, nor in a compaction, nor for the
+  assembled history (`a_native_window_moves_at_its_checkpoint_and_an_ordinary_turn_reads_no_pass`). The
+  full history, a revert, a fork, older pages, and `event.read` read the file, as for ACP logs, and so does
+  **the approval reviewer, once per escalated approval**, until phase 8 gives it its own log.
+- **Fixed on the way:** `visit_json` of a log holding its records serialized a record appended since the
+  read without `write_stored_history`, so it differed from its own line (a display block's lines); its
+  one reader collects artifact references. The extended golden test found it.
+- **Tests.** Every committed turn and checkpoint of every test's store append compares the log with a
+  reopening, the projection with a reopening's, and opens a `state.json` of that moment against a parse.
+  `a_golden_*_log_appended_again_answers_as_reopened*` append every golden log of format 3 (ACP, coding,
+  revert and fork, both native compactions, replay, delegation) and compare at every committed turn and
+  checkpoint: windows, pages, lines, counts, metadata, the model's context, and an owned reopening's
+  window and holdings. `a_native_log_holds_its_context_once_a_checkpoint_commits_and_its_file_the_pins`,
+  `a_synthetic_native_log_holds_its_context_and_answers_as_its_file` (16 runs, 17 checkpoints, 53 turns,
+  each checked, with skills, elisions, background jobs, delegations, and producer messages across
+  checkpoints), `a_revert_of_a_native_window_folds_what_stays_as_its_file_does`,
+  `a_switch_between_an_acp_agent_and_a_native_one_with_a_checkpoint_windows_either_way` (ACP to native,
+  its checkpoint, back to ACP, and native again, through the engine), and
+  `a_native_log_that_compacts_costs_no_more_at_four_times_its_length`.
+- **Not done as asked: the long native scenario of phase 6 does not go through a log.** Its records are
+  not a valid log (turns without attempts, an ACP agent's turn inside a native run), so a real append
+  refuses them; it stays the in-memory check of selection it was. Its through-disk counterpart is the
+  synthetic native log above, checked at every committed turn and checkpoint, and the engine's tests.
+
+Measured on 2026-11-07, release build, one process per open, by the counting allocator, in MB, on a
+synthetic native log (`forever_measure generate <dir> <times> 0 native`): the mix of phase 5 on a native
+model, each turn's usage recorded, a skill in a tenth of the runs, and a compaction inside the run once
+the context since the last checkpoint holds about 400 KB, keeping the latest turn and eliding up to three
+outputs in view. Without delegations. "Fold" is the first open, with no `state.json`; "file" the next:
+
+| Length | Log | Records | Held after open | Fold: time | Fold: live | Fold: peak | `state.json` | File: time | File: live | File: peak |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 1x | 15.1 MB | 7,903 | 219 + 3 pinned | 208 ms | 1.60 | 2.01 | 0.57 MB | 16 ms | 1.76 | 1.93 |
+| 4x | 62.1 MB | 32,340 | 112 + 3 pinned | 863 ms | 1.44 | 2.14 | 0.70 MB | 17 ms | 1.58 | 1.91 |
+| 10x | 155 MB | 80,731 | 24 + 1 | 2,127 ms | 1.01 | 2.14 | 0.62 MB | 5 ms | 1.13 | 1.68 |
+| 25x | 380 MB | 198,314 | 241 + 1 | 5,246 ms | 1.96 | 2.27 | 0.72 MB | 19 ms | 2.08 | 2.26 |
+| 50x | 761 MB | 397,947 | 109 + 1 | 10,511 ms | 1.62 | 2.47 | 0.79 MB | 16 ms | 1.75 | 2.17 |
+| 100x | 1,513 MB | 791,101 | 238 + 1 | 20,898 ms | 2.58 | 2.87 | 1.10 MB | 23 ms | 2.71 | 3.00 |
+
+**So a native log that compacts holds 1.0 to 2.7 MB, its file 0.6 to 1.1 MB, and opens from it in under 25
+ms, from 1 to 100 times this store's largest log**: what moves is where the context since the last
+checkpoint happens to end, and the producer keys kept for as long as the log, as in phase 5. The fold
+from the start stays linear in time and flat in memory. For comparison, the same mix with compaction off
+(`native-whole`), which holds every record as every native log did before this phase: live 35.8, 145.7,
+and 362.5 MB at 1, 4, and 10 times, peaks 38.3, 155.7, and 385.3. With phase 5's rate of delegations, from
+`state.json`: 1.39, 4.68, and 28.78 MB live and 0.66, 1.21, and 6.42 MB of file at 1, 10, and 100 times,
+the delegation records of phase 5. The growth test, in a debug build at 150 and 600 runs of the small
+native mix: 941 KB and 1,029 KB held, 376 KB and 400 KB of file, 23 ms and 25 ms.
+
+**The one native log on this machine with a checkpoint**, a scratch copy converted to history format 3:
+4.7 MB, 2,037 records, one checkpoint, 12 children. `forever_measure check` opened all 13 logs a record at
+a time under the reference checks, 2 windowed, both reopened from the `state.json` they wrote. The root
+alone: read whole, 64 to 81 ms, 12.36 live, 18.29 peak; by a fold, 68 ms, 7.26 live, 7.58 peak; from its
+1.02 MB `state.json`, 28 ms, 7.91 live, 8.03 peak, holding 950 records and 3 pinned, as its one checkpoint
+keeps half the log in its context. Through the store with its tree, 168 to 230 ms and a 21 MB peak: its
+native children have no checkpoint, so no file, and the tree load parses them.
+
+**What phase 8 must know.**
+
+- The reviewer's own log is a native child session, and **a native log's window moves only at a
+  checkpoint**: one that never records `context_checkpoint_committed` holds every record and has no
+  `state.json`. Section 5.5's epoch makes no model call and so writes no checkpoint as built today;
+  phase 8 must give its epoch a record that `context_window_start` reads (a checkpoint of its own, or
+  teach `model_context` the epoch), and `LettingGo` the same, or the reviewer's log grows in memory.
+- Until then the reviewer reads its session through `history()`, a pass over the file per escalated
+  approval of a windowed native session.
+- A native child without a checkpoint is parsed at each tree load (no file), as the real log above shows.
+- `EventStorage::context`, `LettingGo`, `narrow_to_context`, and `reads_whole_for_its_model` are where a
+  native window is decided; `model_context` is still the only selection, so a change to it changes what
+  every native log holds, and the digest test and `assert_context_reads_as_whole` say so.
