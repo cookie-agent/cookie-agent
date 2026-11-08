@@ -1135,6 +1135,88 @@ mod tests {
         );
     }
 
+    /// A native model's log reverted into its window, to before its latest
+    /// checkpoint, and to before its first, folds what stays as a reopening does:
+    /// its model's context, what it holds, and its answers (section 3.5).
+    #[test]
+    fn a_revert_of_a_native_window_folds_what_stays_as_its_file_does() {
+        let directory = tempfile::tempdir().expect("a directory");
+        let path = directory.path().join(SESSION).join("events.jsonl");
+        fs::create_dir_all(path.parent().expect("a directory")).expect("a directory");
+        let log = EventLog::create(
+            path,
+            SESSION.parse().expect("a session"),
+            EventOrigin::new("client:synthetic").expect("an origin"),
+            payload_of(Templates::load(true).of("session_created")),
+        )
+        .expect("a log");
+        let mut sink = SkipCreation {
+            log: &log,
+            skipped: false,
+        };
+        let mix = Mix {
+            checkpoint_bytes: Some(16_000),
+            ..Mix::small(24)
+        };
+        write(&mix, &mut sink).expect("a synthetic native log appends");
+        let checkpoints = log
+            .history()
+            .and_then(Iterator::collect::<Result<Vec<_>, _>>)
+            .expect("a pass")
+            .iter()
+            .filter(|event| {
+                matches!(
+                    event.payload,
+                    EventPayload::ContextCheckpointCommitted { .. }
+                )
+            })
+            .map(|event| event.seq)
+            .collect::<Vec<_>>();
+        assert!(checkpoints.len() >= 4, "{checkpoints:?}");
+        let answers_as_reopened = |what: &str| {
+            log.assert_window_reads_as_reopened();
+            let reopened =
+                EventLog::open(log.path().to_owned(), log.session_id).expect("a reopening");
+            let (held, whole) = (
+                log.model_context_events().expect("a context"),
+                reopened.model_context_events().expect("a context"),
+            );
+            assert!(
+                held.len() == whole.len() && held.iter().zip(whole.iter()).all(|(a, b)| a == b),
+                "{what}: the model's context"
+            );
+            assert_eq!(
+                reopened.window_for_test(),
+                log.window_for_test(),
+                "{what}: the window"
+            );
+            assert_eq!(
+                reopened.storage_len_for_test(),
+                log.storage_len_for_test(),
+                "{what}: what it holds"
+            );
+        };
+        // Into the window: after the latest checkpoint.
+        let latest = *checkpoints.last().expect("a checkpoint");
+        let tip = log.physical_tip_seq();
+        log.truncate_after_for_test((latest + tip) / 2)
+            .expect("a revert");
+        assert!(log.window_for_test().is_some());
+        answers_as_reopened("after the latest checkpoint");
+        // To before it: the context of the checkpoint before.
+        let before_latest = checkpoints[checkpoints.len() - 2];
+        log.truncate_after_for_test(latest - 1).expect("a revert");
+        assert!(log.window_for_test().is_some());
+        answers_as_reopened("before the latest checkpoint");
+        assert!(log.window_for_test() <= Some(before_latest));
+        // To before the first: whole again.
+        log.truncate_after_for_test(checkpoints[0] - 1)
+            .expect("a revert");
+        assert_eq!(log.window_for_test(), None);
+        answers_as_reopened("before the first checkpoint");
+        assert_eq!(log.storage_len_for_test() as u64, log.record_count());
+    }
+
     /// A long log through real appends: what it holds, what its folds give, and
     /// its validation agree with a reopening of its file, with what it let go of.
     #[test]
