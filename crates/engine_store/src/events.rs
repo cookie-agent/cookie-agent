@@ -2859,10 +2859,10 @@ impl EventLog {
 
     /// The events a native model's context is assembled from: pinned records
     /// and the window, in order (`docs/site/specs/forever-sessions.md` section
-    /// 5.1, and [`model_context`] for what is pinned). A native log stays
-    /// whole until phase 7, and a log an ACP agent's window narrowed is read
-    /// whole, which is why this is fallible. So only what serves a native
-    /// model takes it.
+    /// 5.1, and [`model_context`] for what is pinned). A native log holds only
+    /// that once a checkpoint commits, and every record until then; a log an
+    /// ACP agent's window narrowed is read whole, which is why this is
+    /// fallible. So only what serves a native model takes it.
     pub fn model_context_events(&self) -> Result<EventSnapshot, EventLogError> {
         Ok(self.model_context_and_state()?.0)
     }
@@ -2963,10 +2963,10 @@ impl EventLog {
     }
 
     /// Reads a windowed log whole, holding appends off (section 5.4). A log whose
-    /// agent is no longer an ACP agent then stops being windowed and holds it
-    /// all, until an ACP agent's next committed turn; a reader asking of one
-    /// whose agent still is, as `get_history` can, gets its answer and the log
-    /// lets it go.
+    /// agent is no longer an ACP agent then holds what its model's context needs:
+    /// all of it until a checkpoint, or the context since the latest one, until an
+    /// ACP agent's next committed turn; a reader asking of one whose agent still
+    /// is, as `get_history` can, gets its answer and the log lets it go.
     fn read_whole(&self) -> Result<(EventSnapshot, Arc<LogState>), EventLogError> {
         let _append = self
             .append
