@@ -1255,3 +1255,76 @@ fn an_epoch_reads_agents_md_afresh_where_the_render_kept_the_first() {
     }
     assert!(differed > 0, "an epoch came after the second AGENTS.md");
 }
+
+/// Concurrent reviews of one session take its gate in any order. A review whose
+/// cut is before the cut of the turn recorded while it waited reads nothing new
+/// and records that later cut, so the next review reads on from it rather than
+/// over what that turn already held a second time.
+#[test]
+fn a_review_that_waited_for_a_later_cut_does_not_move_the_position_back() {
+    let mut log = Log::new();
+    let run = RunId::new_v7();
+    log.user(run, "client:tui", "Tidy the repository.");
+    let first_call = log.call(run, "bash", json!({"command": "tidy first"}));
+    let first = log.request(run, first_call, PermissionAction::BASH);
+    let second_call = log.call(run, "bash", json!({"command": "tidy second"}));
+    let second = log.request(run, second_call, PermissionAction::BASH);
+    let seq_of = |log: &Log, approval: ApprovalId| {
+        log.events
+            .iter()
+            .find_map(|event| match &event.payload {
+                Event::ApprovalRequested { request } if request.approval_id() == approval => {
+                    Some((event.seq, request.clone()))
+                }
+                _ => None,
+            })
+            .unwrap()
+    };
+    let (first_cut, first_request) = seq_of(&log, first);
+    let (second_cut, second_request) = seq_of(&log, second);
+    let allow = Verdict {
+        decision: ApprovalInternalDecisionKind::Allow,
+        reason: None,
+    };
+    let turns = |owner: &cookie_agent_protocol::AssistantToolCallRef| {
+        super::thread::turn_arguments(&log.events, owner)
+    };
+    let review =
+        |thread: &[cookie_agent_protocol::ReviewerTurn], request: &ApprovalRequest, cut: u64| {
+            let from = thread.last().map_or(0, |last| last.cut_seq);
+            super::thread::Review {
+                thread,
+                unrecorded: None,
+                inherited: None,
+                request,
+                cut,
+                call: None,
+                turns: Some(&turns),
+                bounds: ROOMY,
+            }
+            .prepare(
+                log.events
+                    .iter()
+                    .filter(|event| event.seq > from && event.seq <= cut)
+                    .cloned()
+                    .collect::<Vec<_>>(),
+            )
+        };
+    // The later request's review takes the gate first.
+    let later = review(&[], &second_request, second_cut).record(&allow, second_cut + 1);
+    assert_eq!(later.cut_seq, second_cut);
+    let earlier = review(std::slice::from_ref(&later), &first_request, first_cut);
+    assert!(
+        earlier
+            .conversation
+            .request
+            .starts_with("<context_delta>\n[nothing new]"),
+        "{}",
+        earlier.conversation.request
+    );
+    let earlier = earlier.record(&allow, second_cut + 2);
+    assert_eq!(
+        earlier.cut_seq, second_cut,
+        "the position stays at the later cut"
+    );
+}

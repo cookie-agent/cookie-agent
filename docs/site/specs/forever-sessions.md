@@ -1770,3 +1770,14 @@ a review in the golden scenario.
   do the session leaving memory and its deletion (`Engine::forget_reviews`), which also drop the
   session's review gate when no review holds it; a turn whose review read the log before a revert is not
   kept (`a_failed_first_reviews_turn_does_not_outlive_a_revert_and_a_reopen`).
+- **A reviewer turn's cut never goes back.** Reviews of one session take its gate after their
+  `approval_requested` is appended, so two at once may take it out of order, and the earlier request's
+  turn then recorded its own cut, before the later turn's: the next review read the records between the
+  two again, showing user inputs and finalized approvals twice. A review whose cut is before the
+  thread's last now reads nothing new and records that later cut
+  (`a_review_that_waited_for_a_later_cut_does_not_move_the_position_back`). No path found reaches it as
+  built: a native run asks its approvals in model order before running its calls, the one nested
+  approval (a fork skill's `delegate_subagent`, `execute_tool` from `skills.rs`) runs from the
+  `skill` tool, which is exclusive and so runs after the parallel calls, one at a time, and an ACP
+  session's approvals are never reviewed. The gate admits concurrent reviews, so the turn keeps its
+  order whatever calls it.

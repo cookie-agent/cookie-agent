@@ -519,6 +519,9 @@ pub(in crate::runtime) struct Review<'a> {
     pub(in crate::runtime) unrecorded: Option<&'a ReviewerTurn>,
     pub(in crate::runtime) inherited: Option<&'a Inherited>,
     pub(in crate::runtime) request: &'a ApprovalRequest,
+    /// The request's sequence in the session's log. The turn records it as
+    /// where the next review reads on from, or the thread's last cut when
+    /// that is later, as a position never goes back.
     pub(in crate::runtime) cut: u64,
     pub(in crate::runtime) call: Option<&'a CallFacts>,
     pub(in crate::runtime) turns: Option<TurnLookup<'a>>,
@@ -538,6 +541,17 @@ impl Review<'_> {
                 None => self.first(events),
             };
         };
+        // Concurrent reviews take the session's gate in any order: one cut
+        // before the turn recorded while it waited reads nothing new, and its
+        // turn keeps that later cut, so the next review never reads again what
+        // that turn holds.
+        if last.cut_seq > self.cut {
+            return Review {
+                cut: last.cut_seq,
+                ..*self
+            }
+            .prepare(events);
+        }
         let mut gatherer = Gatherer::from_cursor(&last.cursor, self.turns);
         for event in events {
             if event.seq > last.cut_seq && event.seq <= self.cut {
