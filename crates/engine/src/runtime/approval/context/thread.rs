@@ -484,6 +484,13 @@ pub(in crate::runtime) struct Prepared {
 }
 
 impl Prepared {
+    /// A log's first turn as sent, when its review gave no verdict to
+    /// record: what the next review reads on from.
+    #[must_use]
+    pub(in crate::runtime) fn into_unrecorded(self) -> Option<ReviewerTurn> {
+        self.turn.epoch.is_some().then_some(self.turn)
+    }
+
     /// The turn the reviewer's log records for `verdict`, which the session's
     /// log evaluated at `evaluated_seq`.
     #[must_use]
@@ -506,6 +513,10 @@ impl Prepared {
 /// pass did not read its turn.
 pub(in crate::runtime) struct Review<'a> {
     pub(in crate::runtime) thread: &'a [ReviewerTurn],
+    /// A log's first turn that was sent and never recorded, as its review
+    /// failed: with no thread, the next review reads on from its cut instead
+    /// of from the log's start, as it holds what that pass kept.
+    pub(in crate::runtime) unrecorded: Option<&'a ReviewerTurn>,
     pub(in crate::runtime) inherited: Option<&'a Inherited>,
     pub(in crate::runtime) request: &'a ApprovalRequest,
     pub(in crate::runtime) cut: u64,
@@ -522,7 +533,10 @@ impl Review<'_> {
         events: impl IntoIterator<Item = Arc<StoredEvent>>,
     ) -> Prepared {
         let Some(last) = self.thread.last() else {
-            return self.first(events);
+            return match self.unrecorded {
+                Some(unrecorded) => self.after_unrecorded(unrecorded, events),
+                None => self.first(events),
+            };
         };
         let mut gatherer = Gatherer::from_cursor(&last.cursor, self.turns);
         for event in events {
@@ -609,6 +623,45 @@ impl Review<'_> {
             trajectory_omitted: epoch.trajectory_omitted,
         };
         self.fresh(kept, &verdicts, gatherer.cursor, Since::StartedOver)
+    }
+
+    /// A log's first turn after `unrecorded`, one that was sent and not
+    /// recorded: a fresh turn from what it kept and the entries since its cut,
+    /// as [`Self::first`] gives from the whole log, carrying the same verdicts,
+    /// as no verdict came since.
+    fn after_unrecorded(
+        &self,
+        unrecorded: &ReviewerTurn,
+        events: impl IntoIterator<Item = Arc<StoredEvent>>,
+    ) -> Prepared {
+        let mut gatherer = Gatherer::from_cursor(&unrecorded.cursor, self.turns);
+        for event in events {
+            if event.seq > unrecorded.cut_seq && event.seq <= self.cut {
+                gatherer.observe(&event);
+            }
+        }
+        let epoch = unrecorded.epoch.clone().unwrap_or_default();
+        let mut messages = epoch.messages;
+        let mut trajectory = epoch.trajectory;
+        for entry in gatherer.entries.drain(..) {
+            if entry.message {
+                messages.push(entry);
+            } else {
+                trajectory.push(entry);
+            }
+        }
+        let kept = Kept {
+            messages,
+            messages_omitted: epoch.messages_omitted,
+            trajectory,
+            trajectory_omitted: epoch.trajectory_omitted,
+        };
+        let since = if epoch.verdicts.is_empty() {
+            Since::FirstReview
+        } else {
+            Since::StartedOver
+        };
+        self.fresh(kept, &epoch.verdicts, gatherer.cursor, since)
     }
 
     /// The first review of a log: a fresh turn from one pass over the

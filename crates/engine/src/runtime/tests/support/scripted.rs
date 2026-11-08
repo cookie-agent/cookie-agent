@@ -1753,14 +1753,15 @@ pub(crate) async fn scripted_repeated_write_server(
 pub(crate) async fn scripted_two_evaluated_writes_server(
     internal_output: &str,
 ) -> (String, tokio::task::JoinHandle<Vec<String>>) {
-    scripted_evaluated_writes_server(internal_output, &[2]).await
+    scripted_evaluated_writes_server(&[internal_output], &[2]).await
 }
 
 /// A model that, in each run, calls `write` as many times as `runs` says,
-/// each answered by `internal_output` as the reviewer's verdict, and then
-/// ends the run with text. The task returns every request, in order.
+/// the reviewer answering the calls with `internal_outputs` in order, its
+/// last for the rest, and then ends the run with text. The task returns every
+/// request, in order.
 pub(crate) async fn scripted_evaluated_writes_server(
-    internal_output: &str,
+    internal_outputs: &[&str],
     runs: &[usize],
 ) -> (String, tokio::task::JoinHandle<Vec<String>>) {
     use tokio::io::AsyncWriteExt as _;
@@ -1774,22 +1775,24 @@ pub(crate) async fn scripted_evaluated_writes_server(
             "data: {{\"choices\":[{{\"delta\":{{\"tool_calls\":[{{\"index\":0,\"id\":\"persistent-write-{index}\",\"type\":\"function\",\"function\":{{\"name\":\"write\",\"arguments\":\"{{}}\"}}}}]}},\"finish_reason\":null}}]}}\n\ndata: {{\"choices\":[{{\"delta\":{{}},\"finish_reason\":\"tool_calls\"}}]}}\n\n"
         )
     };
-    let internal_delta = serde_json::json!({
-        "choices": [{
-            "delta": {"content": internal_output},
-            "finish_reason": null
-        }]
-    });
-    let approval = format!(
-        "data: {internal_delta}\n\ndata: {{\"choices\":[{{\"delta\":{{}},\"finish_reason\":\"stop\"}}]}}\n\n"
-    );
+    let approval = |index: usize| {
+        let internal_delta = serde_json::json!({
+            "choices": [{
+                "delta": {"content": internal_outputs[(index - 1).min(internal_outputs.len() - 1)]},
+                "finish_reason": null
+            }]
+        });
+        format!(
+            "data: {internal_delta}\n\ndata: {{\"choices\":[{{\"delta\":{{}},\"finish_reason\":\"stop\"}}]}}\n\n"
+        )
+    };
     let mut bodies = Vec::new();
     let mut index = 0;
     for writes in runs {
         for _ in 0..*writes {
             index += 1;
             bodies.push(tool_call(index));
-            bodies.push(approval.clone());
+            bodies.push(approval(index));
         }
         bodies.push("data: {\"choices\":[{\"delta\":{\"content\":\"persistent approvals complete\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n".to_owned());
     }

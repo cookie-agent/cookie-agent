@@ -128,6 +128,10 @@ pub(crate) struct ApprovalRuntimeState {
     /// One review at a time per session, from reading the reviewer's log to
     /// recording its turn, so each turn follows the one before it.
     pub(crate) reviews: Mutex<HashMap<SessionId, Arc<tokio::sync::Mutex<()>>>>,
+    /// A session's first reviewer turn that was sent and not recorded, as its
+    /// review failed, with how many cuts its log had then: the next review
+    /// reads on from its cut rather than pass over the whole log again.
+    pub(crate) unrecorded: Mutex<HashMap<SessionId, (u64, cookie_agent_protocol::ReviewerTurn)>>,
 }
 
 /// A review's turn, to record in the reviewer's log once the session's log
@@ -452,18 +456,21 @@ impl Engine {
                 )
             })
             .await?;
-        if let (Some(pending), ReviewOutcome::Verdict { decision, reason }, Some(evaluated_seq)) =
-            (pending_turn, &review, evaluated_seq)
-        {
-            self.record_review_turn(
-                session,
-                pending,
-                &approval_context::Verdict {
-                    decision: *decision,
-                    reason: reason.clone(),
-                },
-                evaluated_seq,
-            );
+        if let Some(pending) = pending_turn {
+            match (&review, evaluated_seq) {
+                (ReviewOutcome::Verdict { decision, reason }, Some(evaluated_seq)) => {
+                    self.record_review_turn(
+                        session,
+                        pending,
+                        &approval_context::Verdict {
+                            decision: *decision,
+                            reason: reason.clone(),
+                        },
+                        evaluated_seq,
+                    );
+                }
+                _ => self.keep_unrecorded_turn(session, pending),
+            }
         }
         let (mut receiver, expires_at) = match transition {
             ApprovalEvaluationTransition::Resolved(outcome) => return Ok(outcome),
@@ -565,21 +572,17 @@ impl Engine {
             create,
             cuts,
         };
-        match result {
+        let outcome = match result {
             Ok(result) => approval_context::parse_verdict(&result.text).map_or(
-                (ReviewOutcome::Failed, None),
-                |verdict| {
-                    (
-                        ReviewOutcome::Verdict {
-                            decision: verdict.decision,
-                            reason: verdict.reason,
-                        },
-                        Some(pending),
-                    )
+                ReviewOutcome::Failed,
+                |verdict| ReviewOutcome::Verdict {
+                    decision: verdict.decision,
+                    reason: verdict.reason,
                 },
             ),
-            Err(_) => (ReviewOutcome::Failed, None),
-        }
+            Err(_) => ReviewOutcome::Failed,
+        };
+        (outcome, Some(pending))
     }
 
     /// What the review of `request` sends, from the reviewer's log and the
@@ -625,6 +628,20 @@ impl Engine {
             }
             None => Vec::new(),
         };
+        // A first turn sent and not recorded since, of this log as it stands.
+        let unrecorded = thread
+            .is_empty()
+            .then(|| {
+                self.inner
+                    .approvals
+                    .unrecorded
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .get(&session_id)
+                    .filter(|(at, turn)| *at == cuts && turn.cut_seq < cut)
+                    .map(|(_, turn)| turn.clone())
+            })
+            .flatten();
         // The official `approval` document's body is the whole prompt; the
         // output contract stays in the request block
         // (`approval_context::REQUEST_CONTRACT`).
@@ -644,13 +661,14 @@ impl Engine {
         );
         // A log's first turn opens with what a delegated session inherits,
         // read once, and reads the session's log from its start.
-        let inherited = if thread.is_empty() {
+        let inherited = if thread.is_empty() && unrecorded.is_none() {
             self.reviewer_inheritance(session)?
         } else {
             None
         };
         let review = approval_context::thread::Review {
             thread: &thread,
+            unrecorded: unrecorded.as_ref(),
             inherited: inherited.as_ref(),
             request,
             cut,
@@ -662,6 +680,7 @@ impl Engine {
         // can read from; a log's first turn passes over the whole log once.
         let from = thread
             .last()
+            .or(unrecorded.as_ref())
             .map_or(1, |last| last.cut_seq.saturating_add(1));
         let read = log
             .history_range(from..=cut)?
@@ -675,6 +694,28 @@ impl Engine {
             .push((from, read.len()));
         let prepared = review.prepare(read);
         Ok(Some((prepared, thread.is_empty(), cuts, system)))
+    }
+
+    /// Keeps `pending`, a log's first turn whose review gave no verdict to
+    /// record, for the next review to read on from.
+    fn keep_unrecorded_turn(&self, session: SessionId, pending: PendingReviewTurn) {
+        let PendingReviewTurn {
+            _review,
+            prepared,
+            create,
+            cuts,
+        } = pending;
+        if !create {
+            return;
+        }
+        if let Some(turn) = prepared.into_unrecorded() {
+            self.inner
+                .approvals
+                .unrecorded
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .insert(session, (cuts, turn));
+        }
     }
 
     /// Records `pending`, the turn a review sent, with `verdict`, which the
@@ -702,6 +743,12 @@ impl Engine {
         {
             return;
         }
+        self.inner
+            .approvals
+            .unrecorded
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(&session);
         let payload = Event::ReviewerTurnRecorded {
             turn: Box::new(prepared.record(verdict, evaluated_seq)),
         };

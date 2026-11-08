@@ -115,6 +115,7 @@ pub(in crate::runtime) fn sent_all(
 ) -> (Vec<(ApprovalId, Conversation)>, Vec<Vec<ReviewerTurn>>) {
     let verdicts = verdicts(events);
     let mut thread = Vec::<ReviewerTurn>::new();
+    let mut unrecorded = None::<ReviewerTurn>;
     let mut threads = Vec::new();
     let mut conversations = Vec::new();
     for (position, event) in events.iter().enumerate() {
@@ -123,9 +124,9 @@ pub(in crate::runtime) fn sent_all(
         };
         let id = request.approval_id();
         let verdict = verdicts.get(&id);
-        if Some(id) != current && verdict.is_none() {
-            continue;
-        }
+        // A review with no verdict is still sent, and a log's first turn that
+        // was not recorded is what the next one reads on from.
+        let failed = Some(id) != current && verdict.is_none();
         let before = &events[..=position];
         let turns = |owner: &cookie_agent_protocol::AssistantToolCallRef| {
             thread::turn_arguments(before, owner)
@@ -133,6 +134,7 @@ pub(in crate::runtime) fn sent_all(
         let call = call_of(before, request);
         let review = Review {
             thread: &thread,
+            unrecorded: unrecorded.as_ref(),
             inherited: if thread.is_empty() { inherited } else { None },
             request,
             cut: event.seq,
@@ -140,7 +142,10 @@ pub(in crate::runtime) fn sent_all(
             turns: Some(&turns),
             bounds,
         };
-        let from = thread.last().map_or(0, |last| last.cut_seq);
+        let from = thread
+            .last()
+            .or(unrecorded.as_ref())
+            .map_or(0, |last| last.cut_seq);
         let prepared = review.prepare(
             before
                 .iter()
@@ -148,10 +153,17 @@ pub(in crate::runtime) fn sent_all(
                 .cloned()
                 .collect::<Vec<_>>(),
         );
+        if failed {
+            if thread.is_empty() {
+                unrecorded = prepared.into_unrecorded();
+            }
+            continue;
+        }
         conversations.push((id, prepared.conversation.clone()));
         let Some((verdict, evaluated)) = verdict.filter(|_| Some(id) != current) else {
             break;
         };
+        unrecorded = None;
         let turn = as_stored(prepared.record(verdict, *evaluated));
         if turn.epoch.is_some() {
             thread.clear();

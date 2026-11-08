@@ -597,7 +597,7 @@ fn reviewer_turns(
 #[tokio::test]
 async fn repeated_approvals_build_one_append_only_reviewer_conversation() {
     let (endpoint, captured) = scripted_evaluated_writes_server(
-        r#"{"decision":"allow","reason":"Routine write."}"#,
+        &[r#"{"decision":"allow","reason":"Routine write."}"#],
         &[2, 1],
     )
     .await;
@@ -822,6 +822,117 @@ async fn repeated_approvals_build_one_append_only_reviewer_conversation() {
     assert_eq!(conversation.reviews[0].0, first[1].1);
     assert_eq!(conversation.reviews[1].0, second[3].1);
     assert_eq!(conversation.request, third[5].1);
+    fixture.engine.shutdown().await;
+}
+
+/// A session's first review that gives no verdict records no turn, and the
+/// next review reads on from its cut, not from the log's start again: with no
+/// verdict yet, no escalated approval passes over the whole log twice
+/// (`docs/site/specs/forever-sessions.md` section 5.5).
+#[tokio::test]
+async fn a_failed_first_review_is_read_on_from_rather_than_passed_over_again() {
+    let (endpoint, captured) = scripted_evaluated_writes_server(
+        &[
+            "not a verdict",
+            "still not a verdict",
+            r#"{"decision":"allow","reason":"Routine write."}"#,
+        ],
+        &[3],
+    )
+    .await;
+    let (fixture, selection) = custom_fixture_with_endpoint_primary_and_internal(
+        &endpoint,
+        "---\ndescription: Approval test agent\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions:\n  write: ask\n---\nTest approval flow.\n",
+        Some((
+            "approval.md",
+            "---\ndescription: Persistent approval evaluator\nmode: internal\nenabled: true\nmodels: [{ model: \"${parent_model}\" }]\nlimits: { timeout_ms: 30000, max_output_tokens: 128 }\npermissions: {}\n---\nEvaluate approval requests conservatively.\n",
+        )),
+        None,
+        false,
+    );
+    fixture.engine.register_tool_provider(
+        crate::ToolLayer::Local,
+        Arc::new(TestWriteProvider {
+            executed: Arc::new(TestFlag::default()),
+        }),
+    );
+    let session = fixture
+        .engine
+        .create_session(selection.clone())
+        .expect("session");
+    // A failed review is rejected for the user, so the run goes on.
+    fixture
+        .engine
+        .set_permission_mode(
+            session.session_id,
+            PermissionMode::AutoApproveN,
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
+        .await
+        .expect("auto_approve_n");
+    fixture
+        .engine
+        .start_run(
+            RunStartParams {
+                reset_fallback: false,
+                session_id: session.session_id,
+                client_run_id: ClientRunId::new("failing").expect("run ID"),
+                selection,
+                content: "three writes".to_owned().into(),
+            },
+            cookie_agent_protocol::EventOrigin::new("client:test").unwrap(),
+        )
+        .await
+        .expect("run");
+    await_projection(
+        &fixture.engine,
+        session.session_id,
+        "three reviews",
+        |projection| projection.status == SessionStatus::Completed,
+    )
+    .await;
+    let requests = with_watchdog("captured fixture completion", captured)
+        .await
+        .expect("server task");
+    let reads = fixture
+        .engine
+        .inner
+        .test_hooks
+        .reviewer_reads
+        .lock()
+        .unwrap()
+        .clone();
+    assert_eq!(reads.len(), 3);
+    assert_eq!(reads[0].0, 1, "the first review reads the log whole");
+    assert!(reads[1].0 > 1 && reads[2].0 > reads[1].0, "{reads:?}");
+    // Each failed review sent a fresh first turn; the one that answered
+    // records it, from what the passes before it kept.
+    let turns = reviewer_turns(&fixture.engine, session.session_id);
+    assert_eq!(turns.len(), 1);
+    assert!(turns[0].epoch.is_some());
+    assert_eq!(chat_messages(&requests[5])[1].1, turns[0].request);
+    assert!(turns[0].request.starts_with("<context>\n"));
+    assert_eq!(turns[0].request.matches("[tool call] write").count(), 2);
+    let log = fixture
+        .engine
+        .inner
+        .store
+        .get(session.session_id)
+        .expect("projection")
+        .log
+        .event_snapshot();
+    assert_eq!(
+        crate::runtime::approval::context::render(
+            &log,
+            None,
+            turns[0].approval_id,
+            crate::runtime::approval::context::Bounds::new(None, None, ""),
+        )
+        .expect("render")
+        .request,
+        turns[0].request,
+        "the render of the whole log"
+    );
     fixture.engine.shutdown().await;
 }
 

@@ -1152,6 +1152,7 @@ fn a_session_with_no_reviewer_log_starts_one_with_a_fresh_turn_carrying_its_verd
     };
     let prepared = super::thread::Review {
         thread: &[],
+        unrecorded: None,
         inherited: None,
         request,
         cut,
