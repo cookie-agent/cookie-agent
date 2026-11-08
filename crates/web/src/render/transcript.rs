@@ -468,6 +468,19 @@ fn item_key_in(pass: &Pass<'_, '_>, item: &TranscriptItem) -> u64 {
     if let TranscriptItem::User { seq, .. } = item {
         (pass.latest_user == Some(*seq)).hash(&mut hasher);
     }
+    // Every fold pushes the row of history at version 0 under the same id,
+    // and a page can land before any pass sees it loading: what the row
+    // reads next is in its key.
+    if let TranscriptItem::History {
+        before,
+        skipped,
+        loading,
+        failed,
+        ..
+    } = item
+    {
+        (before, skipped, loading, failed).hash(&mut hasher);
+    }
     if let Some(key) = block_key(item) {
         view.expanded.block(&key).hash(&mut hasher);
     }
@@ -3846,6 +3859,139 @@ mod tests {
         assert!(!row.contains("data-history-loading"), "{row}");
         let reading = super::history_html(40, None, true, None);
         assert!(reading.contains("data-history-loading"), "{reading}");
+    }
+
+    #[test]
+    fn a_row_of_history_draws_again_when_its_page_lands_before_the_next_pass() {
+        use std::sync::Arc;
+
+        use cookie_agent_client_state::{DeliveryOutcome, StateStore};
+        use cookie_agent_protocol::{EventsView, PageHeader, StoredEvent, display_view};
+        use cookie_agent_protocol_transport::{
+            ClientDelivery, EventsPage, ReplayHistory, ReplayWindow,
+        };
+
+        // The `coding` golden history, opened newest first: older history
+        // is left out, and a page of it leaves more.
+        let events = include_str!(
+            "../../../engine/tests/fixtures/history/1/coding/01a152fa-2785-7822-b056-5a3ad818855f/events.jsonl"
+        )
+        .lines()
+        .map(|line| Arc::new(serde_json::from_str::<StoredEvent>(line).unwrap()))
+        .collect::<Vec<_>>();
+        let session_id = events[0].session_id;
+        let budget = 8 * 1024;
+        let window = display_view::tail_window(&events, EventsView::Display, budget);
+        let final_seq = window.events.last().unwrap().seq;
+        let mut store = StateStore::default();
+        let mut deliveries = vec![ClientDelivery::ReplayStart {
+            session_id,
+            generation: 0,
+            final_seq,
+            rebuild: true,
+            history: Some(Box::new(ReplayHistory {
+                window: Some(ReplayWindow {
+                    header: window
+                        .header
+                        .iter()
+                        .map(|event| (**event).clone())
+                        .collect(),
+                    older_cursor: window.older_cursor,
+                    gap: window.gap,
+                }),
+                cut: window.cut.clone(),
+            })),
+        }];
+        deliveries.extend(
+            window
+                .events
+                .iter()
+                .map(|event| ClientDelivery::ReplayEvent {
+                    session_id,
+                    generation: 0,
+                    final_seq,
+                    event: Box::new((**event).clone()),
+                }),
+        );
+        deliveries.push(ClientDelivery::ReplayEnd {
+            session_id,
+            generation: 0,
+            final_seq,
+        });
+        for delivery in deliveries {
+            assert_eq!(store.apply_delivery(delivery), DeliveryOutcome::Applied);
+        }
+
+        let names = ModelDisplayNames::default();
+        let expanded = Expanded::default();
+        let mut cache = super::RowCache::default();
+        // The `before` of each row of history not loaded: as the projection
+        // holds it, and as the drawn rows ask for it.
+        let held = |store: &StateStore| {
+            store.sessions[&session_id]
+                .transcript
+                .iter()
+                .filter_map(|item| match item {
+                    TranscriptItem::History { before, .. } => Some(before.to_string()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        let drawn = |store: &StateStore, cache: &mut super::RowCache| {
+            let view = TranscriptView {
+                session_id,
+                state: &store.sessions[&session_id],
+                names: &names,
+                minimum_level: EventLevel::Warning,
+                expanded: &expanded,
+                delegates: &NO_DELEGATES,
+                homes: &NO_HOMES,
+                machines: &NO_MACHINES,
+                transcript: TranscriptMode::Full,
+                now: jiff::Timestamp::UNIX_EPOCH,
+            };
+            let rows = super::transcript_rows(&view, None, cache);
+            rows.order
+                .iter()
+                .filter_map(|id| match &rows.html[id] {
+                    super::RowHtml::Html(html) => html
+                        .split_once("data-history=\"")
+                        .and_then(|(_, rest)| rest.split_once('"'))
+                        .map(|(before, _)| before.to_owned()),
+                    super::RowHtml::Reply { .. } => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        let opened = held(&store);
+        assert!(!opened.is_empty(), "the window leaves history out");
+        assert_eq!(drawn(&store, &mut cache), opened);
+
+        // A click reads a page, and its answer lands before the next frame
+        // draws the rows: no pass sees the row loading.
+        let before = store.next_history(session_id).unwrap();
+        let params = store.request_history(session_id, before).unwrap();
+        assert_eq!(params.before, before);
+        let page = display_view::older_page(&events, before, EventsView::Display, budget);
+        store.apply_history_page(
+            session_id,
+            before,
+            Ok(EventsPage {
+                events: page
+                    .events
+                    .iter()
+                    .map(|event| (**event).clone().into())
+                    .collect(),
+                header: page.header.iter().map(|event| (**event).clone()).collect(),
+                header_kind: PageHeader::Full,
+                older_cursor: page.older_cursor,
+                cut: page.cut,
+            }),
+        );
+        let paged = held(&store);
+        assert!(!paged.is_empty(), "the page leaves older history out");
+        assert_ne!(paged, opened, "the page moved the row of history");
+        // The row asks for the history still left out, not the page read.
+        assert_eq!(drawn(&store, &mut cache), paged);
     }
 
     #[test]
