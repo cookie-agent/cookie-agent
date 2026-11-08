@@ -1,6 +1,7 @@
 //! A session that runs forever costs no more for its log being longer
 //! (`docs/site/specs/forever-sessions.md` section 1): what a windowed log holds,
-//! its `state.json`, and opening it from that, at a length and at four times it.
+//! its `state.json`, and opening it from that, at a length and at four times it,
+//! an ACP agent's and a native model's that compacts (section 5).
 //!
 //! A test binary of its own, as it counts the heap with its own allocator. Bytes
 //! are compared closely, and time loosely: a test machine's load moves it.
@@ -63,7 +64,7 @@ fn store(directory: &Path) -> Arc<SessionStore> {
     SessionStore::open(&directory.join("data"), &cwd).expect("a store")
 }
 
-fn cost_of(runs: u64) -> Cost {
+fn cost_of(runs: u64, native: bool) -> Cost {
     let directory = tempfile::tempdir().expect("a directory");
     let session: SessionId = SESSION.parse().expect("a session");
     let dir = store(directory.path()).root_dir_for_test(session);
@@ -73,6 +74,7 @@ fn cost_of(runs: u64) -> Cost {
         delegations: 0.0,
         ..Mix::small(runs)
     };
+    let mix = if native { mix.native() } else { mix };
     let (log_bytes, _) = write_file(&mix, &dir.join("events.jsonl")).expect("a synthetic log");
     // The first open folds the log from its start; leaving memory writes the file.
     {
@@ -104,11 +106,20 @@ fn cost_of(runs: u64) -> Cost {
 
 #[test]
 fn a_windowed_log_costs_no_more_at_four_times_its_length() {
+    assert_costs_no_more(false);
+}
+
+#[test]
+fn a_native_log_that_compacts_costs_no_more_at_four_times_its_length() {
+    assert_costs_no_more(true);
+}
+
+fn assert_costs_no_more(native: bool) {
     // The reference checks parse the whole log at each open, which is what this
     // measures the absence of; the store's unit tests run them.
     skip_reference_fold();
-    let short = cost_of(150);
-    let long = cost_of(600);
+    let short = cost_of(150, native);
+    let long = cost_of(600, native);
     for (name, cost) in [("short", &short), ("long", &long)] {
         eprintln!(
             "{name}: log {} B, held {} B, state.json {} B, open {:?}",

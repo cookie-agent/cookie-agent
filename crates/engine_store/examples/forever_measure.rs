@@ -2,8 +2,10 @@
 //! 12, phase 5. Each command runs in a process of its own, so what it measures is
 //! one open:
 //!
-//!     forever_measure generate <dir> <times>
-//!     forever_measure open <dir>
+//!     forever_measure generate <dir> <times> [<delegations a run> [native]]
+//!     forever_measure open <dir> [parts]
+//!
+//! `native` makes it a native model's session that compacts (section 5).
 //!
 //! Live heap and peak are by a counting allocator. Scratch data goes under `<dir>`.
 
@@ -91,7 +93,7 @@ fn parts(bytes: &[u8]) -> Vec<(String, usize)> {
                         sizes.push((format!("{name}.state.{key}"), size(state_part)));
                         if matches!(
                             key.as_str(),
-                            "harvest" | "once" | "approvals" | "acp" | "run"
+                            "harvest" | "once" | "approvals" | "acp" | "run" | "calls"
                         ) && let Some(deep) = state_part.as_object()
                         {
                             for (deep_key, deep_part) in deep {
@@ -132,6 +134,9 @@ fn main() {
             let mut mix = Mix::largest_times(times);
             if let Some(rate) = arguments.get(3) {
                 mix.delegations = rate.parse().expect("delegations a run");
+            }
+            if arguments.get(4).is_some_and(|kind| kind == "native") {
+                mix = mix.native();
             }
             let (bytes, records) = write_file(&mix, &log).expect("a log");
             println!(

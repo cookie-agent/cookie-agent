@@ -13,6 +13,12 @@
 //! its run does and after later runs, a delegation that finishes runs later, an
 //! internal agent that starts after its run ended, an input recalled, and a call
 //! that never ends.
+//!
+//! A native model's session ([`Mix::checkpoint_bytes`]) is the same mix on a native
+//! model, which also loads a skill now and then and compacts once its context
+//! since the last checkpoint holds that much: a summary's internal agent, its
+//! elision of outputs in view, the memory read afresh, and the checkpoint, inside
+//! the run, keeping the latest turn (section 5).
 
 use std::{
     collections::HashMap,
@@ -46,6 +52,10 @@ pub struct Mix {
     /// for as long as the log.
     pub delegations: f64,
     pub seed: u64,
+    /// A native model's session, compacting once its context since the latest
+    /// checkpoint holds about this many bytes of records; `None` for an ACP
+    /// agent's.
+    pub checkpoint_bytes: Option<u64>,
 }
 
 impl Mix {
@@ -57,6 +67,7 @@ impl Mix {
             size: 1.0,
             delegations: 0.08,
             seed: 0x5eed,
+            checkpoint_bytes: None,
         }
     }
 
@@ -69,6 +80,17 @@ impl Mix {
             size: 0.1,
             delegations: 0.08,
             seed: 0x5eed,
+            checkpoint_bytes: None,
+        }
+    }
+
+    /// This mix on a native model, which compacts at about 400 KB of context
+    /// (some 100,000 tokens) at full size.
+    #[must_use]
+    pub fn native(self) -> Self {
+        Self {
+            checkpoint_bytes: Some((400_000.0 * self.size) as u64),
+            ..self
         }
     }
 }
@@ -191,22 +213,25 @@ impl Templates {
             .join(cookie_agent_protocol::HISTORY_FORMAT.to_string())
     }
 
-    fn load() -> Self {
+    /// The ACP scenario's records first, so what it holds is an ACP agent's, and
+    /// what it does not reach of a native model's, such as an internal agent; or,
+    /// for a native model's log, the other way round.
+    fn load(native: bool) -> Self {
         let root = Self::golden_root();
         let mut templates = HashMap::new();
-        // The ACP scenario's first, so what it holds is an ACP agent's.
-        Self::read_log(
-            &root.join("acp").join(SESSION).join("events.jsonl"),
-            &mut templates,
-        );
-        // What it does not reach, of a native model: an internal agent.
-        Self::read_log(
-            &root
-                .join("native-compaction")
-                .join("01a1b355-0fa9-7c93-a8ee-c51cff73938d")
-                .join("events.jsonl"),
-            &mut templates,
-        );
+        let acp = root.join("acp").join(SESSION).join("events.jsonl");
+        let compaction = root
+            .join("native-compaction")
+            .join("01a1b355-0fa9-7c93-a8ee-c51cff73938d")
+            .join("events.jsonl");
+        let order = if native {
+            [&compaction, &acp]
+        } else {
+            [&acp, &compaction]
+        };
+        for log in order {
+            Self::read_log(log, &mut templates);
+        }
         Self(templates)
     }
 
@@ -311,6 +336,22 @@ struct RunWriter<'a> {
     delegations: Vec<(u64, RunId, Value)>,
     /// Inputs admitted with no run that a later step recalls.
     admitted: Vec<(u64, Value)>,
+    /// A native model's session: what its compaction needs to know.
+    native: Option<NativeContext>,
+}
+
+/// What a native model's session has in its context since the latest checkpoint.
+struct NativeContext {
+    /// Compacts once the records since `from` hold this many bytes.
+    checkpoint_bytes: u64,
+    bytes: u64,
+    /// Where the context starts: the latest checkpoint's kept turn.
+    from: u64,
+    latest_checkpoint: Option<u64>,
+    /// Calls that ended since `from` and whose output was not elided.
+    ended: Vec<(RunId, String)>,
+    /// Where the latest turn started, which a checkpoint keeps.
+    turn_from: u64,
 }
 
 #[derive(Clone)]
@@ -347,7 +388,77 @@ impl RunWriter<'_> {
         value: Value,
     ) -> Result<(), EventLogError> {
         self.seq += 1;
+        if let Some(native) = &mut self.native {
+            native.bytes += serde_json::to_vec(&value).map_or(0, |bytes| bytes.len()) as u64;
+        }
         self.sink.record(run, origin, payload_of(value))
+    }
+
+    /// The origin of what an ACP agent's bridge, or a native model's loop, writes.
+    fn model_origin(&self) -> &'static str {
+        if self.native.is_some() {
+            ORIGIN_LOOP
+        } else {
+            ORIGIN_ACP
+        }
+    }
+
+    /// A skill loaded in `run`, which a native model's checkpoint then summarizes.
+    fn skill(&mut self, run: RunId) -> Result<(), EventLogError> {
+        let mut loaded = self.templates.of("skill_loaded");
+        let length = self.size(6_000);
+        loaded["rendered_body"] = json!(text(&mut self.numbers, length));
+        self.write(Some(run), "engine:skills", loaded)
+    }
+
+    /// A native model's compaction inside `run`, once its context holds enough: the
+    /// summary's internal agent, the outputs in view it elides, the memory read
+    /// afresh, and the checkpoint keeping the latest turn, as
+    /// `maybe_compact_context` writes them.
+    fn compact(&mut self, run: RunId) -> Result<(), EventLogError> {
+        let Some(native) = &self.native else {
+            return Ok(());
+        };
+        if native.bytes < native.checkpoint_bytes {
+            return Ok(());
+        }
+        let (from, latest, kept) = (native.from, native.latest_checkpoint, native.turn_from);
+        let elided = native.ended.iter().take(3).cloned().collect::<Vec<_>>();
+        self.internal_agent(run)?;
+        for (call_run, tool_call_id) in elided {
+            let uri = format!("artifact://synthetic/{}", self.id());
+            self.write(
+                Some(call_run),
+                ORIGIN_LOOP,
+                json!({
+                    "type": "tool_output_elided",
+                    "tool_call_id": tool_call_id,
+                    "original_bytes": 4_096,
+                    "retained": {"uri": uri},
+                }),
+            )?;
+        }
+        let memory = self.templates.of("memory_loaded");
+        self.write(Some(run), ORIGIN_LOOP, memory)?;
+        let mut committed = self.templates.of("context_checkpoint_committed");
+        committed["checkpoint"]["native"] = Value::Null;
+        committed["boundaries"] = json!({
+            "source_from_seq": from.max(1),
+            "source_through_seq": self.seq,
+            "recent_from_seq": kept,
+            "input_through_seq": self.seq,
+            "prior_checkpoint_seq": latest,
+        });
+        committed["context_fresh"] = json!(true);
+        self.write(Some(run), ORIGIN_LOOP, committed)?;
+        let seq = self.seq;
+        let native = self.native.as_mut().expect("a native session");
+        native.latest_checkpoint = Some(seq);
+        native.from = kept;
+        native.ended.clear();
+        // What the kept turn holds stays in the context.
+        native.bytes = 0;
+        Ok(())
     }
 
     /// Calibrated, as the sizes of [`Mix`] are: a run's records hold this much of
@@ -387,6 +498,13 @@ impl RunWriter<'_> {
     }
 
     fn acp_session(&mut self, run: RunId, index: u64) -> Result<(), EventLogError> {
+        // A native model's session loads a skill now and then instead.
+        if self.native.is_some() {
+            if self.numbers.chance(0.1) {
+                self.skill(run)?;
+            }
+            return Ok(());
+        }
         // About 61 starts per 159 runs, and most of them resume.
         if !self.numbers.chance(0.38) {
             return Ok(());
@@ -414,19 +532,24 @@ impl RunWriter<'_> {
     }
 
     fn turn(&mut self, run: RunId, calls: u64, ordinal: u32) -> Result<(), EventLogError> {
+        let origin = self.model_origin();
         let attempt = self.id();
         let mut started = self.templates.of("model_attempt_started");
         started["attempt_id"] = json!(attempt);
         started["attempt_ordinal"] = json!(ordinal);
         started["fallback_index"] = json!(0);
         started["retry_ordinal"] = json!(0);
-        self.write(Some(run), ORIGIN_ACP, started)?;
+        self.write(Some(run), origin, started)?;
+        let turn_from = self.seq;
+        if let Some(native) = &mut self.native {
+            native.turn_from = turn_from;
+        }
         if self.numbers.chance(0.78) {
             let mut output = self.templates.of("model_output_started");
             output["attempt_id"] = json!(attempt);
-            self.write(Some(run), ORIGIN_ACP, output)?;
+            self.write(Some(run), origin, output)?;
         }
-        if self.numbers.chance(0.14) {
+        if self.native.is_none() && self.numbers.chance(0.14) {
             self.update_acp(Some(run))?;
         }
         self.model_turn_seq += 1;
@@ -445,7 +568,7 @@ impl RunWriter<'_> {
                 "type": "tool_call",
                 "id": call,
                 "provider_item_id": null,
-                "name": "acp.edit",
+                "name": if self.native.is_some() { "read" } else { "acp.edit" },
                 "input": {"path": "/work/notes.txt"},
                 "raw_input": null,
                 "metadata": null,
@@ -457,7 +580,14 @@ impl RunWriter<'_> {
         committed["input_through_seq"] = json!(self.input_through);
         committed["turn"]["content"] = Value::Array(content);
         committed["turn"]["finish_reason"] = json!(if calls == 0 { "stop" } else { "tool_calls" });
-        self.write(Some(run), ORIGIN_ACP, committed)?;
+        self.write(Some(run), origin, committed)?;
+        // A native model's loop records each turn's usage as it commits, where an
+        // ACP agent reports a round's with its last turn.
+        if self.native.is_some() {
+            let mut usage = self.templates.of("model_usage_recorded");
+            usage["model_turn_seq"] = json!(turn_seq);
+            self.write(Some(run), origin, usage)?;
+        }
         for (index, call) in parts {
             let tool_call_id = self.id();
             let owner = json!({
@@ -472,7 +602,7 @@ impl RunWriter<'_> {
             let title_length = self.size(400);
             started["presentation"]["title"] =
                 json!(text(&mut self.numbers, title_length).replace('\n', " "));
-            self.write(Some(run), ORIGIN_ACP, started)?;
+            self.write(Some(run), origin, started)?;
             let open = OpenCall {
                 run,
                 tool_call_id,
@@ -507,7 +637,7 @@ impl RunWriter<'_> {
             }
         }
         self.open_calls = still_open;
-        Ok(())
+        self.compact(run)
     }
 
     /// A committed turn's text, by the quantiles of the store's logs: 1.5 KB at
@@ -546,7 +676,11 @@ impl RunWriter<'_> {
         terminated["tool_call_id"] = json!(call.tool_call_id);
         terminated["owner"] = call.owner.clone();
         terminated["result"]["output"] = json!(text(&mut self.numbers, length));
-        self.write(Some(call.run), ORIGIN_RESULT, terminated)
+        self.write(Some(call.run), ORIGIN_RESULT, terminated)?;
+        if let Some(native) = &mut self.native {
+            native.ended.push((call.run, call.tool_call_id.clone()));
+        }
+        Ok(())
     }
 
     fn approval(&mut self, run: RunId, tool_call: &str) -> Result<(), EventLogError> {
@@ -768,9 +902,11 @@ impl RunWriter<'_> {
                 )?;
             }
         }
-        let mut usage = self.templates.of("model_usage_recorded");
-        usage["model_turn_seq"] = json!(self.model_turn_seq);
-        self.write(Some(run), ORIGIN_ACP, usage)?;
+        if self.native.is_none() {
+            let mut usage = self.templates.of("model_usage_recorded");
+            usage["model_turn_seq"] = json!(self.model_turn_seq);
+            self.write(Some(run), ORIGIN_ACP, usage)?;
+        }
         let length = self.size(1_500);
         let final_text = text(&mut self.numbers, length);
         self.write(
@@ -791,7 +927,7 @@ impl RunWriter<'_> {
 
 /// Writes the log `mix` describes to `sink`.
 pub fn write(mix: &Mix, sink: &mut dyn Sink) -> Result<(), EventLogError> {
-    let templates = Templates::load();
+    let templates = Templates::load(mix.checkpoint_bytes.is_some());
     let creation = templates.of("session_created");
     sink.record(None, "client:synthetic", payload_of(creation))?;
     let mut writer = RunWriter {
@@ -809,6 +945,14 @@ pub fn write(mix: &Mix, sink: &mut dyn Sink) -> Result<(), EventLogError> {
         jobs: Vec::new(),
         delegations: Vec::new(),
         admitted: Vec::new(),
+        native: mix.checkpoint_bytes.map(|checkpoint_bytes| NativeContext {
+            checkpoint_bytes,
+            bytes: 0,
+            from: 1,
+            latest_checkpoint: None,
+            ended: Vec::new(),
+            turn_from: 1,
+        }),
     };
     for index in 0..mix.runs {
         writer.write_run(index)?;
@@ -836,7 +980,7 @@ mod tests {
     use crate::ownership::WriteAuthority;
 
     fn creation() -> EventPayload {
-        payload_of(Templates::load().of("session_created"))
+        payload_of(Templates::load(false).of("session_created"))
     }
 
     /// Appends a synthetic log of `runs` runs, each record as strictly as a live
@@ -877,6 +1021,118 @@ mod tests {
             }
             AppendSink(self.log).record(run, origin, payload)
         }
+    }
+
+    /// [`SkipCreation`] that checks the log at each committed turn and checkpoint:
+    /// its window against a reopening, its model's context against a whole read
+    /// of its file, and, at each checkpoint, a `state.json` of that moment against
+    /// a parse (`docs/site/specs/forever-sessions.md` sections 5.3, 5.6, and 7).
+    struct Checked<'a> {
+        sink: SkipCreation<'a>,
+        log: &'a Arc<EventLog>,
+        checkpoints: usize,
+        turns: usize,
+    }
+
+    impl Sink for Checked<'_> {
+        fn record(
+            &mut self,
+            run: Option<RunId>,
+            origin: &str,
+            payload: EventPayload,
+        ) -> Result<(), EventLogError> {
+            let checkpoint = matches!(payload, EventPayload::ContextCheckpointCommitted { .. });
+            let turn = matches!(payload, EventPayload::ModelTurnCommitted { .. });
+            self.sink.record(run, origin, payload)?;
+            if !(checkpoint || turn) {
+                return Ok(());
+            }
+            self.turns += usize::from(turn);
+            self.log.assert_window_reads_as_reopened();
+            let context = self.log.model_context_events()?;
+            let reopened =
+                EventLog::open_read_only(self.log.path().to_owned(), self.log.session_id)?;
+            let whole = reopened.model_context_events()?;
+            assert!(
+                context.len() == whole.len()
+                    && context.iter().zip(whole.iter()).all(|(a, b)| a == b),
+                "the model's context at {}",
+                self.log.physical_tip_seq()
+            );
+            if checkpoint {
+                self.checkpoints += 1;
+                assert!(
+                    self.log.window_for_test().is_some(),
+                    "a checkpoint moves the window"
+                );
+                let folds = crate::session::projection(Arc::clone(self.log)).expect("a projection");
+                let state = self
+                    .log
+                    .state_file(&folds)
+                    .expect("a native window has a file");
+                let path = self
+                    .log
+                    .path()
+                    .with_file_name(super::super::state_file::STATE_FILE);
+                fs::write(&path, state.to_bytes().expect("state serializes")).expect("a file");
+                let opened =
+                    EventLog::open_read_only(self.log.path().to_owned(), self.log.session_id)?;
+                assert!(
+                    opened.opened_from_state_for_test(),
+                    "it opens from the file"
+                );
+                fs::remove_file(&path).expect("the file goes");
+            }
+            Ok(())
+        }
+    }
+
+    /// A native model's long log through real appends, checked at every committed
+    /// turn and checkpoint: what it holds after each checkpoint is its model's
+    /// context, and it answers as its file does.
+    #[test]
+    fn a_synthetic_native_log_holds_its_context_and_answers_as_its_file() {
+        let directory = tempfile::tempdir().expect("a directory");
+        let path = directory.path().join(SESSION).join("events.jsonl");
+        fs::create_dir_all(path.parent().expect("a directory")).expect("a directory");
+        let log = EventLog::create(
+            path,
+            SESSION.parse().expect("a session"),
+            EventOrigin::new("client:synthetic").expect("an origin"),
+            payload_of(Templates::load(true).of("session_created")),
+        )
+        .expect("a log");
+        let mut sink = Checked {
+            sink: SkipCreation {
+                log: &log,
+                skipped: false,
+            },
+            log: &log,
+            checkpoints: 0,
+            turns: 0,
+        };
+        let mix = Mix {
+            checkpoint_bytes: Some(16_000),
+            ..Mix::small(16)
+        };
+        write(&mix, &mut sink).expect("a synthetic native log appends");
+        let (checkpoints, turns) = (sink.checkpoints, sink.turns);
+        eprintln!("{checkpoints} checkpoints, {turns} turns");
+        assert!(checkpoints >= 5, "{checkpoints} checkpoints");
+        assert!(turns >= 50, "{turns} turns");
+        assert!(
+            log.validation
+                .lock()
+                .expect("validation lock poisoned")
+                .let_go,
+            "its validation let go of what settled"
+        );
+        assert!(
+            (log.storage_len_for_test() as u64) < log.record_count() / 4,
+            "held {} of {}",
+            log.storage_len_for_test(),
+            log.record_count()
+        );
     }
 
     /// A long log through real appends: what it holds, what its folds give, and
