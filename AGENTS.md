@@ -214,5 +214,7 @@ system turn. Materialize them at the emission point as user turns beginning
 with `[tool-emitted system message; materialized as user history]`; this keeps
 the cacheable system prefix stable across replay.
 
-Tool prompt sections are composed only at run admission and frozen into
-`run_started`; they must never mutate `history[0]` after freeze.
+Tool prompt sections are composed at run admission and frozen into
+`run_started`, and composed again only at a native checkpoint inside a run,
+recorded as `system_prompt_composed`; they never mutate `history[0]`
+otherwise.
