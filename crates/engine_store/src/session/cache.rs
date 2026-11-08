@@ -148,6 +148,51 @@ pub(super) fn replace_cache_file(
     result
 }
 
+/// How old a cache's temporary must be for an owned open to take it for what a
+/// crash left: a write renames its own within moments of staging it.
+const STALE_TEMPORARY_AGE: Duration = Duration::from_secs(5 * 60);
+
+/// Removes the temporaries [`replace_cache_file`] staged in `directory` for the
+/// caches `names` and never renamed, as a crash between the two leaves them:
+/// `.<name>.<uuid>.tmp`, once older than [`STALE_TEMPORARY_AGE`], so a write in
+/// flight keeps its own. Nothing else removes them. A failure is only logged.
+pub(super) fn sweep_cache_temporaries(directory: &Path, names: &[&str]) {
+    let Ok(entries) = fs::read_dir(directory) else {
+        return;
+    };
+    let now = std::time::SystemTime::now();
+    for entry in entries.flatten() {
+        let file_name = entry.file_name();
+        let staged = file_name.to_str().is_some_and(|file_name| {
+            names.iter().any(|name| {
+                file_name
+                    .strip_prefix('.')
+                    .and_then(|rest| rest.strip_prefix(name))
+                    .and_then(|rest| rest.strip_prefix('.'))
+                    .and_then(|rest| rest.strip_suffix(".tmp"))
+                    .is_some_and(|id| Uuid::parse_str(id).is_ok())
+            })
+        });
+        let stale = staged
+            && entry.metadata().is_ok_and(|metadata| {
+                metadata.is_file()
+                    && metadata
+                        .modified()
+                        .ok()
+                        .and_then(|modified| now.duration_since(modified).ok())
+                        .is_some_and(|age| age >= STALE_TEMPORARY_AGE)
+            });
+        if !stale {
+            continue;
+        }
+        match fs::remove_file(entry.path()) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => eprintln!("{} could not be removed: {error}", entry.path().display()),
+        }
+    }
+}
+
 /// Session metadata cache path.
 pub fn meta_path(session_dir: &Path) -> PathBuf {
     session_dir.join(SESSION_META_FILE)

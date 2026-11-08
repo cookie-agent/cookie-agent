@@ -1708,3 +1708,9 @@ a review in the golden scenario.
   (`an_owned_open_removes_a_state_file_that_does_not_match_or_is_not_wanted`). A read-only open
   leaves it alone. Two checks of `state_file/tests.rs` write their file again before an open, as
   the owned open before them now removes it.
+- **An owned open sweeps the temporaries a crash left.** A crash between staging a cache's
+  temporary and renaming it (`replace_cache_file`) left `.<name>.<uuid>.tmp` in the session's
+  folder for good. An owned open of the session now removes those of `state.json`, `view.json`,
+  and `metadata`, which share the naming, and an owned open of its reviewer log those of the
+  reviewer's `state.json`, once older than five minutes, so a write in flight keeps its own
+  (`an_owned_open_sweeps_the_temporaries_a_crash_left`).

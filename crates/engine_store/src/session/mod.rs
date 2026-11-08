@@ -1479,10 +1479,15 @@ impl SessionStore {
                     .unwrap_or_else(|poisoned| poisoned.into_inner())
                     .take(id, fingerprint)
             });
-        if let Some(owned) = parsed.and_then(|log| log.owned_from_read_only(capability.clone())) {
-            return Ok(owned);
+        let log = match parsed.and_then(|log| log.owned_from_read_only(capability.clone())) {
+            Some(owned) => owned,
+            None => EventLog::open_owned(path, id, capability)?,
+        };
+        // What a crash left of writing the session's caches.
+        if let Some(directory) = log.path().parent() {
+            sweep_cache_temporaries(directory, &[STATE_FILE, view::VIEW_FILE, SESSION_META_FILE]);
         }
-        EventLog::open_owned(path, id, capability)
+        Ok(log)
     }
 
     /// Arc clone of the resident log plus its persistence flag, without

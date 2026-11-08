@@ -221,6 +221,8 @@ impl SessionStore {
             .and_then(ReviewerLog::open);
         match opened {
             Ok(open) => {
+                // What a crash left of writing its `state.json`.
+                sweep_cache_temporaries(&directory, &[STATE_FILE]);
                 let log = Arc::clone(&open.log);
                 self.reviewers.insert(parent, open);
                 Ok(Some(log))

@@ -255,3 +255,61 @@ fn an_owned_open_removes_a_state_file_that_does_not_match_or_is_not_wanted() {
     crate::events::state_file::set_state_min_log_bytes_for_test(0);
     assert!(!state.exists(), "a log shorter than the least has none");
 }
+
+/// An owned open removes what a crash left of writing a cache in the session's
+/// folder, and in its reviewer log's, between staging the temporary and renaming
+/// it: nothing else did (review, 2026-11-08). A temporary young enough to be a
+/// write in flight stays, and so does what no cache write names so.
+#[test]
+fn an_owned_open_sweeps_the_temporaries_a_crash_left() {
+    let temporary = private_tempdir();
+    let (root, _) = golden_acp_tree(&temporary);
+    let store = store_in(&temporary);
+    store.open_for_write(root).expect("an adoption");
+    store
+        .create_reviewer_log(root, Vec::new())
+        .expect("a reviewer log");
+    assert!(store.evict(root).expect("an eviction"));
+    let dir = store.resolve_dir(root).expect("a session");
+    let reviewer = dir.join(crate::session::REVIEWER_DIR);
+    let temporary_in = |directory: &Path, name: &str| {
+        let path = directory.join(format!(".{name}.{}.tmp", uuid::Uuid::now_v7()));
+        fs::write(&path, b"{").expect("a temporary");
+        path
+    };
+    let age = |path: &Path| {
+        fs::File::options()
+            .write(true)
+            .open(path)
+            .and_then(|file| {
+                file.set_modified(
+                    std::time::SystemTime::now() - std::time::Duration::from_secs(60 * 60),
+                )
+            })
+            .expect("an older time");
+    };
+    let stale = [
+        temporary_in(&dir, STATE_FILE),
+        temporary_in(&dir, crate::session::view::VIEW_FILE),
+        temporary_in(&dir, crate::session::SESSION_META_FILE),
+        temporary_in(&reviewer, STATE_FILE),
+    ];
+    for path in &stale {
+        age(path);
+    }
+    let in_flight = temporary_in(&dir, STATE_FILE);
+    let other = dir.join(".notes.tmp");
+    fs::write(&other, b"notes").expect("a file");
+    age(&other);
+
+    store.open_for_write(root).expect("an adoption");
+    store
+        .reviewer_log(root)
+        .expect("the reviewer log")
+        .expect("it opens");
+    for path in &stale {
+        assert!(!path.exists(), "{} stays", path.display());
+    }
+    assert!(in_flight.exists(), "a write in flight");
+    assert!(other.exists(), "what no cache write names so");
+}
