@@ -979,7 +979,8 @@ impl Engine {
         run: RunId,
     ) -> Result<(), EngineError> {
         let projection = self.inner.store.get(session)?;
-        let Some(status) = projection.runs.get(&run).map(|run| run.status) else {
+        // A run whose fire settles late may be one the projection let go of.
+        let Some(status) = projection.run_outcome(run)?.map(|run| run.status) else {
             return Ok(());
         };
         if !matches!(

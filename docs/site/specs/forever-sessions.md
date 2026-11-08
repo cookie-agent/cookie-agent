@@ -1792,3 +1792,9 @@ a review in the golden scenario.
   them, its fallback for an attachment whose runtime is away keeps such a machine's in-place
   `AGENTS.md` as its current record, which no test covers on its own; a memory snapshot that cannot be
   read is written again as before, without the in-place machine memories.
+- **A subagent's report of a run its projection let go of is delivered.** `deliver_subagent_report` read
+  the run's status from `projection.runs` and took a run it did not find as nothing to report, so a
+  report that waited, retrying, while an ACP child ended more than 16 runs was dropped. It reads
+  `run_outcome`, as the other readers of an older run do, and so does a cron fire's settling of its run
+  (`a_report_of_a_run_the_child_let_go_of_is_still_delivered`, with a test hook that holds a report's
+  delivery).

@@ -257,6 +257,89 @@ async fn a_delegation_and_a_compaction_read_only_their_own_run() {
     assert_reads_only_since(&passes(engine, session), "compaction.rs", before);
 }
 
+/// A subagent's report reaches its parent whenever it is delivered: one that
+/// waited while the child's projection let go of its run, as an ACP child's
+/// keeps only the latest runs that ended, is still delivered, from the log.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_report_of_a_run_the_child_let_go_of_is_still_delivered() {
+    crate::session::skip_reference_fold();
+    let document = "---\ndescription: Fixture\nmode: all\nacp: {}\npermissions:\n  delegate: { fixture: allow }\n---\nReview.\n";
+    let acp = acp_fixture(&[], &[("fixture.md", document)]).await;
+    let engine = acp.engine();
+    let session = engine.create_session(selection()).unwrap().session_id;
+    let call = format!(
+        "mcp call delegate_subagent {}",
+        serde_json::json!({
+            "description": "A child",
+            "prompt": "say from the child",
+            "agent_type": "fixture",
+        })
+    );
+    quiet_turn(engine, session, "delegate", &call).await;
+    let child = engine.children(session).unwrap()[0].session_id;
+    let first = *engine
+        .inner
+        .store
+        .get(child)
+        .unwrap()
+        .runs
+        .keys()
+        .next()
+        .expect("the delegation's run");
+    // The next run's report waits while the child runs more than the runs
+    // its projection keeps.
+    let (reached, release) = engine.install_subagent_report_hook(vec![first]);
+    quiet_turn(engine, child, "reported", "say one").await;
+    with_watchdog("the held report", reached)
+        .await
+        .expect("held");
+    let reported = engine
+        .inner
+        .store
+        .get(child)
+        .unwrap()
+        .runs
+        .values()
+        .find(|run| run.client_run_id.as_str() == "reported")
+        .expect("the run")
+        .id;
+    for later in 0..17 {
+        quiet_turn(engine, child, &format!("later-{later}"), "say one").await;
+    }
+    assert!(
+        !engine
+            .inner
+            .store
+            .get(child)
+            .unwrap()
+            .runs
+            .contains_key(&reported),
+        "the child's projection let go of the run"
+    );
+    let owner = cookie_agent_protocol::ProducerOwner::Subagent { session_id: child };
+    let key = cookie_agent_protocol::ProducerIdempotencyKey::new(reported.to_string()).unwrap();
+    assert_eq!(
+        engine
+            .goal_producer_projection(session)
+            .unwrap()
+            .accepted(&owner, &key),
+        None,
+        "not delivered yet"
+    );
+    engine
+        .deliver_subagent_report_until_done(child, reported)
+        .await;
+    assert!(
+        engine
+            .goal_producer_projection(session)
+            .unwrap()
+            .accepted(&owner, &key)
+            .is_some(),
+        "the report reached the parent"
+    );
+    release.notify_one();
+}
+
 /// Panics if what `reader` asked of the file starts at or before `seq`.
 fn assert_reads_only_since(calls: &[String], reader: &str, seq: u64) {
     for call in calls.iter().filter(|call| call.contains(reader)) {

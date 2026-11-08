@@ -99,6 +99,8 @@ impl Engine {
         child: SessionId,
         run: RunId,
     ) -> Result<(), EngineError> {
+        #[cfg(test)]
+        self.wait_for_subagent_report_hook(run).await;
         let projection = self.inner.store.get(child)?;
         let SessionOrigin::Delegated {
             parent_session_id, ..
@@ -106,7 +108,9 @@ impl Engine {
         else {
             return Ok(());
         };
-        let Some(status) = projection.runs.get(&run).map(|run| run.status) else {
+        // The run may be one the child's projection let go of, as its log
+        // keeps only the latest that ended while an ACP agent's window holds it.
+        let Some(status) = projection.run_outcome(run)?.map(|run| run.status) else {
             return Ok(());
         };
         if !matches!(

@@ -296,4 +296,58 @@ impl crate::runtime::Engine {
             .map(|record| (record.background, record.producer_id))
             .ok_or_else(|| EngineError::ToolFailed("subagent registry entry is missing".into()))
     }
+
+    /// Holds the next attempt to deliver the subagent report of a run other
+    /// than `passing` before it reads the child, until the returned notify
+    /// fires.
+    pub(crate) fn install_subagent_report_hook(
+        &self,
+        passing: Vec<RunId>,
+    ) -> (oneshot::Receiver<()>, Arc<tokio::sync::Notify>) {
+        let (reached, receiver) = oneshot::channel();
+        let release = Arc::new(tokio::sync::Notify::new());
+        *self
+            .inner
+            .test_hooks
+            .subagent_report_hook
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some((
+            passing,
+            Arc::new(crate::runtime::PagingRaceHook {
+                reached: Mutex::new(Some(reached)),
+                release: Arc::clone(&release),
+            }),
+        ));
+        (receiver, release)
+    }
+
+    pub(in crate::runtime) async fn wait_for_subagent_report_hook(&self, run: RunId) {
+        let hook = {
+            let mut hook = self
+                .inner
+                .test_hooks
+                .subagent_report_hook
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if hook
+                .as_ref()
+                .is_some_and(|(passing, _)| !passing.contains(&run))
+            {
+                hook.take().map(|(_, hook)| hook)
+            } else {
+                None
+            }
+        };
+        if let Some(hook) = hook {
+            if let Some(reached) = hook
+                .reached
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .take()
+            {
+                let _ = reached.send(());
+            }
+            hook.release.notified().await;
+        }
+    }
 }

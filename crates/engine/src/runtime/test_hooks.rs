@@ -175,6 +175,9 @@ pub(crate) struct TestHooks {
     /// Holds a cron fire between its delivery and the write that records it
     /// delivered.
     pub(crate) cron_settle_hook: Mutex<Option<Arc<PagingRaceHook>>>,
+    /// Holds the next attempt to deliver a subagent report of a run other
+    /// than those listed, before it reads the child.
+    pub(crate) subagent_report_hook: Mutex<Option<(Vec<RunId>, Arc<PagingRaceHook>)>>,
     /// Holds an eviction between paging its sessions out and closing their
     /// ACP sessions.
     pub(crate) acp_eviction_close_hook: Mutex<Option<Arc<PagingRaceHook>>>,
