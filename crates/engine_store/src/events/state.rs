@@ -1153,7 +1153,7 @@ impl DoomFold {
 /// checks.
 pub const LOOP_WINDOW_CALLS: usize = 64;
 
-/// How many calls [`LoopFold`] holds at most: a call open while more than this
+/// How many calls the loop guard's fold (`LoopFold`) holds at most: a call open while more than this
 /// many others start is checked against what is left.
 pub const LOOP_HELD_CALLS: usize = 4 * LOOP_WINDOW_CALLS;
 
