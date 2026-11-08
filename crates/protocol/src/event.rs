@@ -3286,6 +3286,16 @@ pub enum EventPayload {
         #[schemars(length(max = 16))]
         blocks: Option<Vec<PromptBlockSpan>>,
     },
+    /// A turn of the approval reviewer's conversation, in the reviewer's own
+    /// log: a hidden child session filed in the reviewed session's folder,
+    /// whose records after its creation are these (client protocol 1.92.0;
+    /// `docs/site/specs/forever-sessions.md` section 5.5). It holds the
+    /// `user` turn and the verdict as they were sent, so a restart sends the
+    /// same bytes; a turn that starts an epoch is where the log's window
+    /// starts, as a checkpoint is a native model's. No other log holds it.
+    ReviewerTurnRecorded {
+        turn: Box<ReviewerTurn>,
+    },
     /// Prompt blocks that changed since the system prompt carried them
     /// (client protocol 1.54.0). Rendered in place as a user turn of the
     /// model's history.
@@ -3682,6 +3692,7 @@ crate::open_enum!(tagged EventPayload, tag = "type", tags = [
     "prompt_blocks_recorded",
     "prompt_blocks_announced",
     "system_prompt_composed",
+    "reviewer_turn_recorded",
     "model_turn_committed",
     "model_usage_recorded",
     "native_compaction_finished",
@@ -3867,6 +3878,7 @@ impl EventPayload {
                 matches!(step, Open::Known(ApprovalStep::DoomLoop { .. }))
             }
             Self::SessionCreated { .. }
+            | Self::ReviewerTurnRecorded { .. }
             | Self::AcpSessionStarted { .. }
             | Self::AcpSessionUpdated { .. }
             | Self::ElicitationRequested { .. }
@@ -3991,6 +4003,7 @@ impl EventPayload {
                 | Self::DelegatedContextSeeded { .. }
                 | Self::DelegateChildTerminated { .. }
                 | Self::RecordOmitted { .. }
+                | Self::ReviewerTurnRecorded { .. }
                 | Self::AcpSessionStarted { .. }
                 | Self::AcpSessionUpdated { .. }
                 | Self::AutomaticRunsHeld { .. }
@@ -4118,6 +4131,9 @@ impl EventPayload {
                 {
                     return Err(EventSchemaError::InvalidSkillEvent);
                 }
+            }
+            Self::ReviewerTurnRecorded { turn } if !turn.is_valid() => {
+                return Err(EventSchemaError::InvalidReviewerTurn);
             }
             Self::SkillInvocationNoted { name } if name.is_empty() => {
                 return Err(EventSchemaError::InvalidSkillEvent);
@@ -5605,6 +5621,7 @@ pub enum EventSchemaError {
     InvalidSessionPermissionOverlay,
     InvalidSessionToolExposure,
     InvalidSkillEvent,
+    InvalidReviewerTurn,
     ZeroEventSequence,
     InvalidSessionCreatedEnvelope,
     MissingRunId,
@@ -5692,6 +5709,7 @@ impl fmt::Display for EventSchemaError {
             Self::InvalidSessionPermissionOverlay => "session permission overlay is invalid",
             Self::InvalidSessionToolExposure => "session tool exposure is invalid",
             Self::InvalidSkillEvent => "skill event is invalid",
+            Self::InvalidReviewerTurn => "approval reviewer turn is invalid",
             Self::ZeroEventSequence => "event sequence must be positive",
             Self::StoredTransientPayload => "live-only stream payloads are never stored",
             Self::NonTransientPayload => "transient events carry only live-only payloads",

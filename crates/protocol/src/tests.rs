@@ -1960,6 +1960,70 @@ fn test_window(adapter: &str, provider: &str, model: &str) -> NativeContextWindo
     .unwrap()
 }
 
+/// An approval reviewer's turn is a state record of its own log, runless,
+/// with its optional parts left out when empty, and refused when its verdict
+/// does not follow its cut or either turn is empty.
+#[test]
+fn a_reviewer_turn_follows_its_cut_and_writes_only_what_it_holds() {
+    let turn = ReviewerTurn {
+        approval_id: ApprovalId::new_v7(),
+        cut_seq: 7,
+        evaluated_seq: 9,
+        tool: "bash".into(),
+        request: "<context>\n[nothing new]\n</context>".into(),
+        verdict: r#"{"decision":"allow"}"#.into(),
+        entries: Vec::new(),
+        epoch: Some(ReviewerEpoch::default()),
+        cursor: ReviewerCursor {
+            runs: 1,
+            ..ReviewerCursor::default()
+        },
+    };
+    let event = |turn: ReviewerTurn| StoredEvent {
+        engine_version: None,
+        origin: None,
+        session_id: SessionId::new_v7(),
+        run_id: None,
+        seq: 2,
+        timestamp: jiff::Timestamp::now(),
+        payload: EventPayload::ReviewerTurnRecorded {
+            turn: Box::new(turn),
+        },
+    };
+    let valid = event(turn.clone());
+    assert!(!valid.payload.is_audit());
+    assert_eq!(valid.validate(), Ok(()));
+    let wire = serde_json::to_value(&valid).unwrap();
+    assert_eq!(wire["payload"]["type"], json!("reviewer_turn_recorded"));
+    assert_eq!(wire["payload"]["turn"]["epoch"], json!({}));
+    assert_eq!(wire["payload"]["turn"]["cursor"], json!({"runs": 1}));
+    assert!(wire["payload"]["turn"].get("entries").is_none());
+    assert_eq!(serde_json::from_value::<StoredEvent>(wire).unwrap(), valid);
+    for invalid in [
+        ReviewerTurn {
+            evaluated_seq: 7,
+            ..turn.clone()
+        },
+        ReviewerTurn {
+            cut_seq: 0,
+            ..turn.clone()
+        },
+        ReviewerTurn {
+            request: String::new(),
+            ..turn.clone()
+        },
+        ReviewerTurn {
+            verdict: String::new(),
+            ..turn
+        },
+    ] {
+        assert_eq!(
+            event(invalid).validate(),
+            Err(EventSchemaError::InvalidReviewerTurn)
+        );
+    }
+}
+
 /// A system prompt composed afresh inside a run is an audit record, with its
 /// blocks only when a plugin did not replace the prompt, and refused when a
 /// block lies outside the prompt or the prompt is empty or too long.

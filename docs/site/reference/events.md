@@ -256,6 +256,7 @@ never stored.
 | `prompt_blocks_recorded`, `prompt_blocks_announced` | audit | run | [Prompt blocks](#prompt-blocks): where a run's prompt carries its blocks, and what changed since |
 | `context_refreshed` | audit | run | [Prompt blocks](#prompt-blocks): the context before the conversation was composed again between compactions, and why |
 | `system_prompt_composed` | audit | run | [Prompt blocks](#prompt-blocks): a checkpoint inside a run composed the run's system prompt afresh |
+| `reviewer_turn_recorded` | state | runless | A turn of the [approval reviewer's own log](#approvals), which only that log holds |
 | `model_turn_committed`, `model_usage_recorded` | state | run | A committed turn and its usage |
 | `native_replay_cut` | state | run | Reasoning at or before `through_seq` is no longer replayed, because the request before it changed since it was made; see [Stale reasoning](#stale-reasoning) |
 | `automatic_runs_held`, `automatic_runs_resumed` | state | runless | A [held session](../specs/held-sessions.md): its automatic runs stopped, and the resume that cleared it |
@@ -720,8 +721,20 @@ cancelled the request. An outcome this build does not know reads as cancelled,
 so the operation is not approved.
 
 The approval reviewer's conversation is rendered from these records and the
-session's messages and tool calls, never stored separately
-([The approval reviewer](../extend/agents.md#the-approval-reviewer)).
+session's messages and tool calls, and kept in a log of its own
+([The approval reviewer](../extend/agents.md#the-approval-reviewer)): a hidden
+child session in the reviewed session's folder, `reviewer/events.jsonl`, which
+no listing, tree, or client reads. After its `session_created`, each of its
+records is `reviewer_turn_recorded { turn }` (client protocol 1.92.0), one per
+review the reviewer answered: `turn.request` and `turn.verdict` are the `user`
+turn and the verdict as they were sent, `cut_seq` the reviewed session's
+`approval_requested` of the call and `evaluated_seq` its `evaluated` step,
+`entries` what the turn rendered since the previous one, and `cursor` what
+the next review needs of the session's log before its cut. A turn with
+`epoch` started the conversation over, holding the entries a later epoch can
+still keep and the verdicts it carries forward; the log's window starts
+there. A revert of the reviewed session drops the turns whose `evaluated_seq`
+it cuts, and a fork copies those it keeps.
 
 `permission_mode_set { mode }` is a runless state event of a root session:
 its tree's permission mode changed to `mode`. Loading the tree restores the

@@ -4325,6 +4325,23 @@
           "type": "object"
         },
         {
+          "description": "A turn of the approval reviewer's conversation, in the reviewer's own\nlog: a hidden child session filed in the reviewed session's folder,\nwhose records after its creation are these (client protocol 1.92.0;\n`docs/site/specs/forever-sessions.md` section 5.5). It holds the\n`user` turn and the verdict as they were sent, so a restart sends the\nsame bytes; a turn that starts an epoch is where the log's window\nstarts, as a checkpoint is a native model's. No other log holds it.",
+          "properties": {
+            "turn": {
+              "$ref": "#/$defs/ReviewerTurn"
+            },
+            "type": {
+              "const": "reviewer_turn_recorded",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "turn"
+          ],
+          "type": "object"
+        },
+        {
           "description": "Prompt blocks that changed since the system prompt carried them\n(client protocol 1.54.0). Rendered in place as a user turn of the\nmodel's history.",
           "properties": {
             "blocks": {
@@ -8904,6 +8921,382 @@
         "byte_length",
         "line_count",
         "truncated"
+      ],
+      "type": "object"
+    },
+    "ReviewerAgentsMd": {
+      "description": "An `AGENTS.md` record of the reviewed session: its position, its run,\nand its text.",
+      "properties": {
+        "run_id": {
+          "format": "uuid",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "seq": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "seq",
+        "text"
+      ],
+      "type": "object"
+    },
+    "ReviewerAttachment": {
+      "description": "A runtime the reviewed session attached, as the request block names\nwhere a call runs.",
+      "properties": {
+        "kind": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "runtime_id": {
+          "type": "string"
+        },
+        "workspace": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "name",
+        "runtime_id",
+        "kind"
+      ],
+      "type": "object"
+    },
+    "ReviewerCursor": {
+      "description": "What the reviewed session's log says through a cut, as far as rendering\nwhat comes after it needs.",
+      "properties": {
+        "agents_md": {
+          "description": "The `AGENTS.md` texts of the newest run that loaded any. Empty for a\ndelegated session, whose `inherited` holds its root's.",
+          "items": {
+            "$ref": "#/$defs/ReviewerAgentsMd"
+          },
+          "type": "array"
+        },
+        "attachments": {
+          "description": "The runtimes the log attached, by attachment name.",
+          "items": {
+            "$ref": "#/$defs/ReviewerAttachment"
+          },
+          "type": "array"
+        },
+        "inherited": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ReviewerInherited"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Set for a delegated session: what it inherited of its root."
+        },
+        "messages": {
+          "description": "Producer messages accepted and not yet consumed or discarded that the\nconversation shows, at most 256.",
+          "items": {
+            "$ref": "#/$defs/ReviewerMessage"
+          },
+          "type": "array"
+        },
+        "open_calls": {
+          "description": "Calls started and not yet ended through the cut that the trajectory\nshows, with the entry each renders as for each way it can end.",
+          "items": {
+            "$ref": "#/$defs/ReviewerOpenCall"
+          },
+          "type": "array"
+        },
+        "recent_runs": {
+          "description": "The latest of those runs, at most 64, oldest first.",
+          "items": {
+            "$ref": "#/$defs/ReviewerRun"
+          },
+          "type": "array"
+        },
+        "runs": {
+          "description": "How many runs the log named through the cut, in the order each first\nappears: an entry says which run it came in by this count.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "runs"
+      ],
+      "type": "object"
+    },
+    "ReviewerEntry": {
+      "description": "An entry of the reviewer's conversation, as rendered, at its position in\nthe reviewed session's log: a user message, or an entry of the agent's\ntrajectory. A delegated session's inherited messages are at position 0.",
+      "properties": {
+        "message": {
+          "description": "A user message, rather than a trajectory entry.",
+          "type": "boolean"
+        },
+        "seq": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "seq",
+        "text"
+      ],
+      "type": "object"
+    },
+    "ReviewerEpoch": {
+      "description": "What an epoch's first turn kept for the epochs after it: the entries a\nlater fresh turn can still render within its budgets, and what was left\nout before them.",
+      "properties": {
+        "messages": {
+          "description": "The user messages a later epoch can keep, in order.",
+          "items": {
+            "$ref": "#/$defs/ReviewerEntry"
+          },
+          "type": "array"
+        },
+        "messages_omitted": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ReviewerOmitted"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The user messages an epoch left out, which no later one keeps."
+        },
+        "trajectory": {
+          "description": "The newest trajectory entries, up to the first that puts them over\nthe trajectory's budget.",
+          "items": {
+            "$ref": "#/$defs/ReviewerEntry"
+          },
+          "type": "array"
+        },
+        "trajectory_omitted": {
+          "description": "How many older trajectory entries were let go of.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "verdicts": {
+          "description": "The verdicts before this turn that a later epoch carries forward, at\nmost five, oldest first.",
+          "items": {
+            "$ref": "#/$defs/ReviewerVerdict"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "ReviewerInherited": {
+      "description": "What a delegated session's reviewer inherited of its root when its log\nwas created: the root's `AGENTS.md`, as the conversation renders it.",
+      "properties": {
+        "agents_md": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "ReviewerMessage": {
+      "description": "A producer message the conversation shows once it is consumed: its\nlabel and its body as the entry renders them.",
+      "properties": {
+        "body": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "message_id": {
+          "format": "uuid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "message_id",
+        "label",
+        "body"
+      ],
+      "type": "object"
+    },
+    "ReviewerOmitted": {
+      "description": "User messages an epoch left out: how many, their tokens by the engine's\nestimate, and the position of the first.",
+      "properties": {
+        "count": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "first_seq": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "tokens": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "count",
+        "tokens",
+        "first_seq"
+      ],
+      "type": "object"
+    },
+    "ReviewerOpenCall": {
+      "description": "A call still open at a cut, with the trajectory entry it renders as for\neach way it can end.",
+      "properties": {
+        "cancelled": {
+          "type": "string"
+        },
+        "completed": {
+          "type": "string"
+        },
+        "denied": {
+          "type": "string"
+        },
+        "failed": {
+          "type": "string"
+        },
+        "tool_call_id": {
+          "format": "uuid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "tool_call_id",
+        "completed",
+        "failed",
+        "denied",
+        "cancelled"
+      ],
+      "type": "object"
+    },
+    "ReviewerRun": {
+      "description": "A run of the reviewed session: its number, and whether a message the\nconversation shows came in it yet.",
+      "properties": {
+        "has_input": {
+          "type": "boolean"
+        },
+        "ordinal": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "run_id": {
+          "format": "uuid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "run_id",
+        "ordinal"
+      ],
+      "type": "object"
+    },
+    "ReviewerTurn": {
+      "description": "One review: the `user` turn of the call under review and the verdict that\nanswered it, as sent, with what a later review needs.",
+      "properties": {
+        "approval_id": {
+          "format": "uuid",
+          "type": "string"
+        },
+        "cursor": {
+          "$ref": "#/$defs/ReviewerCursor",
+          "description": "What reading the reviewed session's log on from `cut_seq` needs of\nwhat came before it."
+        },
+        "cut_seq": {
+          "description": "The reviewed session's `approval_requested` of the call: the review's\ncut. The turn holds what the log positions after the previous turn's\ncut and up to this one.",
+          "format": "uint64",
+          "minimum": 1,
+          "type": "integer"
+        },
+        "entries": {
+          "description": "The entries this turn renders since the previous turn, in the log's\norder. Empty on an epoch's first turn, whose `epoch` holds them.",
+          "items": {
+            "$ref": "#/$defs/ReviewerEntry"
+          },
+          "type": "array"
+        },
+        "epoch": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ReviewerEpoch"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Set on the first turn of an epoch: the conversation started over\nhere, from what the reviewer's log kept, and holds nothing from\nbefore. The reviewer's log lets go of the turns before it."
+        },
+        "evaluated_seq": {
+          "description": "The reviewed session's `approval_step` that recorded the verdict. A\nrevert or fork of that session before it leaves the turn out.",
+          "format": "uint64",
+          "minimum": 1,
+          "type": "integer"
+        },
+        "request": {
+          "description": "The `user` turn as sent.",
+          "type": "string"
+        },
+        "tool": {
+          "description": "The name of the tool the reviewed call is of, as a later epoch's\ncarried verdicts name it.",
+          "type": "string"
+        },
+        "verdict": {
+          "description": "The `assistant` turn as sent: the verdict as canonical JSON.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "approval_id",
+        "cut_seq",
+        "evaluated_seq",
+        "tool",
+        "request",
+        "verdict",
+        "cursor"
+      ],
+      "type": "object"
+    },
+    "ReviewerVerdict": {
+      "description": "An earlier verdict, as a new epoch carries it.",
+      "properties": {
+        "cut_seq": {
+          "description": "The cut of the review it answered.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "tool": {
+          "type": "string"
+        },
+        "verdict": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "cut_seq",
+        "tool",
+        "verdict"
       ],
       "type": "object"
     },

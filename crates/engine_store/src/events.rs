@@ -1523,6 +1523,9 @@ pub fn syncs_on_append(payload: &EventPayload) -> bool {
         | EventPayload::NativeCompactionFinished { .. }
         | EventPayload::ToolCallProgress { .. }
         | EventPayload::AcpLiveUpdate { .. } => false,
+        // The approval reviewer's own log: one per review, and a lost one
+        // only costs the next review a longer delta.
+        EventPayload::ReviewerTurnRecorded { .. } => true,
         // Tool calls.
         EventPayload::ToolCallStarted { .. }
         | EventPayload::ToolCallTerminated { .. }

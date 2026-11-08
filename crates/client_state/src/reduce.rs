@@ -1990,7 +1990,9 @@ pub(super) fn reduce_event_from(
                 text,
             );
         }
-        EventPayload::UserInputTransformed { .. }
+        // Only the reviewer's own log holds it, which no client reads.
+        EventPayload::ReviewerTurnRecorded { .. }
+        | EventPayload::UserInputTransformed { .. }
         | EventPayload::DelegationReserved { .. }
         | EventPayload::DelegationProgressed { .. }
         | EventPayload::ToolRoundStarted { .. }

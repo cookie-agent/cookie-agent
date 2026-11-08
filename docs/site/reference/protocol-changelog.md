@@ -5,6 +5,15 @@ The client protocol's version is `MAJOR.MINOR.PATCH`
 adds and a major breaks; before it, every minor could break the wire (see the
 [compatibility spec](../specs/compatibility-v1.md) section 3).
 
+## 1.92.0
+
+- A new state event, `reviewer_turn_recorded { turn }`: a turn of the approval
+  reviewer's conversation, with the `user` turn and the verdict as they were
+  sent, in the reviewer's own log, a hidden child session filed in the reviewed
+  session's folder ([Sessions that run forever](../specs/forever-sessions.md)
+  section 5.5). No session a client lists or reads holds it, so clients never
+  receive it. Plugin protocol 1.46.0 carries it in the event schema.
+
 ## 1.91.0
 
 - A new audit event, `system_prompt_composed { composed_prompt,
