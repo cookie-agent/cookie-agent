@@ -550,6 +550,134 @@ async fn a_switch_to_a_native_agent_and_back_reads_the_log_whole_and_windows_it_
     }
 }
 
+/// Starts a run of the native agent and waits for it to end, returning its final
+/// text.
+async fn native_turn(engine: &Engine, session: SessionId, key: &str, text: &str) -> String {
+    let run = engine
+        .start_run(
+            RunStartParams {
+                reset_fallback: false,
+                session_id: session,
+                client_run_id: ClientRunId::new(key).unwrap(),
+                selection: RunSelection {
+                    agent: cookie_agent_protocol::AgentId::new("native").unwrap(),
+                    model: ModelSelection {
+                        model: "custom.test/group/model".parse().unwrap(),
+                        variant: None,
+                    },
+                    preset: None,
+                    acp_runtime: None,
+                },
+                content: text.into(),
+            },
+            origin(),
+        )
+        .await
+        .expect("the native run starts")
+        .run_id;
+    let outcome = finished(engine, session, run).await;
+    wait_for_session_not_running(engine, session).await;
+    final_text(&outcome)
+}
+
+/// Section 5.4 both ways and back, with a native model's checkpoint: from an ACP
+/// agent to a native one the log reads whole, and holds it until the checkpoint,
+/// which moves its window to what the model's context needs; back to the ACP
+/// agent it narrows at the agent's next committed turn; and to the native one
+/// again it reads whole once and holds the context since that checkpoint.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_switch_between_an_acp_agent_and_a_native_one_with_a_checkpoint_windows_either_way() {
+    let (config, captured) = super::titles::title_model(&[
+        "A title",
+        "native one",
+        "native more",
+        "Summary: the session so far.",
+        "native two",
+        "native three",
+    ])
+    .await;
+    // Room for a summary and the tail it keeps beside the tools.
+    let config = config.replace("context_tokens = 8192", "context_tokens = 200000");
+    let acp = acp_fixture_with(&[], &[("native.md", NATIVE_DOCUMENT)], &config).await;
+    let engine = acp.engine();
+    let session = engine.create_session(selection()).unwrap().session_id;
+    for round in 0..3 {
+        turn(
+            engine,
+            session,
+            &format!("acp-{round}"),
+            &format!("say acp {round}"),
+        )
+        .await;
+    }
+    let log = log_of(engine, session);
+    let acp_window = log.window_for_test().expect("an ACP agent's window");
+
+    // To the native agent: whole, as its model reads it all.
+    assert_eq!(
+        native_turn(engine, session, "native-1", "say native one").await,
+        "native one"
+    );
+    assert_eq!(log.window_for_test(), None, "whole until a checkpoint");
+    assert_eq!(log.recent().len() as u64, log.record_count());
+    assert_eq!(
+        native_turn(engine, session, "native-more", "say more").await,
+        "native more"
+    );
+
+    // Its checkpoint moves the window past where the ACP agent's was.
+    let result = engine
+        .compact_session_result(session, None, origin())
+        .await
+        .expect("compaction");
+    assert!(result.compacted, "{result:?}");
+    let native_window = log.window_for_test().expect("a native window");
+    assert!(native_window > acp_window);
+    assert!((log.recent().len() as u64) < log.record_count());
+    assert_answers_as_reopened(&log, "at the native checkpoint");
+    assert_eq!(
+        native_turn(engine, session, "native-2", "say native two").await,
+        "native two"
+    );
+    assert_eq!(
+        log.window_for_test(),
+        Some(native_window),
+        "a turn leaves it"
+    );
+    assert_answers_as_reopened(&log, "after the native checkpoint");
+
+    // Back to the ACP agent: its next committed turn narrows the log to it.
+    turn(engine, session, "back", "say back").await;
+    assert_eq!(log.window_for_test(), log.state_latest_turn_seq_for_test());
+    assert!(log.window_for_test() > Some(native_window));
+    assert_eq!(
+        log.recent().len(),
+        log.storage_len_for_test(),
+        "an ACP agent's window pins nothing"
+    );
+    assert_answers_as_reopened(&log, "back on the ACP agent");
+
+    // And native again: read whole once, then the context since its checkpoint.
+    assert_eq!(
+        native_turn(engine, session, "native-3", "say native three").await,
+        "native three"
+    );
+    assert_eq!(log.window_for_test(), Some(native_window));
+    assert_answers_as_reopened(&log, "native again");
+    drop(acp);
+    let requests = captured.await.unwrap();
+    let request = requests.last().unwrap();
+    assert!(
+        request.contains("say back"),
+        "the native model read the ACP turn"
+    );
+    assert!(request.contains("say native three"));
+    assert!(
+        !request.contains("say acp 0"),
+        "nor what the summary covers"
+    );
+}
+
 /// A pass reads the file for what precedes the window it saw: what the log
 /// appends later is not in it, and a cut under it ends it rather than handing
 /// out what the file holds now.

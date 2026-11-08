@@ -885,6 +885,11 @@ fn tool(name: &'static str, arguments: Value) -> Reply {
     Reply::Tools(vec![(name, arguments)])
 }
 
+/// A step that calls one tool.
+pub(super) fn tool_reply(name: &'static str, arguments: Value) -> Reply {
+    tool(name, arguments)
+}
+
 pub(super) type Rules = BTreeMap<&'static str, Vec<Reply>>;
 
 /// The scenario's root, for `$child:<n>` in a reply's arguments: the handle

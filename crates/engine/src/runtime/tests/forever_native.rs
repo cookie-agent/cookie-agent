@@ -133,3 +133,125 @@ async fn a_checkpoint_reads_agents_md_afresh_and_a_skill_loads_again_after_it() 
     quiesce(engine, session).await;
     engine.shutdown().await;
 }
+
+/// A native session's window moves when its checkpoint commits, to what its
+/// model's context needs; the checkpoint writes `state.json`, from which the
+/// session comes back as it was; and an ordinary turn after it asks for no pass
+/// over the log (`docs/site/specs/forever-sessions.md` sections 5 and 7).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_native_window_moves_at_its_checkpoint_and_an_ordinary_turn_reads_no_pass() {
+    // The reference folds of a store append read the whole log: they would
+    // count, and are what this keeps a turn from doing.
+    crate::session::skip_reference_fold();
+    let rules = Rules::from([
+        ("one", vec![text("The first answer.")]),
+        (
+            "two",
+            vec![
+                super::golden_history::tool_reply(
+                    "read",
+                    serde_json::json!({"path": "src/lib.rs"}),
+                ),
+                text("The second answer."),
+            ],
+        ),
+        (
+            "three",
+            vec![
+                super::golden_history::tool_reply(
+                    "read",
+                    serde_json::json!({"path": "src/lib.rs"}),
+                ),
+                text("An ordinary answer."),
+            ],
+        ),
+        ("four", vec![text("The answer after it came back.")]),
+    ]);
+    let endpoint = script_server(rules).await;
+    let (fixture, selection) = coding_fixture(&endpoint, CODING_AGENT, None).await;
+    let engine = &fixture.engine;
+    let session = engine.create_session(selection.clone()).unwrap().session_id;
+    for (key, words) in [("one", "#k:one Begin."), ("two", "#k:two Read it.")] {
+        run(engine, session, &selection, key, user_text(words)).await;
+        quiesce(engine, session).await;
+    }
+    let log = engine.inner.store.log(session).unwrap();
+    assert_eq!(log.window_for_test(), None, "no checkpoint, no window");
+    let state = engine
+        .inner
+        .store
+        .session_dir(session)
+        .join(crate::session::STATE_FILE);
+    assert!(!state.exists());
+
+    assert!(
+        engine
+            .compact_session(session, None, origin())
+            .await
+            .expect("compaction")
+    );
+    let window = log
+        .window_for_test()
+        .expect("the checkpoint moved the window");
+    let held = log.recent().len() as u64;
+    assert!(
+        held < log.record_count(),
+        "{held} of {}",
+        log.record_count()
+    );
+    assert!(state.is_file(), "the checkpoint writes the state file");
+    let context = log.model_context_events().unwrap();
+    assert!(context.iter().any(|event| event.seq < window), "it pins");
+
+    log.take_history_calls_for_test();
+    run(
+        engine,
+        session,
+        &selection,
+        "three",
+        user_text("#k:three Read it again."),
+    )
+    .await;
+    quiesce(engine, session).await;
+    let calls = log.take_history_calls_for_test();
+    assert!(calls.is_empty(), "{calls:#?}");
+    assert_eq!(log.window_for_test(), Some(window), "a turn leaves it");
+
+    // Out of memory and back: from the state file, holding what it held.
+    let context = log.model_context_events().unwrap();
+    let held = log.recent();
+    assert!(engine.inner.store.evict(session).unwrap());
+    let back = engine.inner.store.log(session).unwrap();
+    assert!(back.opened_from_state_for_test());
+    assert_eq!(back.window_for_test(), Some(window));
+    assert!(
+        back.recent()
+            .iter()
+            .map(|event| event.seq)
+            .eq(held.iter().map(|event| event.seq))
+    );
+    let reopened = back.model_context_events().unwrap();
+    assert!(
+        reopened.len() == context.len() && reopened.iter().zip(context.iter()).all(|(a, b)| a == b)
+    );
+    super::acp::window::assert_answers_as_reopened(&back, "after it came back");
+    run(
+        engine,
+        session,
+        &selection,
+        "four",
+        user_text("#k:four Carry on."),
+    )
+    .await;
+    quiesce(engine, session).await;
+    let assembled = serde_json::to_string(
+        &engine
+            .get_history(session, EngineHistoryView::Assembled)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(assembled.contains("The answer after it came back."));
+    assert!(assembled.contains("Read it again."));
+    engine.shutdown().await;
+}
