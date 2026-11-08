@@ -473,9 +473,19 @@ pub(crate) struct LettingGo {
 }
 
 impl LettingGo {
-    pub(crate) fn observe(&mut self, payload: &EventPayload) {
+    pub(crate) fn observe(&mut self, event: &StoredEvent) {
+        let payload = &event.payload;
         if let Some(acp) = windowed_after(payload) {
             self.acp = acp;
+        }
+        // An approval reviewer's epoch starts its own log's context.
+        if let EventPayload::ReviewerTurnRecorded { turn } = payload
+            && turn.epoch.is_some()
+        {
+            self.context_from = Some(
+                self.context_from
+                    .map_or(event.seq, |from| from.max(event.seq)),
+            );
         }
         if let EventPayload::ContextCheckpointCommitted { commit } = payload {
             let start = model_context::commit_window_start(commit);
@@ -1303,11 +1313,15 @@ impl EventStorage {
     }
 
     /// Narrows as `record`, just pushed, moves the window: an ACP agent's
-    /// committed turn, or a checkpoint of a native model's.
+    /// committed turn, a checkpoint of a native model's, or an epoch of an
+    /// approval reviewer's own log.
     fn narrow_after(&mut self, record: &StoredEvent) {
         match &record.payload {
             EventPayload::ModelTurnCommitted { .. } => self.narrow(),
             EventPayload::ContextCheckpointCommitted { .. } => self.narrow_to_context(),
+            EventPayload::ReviewerTurnRecorded { turn } if turn.epoch.is_some() => {
+                self.narrow_to_context();
+            }
             _ => {}
         }
     }
@@ -1700,6 +1714,28 @@ impl EventLog {
             log.sync_through(commit)?;
         }
         Ok(log)
+    }
+
+    /// Creates a log holding `creation` followed by `records`, written to its
+    /// file at once and synced: a log no session's publication waits for,
+    /// as the approval reviewer's own is.
+    pub fn create_persisted_owned(
+        path: PathBuf,
+        session_id: SessionId,
+        origin: EventOrigin,
+        creation: EventPayload,
+        records: Vec<EventPayload>,
+        capability: WriteCapability,
+    ) -> Result<Arc<Self>, EventLogError> {
+        Self::create_owned(
+            path, session_id, origin, creation, records, capability, true, None,
+        )
+    }
+
+    /// The session whose log this is.
+    #[must_use]
+    pub fn session_id(&self) -> SessionId {
+        self.session_id
     }
 
     #[cfg(any(test, feature = "test-support"))]
@@ -5122,7 +5158,7 @@ fn validate_record_incremental(
         });
     }
     state.note_settling(record);
-    state.letting_go.observe(&record.payload);
+    state.letting_go.observe(record);
     // After every record, so what it holds is what letting go once at the end of
     // a whole validation keeps, wherever the log ends.
     if state.letting_go.lets_go() && state.may_let_go() {
@@ -6083,6 +6119,12 @@ fn validate_record(
         EventPayload::SessionProjectSet { .. } => {
             if record.run_id.is_some() {
                 return corrupt(path, "SessionProjectSet must be runless");
+            }
+        }
+        // The approval reviewer's own log has no runs.
+        EventPayload::ReviewerTurnRecorded { .. } => {
+            if record.run_id.is_some() {
+                return corrupt(path, "ReviewerTurnRecorded must be runless");
             }
         }
         // A tree's permission mode changes outside its root's runs.

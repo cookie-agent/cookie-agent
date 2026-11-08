@@ -91,7 +91,14 @@ pub(crate) fn commit_window_start(commit: &ContextCheckpointCommit) -> u64 {
 /// provider window alone, the latest summary's range too, or the whole log
 /// when there is none, as a model that cannot use the window reads that.
 /// `None` without a checkpoint.
+///
+/// The approval reviewer's own log has no checkpoints: an epoch's first turn
+/// starts its window at itself, with nothing pinned before it, as it holds
+/// what the epoch kept (section 5.5).
 pub fn context_window_start<E: Borrow<StoredEvent>>(events: &[E]) -> Option<u64> {
+    if let Some(epoch) = latest_reviewer_epoch(events) {
+        return Some(epoch);
+    }
     let (_, latest) = latest_checkpoint(events)?;
     let start = commit_window_start(latest);
     Some(match latest.checkpoint {
@@ -101,6 +108,22 @@ pub fn context_window_start<E: Borrow<StoredEvent>>(events: &[E]) -> Option<u64>
                 .map_or(0, |(_, summary)| commit_window_start(summary)),
         ),
     })
+}
+
+/// Where the latest epoch of an approval reviewer's own log starts: the
+/// sequence of the turn that started it. `None` in any other log, or when a
+/// checkpoint comes after it, which no reviewer's log holds.
+pub fn latest_reviewer_epoch<E: Borrow<StoredEvent>>(events: &[E]) -> Option<u64> {
+    events.iter().rev().find_map(|event| {
+        let event = event.borrow();
+        match &event.payload {
+            EventPayload::ReviewerTurnRecorded { turn } => {
+                turn.epoch.is_some().then_some(Some(event.seq))
+            }
+            EventPayload::ContextCheckpointCommitted { .. } => Some(None),
+            _ => None,
+        }
+    })?
 }
 
 /// Where in `events` the `AGENTS.md` records the model reads before the

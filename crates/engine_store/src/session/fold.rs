@@ -544,7 +544,7 @@ impl ProjectionFolds {
         {
             return Observed::NeedsRefold;
         }
-        self.fold.letting_go.observe(&envelope.payload);
+        self.fold.letting_go.observe(envelope);
         if matches!(
             envelope.payload,
             EventPayload::RunFinished { .. }

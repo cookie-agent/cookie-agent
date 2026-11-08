@@ -271,6 +271,8 @@ impl SessionStore {
     /// every log's write capability at once.
     fn forget_tree(&self, root: SessionId, members: &[SessionId]) {
         let deleted = members.iter().copied().collect::<HashSet<_>>();
+        // Each member's reviewer log is in its folder, which goes with it.
+        self.forget_reviewers(&deleted);
         {
             let mut residency = self
                 .residency

@@ -10,6 +10,7 @@ mod in_flight;
 mod layout;
 mod marks;
 mod publication;
+mod reviewer;
 mod tree_load;
 mod view;
 
@@ -39,6 +40,7 @@ pub use layout::{
     ACTIVITY_DIR, LAYOUT_VERSION, Month, PendingTree, RUNTIME_REVISIONS_FILE, StoreLayout,
     read_layout, root_dir_in,
 };
+pub use reviewer::REVIEWER_DIR;
 pub use tree_load::TreeLoadProducts;
 pub use tree_load::TreeState;
 use tree_load::*;
@@ -521,6 +523,9 @@ pub struct SessionStore {
     /// Where the view cache this process last wrote for each session starts
     /// (`view.json`).
     views: Mutex<HashMap<SessionId, view::ViewStart>>,
+    /// The approval reviewers' own logs this store opened, by the session
+    /// each reviews (`reviewer.rs`).
+    reviewers: reviewer::ReviewerLogs,
     closed: AtomicBool,
     #[cfg(any(test, feature = "test-support"))]
     eviction_transition_hook: Mutex<Option<EvictionTransitionHook>>,
@@ -906,6 +911,7 @@ impl SessionStore {
             pinned: marks::MarkedSessions::open(data_root, marks::PINNED_FILE, "pinned sessions"),
             read_only_logs: Mutex::new(ReadOnlyLogs::default()),
             views: Mutex::new(HashMap::new()),
+            reviewers: reviewer::ReviewerLogs::default(),
             closed: AtomicBool::new(false),
             #[cfg(any(test, feature = "test-support"))]
             eviction_transition_hook: Mutex::new(None),
@@ -2084,7 +2090,9 @@ impl SessionStore {
 
     pub fn evict(&self, id: SessionId) -> Result<bool, SessionError> {
         // The next open is a cold one: it reads the view cache and the state
-        // file, brought up to the log before any lock.
+        // file, brought up to the log before any lock. The session's reviewer
+        // log leaves memory with it.
+        self.release_reviewer(id);
         self.refresh_resident_view(id);
         self.refresh_state(id, |log| {
             log.state_behind().is_some_and(|behind| behind > 0)
@@ -2513,6 +2521,8 @@ impl SessionStore {
         let capability = self.write_capability(id, false)?;
         let (log, _) = self.resident_log(id)?;
         log.truncate_after(&capability, through_seq)?;
+        // The reviewer's conversation keeps the turns whose verdicts stay.
+        self.revert_reviewer(id, through_seq);
         let rebuilt = Arc::new(refold(log.clone(), None)?);
         if log.is_persisted() {
             self.refresh_meta_cache(id, &rebuilt.meta)?;
@@ -2610,6 +2620,8 @@ impl SessionStore {
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .0
                 .retain(|entry| entry.id != id);
+            // Its reviewer log is in its folder.
+            self.forget_reviewers(&HashSet::from([id]));
             self.locations
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -3217,6 +3229,8 @@ impl SessionStore {
             if let SessionLocation::Child { root } = location {
                 self.persist_subagent_index(root)?;
             }
+            // The fork's reviewer conversation starts as its source's did.
+            self.fork_reviewer(source_id, session_id, through_seq);
             Ok(session_id)
         })();
         if result.is_err() {
@@ -4149,6 +4163,7 @@ impl SessionStore {
                 log.state_behind().is_some_and(|behind| behind > 0)
             });
         }
+        self.release_reviewers();
         self.closed.store(true, Ordering::Release);
         let _mutation = self.lock_mutation();
         // Best effort, like the writer suspension below: a tip an in-run append
