@@ -118,7 +118,11 @@ pub fn PageView(workspace: Workspace, connection: Connection) -> impl IntoView {
             class="flex min-w-0 flex-1 flex-col"
             data-view=move || workspace.view.get().id()
         >
-            <div class="flex h-12 shrink-0 items-center gap-1 border-b border-line px-2">
+            // An asset open on its page has a head of its own.
+            <div
+                class="flex h-12 shrink-0 items-center gap-1 border-b border-line px-2"
+                class:hidden=move || workspace.view.get() == View::Assets && workspace.asset_page.with(Option::is_some)
+            >
                 <SidebarButton workspace=workspace />
                 <Show when=back>
                     <button
@@ -137,6 +141,21 @@ pub fn PageView(workspace: Workspace, connection: Connection) -> impl IntoView {
             {move || match workspace.view.get() {
                 View::Settings => settings_page(workspace, connection).into_any(),
                 View::Agents => agents_page(workspace).into_any(),
+                // The list stays, hidden, under an asset's page, so Back
+                // finds it scrolled where it was.
+                View::Assets => view! {
+                    <div
+                        class="flex min-h-0 flex-1 flex-col overflow-y-auto px-3 py-4 sm:px-8 sm:py-6"
+                        class:hidden=move || workspace.asset_page.with(Option::is_some)
+                        data-page-body
+                    >
+                        <div class="mx-auto flex w-full max-w-6xl flex-1 flex-col gap-3">
+                            {super::assets::assets_page(workspace)}
+                        </div>
+                    </div>
+                    <super::asset_page::AssetPage workspace />
+                }
+                .into_any(),
                 view => view! {
                     <div class="flex min-h-0 flex-1 flex-col overflow-y-auto px-3 py-4 sm:px-8 sm:py-6" data-page-body>
                         <div class="mx-auto flex w-full max-w-3xl flex-1 flex-col gap-3">
@@ -145,10 +164,9 @@ pub fn PageView(workspace: Workspace, connection: Connection) -> impl IntoView {
                                 View::Memory => memory_sheet(workspace).into_any(),
                                 View::Cron => cron_page(workspace).into_any(),
                                 View::Skills => super::skills::skills_page(workspace).into_any(),
-                                View::Assets => super::assets::assets_page(workspace).into_any(),
                                 View::Sharing => super::shares::sharing_page(workspace).into_any(),
                                 View::Mcp => mcp_sheet(workspace).into_any(),
-                                View::Chat | View::Settings | View::Agents => ().into_any(),
+                                View::Chat | View::Settings | View::Agents | View::Assets => ().into_any(),
                             }}
                         </div>
                     </div>

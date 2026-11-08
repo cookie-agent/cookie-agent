@@ -23,7 +23,10 @@
 use std::{cell::RefCell, collections::HashMap};
 
 use cookie_agent_protocol::{Asset, AssetId, AssetStore};
-use leptos::{prelude::Set as _, task::spawn_local};
+use leptos::{
+    prelude::{Set as _, Update as _, WithUntracked as _},
+    task::spawn_local,
+};
 use wasm_bindgen::{JsCast as _, JsValue, closure::Closure};
 
 use crate::{
@@ -170,9 +173,32 @@ impl OpenAsset {
         })
     }
 
-    /// Whether it has text to show as its source: a page or a document.
+    /// Whether it has text to show as its source: a page, a document, or
+    /// a text file.
     pub fn has_source(&self) -> bool {
-        self.media_type == "text/html" || self.media_type == "text/markdown"
+        is_text(&self.media_type)
+    }
+
+    /// Whether it shows only as its source: a text file that is not a
+    /// page or a document (`docs/site/specs/asset-opening.md` section 5.2).
+    pub fn source_only(&self) -> bool {
+        is_text(&self.media_type)
+            && self.media_type != "text/html"
+            && self.media_type != "text/markdown"
+    }
+
+    /// The asset `asset` as it is now, to open on its page.
+    pub fn of_asset(asset: &Asset) -> Self {
+        Self {
+            source: Source::Asset {
+                store: asset.store.clone(),
+                asset: asset.id,
+            },
+            handle: asset.handle.to_string(),
+            title: asset.title.clone(),
+            media_type: asset.media_type.clone(),
+            shown_sha: asset.sha256.clone(),
+        }
     }
 
     /// The side panel's placeholder of it: shown whole, or its `source`.
@@ -198,6 +224,132 @@ impl OpenAsset {
             escape(&self.media_type),
         )
     }
+}
+
+/// Whether a file of `media_type` is text to show as its source: a page, a
+/// document, any `text/*`, JSON, XML, or YAML.
+pub fn is_text(media_type: &str) -> bool {
+    media_type.starts_with("text/")
+        || matches!(
+            media_type,
+            "application/json" | "application/xml" | "application/yaml" | "application/x-yaml"
+        )
+        || media_type.ends_with("+json")
+        || media_type.ends_with("+xml") && media_type != "image/svg+xml"
+}
+
+/// The largest video whose card in the Assets tab shows its first frame;
+/// a larger one shows its icon, so drawing the list never reads it
+/// (`docs/site/specs/asset-opening.md` section 3).
+const THUMB_VIDEO_BYTES: u64 = 16 * 1024 * 1024;
+
+/// The Assets tab's thumbnail of `asset`: a placeholder the tab fills once
+/// its card comes into view (a picture, a video's first frame, a page's
+/// live thumbnail, a document's first lines), or the kind's icon and the
+/// file's type.
+pub fn tab_thumbnail_html(asset: &Asset) -> String {
+    let media = asset.media_type.as_str();
+    let (view, body) = if (media.starts_with("image/") && asset.byte_length <= BUDGET_BYTES)
+        || (media.starts_with("video/") && asset.byte_length <= THUMB_VIDEO_BYTES)
+    {
+        (
+            "thumb",
+            "<span class=\"absolute inset-0 flex items-center justify-center\" data-asset-body></span>",
+        )
+    } else if media == "text/html" && asset.byte_length <= BUDGET_BYTES {
+        (
+            "page",
+            "<span class=\"absolute inset-0 overflow-hidden bg-white\" data-asset-body></span>",
+        )
+    } else if media == "text/markdown" && asset.byte_length <= MAX_DOCUMENT_BYTES as u64 {
+        (
+            "doc",
+            "<span class=\"asset-excerpt absolute inset-0 block overflow-hidden bg-surface px-3 pt-2.5 text-xs text-muted\" data-asset-body></span>",
+        )
+    } else {
+        let label = crate::render::attachments::type_label_of(asset.filename.as_deref(), media);
+        let hue =
+            crate::badges::hue_class(Some(cookie_agent_client_state::badges::badge_hue(&label)));
+        return format!(
+            "<span class=\"absolute inset-0 flex flex-col items-center justify-center gap-2 text-muted\" data-asset-icon>{}<span class=\"rounded-md border px-1.5 py-0.5 font-mono text-[0.6875rem] font-bold {hue}\">{}</span></span>",
+            crate::icons::svg(
+                crate::icons::asset_icon(cookie_agent_client_state::assets::AssetKind::of(media)),
+                "text-3xl"
+            ),
+            escape(&label),
+        );
+    };
+    format!(
+        "<span class=\"absolute inset-0\" data-asset=\"{}\" data-asset-store=\"{}\" data-asset-sha=\"{}\" data-asset-handle=\"{}\" data-asset-title=\"{}\" data-asset-type=\"{}\" data-asset-view=\"{view}\">{body}</span>",
+        escape(&asset.id.to_string()),
+        escape(&serde_json::to_string(&asset.store).unwrap_or_default()),
+        escape(&asset.sha256),
+        escape(asset.handle.as_str()),
+        escape(&asset.title),
+        escape(media),
+    )
+}
+
+/// The media viewer's file for `asset`, a picture or a video: its URL when
+/// its content was read already, else empty, for the viewer to read it
+/// when it shows it (`docs/site/specs/asset-opening.md` section 4).
+pub fn viewing_of(asset: &Asset) -> crate::media::Viewing {
+    let url = CONTENTS
+        .with(|contents| contents.borrow_mut().get(&asset.sha256))
+        .map(|content| content.url)
+        .unwrap_or_default();
+    crate::media::Viewing {
+        url,
+        media_type: asset.media_type.clone(),
+        alt: asset.title.clone(),
+        handle: Some(asset.handle.to_string()),
+        asset: Some((asset.store.clone(), asset.id)),
+    }
+}
+
+/// Reads the asset of `viewing`, a file of the media viewer not read yet,
+/// and shows it in the viewer's deck, and in the viewer while it still
+/// shows it.
+pub fn load_viewing(viewing: crate::media::Viewing, workspace: Workspace) {
+    let Some((store, id)) = viewing.asset.clone() else {
+        return;
+    };
+    spawn_local(async move {
+        let read = async {
+            let asset = workspace
+                .get_asset(store.clone(), id)
+                .await?
+                .ok_or_else(|| "that asset was deleted".to_owned())?;
+            content(&asset, &Source::Asset { store, asset: id }, workspace).await
+        }
+        .await;
+        let showing = workspace
+            .media_viewer
+            .with_untracked(|shown| shown.as_ref() == Some(&viewing));
+        match read {
+            Ok(content) => {
+                let filled = crate::media::Viewing {
+                    url: content.url,
+                    media_type: content.media_type,
+                    ..viewing.clone()
+                };
+                workspace.media_group.update(|group| {
+                    for shown in group.iter_mut().filter(|shown| **shown == viewing) {
+                        *shown = filled.clone();
+                    }
+                });
+                if showing {
+                    workspace.media_viewer.set(Some(filled));
+                }
+            }
+            Err(error) => {
+                workspace.status.set(error);
+                if showing {
+                    workspace.media_viewer.set(None);
+                }
+            }
+        }
+    });
 }
 
 /// The assets with a live link among `shares`.
@@ -512,6 +664,10 @@ fn open_deck(deck: &web_sys::Element, index: usize, workspace: Workspace) {
                 media_type: content.media_type,
                 alt: card.get_attribute("data-asset-title").unwrap_or_default(),
                 handle: card.get_attribute("data-asset-handle"),
+                asset: match placeholder(&card).map(|shown| shown.source) {
+                    Some(Source::Asset { store, asset }) => Some((store, asset)),
+                    _ => None,
+                },
             },
         ));
     }
@@ -1276,7 +1432,10 @@ async fn content(asset: &Asset, source: &Source, workspace: Workspace) -> Result
             (bytes, sha256.clone(), media_type.clone())
         }
     };
-    let text = (media_type == "text/markdown" || media_type == "text/html")
+    // A page's text whatever its size; another text file's up to what a
+    // document shows.
+    let text = (media_type == "text/html"
+        || (is_text(&media_type) && bytes.len() <= MAX_DOCUMENT_BYTES))
         .then(|| String::from_utf8(bytes.clone()).ok())
         .flatten()
         .map(std::rc::Rc::from);

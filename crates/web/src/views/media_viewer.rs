@@ -38,6 +38,8 @@ thread_local! {
     /// The side the next viewer's file comes in from: `1` after a step to
     /// the next, `-1` to the one before, `0` opened anew.
     static ENTER: Cell<i8> = const { Cell::new(0) };
+    /// Whether an asset's Details show beside it, kept from file to file.
+    static DETAILS: Cell<bool> = const { Cell::new(false) };
 }
 
 /// The viewer, open while `workspace.media_viewer` holds a file.
@@ -55,10 +57,101 @@ pub(crate) fn MediaViewer(workspace: Workspace) -> impl IntoView {
         open
     });
     move || {
-        workspace
-            .media_viewer
-            .get()
-            .map(|viewing| view! { <Viewer workspace viewing /> })
+        workspace.media_viewer.get().map(|viewing| {
+            if viewing.url.is_empty() {
+                view! { <Pending workspace viewing /> }.into_any()
+            } else {
+                view! { <Viewer workspace viewing /> }.into_any()
+            }
+        })
+    }
+}
+
+/// An asset of the deck not read yet (`docs/site/specs/asset-opening.md`
+/// section 4): its title and "Loading…" while it is read; Escape closes,
+/// and Left and Right step past it.
+#[component]
+fn Pending(workspace: Workspace, viewing: Viewing) -> impl IntoView {
+    let root = NodeRef::<html::Div>::new();
+    crate::assets::load_viewing(viewing.clone(), workspace);
+    Effect::new(move |_| {
+        if let Some(root) = root.get() {
+            let _ = root.focus();
+        }
+    });
+    let at = workspace
+        .media_group
+        .with_untracked(|group| group.iter().position(|shown| *shown == viewing));
+    let count = workspace.media_group.with_untracked(Vec::len);
+    let turn = move |by: isize| {
+        let Some(at) = at.filter(|_| count > 1) else {
+            return;
+        };
+        ENTER.with(|enter| enter.set(by.signum() as i8));
+        let next = workspace.media_group.with_untracked(|group| {
+            group
+                .get((at as isize + by).rem_euclid(count as isize) as usize)
+                .cloned()
+        });
+        workspace.media_viewer.set(next);
+    };
+    let title = viewing.title().to_owned();
+    let label = title.clone();
+    view! {
+        <div
+            node_ref=root
+            id="media-viewer"
+            role="dialog"
+            aria-modal="true"
+            aria-label=label
+            aria-busy="true"
+            tabindex="-1"
+            class="fixed inset-0 z-[60] flex flex-col bg-black/95 text-white outline-none"
+            on:keydown=move |event: ev::KeyboardEvent| {
+                let handled = match event.key().as_str() {
+                    "Escape" => {
+                        workspace.media_viewer.set(None);
+                        true
+                    }
+                    "ArrowLeft" => {
+                        turn(-1);
+                        true
+                    }
+                    "ArrowRight" => {
+                        turn(1);
+                        true
+                    }
+                    _ => false,
+                };
+                if handled {
+                    event.prevent_default();
+                }
+            }
+        >
+            <div class="flex shrink-0 items-center gap-1 px-2 pt-[max(0.25rem,env(safe-area-inset-top))] pb-1">
+                <span class="flex min-w-0 flex-1 items-baseline gap-2 px-2 text-sm">
+                    <span id="media-viewer-title" class="min-w-0 truncate">{title}</span>
+                    {at.filter(|_| count > 1).map(|at| view! {
+                        <span id="media-viewer-position" class="shrink-0 font-mono text-xs text-white/70 tabular-nums">
+                            {format!("{} / {count}", at + 1)}
+                        </span>
+                    })}
+                </span>
+                <button
+                    type="button"
+                    id="media-viewer-close"
+                    class=BAR_BUTTON
+                    aria-label="Close"
+                    title="Close (Esc)"
+                    on:click=move |_| workspace.media_viewer.set(None)
+                >
+                    <Glyph icon=icondata::LuX />
+                </button>
+            </div>
+            <div class="flex min-h-0 flex-1 items-center justify-center text-sm text-white/70" data-viewer-loading>
+                "Loading…"
+            </div>
+        </div>
     }
 }
 
@@ -97,6 +190,14 @@ fn Viewer(workspace: Workspace, viewing: Viewing) -> impl IntoView {
     };
     let entering = ENTER.with(|enter| enter.replace(0));
     let zoom = RwSignal::new(Zoom::default());
+    let asset = viewing.asset.clone();
+    let has_asset = asset.is_some();
+    let details = RwSignal::new(has_asset && DETAILS.with(Cell::get));
+    let toggle_details = move || {
+        let open = !details.get_untracked();
+        DETAILS.with(|kept| kept.set(open));
+        details.set(open);
+    };
     let root = NodeRef::<html::Div>::new();
     let stage = NodeRef::<html::Div>::new();
     let video = NodeRef::<html::Video>::new();
@@ -403,6 +504,10 @@ fn Viewer(workspace: Workspace, viewing: Viewing) -> impl IntoView {
             }
             "0" => {
                 zoom.set(Zoom::default());
+                true
+            }
+            "i" if has_asset => {
+                toggle_details();
                 true
             }
             " " | "k" if is_video && !in_field => {
@@ -741,6 +846,26 @@ fn Viewer(workspace: Workspace, viewing: Viewing) -> impl IntoView {
                         <Glyph icon=icondata::LuCopy />
                     </button>
                 })}
+                {asset.clone().map(|(store, id)| {
+                    let title = viewing.title().to_owned();
+                    view! {
+                        <Show when=move || workspace.has_shares.get()>
+                            <button
+                                type="button"
+                                id="media-viewer-share"
+                                class=BAR_BUTTON
+                                aria-label="Share link"
+                                title="Share link"
+                                on:click={
+                                    let (store, title) = (store.clone(), title.clone());
+                                    move |_| workspace.open_share_dialog(store.clone(), id, title.clone())
+                                }
+                            >
+                                <Glyph icon=icondata::LuShare2 />
+                            </button>
+                        </Show>
+                    }
+                })}
                 <a
                     id="media-viewer-download"
                     class=BAR_BUTTON
@@ -751,6 +876,19 @@ fn Viewer(workspace: Workspace, viewing: Viewing) -> impl IntoView {
                 >
                     <Glyph icon=icondata::LuDownload />
                 </a>
+                {has_asset.then(|| view! {
+                    <button
+                        type="button"
+                        id="media-viewer-details"
+                        class=move || format!("{BAR_BUTTON} {}", if details.get() { "bg-white/20" } else { "" })
+                        aria-label="Details"
+                        title="Details (i)"
+                        aria-pressed=move || details.get().to_string()
+                        on:click=move |_| toggle_details()
+                    >
+                        <Glyph icon=icondata::LuInfo />
+                    </button>
+                })}
                 <button
                     type="button"
                     id="media-viewer-close"
@@ -762,10 +900,13 @@ fn Viewer(workspace: Workspace, viewing: Viewing) -> impl IntoView {
                     <Glyph icon=icondata::LuX />
                 </button>
             </div>
+            <div class="relative flex min-h-0 flex-1">
+            // The arrows stand on the file's side, clear of the Details.
+            <div class="relative flex min-h-0 min-w-0 flex-1">
             <div
                 node_ref=stage
                 id="media-viewer-stage"
-                class="relative flex min-h-0 flex-1 touch-none items-center justify-center overflow-hidden p-2 select-none"
+                class="relative flex min-h-0 min-w-0 flex-1 touch-none items-center justify-center overflow-hidden p-2 select-none"
                 on:pointerdown=on_pointerdown
                 on:pointermove=on_pointermove
                 on:pointerup=on_pointerup
@@ -796,14 +937,24 @@ fn Viewer(workspace: Workspace, viewing: Viewing) -> impl IntoView {
                 >
                     <Glyph icon=icondata::LuChevronRight />
                 </button>
+            })}
+            </div>
+            {asset.clone().map(|(store, id)| view! {
+                <Show when=move || details.get()>
+                    <super::asset_details::AssetDetails workspace store=store.clone() id />
+                </Show>
+            })}
+            </div>
+            {stepping.then(|| view! {
                 <div id="media-viewer-strip" class="flex shrink-0 justify-center gap-2 overflow-x-auto px-2 pb-2">
                     {group
                         .iter()
                         .enumerate()
                         .map(|(index, shown)| {
                             let current = Some(index) == at;
-                            let picture = if shown.is_video() {
-                                view! { <Glyph icon=icondata::LuFilm /> }.into_any()
+                            let picture = if shown.is_video() || shown.url.is_empty() {
+                                let icon = if shown.is_video() { icondata::LuFilm } else { icondata::LuImage };
+                                view! { <Glyph icon=icon /> }.into_any()
                             } else {
                                 view! {
                                     <img src=shown.url.clone() alt="" draggable="false" class="h-full w-full object-cover" />

@@ -94,13 +94,13 @@ pub(crate) fn ShareDialogView(workspace: Workspace) -> impl IntoView {
     let dialog = move || workspace.share_dialog.get();
     view! {
         <Show when=move || dialog().is_some()>
-            <div class="fixed inset-0 z-40 bg-scrim dark:bg-black/50" on:click=move |_| close()></div>
+            <div class="fixed inset-0 z-[65] bg-scrim dark:bg-black/50" on:click=move |_| close()></div>
             <div
                 id="share-dialog"
                 role="dialog"
                 aria-modal="true"
                 aria-labelledby="share-title"
-                class="fixed inset-x-0 bottom-0 z-50 flex max-h-[85vh] flex-col gap-3 overflow-y-auto rounded-t-xl p-4 pb-[max(1rem,env(safe-area-inset-bottom))] text-sm sm:inset-x-auto sm:top-1/2 sm:bottom-auto sm:left-1/2 sm:w-[32rem] sm:max-w-[calc(100vw-2rem)] sm:-translate-x-1/2 sm:-translate-y-1/2 sm:rounded-xl bg-raised ring-1 ring-line shadow-menu"
+                class="fixed inset-x-0 bottom-0 z-[70] flex max-h-[85vh] flex-col gap-3 overflow-y-auto rounded-t-xl p-4 pb-[max(1rem,env(safe-area-inset-bottom))] text-sm sm:inset-x-auto sm:top-1/2 sm:bottom-auto sm:left-1/2 sm:w-[32rem] sm:max-w-[calc(100vw-2rem)] sm:-translate-x-1/2 sm:-translate-y-1/2 sm:rounded-xl bg-raised ring-1 ring-line shadow-menu"
                 on:keydown=move |event| {
                     if event.key() == "Escape" {
                         close();

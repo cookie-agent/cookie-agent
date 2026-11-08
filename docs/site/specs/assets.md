@@ -608,6 +608,11 @@ web page (daemon origin, holds the token)
 
 ### 8.3 The Assets tab
 
+> **Revised** (2026-11-08, [opening assets](asset-opening.md)): the tab
+> is a gallery that opens assets in the media viewer or on an asset page,
+> and PDF and office files are Documents. What follows is the list as it
+> was.
+
 Revised 2026-11-01: the tab lists session assets too, with a filter like
 the session list's.
 

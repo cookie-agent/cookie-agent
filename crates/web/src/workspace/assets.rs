@@ -13,6 +13,9 @@ use super::Workspace;
 /// more* adds.
 pub const ASSET_ROWS: usize = 100;
 
+/// Where the browser remembers the tab's layout: `list`, or the grid.
+pub const ASSET_LAYOUT_KEY: &str = "cookie.assets_layout";
+
 /// How long the tab waits after an `assets.changed` before it lists again,
 /// so a burst of writes lists once.
 const CHANGED_SETTLE: std::time::Duration = std::time::Duration::from_millis(300);
@@ -32,7 +35,7 @@ impl Workspace {
         self.asset_filter.set(filter);
         self.asset_list.set(None);
         self.asset_rows.set(ASSET_ROWS);
-        self.asset_open.set(None);
+        self.asset_page.set(None);
         self.asset_renaming.set(None);
         self.asset_deleting.set(None);
         self.poll_assets();
@@ -123,6 +126,40 @@ impl Workspace {
         });
     }
 
+    /// Shows the tab as a list, or as a grid, and remembers it.
+    pub fn choose_asset_layout(self, list: bool) {
+        self.asset_list_layout.set(list);
+        crate::browser::store(ASSET_LAYOUT_KEY, if list { "list" } else { "grid" });
+    }
+
+    /// Takes the deleted `asset` out of the media viewer: the next file
+    /// shows in its place, and the viewer closes when it was the last.
+    fn forget_viewed(self, asset: AssetId) {
+        let showing = self.media_viewer.with_untracked(|viewing| {
+            viewing
+                .as_ref()
+                .is_some_and(|viewing| viewing.asset.as_ref().is_some_and(|(_, id)| *id == asset))
+        });
+        let at = self.media_group.with_untracked(|group| {
+            group
+                .iter()
+                .position(|viewing| viewing.asset.as_ref().is_some_and(|(_, id)| *id == asset))
+        });
+        if let Some(at) = at {
+            self.media_group.update(|group| {
+                group.remove(at);
+            });
+        }
+        if showing {
+            let next = self.media_group.with_untracked(|group| {
+                group
+                    .get(at.unwrap_or(0).min(group.len().saturating_sub(1)))
+                    .cloned()
+            });
+            self.media_viewer.set(next);
+        }
+    }
+
     /// Gives an asset of `store` the title `title`.
     pub fn rename_asset(self, store: AssetStore, asset: AssetId, title: String) {
         let Some(client) = self.client() else {
@@ -145,8 +182,13 @@ impl Workspace {
                 })
                 .await
             {
-                Ok(_) => {
+                Ok(renamed) => {
                     self.asset_renaming.set(None);
+                    self.asset_page.update(|page| {
+                        if let Some(page) = page.as_mut().filter(|page| page.id == asset) {
+                            page.title = renamed.asset.title.clone();
+                        }
+                    });
                     self.poll_assets();
                 }
                 Err(error) => self.status.set(crate::errors::describe(&error)),
@@ -163,9 +205,13 @@ impl Workspace {
             match client.delete_asset(store, asset).await {
                 Ok(_) => {
                     self.asset_deleting.set(None);
-                    if self.asset_open.get_untracked() == Some(asset) {
-                        self.asset_open.set(None);
+                    if self
+                        .asset_page
+                        .with_untracked(|page| page.as_ref().is_some_and(|page| page.id == asset))
+                    {
+                        self.asset_page.set(None);
                     }
+                    self.forget_viewed(asset);
                     self.poll_assets();
                 }
                 Err(error) => self.status.set(crate::errors::describe(&error)),

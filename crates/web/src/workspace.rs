@@ -36,7 +36,7 @@ use crate::{browser, connect::EVENT_LEVEL_KEY};
 mod acp;
 mod agent_documents;
 mod assets;
-pub use assets::ASSET_ROWS;
+pub use assets::{ASSET_LAYOUT_KEY, ASSET_ROWS};
 mod attachments;
 mod background;
 mod cards;
@@ -306,11 +306,20 @@ pub struct Workspace {
     /// The Assets tab's search, and the kind it shows.
     pub asset_query: RwSignal<String>,
     pub asset_kind: RwSignal<Option<cookie_agent_client_state::assets::AssetKind>>,
-    /// The asset the tab shows open, the one renamed and its title, and the
-    /// one whose deletion waits for its confirmation.
-    pub asset_open: RwSignal<Option<cookie_agent_protocol::AssetId>>,
-    pub asset_renaming: RwSignal<Option<(cookie_agent_protocol::AssetId, String)>>,
-    pub asset_deleting: RwSignal<Option<cookie_agent_protocol::AssetId>>,
+    /// Whether the tab shows its assets as a list rather than a grid
+    /// (`docs/site/specs/asset-opening.md` section 3), as the browser
+    /// remembers.
+    pub asset_list_layout: RwSignal<bool>,
+    /// The asset open on its own page (section 5), in place of the list.
+    pub asset_page: RwSignal<Option<cookie_agent_protocol::Asset>>,
+    /// The asset whose ⋯ menu is open, and the one a right-click opened
+    /// the menu of, and where.
+    pub asset_menu: RwSignal<Option<cookie_agent_protocol::AssetId>>,
+    pub asset_context: RwSignal<Option<(cookie_agent_protocol::AssetId, f64, f64)>>,
+    /// The asset being renamed and its title, and the one whose deletion
+    /// waits for its confirmation, each in a dialog.
+    pub asset_renaming: RwSignal<Option<(cookie_agent_protocol::Asset, String)>>,
+    pub asset_deleting: RwSignal<Option<cookie_agent_protocol::Asset>>,
     /// Whether the daemon keeps share links (client protocol 1.86.0), the
     /// base its handshake gave links, and the address of its page, which
     /// a link without a URL of its own is put after.
@@ -674,7 +683,12 @@ impl Workspace {
             assets_changed_at: StoredValue::new(0),
             asset_query: RwSignal::new(String::new()),
             asset_kind: RwSignal::new(None),
-            asset_open: RwSignal::new(None),
+            asset_list_layout: RwSignal::new(
+                crate::browser::load(crate::workspace::ASSET_LAYOUT_KEY).as_deref() == Some("list"),
+            ),
+            asset_page: RwSignal::new(None),
+            asset_menu: RwSignal::new(None),
+            asset_context: RwSignal::new(None),
             asset_renaming: RwSignal::new(None),
             asset_deleting: RwSignal::new(None),
             has_shares: RwSignal::new(false),

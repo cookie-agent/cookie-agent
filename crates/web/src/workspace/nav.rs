@@ -20,6 +20,9 @@ impl Workspace {
         }
         self.panel.set(None);
         self.sidebar_open.set(false);
+        // An asset's page closes with its view, and opening the view shows
+        // the list.
+        self.asset_page.set(None);
         match view {
             View::Chat => {}
             View::Agents => self.open_config(),
@@ -157,7 +160,8 @@ impl Workspace {
                 self.memory_edit.with(Option::is_none) && self.memory_pending.with(Option::is_none)
             }
             View::Cron => self.cron_form.with(Option::is_none),
-            View::Skills | View::Mcp | View::Machines | View::Assets | View::Sharing => true,
+            View::Assets => self.asset_page.with(Option::is_none),
+            View::Skills | View::Mcp | View::Machines | View::Sharing => true,
         }
     }
 
@@ -181,12 +185,8 @@ impl Workspace {
                 self.memory_edit.with(Option::is_some) || self.memory_pending.with(Option::is_some)
             }
             View::Cron => self.cron_form.with(Option::is_some),
-            View::Chat
-            | View::Skills
-            | View::Mcp
-            | View::Machines
-            | View::Assets
-            | View::Sharing => false,
+            View::Assets => self.asset_page.with(Option::is_some),
+            View::Chat | View::Skills | View::Mcp | View::Machines | View::Sharing => false,
         };
         if editing {
             layers.push(Layer::Editor);
@@ -267,6 +267,7 @@ impl Workspace {
                 self.memory_edit.set(None);
                 self.memory_pending.set(None);
                 self.cron_form.set(None);
+                self.asset_page.set(None);
             }
         }
     }

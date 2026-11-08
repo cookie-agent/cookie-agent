@@ -38,6 +38,8 @@ use crate::{
 };
 
 mod agents;
+mod asset_details;
+mod asset_page;
 mod asset_panel;
 mod assets;
 mod cards;
@@ -64,6 +66,7 @@ mod sidebar;
 mod skills;
 mod tool_groups;
 
+pub(crate) use assets::AssetDialogs;
 pub(crate) use install::{Install, InstallAction, InstallBanner};
 pub(crate) use media_viewer::MediaViewer;
 pub(crate) use restart::{RestartBanner, RestartDialog};
@@ -2683,6 +2686,7 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
                         media_type: target.get_attribute("data-media-type").unwrap_or_default(),
                         alt: target.get_attribute("data-alt").unwrap_or_default(),
                         handle: None,
+                        asset: None,
                     }));
                 }
             }

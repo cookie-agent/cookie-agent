@@ -179,13 +179,18 @@ fn opener(
 /// A media file open in the media viewer.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Viewing {
-    /// The file's `Blob` URL.
+    /// The file's `Blob` URL; empty until an asset opened from the Assets
+    /// tab is read (`docs/site/specs/asset-opening.md` section 4).
     pub url: String,
     pub media_type: String,
     /// The file's label; empty when it has none.
     pub alt: String,
-    /// The asset it is, when it is one.
+    /// The asset it is, when it is one: its handle, and its store and ID.
     pub handle: Option<String>,
+    pub asset: Option<(
+        cookie_agent_protocol::AssetStore,
+        cookie_agent_protocol::AssetId,
+    )>,
 }
 
 impl Viewing {

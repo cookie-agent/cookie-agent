@@ -1772,8 +1772,8 @@ def assets_tab(browser):
     """The Assets tab lists every project's and every session's assets: a
     filter narrows them to a project or none and to a level, session or
     project, and kinds and a search narrow further; a session's own name
-    their session. One opens as a figure, is renamed, and is deleted after
-    asking."""
+    their session. One opens on its own page, is renamed, and is deleted
+    after asking, from its menu."""
     new_session(browser)
     send(browser, "save a project report")
     idle(browser, "the saving call")
@@ -1823,27 +1823,60 @@ def assets_tab(browser):
     browser.wait("the search", lambda: count(browser, row) == 0)
     browser.script("const e = document.querySelector('#assets-search'); e.value = ''; e.dispatchEvent(new Event('input', {bubbles: true}))")
     browser.wait("the row back", lambda: count(browser, row) == 1)
-    # Opened, it shows as a figure does.
-    browser.click(row + " [data-asset-action='open']")
-    browser.wait("the opened document", lambda: "All good." in browser.text(row + " [data-asset-preview]"), timeout=30)
+    # Opened, a document shows on its own page, and Back returns to the list.
+    browser.click(row)
+    browser.wait("the asset's page", lambda: "All good." in browser.text("#asset-page-body"), timeout=30)
+    browser.shot("assets-page")
+    browser.click("#asset-page-back")
+    browser.wait("the list again", lambda: count(browser, "#asset-page") == 0 and count(browser, row) == 1)
     browser.shot("assets-tab")
     if SCREENSHOTS:
         browser.cdp("Emulation.setEmulatedMedia", {"features": [{"name": "prefers-color-scheme", "value": "dark"}]})
         browser.shot("assets-tab-dark")
         browser.cdp("Emulation.setEmulatedMedia", {"features": [{"name": "prefers-color-scheme", "value": "light"}]})
-    # Renamed, the row and the listing follow.
-    browser.click(row + " [data-asset-action='rename']")
-    browser.wait("the rename form", lambda: count(browser, "#asset-rename-title") == 1)
+    # Renamed from its menu, the card and the listing follow.
+    browser.click(row + " [data-row-menu]")
+    browser.click("[data-row-menu-list] [data-menu-item='rename']")
+    browser.wait("the rename dialog", lambda: count(browser, "#asset-rename-title") == 1)
     browser.script("const e = document.querySelector('#asset-rename-title'); e.value = 'Renamed report'; e.dispatchEvent(new Event('input', {bubbles: true}))")
     browser.click("#asset-rename-save")
     browser.wait("the new title", lambda: titles() == ["Renamed report"])
     # Deleted after asking.
-    browser.click(row + " [data-asset-action='delete']")
+    browser.click(row + " [data-row-menu]")
+    browser.click("[data-row-menu-list] [data-menu-item='delete']")
     browser.wait("the confirmation", lambda: count(browser, "#asset-delete-confirm") == 1)
     browser.click("#asset-delete-confirm")
     browser.wait("the empty tab", lambda: count(browser, row) == 0 and "No assets here yet" in browser.text("#assets-page"))
+    # Pictures open in the media viewer, which steps through the tab's
+    # pictures and shows an asset's details.
     view(browser, "chat")
-    print("the Assets tab lists, filters, opens, renames, and deletes a project's assets")
+    send(browser, "show two images")
+    idle(browser, "the images")
+    view(browser, "assets")
+    browser.click("#assets-filter-toggle")
+    browser.click("#assets-filter [data-asset-filter=level][data-value='All levels']")
+    browser.click("#assets-filter-toggle")
+    browser.click("#assets-page [data-asset-kind='Images']")
+    # Another scenario of the same daemons may have shown images too.
+    browser.wait("the images", lambda: count(browser, row) >= 2, timeout=30)
+    images = count(browser, row)
+    browser.click(row)
+    browser.wait("the viewer", lambda: count(browser, "#media-viewer [data-viewer-file]") == 1, timeout=30)
+    assert "1 / %d" % images in browser.text("#media-viewer-position"), browser.text("#media-viewer-position")
+    browser.click("#media-viewer-details")
+    browser.wait("the details", lambda: "asset_" in browser.text("#media-viewer-info"), timeout=30)
+    browser.shot("assets-viewer-details")
+    browser.click("#media-viewer-next")
+    browser.wait(
+        "the second image",
+        lambda: "2 / %d" % images in browser.text("#media-viewer-position")
+        and count(browser, "#media-viewer [data-viewer-file]") == 1,
+        timeout=30,
+    )
+    browser.click("#media-viewer-close")
+    browser.wait("the closed viewer", lambda: count(browser, "#media-viewer") == 0)
+    view(browser, "chat")
+    print("the Assets tab lists, filters, opens, renames, and deletes assets, and steps through its pictures")
 
 
 def session_depth(browser):

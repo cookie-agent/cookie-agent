@@ -1,0 +1,806 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Opening assets — mockup</title>
+<style>
+  :root {
+    --surface: #ffffff; --surface-2: #fafafa; --raised: #ffffff; --sunken: #f4f4f5;
+    --fg: #09090b; --fg-2: #3f3f46; --muted: #71717a; --faint: #a1a1aa;
+    --line: rgb(9 9 11 / .08); --line-2: rgb(9 9 11 / .14);
+    --hover: rgb(9 9 11 / .045); --press: rgb(9 9 11 / .08); --sel: rgb(91 91 214 / .09);
+    --accent: #5b5bd6; --accent-soft: rgb(91 91 214 / .12); --on-accent: #fff;
+    --bad: #d1343b; --scrim: rgb(9 9 11 / .25);
+    --shadow-menu: 0 12px 32px -8px rgb(0 0 0 / .18), 0 2px 6px -2px rgb(0 0 0 / .08);
+    --card-shadow: 0 0 0 1px var(--line), 0 1px 2px rgb(0 0 0 / .03);
+  }
+  :root[data-theme="dark"] {
+    --surface: #0e0e10; --surface-2: #0a0a0c; --raised: #17171a; --sunken: #1b1b1f;
+    --fg: #ededef; --fg-2: #b4b4bc; --muted: #86868f; --faint: #5c5c66;
+    --line: rgb(255 255 255 / .07); --line-2: rgb(255 255 255 / .12);
+    --hover: rgb(255 255 255 / .045); --press: rgb(255 255 255 / .08); --sel: rgb(124 124 255 / .13);
+    --accent: #7c7cff; --accent-soft: rgb(124 124 255 / .16); --on-accent: #fff;
+    --bad: #f2555a; --scrim: rgb(0 0 0 / .5);
+    --shadow-menu: 0 16px 40px -8px rgb(0 0 0 / .7), 0 0 0 1px rgb(255 255 255 / .06);
+    --card-shadow: 0 0 0 1px var(--line);
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; overflow: auto; overscroll-behavior: auto; }
+  body {
+    background: var(--surface-2); color: var(--fg);
+    font: 14px/1.5 Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    -webkit-font-smoothing: antialiased; display: flex; flex-direction: column;
+  }
+  button { font: inherit; color: inherit; }
+  svg.i { width: 1em; height: 1em; flex-shrink: 0; fill: none; stroke: currentColor; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round; }
+
+  /* ---- mockup controls (not part of the design) ---- */
+  .mock {
+    flex-shrink: 0; display: flex; flex-wrap: wrap; gap: 6px; align-items: center;
+    padding: 8px 14px; font-size: 12px; color: var(--muted);
+    background: repeating-linear-gradient(45deg, var(--sunken) 0 8px, var(--surface-2) 8px 16px);
+    border-bottom: 1px dashed var(--line-2);
+  }
+  .mock b { color: var(--fg-2); font-weight: 600; margin-right: 2px; }
+  .mock button { font-size: 12px; padding: 3px 9px; border-radius: 6px; cursor: pointer; border: 1px solid var(--line-2); background: var(--raised); color: var(--fg-2); }
+  .mock button[aria-pressed="true"] { background: var(--accent); color: var(--on-accent); border-color: transparent; }
+  .mock .sep { width: 1px; height: 16px; background: var(--line-2); margin: 0 6px; }
+  .note { flex-shrink: 0; padding: 6px 14px; font-size: 12.5px; color: var(--fg-2); background: var(--accent-soft); border-bottom: 1px solid var(--line); }
+  .note b { color: var(--accent); }
+
+  /* ---- the app ---- */
+  .stage { flex: 1; min-height: 0; display: flex; justify-content: center; align-items: stretch; padding: 0; }
+  .stage.phone { padding: 18px; align-items: center; }
+  .app { position: relative; overflow: hidden; display: flex; flex: 1; min-height: 560px; background: var(--surface); }
+  .stage.phone .app { flex: 0 0 390px; height: 780px; min-height: 0; border-radius: 28px; box-shadow: 0 0 0 10px #1c1c20, 0 20px 50px rgb(0 0 0 / .3); }
+
+  .sidebar { width: 236px; flex-shrink: 0; border-right: 1px solid var(--line); background: var(--surface-2); display: flex; flex-direction: column; padding: 8px; gap: 2px; }
+  .stage.phone .sidebar { display: none; }
+  .side-h { font-size: 11px; font-weight: 600; color: var(--muted); padding: 10px 8px 4px; }
+  .nav { display: flex; align-items: center; gap: 10px; padding: 6px 10px; border-radius: 8px; font-size: 13px; color: var(--fg-2); cursor: default; }
+  .nav:hover { background: var(--hover); }
+  .nav.on { background: var(--sel); color: var(--fg); font-weight: 600; }
+  .nav.on svg { color: var(--accent); }
+  .nav svg { color: var(--muted); font-size: 15px; }
+  .sess { font-size: 13px; padding: 5px 10px; border-radius: 8px; color: var(--fg-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+  .main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+  .head { height: 48px; flex-shrink: 0; display: flex; align-items: center; gap: 4px; padding: 0 8px; border-bottom: 1px solid var(--line); }
+  .head h1 { font-size: 15px; font-weight: 600; letter-spacing: -.01em; margin: 0 0 0 4px; flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .ib { display: inline-flex; align-items: center; justify-content: center; gap: 4px; min-width: 36px; min-height: 36px; padding: 0 8px; border: 0; border-radius: 8px; background: transparent; cursor: pointer; font-size: 12.5px; color: var(--fg-2); }
+  .ib:hover { background: var(--hover); color: var(--fg); }
+  .ib:active { background: var(--press); }
+  .ib:disabled { opacity: .35; cursor: default; background: transparent; }
+  .ib svg { font-size: 16px; }
+
+  .body { flex: 1; min-height: 0; overflow-y: auto; padding: 20px 28px 40px; }
+  .stage.phone .body { padding: 14px 12px 30px; }
+  .wrap { max-width: 1100px; margin: 0 auto; display: flex; flex-direction: column; gap: 12px; }
+
+  .tools { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+  .search { position: relative; flex: 1 1 260px; display: flex; align-items: center; }
+  .search svg { position: absolute; left: 11px; color: var(--muted); font-size: 13px; }
+  .search input { width: 100%; min-height: 38px; border: 0; border-radius: 9px; padding: 0 12px 0 32px; background: var(--surface); color: var(--fg); font: inherit; font-size: 13.5px; box-shadow: inset 0 0 0 1px var(--line-2); }
+  .search input:focus { outline: none; box-shadow: inset 0 0 0 1px var(--accent), 0 0 0 3px var(--accent-soft); }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chip { min-height: 30px; padding: 0 11px; border-radius: 999px; border: 1px solid var(--line-2); background: transparent; font-size: 12.5px; cursor: pointer; color: var(--fg-2); }
+  .chip:hover { background: var(--hover); }
+  .chip.on { background: var(--accent); border-color: transparent; color: var(--on-accent); }
+  .seg { display: inline-flex; padding: 2px; border-radius: 9px; box-shadow: inset 0 0 0 1px var(--line-2); }
+  .seg button { border: 0; background: transparent; border-radius: 7px; min-height: 30px; padding: 0 9px; display: inline-flex; align-items: center; gap: 5px; font-size: 12.5px; color: var(--muted); cursor: pointer; }
+  .seg button.on { background: var(--sunken); color: var(--fg); box-shadow: 0 0 0 1px var(--line); }
+  .summary { font-size: 12px; color: var(--muted); display: flex; gap: 8px; align-items: center; }
+  .summary .dotf { display: inline-flex; align-items: center; gap: 6px; }
+
+  /* grid */
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(208px, 1fr)); gap: 14px; }
+  .stage.phone .grid { grid-template-columns: 1fr 1fr; gap: 10px; }
+  .card { position: relative; border-radius: 12px; background: var(--raised); box-shadow: var(--card-shadow); overflow: hidden; cursor: pointer; text-align: left; border: 0; padding: 0; display: flex; flex-direction: column; transition: box-shadow .12s, transform .12s; }
+  .card:hover { box-shadow: 0 0 0 1px var(--line-2), 0 6px 18px -6px rgb(0 0 0 / .18); transform: translateY(-1px); }
+  .card:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .thumb { position: relative; aspect-ratio: 4 / 3; background: var(--sunken); overflow: hidden; display: grid; place-items: center; }
+  .thumb > svg.pic { width: 100%; height: 100%; display: block; }
+  .thumb .pagef { position: absolute; left: 0; top: 0; width: 400%; height: 400%; transform: scale(.25); transform-origin: 0 0; border: 0; background: #fff; pointer-events: none; }
+  .thumb .docx { position: absolute; inset: 0; padding: 12px 14px; font-size: 10.5px; line-height: 1.45; color: var(--fg-2); background: var(--raised); overflow: hidden; }
+  .thumb .docx h4 { margin: 0 0 4px; font-size: 12px; color: var(--fg); }
+  .thumb .docx::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 40px; background: linear-gradient(transparent, var(--raised)); }
+  .thumb .big { font-size: 34px; color: var(--faint); display: flex; flex-direction: column; align-items: center; gap: 6px; }
+  .thumb .big span { font: 600 11px/1 ui-monospace, monospace; color: var(--muted); letter-spacing: .05em; }
+  .badge { position: absolute; left: 8px; bottom: 8px; display: inline-flex; gap: 4px; align-items: center; padding: 2px 7px; border-radius: 6px; background: rgb(0 0 0 / .62); color: #fff; font: 500 11px/1.4 ui-monospace, monospace; }
+  .badge svg { font-size: 10px; fill: #fff; stroke: none; }
+  .playbtn { position: absolute; inset: 0; margin: auto; width: 46px; height: 46px; border-radius: 50%; background: rgb(0 0 0 / .55); display: grid; place-items: center; color: #fff; }
+  .playbtn svg { fill: #fff; stroke: none; font-size: 18px; margin-left: 3px; }
+  .corner { position: absolute; top: 6px; right: 6px; display: flex; gap: 4px; opacity: 0; transition: opacity .12s; }
+  .card:hover .corner, .card:focus-within .corner { opacity: 1; }
+  .stage.phone .corner { opacity: 1; }
+  .stage.phone .corner [data-act="copy"] { display: none; }
+  .corner button { width: 30px; height: 30px; border-radius: 8px; border: 0; display: grid; place-items: center; background: rgb(255 255 255 / .92); color: #18181b; box-shadow: 0 1px 3px rgb(0 0 0 / .2); cursor: pointer; }
+  :root[data-theme="dark"] .corner button { background: rgb(30 30 34 / .92); color: #ededef; }
+  .corner button:hover { filter: brightness(.95); }
+  .cbody { padding: 9px 11px 10px; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  .ctitle { display: flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 600; min-width: 0; }
+  .ctitle svg { color: var(--accent); font-size: 13px; }
+  .ctitle span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .cmeta { font-size: 11.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .shared-dot { color: var(--accent); }
+
+  /* list */
+  .list { display: flex; flex-direction: column; }
+  .row { display: flex; align-items: center; gap: 12px; padding: 8px 6px; border-bottom: 1px solid var(--line); cursor: pointer; border-radius: 8px; }
+  .row:hover { background: var(--hover); }
+  .row .thumb { width: 64px; flex-shrink: 0; border-radius: 7px; box-shadow: 0 0 0 1px var(--line); }
+  .row .thumb .big { font-size: 20px; }
+  .row .thumb .big span, .row .badge, .row .playbtn, .row .thumb .docx h4 ~ * { display: none; }
+  .row .thumb .docx { font-size: 5px; padding: 5px; }
+  .row .thumb .docx h4 { font-size: 6px; }
+  .row .rmain { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+  .row .rplace { font-size: 12px; color: var(--muted); display: flex; gap: 5px; align-items: center; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .row .rside { font-size: 12px; color: var(--muted); text-align: right; white-space: nowrap; }
+  .stage.phone .row .rside { display: none; }
+
+  /* menu */
+  .menu { position: absolute; z-index: 80; min-width: 190px; padding: 4px; border-radius: 10px; background: var(--raised); box-shadow: var(--shadow-menu); }
+  .menu button { width: 100%; display: flex; align-items: center; gap: 9px; padding: 7px 9px; border: 0; background: transparent; border-radius: 6px; font-size: 13px; cursor: pointer; color: var(--fg-2); text-align: left; }
+  .menu button:hover { background: var(--hover); color: var(--fg); }
+  .menu button.danger { color: var(--bad); }
+  .menu hr { border: 0; border-top: 1px solid var(--line); margin: 4px 2px; }
+
+  /* the asset page */
+  .ahead { flex-shrink: 0; display: flex; align-items: center; gap: 2px; padding: 6px 8px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+  .atitle { flex: 1 1 200px; min-width: 0; display: flex; flex-direction: column; padding: 0 6px; }
+  .atitle .t { font-size: 14px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: flex; align-items: center; gap: 6px; }
+  .atitle .t svg { color: var(--accent); }
+  .atitle .s { font-size: 11.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .atitle .s code { font: 11px ui-monospace, monospace; user-select: all; }
+  .atitle .s a { color: var(--muted); text-decoration: underline dotted; text-underline-offset: 2px; cursor: pointer; }
+  .atitle .s a:hover { color: var(--fg); }
+  .step { font: 11.5px ui-monospace, monospace; color: var(--muted); padding: 0 2px; }
+  .vsep { width: 1px; height: 20px; background: var(--line-2); margin: 0 4px; }
+  .abody { flex: 1; min-height: 0; display: flex; flex-direction: column; background: var(--surface-2); }
+  .abody.pad { padding: 14px; }
+  .stage.phone .abody.pad { padding: 0; }
+  .sheet { flex: 1; min-height: 0; border-radius: 10px; overflow: hidden; box-shadow: var(--card-shadow); background: #fff; display: flex; }
+  .stage.phone .sheet { border-radius: 0; box-shadow: none; }
+  .sheet iframe { flex: 1; border: 0; width: 100%; height: 100%; background: #fff; }
+  .sheet.doc { background: var(--raised); overflow-y: auto; display: block; }
+  .mdoc { max-width: 720px; margin: 0 auto; padding: 32px 28px 48px; color: var(--fg); }
+  .mdoc h1 { font-size: 22px; margin: 0 0 12px; letter-spacing: -.01em; }
+  .mdoc h2 { font-size: 16px; margin: 24px 0 8px; }
+  .mdoc p, .mdoc li { color: var(--fg-2); }
+  .mdoc code { background: var(--sunken); padding: 1px 5px; border-radius: 5px; font-size: 12.5px; }
+  .mdoc table { border-collapse: collapse; font-size: 13px; }
+  .mdoc th, .mdoc td { border-bottom: 1px solid var(--line); padding: 6px 16px 6px 0; text-align: left; }
+  .mdoc th { color: var(--muted); font-weight: 500; }
+  .src { background: var(--raised); overflow: auto; display: block; font: 12.5px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--fg-2); }
+  .src table { border-collapse: collapse; }
+  .src td { padding: 0 14px 0 0; white-space: pre; vertical-align: top; }
+  .src td.n { color: var(--faint); text-align: right; padding: 0 12px 0 14px; user-select: none; border-right: 1px solid var(--line); }
+  .src td.c { padding-left: 14px; }
+  .src tr:first-child td { padding-top: 12px; }
+  .filepage { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; padding: 30px; background: var(--raised); color: var(--fg-2); text-align: center; }
+  .filepage .ic { width: 84px; height: 84px; border-radius: 20px; background: var(--sunken); display: grid; place-items: center; font-size: 36px; color: var(--muted); }
+  .filepage .m { font-size: 12.5px; color: var(--muted); }
+  .btn { display: inline-flex; align-items: center; gap: 7px; padding: 8px 14px; border-radius: 9px; border: 0; background: var(--accent); color: var(--on-accent); font-size: 13.5px; font-weight: 500; cursor: pointer; }
+  .btn svg { font-size: 15px; }
+  .audio { width: min(460px, 100%); display: flex; align-items: center; gap: 12px; padding: 12px 14px; border-radius: 12px; background: var(--sunken); }
+  .audio .pp { width: 40px; height: 40px; border-radius: 50%; background: var(--accent); color: #fff; display: grid; place-items: center; border: 0; cursor: pointer; }
+  .audio .pp svg { fill: #fff; stroke: none; margin-left: 2px; }
+  .wave { flex: 1; display: flex; align-items: center; gap: 2px; height: 32px; }
+  .wave i { flex: 1; background: var(--faint); border-radius: 2px; }
+  .wave i.p { background: var(--accent); }
+  .full .sidebar, .full .ahead.hideable { display: none; }
+  .pdfpage { position: relative; flex-shrink: 0; width: 680px; aspect-ratio: 8.5 / 11; background: #fff; color: #222; padding: 64px 70px; box-shadow: 0 1px 4px rgb(0 0 0 / .25); overflow: hidden; }
+  .pdfpage svg.pic { width: 100%; height: auto; display: block; }
+  .thumb .pdft { position: absolute; left: 50%; top: 12px; transform: translateX(-50%) scale(.27); transform-origin: top center; }
+  .row .thumb .pdft { top: 3px; transform: translateX(-50%) scale(.075); }
+  .sheet.pdf { flex-direction: column; background: var(--sunken); }
+  .pdfbar { flex-shrink: 0; display: flex; align-items: center; justify-content: center; gap: 2px; padding: 3px 6px; border-bottom: 1px solid var(--line); background: var(--raised); color: var(--fg-2); font-size: 12.5px; }
+  .pdfbar .num { font: 12px ui-monospace, monospace; padding: 0 6px; }
+  .pdfpages { flex: 1; min-height: 0; overflow: auto; display: flex; flex-direction: column; align-items: center; gap: 16px; padding: 20px; }
+  .stage.phone .pdfpages { padding: 10px; gap: 10px; }
+  .stage.phone .pdfpage { zoom: .52; }
+  .office { font-size: 40px; display: flex; flex-direction: column; align-items: center; gap: 8px; }
+  .office b { font: 700 12px/1 ui-monospace, monospace; color: #fff; padding: 4px 7px; border-radius: 5px; letter-spacing: .04em; }
+  .row .thumb .office { font-size: 20px; } .row .thumb .office b { display: none; }
+
+  /* the media viewer */
+  .viewer { position: absolute; inset: 0; z-index: 60; background: rgb(0 0 0 / .95); color: #fff; display: flex; flex-direction: column; outline: none; }
+  .vbar { flex-shrink: 0; display: flex; align-items: center; gap: 2px; padding: 4px 8px; }
+  .vbar .vt { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: 8px; padding: 0 8px; font-size: 13.5px; }
+  .vbar .vt span:first-child { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .vbar .mono { font: 11.5px ui-monospace, monospace; color: rgb(255 255 255 / .65); white-space: nowrap; }
+  .vb { display: inline-flex; align-items: center; justify-content: center; gap: 4px; min-width: 40px; min-height: 40px; padding: 0 8px; border: 0; border-radius: 8px; background: transparent; color: #fff; cursor: pointer; font-size: 13px; }
+  .vb:hover { background: rgb(255 255 255 / .14); }
+  .vb.on { background: rgb(255 255 255 / .2); }
+  .vb svg { font-size: 17px; }
+  .vmid { flex: 1; min-height: 0; display: flex; }
+  .vstage { flex: 1; min-width: 0; position: relative; display: grid; place-items: center; padding: 10px 56px; }
+  .stage.phone .vstage { padding: 10px 8px; }
+  .vstage .media { width: min(900px, 100%); max-height: 100%; background: #fff; border-radius: 3px; box-shadow: 0 10px 40px rgb(0 0 0 / .5); }
+  .vstage .media svg { display: block; width: 100%; height: auto; }
+  .stage.phone .vstage .media svg { width: 100%; }
+  .arrow { position: absolute; top: 50%; transform: translateY(-50%); width: 44px; height: 44px; border-radius: 50%; border: 0; background: rgb(255 255 255 / .1); color: #fff; display: grid; place-items: center; cursor: pointer; }
+  .arrow:hover { background: rgb(255 255 255 / .2); }
+  .arrow svg { font-size: 20px; }
+  .arrow.l { left: 8px; } .arrow.r { right: 8px; }
+  .stage.phone .arrow { display: none; }
+  .vinfo { width: 292px; flex-shrink: 0; border-left: 1px solid rgb(255 255 255 / .1); padding: 14px 16px; display: flex; flex-direction: column; gap: 12px; font-size: 12.5px; overflow-y: auto; background: rgb(255 255 255 / .03); }
+  .stage.phone .vinfo { position: absolute; left: 0; right: 0; bottom: 0; width: auto; max-height: 55%; border-left: 0; border-top: 1px solid rgb(255 255 255 / .12); background: #141416; border-radius: 16px 16px 0 0; z-index: 2; }
+  .vinfo h3 { margin: 0; font-size: 14px; display: flex; gap: 6px; align-items: center; }
+  .vinfo dl { margin: 0; display: grid; grid-template-columns: 76px 1fr; gap: 6px 10px; }
+  .vinfo dt { color: rgb(255 255 255 / .55); }
+  .vinfo dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+  .vinfo dd a { color: #fff; text-decoration: underline dotted; text-underline-offset: 2px; cursor: pointer; }
+  .vinfo code { font: 11.5px ui-monospace, monospace; }
+  .vinfo .acts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 2px; }
+  .vinfo .acts button { display: inline-flex; gap: 6px; align-items: center; padding: 6px 10px; border-radius: 8px; border: 1px solid rgb(255 255 255 / .16); background: transparent; color: #fff; font-size: 12.5px; cursor: pointer; }
+  .vinfo .acts button:hover { background: rgb(255 255 255 / .1); }
+  .vinfo .acts button.danger { color: #ff8a8e; border-color: rgb(255 138 142 / .35); }
+  .strip { flex-shrink: 0; display: flex; gap: 6px; justify-content: center; padding: 8px 10px 12px; overflow-x: auto; }
+  .strip button { flex-shrink: 0; width: 64px; height: 46px; padding: 0; border-radius: 6px; border: 0; overflow: hidden; background: #222; opacity: .5; cursor: pointer; position: relative; }
+  .strip button.on { opacity: 1; box-shadow: 0 0 0 2px #fff; }
+  .strip button svg.pic { width: 100%; height: 100%; display: block; }
+  .vcontrols { flex-shrink: 0; display: flex; align-items: center; gap: 6px; padding: 0 12px 4px; font: 11.5px ui-monospace, monospace; }
+  .vcontrols .track { flex: 1; height: 4px; border-radius: 2px; background: rgb(255 255 255 / .25); position: relative; }
+  .vcontrols .track i { position: absolute; left: 0; top: 0; bottom: 0; width: 34%; border-radius: 2px; background: var(--accent); }
+
+  .toast { position: absolute; left: 50%; bottom: 18px; transform: translateX(-50%); z-index: 90; background: var(--fg); color: var(--surface); padding: 7px 14px; border-radius: 9px; font-size: 12.5px; box-shadow: var(--shadow-menu); pointer-events: none; transition: opacity .2s; }
+</style>
+</head>
+<body>
+<div class="mock" id="mock">
+  <b>Mockup</b>
+  <button data-theme-btn="light" aria-pressed="true">Light</button>
+  <button data-theme-btn="dark">Dark</button>
+  <span class="sep"></span>
+  <button data-device="desktop" aria-pressed="true">Desktop</button>
+  <button data-device="phone">Phone</button>
+  <span class="sep"></span>
+  <b>Jump to</b>
+  <button data-jump="tab">Assets tab</button>
+  <button data-jump="image">Image</button>
+  <button data-jump="video">Video</button>
+  <button data-jump="html">HTML page</button>
+  <button data-jump="md">Markdown</button>
+  <button data-jump="pdf">PDF</button>
+  <button data-jump="docx">Word</button>
+  <button data-jump="file">Other file</button>
+</div>
+<div class="note" id="note"></div>
+<div class="stage" id="stage"><div class="app" id="app"></div></div>
+
+<script>
+// ---------- icons (Lucide paths) ----------
+const P = {
+  back: '<path d="m12 19-7-7 7-7"/><path d="M19 12H5"/>',
+  copy: '<rect width="14" height="14" x="8" y="8" rx="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/>',
+  share: '<circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" x2="15.42" y1="13.51" y2="17.49"/><line x1="15.41" x2="8.59" y1="6.51" y2="10.49"/>',
+  download: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/>',
+  max: '<polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" x2="14" y1="3" y2="10"/><line x1="3" x2="10" y1="21" y2="14"/>',
+  min: '<polyline points="4 14 10 14 10 20"/><polyline points="20 10 14 10 14 4"/><line x1="14" x2="21" y1="10" y2="3"/><line x1="3" x2="10" y1="21" y2="14"/>',
+  x: '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
+  more: '<circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/>',
+  left: '<path d="m15 18-6-6 6-6"/>', right: '<path d="m9 18 6-6-6-6"/>',
+  up: '<path d="m18 15-6-6-6 6"/>', down: '<path d="m6 9 6 6 6-6"/>',
+  info: '<circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/>',
+  search: '<circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>',
+  filter: '<path d="M3 6h18"/><path d="M7 12h10"/><path d="M10 18h4"/>',
+  grid: '<rect width="7" height="7" x="3" y="3" rx="1"/><rect width="7" height="7" x="14" y="3" rx="1"/><rect width="7" height="7" x="14" y="14" rx="1"/><rect width="7" height="7" x="3" y="14" rx="1"/>',
+  list: '<line x1="8" x2="21" y1="6" y2="6"/><line x1="8" x2="21" y1="12" y2="12"/><line x1="8" x2="21" y1="18" y2="18"/><line x1="3" x2="3.01" y1="6" y2="6"/><line x1="3" x2="3.01" y1="12" y2="12"/><line x1="3" x2="3.01" y1="18" y2="18"/>',
+  image: '<rect width="18" height="18" x="3" y="3" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/>',
+  video: '<path d="m16 13 5.223 3.482a.5.5 0 0 0 .777-.416V7.87a.5.5 0 0 0-.752-.432L16 10.5"/><rect x="2" y="6" width="14" height="12" rx="2"/>',
+  html: '<path d="M10 12.5 8 15l2 2.5"/><path d="m14 12.5 2 2.5-2 2.5"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7z"/>',
+  md: '<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/>',
+  audio: '<path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/>',
+  file: '<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/>',
+  play: '<polygon points="6 3 20 12 6 21 6 3"/>',
+  pause: '<rect x="14" y="4" width="4" height="16" rx="1"/><rect x="6" y="4" width="4" height="16" rx="1"/>',
+  pencil: '<path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"/>',
+  trash: '<path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/>',
+  chat: '<path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"/>',
+  session: '<path d="M14 9a2 2 0 0 1-2 2H6l-4 4V4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2z"/><path d="M18 9h2a2 2 0 0 1 2 2v11l-4-4h-6a2 2 0 0 1-2-2v-1"/>',
+  folder: '<path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>',
+  zin: '<circle cx="11" cy="11" r="8"/><line x1="21" x2="16.65" y1="21" y2="16.65"/><line x1="11" x2="11" y1="8" y2="14"/><line x1="8" x2="14" y1="11" y2="11"/>',
+  zout: '<circle cx="11" cy="11" r="8"/><line x1="21" x2="16.65" y1="21" y2="16.65"/><line x1="8" x2="14" y1="11" y2="11"/>',
+  reload: '<path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/>',
+  brain: '<path d="M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18Z"/><path d="M12 5a3 3 0 1 1 5.997.125 4 4 0 0 1 2.526 5.77 4 4 0 0 1-.556 6.588A4 4 0 1 1 12 18Z"/>',
+  clock: '<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>',
+  gear: '<path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/>',
+  menu: '<line x1="4" x2="20" y1="12" y2="12"/><line x1="4" x2="20" y1="6" y2="6"/><line x1="4" x2="20" y1="18" y2="18"/>',
+};
+const I = (k, extra = '') => `<svg class="i ${extra}" viewBox="0 0 24 24">${P[k]}</svg>`;
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+// ---------- sample pictures ----------
+function curves(seed, opts = {}) {
+  const w = 640, h = 420, pad = 48, n = opts.lines || 4;
+  const cols = opts.cols || ['#4f6bed', '#e8743b', '#19a979', '#945ecf'];
+  let r = seed;
+  const rnd = () => (r = (r * 9301 + 49297) % 233280) / 233280;
+  let paths = '';
+  for (let l = 0; l < n; l++) {
+    let d = '', y0 = .2 + .15 * l;
+    for (let i = 0; i <= 60; i++) {
+      const x = pad + (w - 2 * pad) * i / 60;
+      const v = opts.rise ? 1 - Math.exp(-i / (8 + l * 5)) * (1 - y0) : Math.exp(-i / (7 + l * 6)) * (1 - y0) + y0 * .25;
+      const y = h - pad - (h - 2 * pad) * Math.min(1, Math.max(0, v + (rnd() - .5) * .05));
+      d += (i ? 'L' : 'M') + x.toFixed(1) + ' ' + y.toFixed(1);
+    }
+    paths += `<path d="${d}" fill="none" stroke="${cols[l % cols.length]}" stroke-width="2.2"/>`;
+  }
+  let gridl = '';
+  for (let g = 0; g <= 4; g++) {
+    const y = pad + (h - 2 * pad) * g / 4;
+    gridl += `<line x1="${pad}" x2="${w - pad}" y1="${y}" y2="${y}" stroke="#e5e7eb"/>`;
+  }
+  const legend = Array.from({ length: n }, (_, l) => `<rect x="${w - pad - 96}" y="${pad + 4 + l * 18}" width="12" height="3" fill="${cols[l % cols.length]}"/><text x="${w - pad - 78}" y="${pad + 9 + l * 18}" font-size="11" fill="#444">run ${11 + l}</text>`).join('');
+  return `<svg class="pic" viewBox="0 0 ${w} ${h}" xmlns="http://www.w3.org/2000/svg"><rect width="${w}" height="${h}" fill="#fff"/>${gridl}<line x1="${pad}" x2="${pad}" y1="${pad}" y2="${h - pad}" stroke="#9ca3af"/><line x1="${pad}" x2="${w - pad}" y1="${h - pad}" y2="${h - pad}" stroke="#9ca3af"/>${paths}<text x="${pad}" y="${pad - 16}" font-size="14" font-weight="600" fill="#111" font-family="system-ui">${esc(opts.title || '')}</text>${legend}<text x="${w / 2}" y="${h - 14}" font-size="11" fill="#666" text-anchor="middle" font-family="system-ui">steps (k)</text></svg>`;
+}
+function bars(seed) {
+  const w = 640, h = 420;
+  let r = seed, out = '';
+  const rnd = () => (r = (r * 9301 + 49297) % 233280) / 233280;
+  for (let i = 0; i < 12; i++) {
+    const v = 60 + rnd() * 240, x = 60 + i * 44;
+    out += `<rect x="${x}" y="${360 - v}" width="30" height="${v}" rx="3" fill="${i % 3 ? '#4f6bed' : '#e8743b'}"/>`;
+  }
+  return `<svg class="pic" viewBox="0 0 ${w} ${h}" xmlns="http://www.w3.org/2000/svg"><rect width="${w}" height="${h}" fill="#fff"/><text x="60" y="40" font-size="14" font-weight="600" font-family="system-ui">Teleop latency per session (ms)</text><line x1="50" x2="600" y1="360" y2="360" stroke="#9ca3af"/>${out}</svg>`;
+}
+function scene(t = 0) {
+  const a = -0.6 + Math.sin(t) * .5;
+  const x2 = 320 + Math.cos(a) * 150, y2 = 250 + Math.sin(a) * 150;
+  return `<svg class="pic" viewBox="0 0 640 400" xmlns="http://www.w3.org/2000/svg"><defs><linearGradient id="g" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="#3b4256"/><stop offset="1" stop-color="#1c2030"/></linearGradient></defs><rect width="640" height="400" fill="url(#g)"/><rect x="0" y="300" width="640" height="100" fill="#2a2f3f"/><rect x="380" y="262" width="56" height="40" rx="4" fill="#e8743b"/><line x1="320" y1="300" x2="320" y2="250" stroke="#c9ced8" stroke-width="18" stroke-linecap="round"/><line x1="320" y1="250" x2="${x2.toFixed(1)}" y2="${y2.toFixed(1)}" stroke="#dfe3ea" stroke-width="14" stroke-linecap="round"/><circle cx="${x2.toFixed(1)}" cy="${y2.toFixed(1)}" r="12" fill="#7c7cff"/><circle cx="320" cy="250" r="12" fill="#9aa3b5"/></svg>`;
+}
+
+// ---------- a fake PDF (pdf.js would draw the real pages) ----------
+function pdfPage(n) {
+  const bar = (w, h = 8, c = '#d4d4d8') => `<div style="height:${h}px;width:${w}%;background:${c};border-radius:2px;margin:0 0 7px"></div>`;
+  const para = (k, seed) => Array.from({ length: k }, (_, i) => bar(i === k - 1 ? 40 + (seed * 13 + i * 7) % 40 : 92 + (seed + i) % 8)).join('') + '<div style="height:10px"></div>';
+  let body;
+  if (n === 1) body = `<div style="font:700 25px/1.25 Georgia,serif;text-align:center;margin:10px 0 10px;color:#111">A Retargeted Grasp Prior for Dexterous Manipulation</div>
+    <div style="font:14px Georgia,serif;text-align:center;color:#555;margin-bottom:26px">Draft · November 2026</div>
+    <div style="font:700 13px Georgia,serif;margin-bottom:8px">Abstract</div>${para(6, 1)}
+    <div style="font:700 15px Georgia,serif;margin:12px 0 8px">1 Introduction</div>${para(7, 2)}${para(5, 3)}${para(6, 4)}`;
+  else if (n === 2) body = `<div style="font:700 15px Georgia,serif;margin:0 0 8px">2 Method</div>${para(5, 5)}
+    <div style="border:1px solid #e5e7eb;border-radius:4px;margin:8px 0 6px">${curves(11, { title: 'Success rate', rise: true, lines: 3 })}</div>
+    <div style="font:italic 11px Georgia,serif;color:#555;margin-bottom:14px">Figure 1: success rate against training steps.</div>${para(6, 6)}${para(4, 7)}`;
+  else body = para(7, n) + para(6, n + 1) + para(8, n + 2) + para(5, n + 3) + para(7, n + 4);
+  return `<div class="pdfpage">${body}<div style="position:absolute;bottom:22px;left:0;right:0;text-align:center;font:11px Georgia,serif;color:#888">${n}</div></div>`;
+}
+
+// ---------- sample pages ----------
+const PAGE_PI = `<!doctype html><html><head><meta charset="utf-8"><style>
+body{font:15px/1.55 system-ui,sans-serif;margin:0;color:#1d1d1f;background:#fff}
+nav{position:sticky;top:0;background:#fffd;backdrop-filter:blur(6px);border-bottom:1px solid #eee;padding:10px 28px;display:flex;gap:18px;font-size:13px}
+nav a{color:#555;text-decoration:none}nav a:hover{color:#000}
+main{max-width:860px;margin:0 auto;padding:28px}
+h1{font-size:28px;margin:0 0 4px}.sub{color:#777;margin:0 0 24px}
+section{margin:0 0 36px}h2{font-size:19px;margin:0 0 8px}
+.fig{background:#f6f7fb;border-radius:12px;padding:16px;display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+.fig div{height:120px;border-radius:8px;background:linear-gradient(135deg,#4f6bed,#945ecf)}
+.fig div:nth-child(2){background:linear-gradient(135deg,#19a979,#4f6bed)}.fig div:nth-child(3){background:linear-gradient(135deg,#e8743b,#f2c14e)}
+table{border-collapse:collapse;width:100%;font-size:14px}td,th{border-bottom:1px solid #eee;padding:8px 6px;text-align:left}th{color:#777;font-weight:500}
+.up{color:#19a979;font-weight:600}
+button{font:inherit;padding:6px 12px;border-radius:8px;border:1px solid #ccd;background:#fff;cursor:pointer}
+</style></head><body>
+<nav><a href="#v3">v3 recap</a><a href="#v6">v6</a><a href="#v8">v8</a><a href="#base">Baseline</a></nav>
+<main><h1>PI update, 2026-11-03</h1><p class="sub">Versions since the last meeting: v3 recap → v8.</p>
+<section id="v3"><h2>v3 recap</h2><div class="fig"><div></div><div></div><div></div></div></section>
+<section id="v6"><h2>v6: contact-aware rewards</h2><p>Success rate on the held-out objects rose from 41% to <span class="up">63%</span>.</p>
+<button onclick="this.textContent='Clicked '+(++window.c||(window.c=1))+'×'">Interactive: click me</button></section>
+<section id="base"><h2>Baseline</h2><table><tr><th>Model</th><th>Success</th><th>Steps</th></tr><tr><td>Joint targets (end to end)</td><td>38%</td><td>2.1M</td></tr><tr><td>v8</td><td class="up">71%</td><td>1.4M</td></tr></table></section>
+<section id="v8"><h2>v8: retargeted grasp prior</h2><div class="fig"><div></div><div></div><div></div></div><p style="height:400px">The page scrolls inside its frame.</p></section>
+</main></body></html>`;
+const PAGE_EVAL = `<!doctype html><html><head><meta charset="utf-8"><style>
+body{font:14px/1.5 system-ui,sans-serif;margin:0;padding:24px;background:#0f172a;color:#e2e8f0}
+h1{font-size:20px;margin:0 0 16px}.k{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:18px}
+.k div{background:#1e293b;border-radius:10px;padding:14px}.k b{display:block;font-size:24px;color:#a5b4fc}
+.bar{height:22px;background:#1e293b;border-radius:6px;margin:6px 0;position:relative;overflow:hidden}
+.bar i{position:absolute;inset:0 auto 0 0;background:linear-gradient(90deg,#6366f1,#22d3ee)}
+.bar span{position:relative;padding-left:8px;font-size:12px;line-height:22px}
+</style></head><body><h1>Eval dashboard · seed sweep</h1>
+<div class="k"><div>Success<b>71.4%</b></div><div>Episodes<b>2,400</b></div><div>Mean steps<b>184</b></div></div>
+<div class="bar"><i style="width:82%"></i><span>mug · 82%</span></div><div class="bar"><i style="width:74%"></i><span>bottle · 74%</span></div>
+<div class="bar"><i style="width:65%"></i><span>drill · 65%</span></div><div class="bar"><i style="width:52%"></i><span>scissors · 52%</span></div></body></html>`;
+const MD_NOTES = `# Ablation notes
+
+The contact reward matters most on thin objects. Removing it drops scissors from **52%** to **19%**.
+
+## Results
+
+| Variant | Success | Δ |
+|---|---|---|
+| full | 71% | |
+| − contact reward | 58% | −13 |
+| − grasp prior | 49% | −22 |
+
+## Next
+
+- Rerun \`v8\` with 5 seeds.
+- Try the prior on the real arm.`;
+const CSV = `run,lr,warmup,final_loss,success
+11,3e-4,500,0.412,0.58
+12,3e-4,2000,0.388,0.63
+13,1e-4,2000,0.371,0.69
+14,1e-4,4000,0.366,0.71`;
+
+// ---------- the assets ----------
+const ASSETS = [
+  { id: 'a1', handle: 'asset_3f9a1c2e', title: 'Loss curves, runs 11–14', kind: 'Images', type: 'image/svg+xml', size: '38 KB', px: '640 × 420', pic: () => curves(7, { title: 'Training loss' }), project: 'UCMA', session: 'Sweep lr warmup', by: 'Sweep lr warmup', age: '2h', shared: true },
+  { id: 'a4', handle: 'asset_91fd8f6f', title: 'PI update 2026-11-03', kind: 'Pages', type: 'text/html', size: '84 KB', page: PAGE_PI, project: 'UCMA', session: null, by: 'PI report builder', age: '5d', shared: true },
+  { id: 'a3', handle: 'asset_c04be771', title: 'Grasp rollout, seed 3', kind: 'Video and audio', type: 'video/mp4', size: '4.2 MB', px: '1280 × 800', dur: '0:12', video: true, project: 'UCMA', session: 'v8 rollouts', by: 'v8 rollouts', age: '3h' },
+  { id: 'a6', handle: 'asset_5b20e9aa', title: 'Ablation notes', kind: 'Documents', type: 'text/markdown', size: '6 KB', md: MD_NOTES, project: 'UCMA', session: 'Ablations', by: 'Ablations', age: '1d' },
+  { id: 'p1', handle: 'asset_d41c09b7', title: 'Grasp prior, paper draft', kind: 'Documents', type: 'application/pdf', size: '2.3 MB', pdf: 9, ext: 'PDF', project: 'UCMA', session: 'Paper draft', by: 'Paper draft', age: '6h' },
+  { id: 'w1', handle: 'asset_88e2a5c3', title: 'Lab meeting minutes', kind: 'Documents', type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', size: '64 KB', office: 'DOCX', color: '#2b579a', app: 'Word document', project: 'No project', session: 'Meeting notes', by: 'Meeting notes', age: '1d' },
+  { id: 'w2', handle: 'asset_1e7f6d20', title: 'Group meeting slides', kind: 'Documents', type: 'application/vnd.openxmlformats-officedocument.presentationml.presentation', size: '7.8 MB', office: 'PPTX', color: '#c43e1c', app: 'PowerPoint presentation', project: 'UCMA', session: null, by: 'PI report builder', age: '5d' },
+  { id: 'a2', handle: 'asset_7d11ab04', title: 'Success vs. steps', kind: 'Images', type: 'image/png', size: '312 KB', px: '1280 × 840', pic: () => curves(19, { title: 'Success rate', rise: true, lines: 3 }), project: 'UCMA', session: 'Sweep lr warmup', by: 'Sweep lr warmup', age: '2h' },
+  { id: 'a5', handle: 'asset_e6a0d3f1', title: 'Eval dashboard', kind: 'Pages', type: 'text/html', size: '22 KB', page: PAGE_EVAL, project: 'UCMA', session: 'v8 rollouts', by: 'v8 rollouts', age: '3h' },
+  { id: 'a7', handle: 'asset_0a8c44d2', title: 'Teleop latency', kind: 'Images', type: 'image/png', size: '96 KB', px: '1280 × 840', pic: () => bars(3), project: 'tianji_sim_real', session: 'Latency probe', by: 'Latency probe', age: '2d' },
+  { id: 'a9', handle: 'asset_2f6e1b90', title: 'Narration, take 2', kind: 'Video and audio', type: 'audio/mpeg', size: '1.1 MB', dur: '0:48', audio: true, project: 'No project', session: 'Demo video script', by: 'Demo video script', age: '4d' },
+  { id: 'a8', handle: 'asset_b3d97c5e', title: 'Sweep summary', kind: 'Other files', type: 'text/csv', size: '1 KB', text: CSV, ext: 'CSV', project: 'UCMA', session: 'Sweep lr warmup', by: 'Sweep lr warmup', age: '2h' },
+  { id: 'a10', handle: 'asset_6c1d0e37', title: 'policy_v8.onnx', kind: 'Other files', type: 'application/octet-stream', size: '48 MB', ext: 'ONNX', project: 'UCMA', session: null, by: 'Export policy', age: '1d' },
+];
+const KINDS = ['All', 'Images', 'Pages', 'Documents', 'Video and audio', 'Other files'];
+const visual = a => !!(a.pic || a.video);
+const icon = a => a.pic ? 'image' : a.video ? 'video' : a.page ? 'html' : (a.md || a.pdf || a.office) ? 'md' : a.audio ? 'audio' : 'file';
+
+// ---------- state ----------
+const S = { theme: 'light', device: 'desktop', layout: 'grid', kind: 'All', q: '', page: null, tab: 'preview', full: false, viewer: null, info: false, menu: null, playing: false };
+const shown = () => ASSETS.filter(a => (S.kind === 'All' || a.kind === S.kind) && (!S.q || a.title.toLowerCase().includes(S.q.toLowerCase())));
+const app = document.getElementById('app');
+
+const NOTES = {
+  tab: '<b>Assets tab:</b> a grid of thumbnails (or a list). A click opens the asset: pictures and videos in the media viewer, anything else on its own page. Documents now hold PDF, Word, PowerPoint and other office files as well as Markdown. Rename, share, delete and the other actions are under ⋯ or a right-click.',
+  viewer: '<b>Media viewer:</b> steps through every picture and video the tab lists (arrow keys, the filmstrip). The bar adds Copy handle, Share, Download, and ⓘ: where it lives, who saved it, Rename, Delete.',
+  page: '<b>Asset page:</b> takes the whole page instead of opening inside the list. The sandboxed frame fills it and scrolls inside. Back (or Esc) returns to the list where you left it; the arrows (J/K) step through the other pages and files the tab lists. Its address is <code>#asset=asset_…</code>.',
+};
+
+function thumb(a) {
+  if (a.pic) return `<div class="thumb">${a.pic()}</div>`;
+  if (a.video) return `<div class="thumb">${scene(0.4)}<span class="playbtn">${I('play')}</span><span class="badge">${I('play')}${a.dur}</span></div>`;
+  if (a.page) return `<div class="thumb"><iframe class="pagef" sandbox="allow-scripts" tabindex="-1" aria-hidden="true" data-src="${a.id}"></iframe></div>`;
+  if (a.md) {
+    const lines = a.md.split('\n').filter(l => l && !l.startsWith('|') && !l.startsWith('#')).slice(0, 4).map(l => `<div>${esc(l.replace(/\*\*/g, ''))}</div>`).join('');
+    return `<div class="thumb"><div class="docx"><h4>${esc(a.md.split('\n')[0].replace(/^# /, ''))}</h4>${lines}</div></div>`;
+  }
+  if (a.pdf) return `<div class="thumb"><div class="pdft">${pdfPage(1)}</div><span class="badge">${a.pdf} pages</span></div>`;
+  if (a.office) return `<div class="thumb"><div class="office" style="color:${a.color}">${I('md')}<b style="background:${a.color}">${a.office}</b></div></div>`;
+  if (a.audio) return `<div class="thumb"><div class="big">${I('audio')}<span>MP3</span></div><span class="badge">${I('play')}${a.dur}</span></div>`;
+  return `<div class="thumb"><div class="big">${I('file')}<span>${a.ext}</span></div></div>`;
+}
+const place = a => a.session ? `${esc(a.project)} · ${esc(a.session)}` : `${esc(a.project)} · project`;
+
+function tabView() {
+  const list = shown();
+  const items = list.map(a => S.layout === 'grid' ? `
+    <div class="card" tabindex="0" data-open="${a.id}" title="${esc(a.title)} · ${a.handle}">
+      ${thumb(a)}
+      <div class="corner">
+        <button data-act="copy" data-id="${a.id}" title="Copy the handle">${I('copy')}</button>
+        <button data-act="menu" data-id="${a.id}" title="More">${I('more')}</button>
+      </div>
+      <div class="cbody">
+        <div class="ctitle">${I(icon(a))}<span>${esc(a.title)}</span>${a.shared ? `<span class="shared-dot" title="Shared">${I('share')}</span>` : ''}</div>
+        <div class="cmeta">${a.ext || a.office || a.type.split('/')[1].replace('svg+xml', 'svg').replace('mpeg', 'mp3').toUpperCase()} · ${a.size} · ${a.age} ago</div>
+        <div class="cmeta">${place(a)}</div>
+      </div>
+    </div>` : `
+    <div class="row" tabindex="0" data-open="${a.id}">
+      ${thumb(a)}
+      <div class="rmain">
+        <div class="ctitle">${I(icon(a))}<span>${esc(a.title)}</span>${a.shared ? `<span class="shared-dot" title="Shared">${I('share')}</span>` : ''}</div>
+        <div class="rplace">${I(a.session ? 'session' : 'folder')}${place(a)}</div>
+      </div>
+      <div class="rside">${a.type} · ${a.size}<br>saved by ${esc(a.by)}, ${a.age} ago</div>
+      <button class="ib" data-act="menu" data-id="${a.id}" title="More">${I('more')}</button>
+    </div>`).join('');
+  return `
+    <div class="head">
+      ${S.device === 'phone' ? `<button class="ib">${I('menu')}</button>` : ''}
+      <h1>Assets</h1>
+    </div>
+    <div class="body"><div class="wrap">
+      <div class="tools">
+        <button class="ib" title="Filter assets" style="box-shadow:inset 0 0 0 1px var(--line-2)">${I('filter')}</button>
+        <label class="search">${I('search')}<input id="q" placeholder="Search by title or file name" value="${esc(S.q)}"></label>
+        <span class="seg" role="radiogroup" aria-label="Layout">
+          <button class="${S.layout === 'grid' ? 'on' : ''}" data-layout="grid" title="Grid">${I('grid')}</button>
+          <button class="${S.layout === 'list' ? 'on' : ''}" data-layout="list" title="List">${I('list')}</button>
+        </span>
+      </div>
+      <div class="chips">${KINDS.map(k => `<button class="chip ${S.kind === k ? 'on' : ''}" data-kind="${k}">${k}</button>`).join('')}</div>
+      <div class="summary"><span>All projects · All levels</span><span>·</span><span>${list.length} assets · 54 MB</span></div>
+      <div class="${S.layout}">${items || '<p style="color:var(--muted)">No assets match.</p>'}</div>
+    </div></div>`;
+}
+
+function pageList() { return shown().filter(a => !visual(a)); }
+
+function pageView() {
+  const a = ASSETS.find(x => x.id === S.page);
+  const deck = pageList();
+  const at = deck.findIndex(x => x.id === a.id);
+  const hasSource = !!(a.page || a.md || a.text);
+  let body;
+  if (S.tab === 'source' && hasSource) {
+    const lines = (a.page || a.md || a.text).split('\n');
+    body = `<div class="abody pad"><div class="sheet src"><table>${lines.map((l, i) => `<tr><td class="n">${i + 1}</td><td class="c">${esc(l)}</td></tr>`).join('')}</table></div></div>`;
+  } else if (a.page) {
+    body = `<div class="abody pad"><div class="sheet"><iframe sandbox="allow-scripts allow-popups" data-src="${a.id}" title="${esc(a.title)}"></iframe></div></div>`;
+  } else if (a.md) {
+    body = `<div class="abody pad"><div class="sheet doc"><div class="mdoc">${md(a.md)}</div></div></div>`;
+  } else if (a.pdf) {
+    const phone = S.device === 'phone';
+    body = `<div class="abody pad"><div class="sheet pdf">
+      <div class="pdfbar">
+        <button class="ib" title="Previous page">${I('up')}</button><span class="num">1 / ${a.pdf}</span><button class="ib" title="Next page">${I('down')}</button>
+        <span class="vsep"></span>
+        <button class="ib" title="Zoom out">${I('zout')}</button><span class="num">${phone ? 'Fit' : '100%'}</span><button class="ib" title="Zoom in">${I('zin')}</button>
+        ${phone ? '' : `<button class="ib" title="Fit the width">Fit width</button>`}
+      </div>
+      <div class="pdfpages">${Array.from({ length: 3 }, (_, i) => pdfPage(i + 1)).join('')}</div>
+    </div></div>`;
+  } else if (a.office) {
+    body = `<div class="abody pad"><div class="sheet" style="background:var(--raised)"><div class="filepage">
+      <div class="ic" style="color:${a.color}">${I('md')}</div><div><b>${esc(a.title)}</b><div class="m">${a.app} · ${a.size}</div></div>
+      <div class="m">A browser cannot show ${a.app.toLowerCase()}s. Download it to open it.</div>
+      <button class="btn" data-act="download">${I('download')}Download</button>
+    </div></div></div>`;
+  } else if (a.audio) {
+    const bars = Array.from({ length: 64 }, (_, i) => `<i class="${i < 22 ? 'p' : ''}" style="height:${20 + Math.abs(Math.sin(i * 1.7) * 70 + Math.sin(i * .4) * 20)}%"></i>`).join('');
+    body = `<div class="abody pad"><div class="sheet" style="background:var(--raised)"><div class="filepage">
+      <div class="ic">${I('audio')}</div><div><b>${esc(a.title)}</b><div class="m">${a.type} · ${a.size} · ${a.dur}</div></div>
+      <div class="audio"><button class="pp" data-act="play">${I(S.playing ? 'pause' : 'play')}</button><div class="wave">${bars}</div><span class="m">0:16 / ${a.dur}</span></div>
+    </div></div></div>`;
+  } else {
+    body = `<div class="abody pad"><div class="sheet" style="background:var(--raised)"><div class="filepage">
+      <div class="ic">${I('file')}</div><div><b>${esc(a.title)}</b><div class="m">${a.type} · ${a.size}</div></div>
+      <div class="m">No preview for this kind of file.</div>
+      <button class="btn" data-act="download">${I('download')}Download</button>
+    </div></div></div>`;
+  }
+  const phone = S.device === 'phone';
+  return `
+    <div class="ahead ${S.full ? 'hideable' : ''}">
+      <button class="ib" data-act="back" title="Back to Assets (Esc)">${I('back')}</button>
+      <div class="atitle">
+        <span class="t">${I(icon(a))}<span>${esc(a.title)}</span></span>
+        <span class="s"><code>${a.handle}</code> · ${a.session ? `<a data-act="session">${esc(a.session)}</a>` : `${esc(a.project)} project`} · ${a.age} ago</span>
+      </div>
+      ${hasSource ? `<span class="seg" role="tablist"><button class="${S.tab === 'preview' ? 'on' : ''}" data-tab="preview">Preview</button><button class="${S.tab === 'source' ? 'on' : ''}" data-tab="source">Source</button></span><span class="vsep"></span>` : ''}
+      ${deck.length > 1 && !phone ? `<button class="ib" data-act="prev" ${at <= 0 ? 'disabled' : ''} title="Previous (K)">${I('up')}</button><span class="step">${at + 1}/${deck.length}</span><button class="ib" data-act="next" ${at >= deck.length - 1 ? 'disabled' : ''} title="Next (J)">${I('down')}</button><span class="vsep"></span>` : ''}
+      ${a.page ? `<button class="ib" data-act="reload" title="Reload the page">${I('reload')}</button>` : ''}
+      <button class="ib" data-act="copy" data-id="${a.id}" title="Copy the handle">${I('copy')}</button>
+      ${phone ? '' : `<button class="ib" data-act="share" title="Share link">${I('share')}</button>`}
+      <button class="ib" data-act="download" title="Download">${I('download')}</button>
+      ${a.page || a.md ? `<button class="ib" data-act="full" title="Full screen (F)">${I(S.full ? 'min' : 'max')}</button>` : ''}
+      <button class="ib" data-act="menu" data-id="${a.id}" title="More">${I('more')}</button>
+    </div>
+    ${S.full ? `<div style="position:absolute;top:8px;right:10px;z-index:5"><button class="ib" style="background:var(--raised);box-shadow:var(--card-shadow)" data-act="full" title="Exit full screen (Esc)">${I('min')}</button></div>` : ''}
+    ${body}`;
+}
+
+function viewerView() {
+  const deck = shown().filter(visual);
+  const a = ASSETS.find(x => x.id === S.viewer);
+  const at = deck.findIndex(x => x.id === a.id);
+  const media = a.pic ? a.pic() : scene(S.t || .4);
+  const phone = S.device === 'phone';
+  return `<div class="viewer" tabindex="-1" id="viewer">
+    <div class="vbar">
+      <span class="vt"><span>${esc(a.title)}</span><span class="mono">${at + 1} / ${deck.length}</span>${phone ? '' : `<span class="mono">${a.px}</span>`}</span>
+      ${a.pic && !phone ? `<button class="vb" title="Zoom out (-)">${I('zout')}</button><span class="mono" style="padding:0 4px">Fit</span><button class="vb" title="Zoom in (+)">${I('zin')}</button><span style="width:6px"></span>` : ''}
+      <button class="vb" data-act="copy" data-id="${a.id}" title="Copy the handle">${I('copy')}</button>
+      ${phone ? '' : `<button class="vb" data-act="share" title="Share link">${I('share')}</button>`}
+      <button class="vb" data-act="download" title="Download">${I('download')}</button>
+      <button class="vb ${S.info ? 'on' : ''}" data-act="info" title="Details (I)">${I('info')}</button>
+      <button class="vb" data-act="close" title="Close (Esc)">${I('x')}</button>
+    </div>
+    <div class="vmid">
+      <div class="vstage">
+        <div class="media">${media}</div>
+        ${deck.length > 1 ? `<button class="arrow l" data-act="vprev" title="Previous (←)">${I('left')}</button><button class="arrow r" data-act="vnext" title="Next (→)">${I('right')}</button>` : ''}
+      </div>
+      ${S.info ? `<aside class="vinfo">
+        <h3>${I(icon(a))}${esc(a.title)}</h3>
+        <dl>
+          <dt>Type</dt><dd>${a.type} · ${a.size}</dd>
+          <dt>Size</dt><dd>${a.px}${a.dur ? ' · ' + a.dur : ''}</dd>
+          <dt>Handle</dt><dd><code>${a.handle}</code></dd>
+          <dt>Lives in</dt><dd>${esc(a.project)}${a.session ? ` · <a data-act="session">${esc(a.session)}</a>` : ' project'}</dd>
+          <dt>Saved by</dt><dd><a data-act="session">${esc(a.by)}</a>, ${a.age} ago</dd>
+        </dl>
+        <div class="acts">
+          <button data-act="rename">${I('pencil')}Rename</button>
+          <button data-act="session">${I('session')}Open the session</button>
+          <button class="danger" data-act="delete">${I('trash')}Delete…</button>
+        </div>
+      </aside>` : ''}
+    </div>
+    ${a.video ? `<div class="vcontrols"><button class="vb" data-act="vplay">${I(S.playing ? 'pause' : 'play')}</button><span>0:04</span><span class="track"><i></i></span><span>${a.dur}</span><span style="width:4px"></span><span>1×</span></div>` : ''}
+    <div class="strip">${deck.map(d => `<button class="${d.id === a.id ? 'on' : ''}" data-view="${d.id}" title="${esc(d.title)}">${d.pic ? d.pic() : scene(.4)}</button>`).join('')}</div>
+  </div>`;
+}
+
+function md(src) {
+  const out = []; let table = null, list = null;
+  const inline = s => esc(s).replace(/\*\*(.+?)\*\*/g, '<b>$1</b>').replace(/`(.+?)`/g, '<code>$1</code>');
+  const flush = () => { if (table) { out.push('<table>' + table.join('') + '</table>'); table = null; } if (list) { out.push('<ul>' + list.join('') + '</ul>'); list = null; } };
+  for (const l of src.split('\n')) {
+    if (l.startsWith('|')) { if (/^\|[-| ]+\|$/.test(l)) continue; const cells = l.slice(1, -1).split('|').map(c => c.trim()); (table ||= []).push('<tr>' + cells.map(c => table.length ? `<td>${inline(c)}</td>` : `<th>${inline(c)}</th>`).join('') + '</tr>'); continue; }
+    if (l.startsWith('- ')) { (list ||= []).push(`<li>${inline(l.slice(2))}</li>`); continue; }
+    flush();
+    if (l.startsWith('## ')) out.push(`<h2>${inline(l.slice(3))}</h2>`);
+    else if (l.startsWith('# ')) out.push(`<h1>${inline(l.slice(2))}</h1>`);
+    else if (l.trim()) out.push(`<p>${inline(l)}</p>`);
+  }
+  flush();
+  return out.join('');
+}
+
+function sidebar() {
+  return `<nav class="sidebar">
+    <div class="nav">${I('chat')}New session</div>
+    <div class="side-h">Sessions</div>
+    <div class="sess">Sweep lr warmup</div><div class="sess">v8 rollouts</div><div class="sess">Ablations</div><div class="sess">Latency probe</div>
+    <div style="flex:1"></div>
+    <div class="nav on">${I('image')}Assets</div>
+    <div class="nav">${I('brain')}Memory</div>
+    <div class="nav">${I('clock')}Cron</div>
+    <div class="nav">${I('gear')}Settings</div>
+  </nav>`;
+}
+
+function render() {
+  document.documentElement.dataset.theme = S.theme;
+  document.getElementById('stage').className = 'stage ' + S.device;
+  app.className = 'app' + (S.full ? ' full' : '');
+  const scroll = app.querySelector('.body')?.scrollTop;
+  app.innerHTML = sidebar() + `<section class="main">${S.page ? pageView() : tabView()}</section>` + (S.viewer ? viewerView() : '') + (S.menu ? menuView() : '');
+  if (scroll != null && !S.page) { const b = app.querySelector('.body'); if (b) b.scrollTop = S.listScroll ?? scroll; }
+  app.querySelectorAll('iframe[data-src]').forEach(f => { f.srcdoc = ASSETS.find(a => a.id === f.dataset.src).page; });
+  document.getElementById('note').innerHTML = S.viewer ? NOTES.viewer : S.page ? NOTES.page : NOTES.tab;
+  document.querySelectorAll('[data-theme-btn]').forEach(b => b.setAttribute('aria-pressed', b.dataset.themeBtn === S.theme));
+  document.querySelectorAll('[data-device]').forEach(b => b.setAttribute('aria-pressed', b.dataset.device === S.device));
+  const q = document.getElementById('q');
+  if (q && S.focusQ) { q.focus(); q.setSelectionRange(q.value.length, q.value.length); S.focusQ = false; }
+  if (S.viewer) document.getElementById('viewer').focus();
+}
+
+function menuView() {
+  const a = ASSETS.find(x => x.id === S.menu.id);
+  return `<div class="menu" style="left:${S.menu.x}px;top:${S.menu.y}px">
+    <button data-act="open" data-id="${a.id}">${I(visual(a) ? 'image' : 'html')}Open</button>
+    <button data-act="rename">${I('pencil')}Rename</button>
+    <button data-act="download">${I('download')}Download</button>
+    <button data-act="share">${I('share')}Share link…</button>
+    ${a.session ? `<button data-act="session">${I('session')}Open the session</button>` : ''}
+    <hr><button class="danger" data-act="delete">${I('trash')}Delete…</button>
+  </div>`;
+}
+
+let toastTimer;
+function toast(msg) {
+  let t = app.querySelector('.toast');
+  if (!t) { t = document.createElement('div'); t.className = 'toast'; app.appendChild(t); }
+  t.textContent = msg; t.style.opacity = 1;
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => t.style.opacity = 0, 1500);
+}
+
+function open(id) {
+  const a = ASSETS.find(x => x.id === id);
+  S.menu = null;
+  if (visual(a)) { S.viewer = id; S.playing = false; }
+  else { S.listScroll = app.querySelector('.body')?.scrollTop; S.page = id; S.tab = 'preview'; S.full = false; S.playing = false; }
+  render();
+}
+function stepViewer(by) {
+  const deck = shown().filter(visual);
+  const at = deck.findIndex(x => x.id === S.viewer);
+  S.viewer = deck[(at + by + deck.length) % deck.length].id; render();
+}
+function stepPage(by) {
+  const deck = pageList();
+  const at = deck.findIndex(x => x.id === S.page);
+  const next = deck[at + by]; if (next) { S.page = next.id; S.tab = 'preview'; render(); }
+}
+
+app.addEventListener('click', e => {
+  const act = e.target.closest('[data-act]');
+  if (S.menu && !e.target.closest('.menu') && !(act && act.dataset.act === 'menu')) { S.menu = null; render(); if (!act) return; }
+  if (act) {
+    e.stopPropagation();
+    const k = act.dataset.act, id = act.dataset.id;
+    const a = ASSETS.find(x => x.id === (id || S.viewer || S.page));
+    switch (k) {
+      case 'copy': toast(`Copied ${a.handle}`); return;
+      case 'menu': {
+        const r = act.getBoundingClientRect(), ar = app.getBoundingClientRect();
+        S.menu = { id, x: Math.min(r.right - ar.left - 190, ar.width - 200), y: r.bottom - ar.top + 4 };
+        if (S.menu.y > ar.height - 240) S.menu.y = r.top - ar.top - 230;
+        render(); return;
+      }
+      case 'open': open(id); return;
+      case 'back': S.page = null; S.full = false; render(); return;
+      case 'close': S.viewer = null; S.info = false; render(); return;
+      case 'info': S.info = !S.info; render(); return;
+      case 'vprev': stepViewer(-1); return;
+      case 'vnext': stepViewer(1); return;
+      case 'prev': stepPage(-1); return;
+      case 'next': stepPage(1); return;
+      case 'full': S.full = !S.full; render(); return;
+      case 'play': case 'vplay': S.playing = !S.playing; render(); return;
+      case 'reload': render(); toast('Reloaded the page'); return;
+      case 'download': toast(`Downloading ${a ? a.title : ''}…`); return;
+      case 'share': toast('Opens the share dialog (as today)'); S.menu = null; return;
+      case 'rename': toast('Rename: the title becomes editable (as today)'); S.menu = null; render(); return;
+      case 'delete': toast('Delete: asks to confirm (as today)'); S.menu = null; render(); return;
+      case 'session': toast('Opens the session in Chat'); S.menu = null; render(); return;
+    }
+  }
+  const v = e.target.closest('[data-view]'); if (v) { S.viewer = v.dataset.view; render(); return; }
+  const o = e.target.closest('[data-open]'); if (o) { open(o.dataset.open); return; }
+  const kb = e.target.closest('[data-kind]'); if (kb) { S.kind = kb.dataset.kind; render(); return; }
+  const lb = e.target.closest('[data-layout]'); if (lb) { S.layout = lb.dataset.layout; render(); return; }
+  const tb = e.target.closest('[data-tab]'); if (tb) { S.tab = tb.dataset.tab; render(); return; }
+  if (S.viewer && e.target.classList.contains('vstage')) { S.viewer = null; S.info = false; render(); }
+});
+app.addEventListener('contextmenu', e => {
+  const o = e.target.closest('[data-open]'); if (!o) return;
+  e.preventDefault();
+  const ar = app.getBoundingClientRect();
+  S.menu = { id: o.dataset.open, x: Math.min(e.clientX - ar.left, ar.width - 200), y: Math.min(e.clientY - ar.top, ar.height - 240) };
+  render();
+});
+app.addEventListener('input', e => { if (e.target.id === 'q') { S.q = e.target.value; S.focusQ = true; render(); } });
+document.addEventListener('keydown', e => {
+  if (e.target.id === 'q') return;
+  if (S.menu && e.key === 'Escape') { S.menu = null; render(); return; }
+  if (S.viewer) {
+    if (e.key === 'Escape') { S.viewer = null; S.info = false; render(); }
+    else if (e.key === 'ArrowLeft') stepViewer(-1);
+    else if (e.key === 'ArrowRight') stepViewer(1);
+    else if (e.key === 'i') { S.info = !S.info; render(); }
+    return;
+  }
+  if (S.page) {
+    if (e.key === 'Escape') { if (S.full) S.full = false; else S.page = null; render(); }
+    else if (e.key === 'j') stepPage(1);
+    else if (e.key === 'k') stepPage(-1);
+    else if (e.key === 'f') { S.full = !S.full; render(); }
+    return;
+  }
+  if (e.key === 'Enter' && e.target.dataset?.open) open(e.target.dataset.open);
+});
+document.getElementById('mock').addEventListener('click', e => {
+  const b = e.target.closest('button'); if (!b) return;
+  if (b.dataset.themeBtn) S.theme = b.dataset.themeBtn;
+  if (b.dataset.device) S.device = b.dataset.device;
+  if (b.dataset.jump) {
+    Object.assign(S, { page: null, viewer: null, info: false, menu: null, full: false, kind: 'All', q: '' });
+    const to = { image: 'a1', video: 'a3', html: 'a4', md: 'a6', pdf: 'p1', docx: 'w1', file: 'a10' }[b.dataset.jump];
+    if (to) { open(to); return; }
+  }
+  render();
+});
+setInterval(() => {
+  if (!S.playing || !S.viewer) return;
+  const a = ASSETS.find(x => x.id === S.viewer);
+  if (!a.video) return;
+  S.t = (S.t || .4) + .12;
+  const m = app.querySelector('.vstage .media'); if (m) m.innerHTML = scene(S.t);
+}, 60);
+// `#theme=dark&device=phone&jump=html&info=1&layout=list` opens a state directly.
+const H = new URLSearchParams(location.hash.slice(1));
+if (H.get('theme')) S.theme = H.get('theme');
+if (H.get('device')) S.device = H.get('device');
+if (H.get('layout')) S.layout = H.get('layout');
+S.info = H.get('info') === '1';
+if (H.get('menu')) S.menu = { id: H.get('menu'), x: 520, y: 260 };
+const jump = { image: 'a1', video: 'a3', html: 'a4', md: 'a6', pdf: 'p1', docx: 'w1', file: 'a10', audio: 'a9' }[H.get('jump')];
+if (jump) open(jump); else render();
+if (H.get('tab')) { S.tab = H.get('tab'); render(); }
+</script>
+</body>
+</html>

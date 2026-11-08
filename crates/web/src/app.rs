@@ -20,8 +20,8 @@ use crate::{
     push::{self, PUSH_DAEMON_URL_KEY},
     theme::ThemePreference,
     views::{
-        Install, InstallAction, InstallBanner, MediaViewer, RestartBanner, RestartDialog,
-        SessionShareDialogView, ShareDialogView, WorkspaceView,
+        AssetDialogs, Install, InstallAction, InstallBanner, MediaViewer, RestartBanner,
+        RestartDialog, SessionShareDialogView, ShareDialogView, WorkspaceView,
     },
     workspace::Workspace,
 };
@@ -600,6 +600,7 @@ pub fn App() -> impl IntoView {
                         <ShareDialogView workspace=connection.workspace />
                         <SessionShareDialogView workspace=connection.workspace />
                         <MediaViewer workspace=connection.workspace />
+                        <AssetDialogs workspace=connection.workspace />
                     </Show>
                     <Show when=move || !connection.is_guest>
                         <InstallBanner />

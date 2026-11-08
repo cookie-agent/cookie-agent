@@ -51,7 +51,8 @@ pub enum AssetKind {
     Image,
     /// An HTML page.
     Page,
-    /// A Markdown document.
+    /// A document: Markdown, PDF, or an office file
+    /// (`docs/site/specs/asset-opening.md` section 6.1).
     Document,
     /// Video or audio.
     Media,
@@ -75,7 +76,7 @@ impl AssetKind {
             Self::Image
         } else if media_type == "text/html" {
             Self::Page
-        } else if media_type == "text/markdown" {
+        } else if is_document(media_type) {
             Self::Document
         } else if media_type.starts_with("video/") || media_type.starts_with("audio/") {
             Self::Media
@@ -94,6 +95,27 @@ impl AssetKind {
             Self::Other => "Other files",
         }
     }
+}
+
+/// Whether a file of `media_type` is a document: Markdown, PDF, a Word,
+/// PowerPoint, or Excel file, new or old, an OpenDocument text,
+/// presentation, or spreadsheet, RTF, or EPUB.
+#[must_use]
+pub fn is_document(media_type: &str) -> bool {
+    matches!(
+        media_type,
+        "text/markdown"
+            | "application/pdf"
+            | "application/msword"
+            | "application/vnd.ms-powerpoint"
+            | "application/vnd.ms-excel"
+            | "application/vnd.oasis.opendocument.text"
+            | "application/vnd.oasis.opendocument.presentation"
+            | "application/vnd.oasis.opendocument.spreadsheet"
+            | "application/rtf"
+            | "text/rtf"
+            | "application/epub+zip"
+    ) || media_type.starts_with("application/vnd.openxmlformats-officedocument.")
 }
 
 /// The assets of `assets` the tab shows: of `kind` when one is chosen,
@@ -322,13 +344,39 @@ mod listing_tests {
         assert_eq!(total_bytes(&assets), 100);
         assert_eq!(AssetKind::of("image/svg+xml"), AssetKind::Image);
         assert_eq!(AssetKind::of("audio/mpeg"), AssetKind::Media);
-        assert_eq!(AssetKind::of("application/pdf"), AssetKind::Other);
+        assert_eq!(AssetKind::of("application/zip"), AssetKind::Other);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pdf_and_office_files_are_documents_and_data_files_are_not() {
+        for document in [
+            "text/markdown",
+            "application/pdf",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "application/msword",
+            "application/vnd.ms-powerpoint",
+            "application/vnd.oasis.opendocument.text",
+            "application/epub+zip",
+        ] {
+            assert_eq!(AssetKind::of(document), AssetKind::Document, "{document}");
+        }
+        for other in [
+            "text/csv",
+            "application/json",
+            "text/plain",
+            "application/octet-stream",
+            "application/zip",
+        ] {
+            assert_eq!(AssetKind::of(other), AssetKind::Other, "{other}");
+        }
+    }
 
     #[test]
     fn a_link_opens_the_session_and_its_asset_on_the_page() {

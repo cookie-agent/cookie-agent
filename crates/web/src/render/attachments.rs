@@ -60,7 +60,9 @@ impl Card {
         } else {
             match AssetKind::of(media_type) {
                 AssetKind::Page => Self::Page,
-                AssetKind::Document => Self::Document,
+                // Only Markdown has first lines to show; a PDF or an
+                // office file is a chip in the chat.
+                AssetKind::Document if media_type == "text/markdown" => Self::Document,
                 _ => Self::File,
             }
         }
