@@ -1196,9 +1196,54 @@ mod tests {
                 "{what}: what it holds"
             );
         };
-        // Into the window: after the latest checkpoint.
+        // A fork through the window copies what a pass reads, pins and all, and
+        // narrows to its own context once written.
         let latest = *checkpoints.last().expect("a checkpoint");
         let tip = log.physical_tip_seq();
+        let fork_session: SessionId = "01a1b46f-0f55-7ba3-86e8-f8d942e26917"
+            .parse()
+            .expect("a session");
+        let fork_path = directory
+            .path()
+            .join(fork_session.to_string())
+            .join("events.jsonl");
+        fs::create_dir_all(fork_path.parent().expect("a directory")).expect("a directory");
+        let blob_dir = blobs::tree_blob_dir(&fork_path);
+        fs::create_dir_all(&blob_dir).expect("a directory");
+        for entry in fs::read_dir(blobs::tree_blob_dir(log.path())).expect("the blobs") {
+            let entry = entry.expect("a blob");
+            fs::copy(entry.path(), blob_dir.join(entry.file_name())).expect("a copy");
+        }
+        let prefix = log
+            .read_fork_prefix(fork_session, tip - 1)
+            .expect("a fork's prefix");
+        let fork = EventLog::fork_buffered(
+            fork_path.clone(),
+            prefix,
+            crate::ownership::WriteAuthority::new().capability(),
+        );
+        let lines = fork.write_whole(&fork_path).expect("a fork written whole");
+        fork.mark_written(lines);
+        assert!(
+            fork.window_for_test().is_some(),
+            "the fork holds its context"
+        );
+        let source = log
+            .history_range(..tip)
+            .and_then(Iterator::collect::<Result<Vec<_>, _>>)
+            .expect("a pass");
+        let copied = fork
+            .history()
+            .and_then(Iterator::collect::<Result<Vec<_>, _>>)
+            .expect("a pass");
+        assert_eq!(copied.len(), source.len(), "the fork's records");
+        // But for the delegation records a fork leaves behind.
+        assert!(copied.iter().zip(&source).all(|(copy, record)| {
+            copy.seq == record.seq
+                && (copy.payload == record.payload
+                    || matches!(copy.payload, EventPayload::RecordOmitted { .. }))
+        }));
+        // Into the window: after the latest checkpoint.
         log.truncate_after_for_test((latest + tip) / 2)
             .expect("a revert");
         assert!(log.window_for_test().is_some());
