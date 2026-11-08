@@ -1320,17 +1320,35 @@ impl EventStorage {
         })
     }
 
+    /// Where the line index must hold every line from: the window's start, or an
+    /// earlier one a view cache starts at. `None` for a log that holds its records.
+    fn lines_held_from(&self) -> Option<u64> {
+        let window = self.window?;
+        Some(
+            self.view_start
+                .as_ref()
+                .and_then(|view_start| view_start.start())
+                .map_or(window, |start| start.seq.min(window)),
+        )
+    }
+
+    /// Whether the line index let go of lines the log needs it to hold: a log that
+    /// read itself whole for a native model after an ACP agent's window, whose
+    /// context starts before that window did.
+    fn lines_fall_short(&self) -> bool {
+        let Some(first) = self.lines.as_ref().and_then(LineIndex::held_from) else {
+            return false;
+        };
+        self.lines_held_from()
+            .is_none_or(|held_from| held_from < first)
+    }
+
     /// Lets go of where the lines before what the log holds start, but for where a
     /// view cache can start, and of the lines the file holds as their records.
     fn let_go_of_lines(&mut self) {
-        let Some(window) = self.window else {
+        let Some(held_from) = self.lines_held_from() else {
             return;
         };
-        let held_from = self
-            .view_start
-            .as_ref()
-            .and_then(|view_start| view_start.start())
-            .map_or(window, |start| start.seq.min(window));
         if let Some(lines) = &mut self.lines {
             lines.let_go_before(held_from);
         }
@@ -1351,12 +1369,7 @@ impl EventStorage {
         let (Some(_), Some(length), true) = (&self.lines, length, let_go) else {
             return Ok(());
         };
-        let held_from = self.window.map(|window| {
-            self.view_start
-                .as_ref()
-                .and_then(|view_start| view_start.start())
-                .map_or(window, |start| start.seq.min(window))
-        });
+        let held_from = self.lines_held_from();
         self.lines = Some(LineIndex::scanned(path, length, held_from)?);
         Ok(())
     }
@@ -2305,6 +2318,15 @@ impl EventLog {
         #[cfg(any(test, feature = "test-support"))]
         let (held, before) = (storage.snapshot(), storage.window);
         narrow(storage);
+        if storage.lines_fall_short() {
+            // Read again from the file, as a revert into what a window let go of
+            // does; without them, a pass reads from the start and no state file is
+            // written.
+            let length = storage.lines.as_ref().map(|lines| lines.len);
+            if storage.read_lines_again(&self.path, length, true).is_err() {
+                storage.lines = None;
+            }
+        }
         #[cfg(any(test, feature = "test-support"))]
         if storage.window != before || storage.all.len() != held.len() {
             self.assert_file_reads_as(storage, &held);
@@ -3036,6 +3058,12 @@ impl EventLog {
             .as_ref()
             .ok_or_else(|| EventLogError::ReadOnly(self.path.clone()))?;
         self.truncate_after(capability, through_seq)
+    }
+
+    /// Test-only: how many records the log holds, pinned ones included.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn storage_len_for_test(&self) -> usize {
+        self.storage().all.len()
     }
 
     /// Test-only: the sequence the log holds its records from, when it does not
