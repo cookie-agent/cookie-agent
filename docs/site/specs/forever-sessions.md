@@ -1651,3 +1651,12 @@ MB of logs (blobs 287.3 MB). By log size: 27 logs under 200 KB had 4.1 MB of fil
 grows with a log: a native checkpoint's records (memory 6.7 KB, `AGENTS.md` 0.7 KB a record at the
 median, and a composed prompt of at most 7 KB when it changed), and the reviewer's log, at 2 to 6 KB
 a review in the golden scenario.
+
+**Fixes after review (2026-11-08).**
+
+- **A pass that ends before what a native window holds.** A range ending before the window,
+  its creation left out, started at the window's position after the pinned records and ended
+  at 0, so `History::held` sliced backwards: an `events.page` with `before` of 1 or less on a
+  native window with pins panicked, as did a range ending before it starts on any log.
+  `History::new` now starts no later than it ends, for both of a pass's constructors
+  (`a_pass_ending_before_what_a_native_window_holds_gives_only_what_precedes_it`).

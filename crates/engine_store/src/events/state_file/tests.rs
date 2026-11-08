@@ -573,6 +573,72 @@ fn a_native_log_holds_its_context_once_a_checkpoint_commits_and_its_file_the_pin
     );
 }
 
+/// The first golden log of `scenario`.
+fn golden(scenario: &str) -> PathBuf {
+    golden_logs()
+        .into_iter()
+        .find(|log| log.starts_with(golden_root().join(scenario)))
+        .expect("a golden scenario")
+}
+
+/// A pass that ends before what a native window holds, its pinned records
+/// included, gives nothing of what it holds, and a page of it is the page of
+/// what precedes `before`: an `events.page` with a small `before` read
+/// `events[pinned..0]` (review, 2026-11-08). A range that ends before it starts
+/// gives nothing either, whatever the log holds.
+#[test]
+fn a_pass_ending_before_what_a_native_window_holds_gives_only_what_precedes_it() {
+    use std::ops::Bound;
+
+    let view = cookie_agent_protocol::EventsView::Display;
+    let budget = 64 * 1024;
+    let (_directory, path) = copy_of(&golden("coding"));
+    let session = session_of(&path);
+    let log = EventLog::open(path.clone(), session).expect("an open");
+    let window = log.window_for_test().expect("a native window");
+    let held = log.storage().snapshot();
+    let pinned = held.iter().filter(|event| event.seq < window).count();
+    assert!(pinned > 0, "the checkpoint pins what precedes its context");
+    let whole = log
+        .history()
+        .and_then(Iterator::collect::<Result<Vec<_>, _>>)
+        .expect("a pass");
+    for before in 0..=held[0].seq + 1 {
+        let expected = whole
+            .iter()
+            .filter(|event| event.seq < before)
+            .cloned()
+            .collect::<Vec<_>>();
+        let read = log
+            .history_range(..before)
+            .and_then(Iterator::collect::<Result<Vec<_>, _>>)
+            .expect("a pass");
+        assert_eq!(read, expected, "the records before {before}");
+        let page = log
+            .history_range(..before)
+            .and_then(|pass| pass.older_page(view, budget, true))
+            .expect("a page");
+        // A page ends after the last record it was given.
+        let end = expected.last().map_or(0, |event| event.seq + 1);
+        assert_eq!(
+            page.window,
+            cookie_agent_protocol::display_view::older_page(&expected, end, view, budget),
+            "the page before {before}"
+        );
+    }
+
+    let (_directory, path) = copy_of(&golden("replay"));
+    let whole = EventLog::open(path.clone(), session_of(&path)).expect("an open");
+    assert_eq!(whole.window_for_test(), None, "a log holding its records");
+    for log in [&log, &whole] {
+        let page = log
+            .history_range((Bound::Included(5), Bound::Included(2)))
+            .and_then(|pass| pass.older_page(view, budget, true))
+            .expect("a page");
+        assert!(page.window.events.is_empty(), "a reversed range");
+    }
+}
+
 /// Damage before the offset is not read as the log opens: it shows when a pass
 /// reads it (section 11, decision 1).
 #[test]

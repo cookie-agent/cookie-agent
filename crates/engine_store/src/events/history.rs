@@ -284,14 +284,16 @@ pub struct OlderPage {
 }
 
 impl History {
-    /// The records of `events`, in order, from position `start` to `end`.
+    /// The records of `events`, in order, from position `start` to `end`: none
+    /// when `start` is not before `end`, as for a range that ends before what a
+    /// window holds after its pinned records.
     pub(super) fn new(events: EventSnapshot, start: usize, end: usize) -> Self {
         Self {
             creation: None,
             file: None,
             read_ahead: VecDeque::new(),
             events,
-            next: start,
+            next: start.min(end),
             end,
         }
     }
