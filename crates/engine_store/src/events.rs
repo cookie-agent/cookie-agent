@@ -2389,7 +2389,11 @@ impl EventLog {
             seqs.contains(&event.seq)
                 && (raw.get(event.seq).is_none() || unread.contains(&event.seq))
         }) {
-            let mut value = serde_json::to_value(event.as_ref()).map_err(json_error)?;
+            // As its line stores it.
+            let mut value = cookie_agent_protocol::write_stored_history(|| {
+                serde_json::to_value(event.as_ref())
+            })
+            .map_err(json_error)?;
             if blobs::may_move(&event.payload)
                 && let Some(payload) = value.get_mut("payload")
             {
