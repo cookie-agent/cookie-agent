@@ -813,10 +813,24 @@ impl LineIndex {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Test-only: the next [`scan_line_starts`] on this thread fails, as a read
+    /// of the file can.
+    static FAIL_NEXT_LINE_SCAN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 /// `(seq, start)` of each line of `path` in `from..until` that carries a
 /// sequence, read as [`scanned_cut_length`] reads one.
 fn scan_line_starts(path: &Path, from: u64, until: u64) -> Result<Vec<(u64, u64)>, EventLogError> {
     use std::io::{BufRead as _, Read as _, Seek as _};
+    #[cfg(test)]
+    if FAIL_NEXT_LINE_SCAN.with(|fail| fail.replace(false)) {
+        return Err(EventLogError::Io {
+            path: path.to_owned(),
+            source: io::Error::other("a scan failed, as a test asked"),
+        });
+    }
     #[derive(Deserialize)]
     struct Sequenced {
         seq: u64,
@@ -3609,11 +3623,13 @@ impl EventLog {
         if through_seq >= self.physical_tip_seq() {
             return Ok(());
         }
-        // A windowed log folds what stays from the file, before it cuts anything.
+        // What stays is folded, from the file for a windowed log, before
+        // anything is cut: once the file is, nothing returns early, or the log
+        // would go on from records the file no longer has.
         let mut kept_taint = self.initial_taint();
         kept_taint.truncate(through_seq);
-        let folded = if self.storage().window.is_some() {
-            Some(
+        let (folded, kept_validation) = if self.storage().window.is_some() {
+            let folded =
                 match self.fold_prefix(through_seq, ValidationState::new(kept_taint.clone())) {
                     // A record names what a record-at-a-time validation lets go
                     // of, which a whole read accepted: validate it whole too.
@@ -3621,12 +3637,19 @@ impl EventLog {
                         self.fold_prefix(through_seq, ValidationState::whole(kept_taint.clone()))?
                     }
                     folded => folded?,
-                },
-            )
+                };
+            (Some(folded), None)
         } else {
-            None
+            let all = self.storage().snapshot();
+            let kept = all.partition_point(|event| event.seq <= through_seq);
+            let validation =
+                rebuild_validation(&self.path, self.session_id, &all[..kept], &kept_taint)?;
+            (None, Some(validation))
         };
         let mut cut_length = None;
+        // A failed sync of the cut, which is no reason to leave the log as it
+        // was in memory: the file is cut, and the next sync covers it.
+        let mut cut_synced = Ok(());
         if self.persisted.load(Ordering::Acquire) {
             // Before the cut, so a crash leaves no file naming what it cut. One
             // that a write in flight puts back no longer matches the log.
@@ -3669,9 +3692,9 @@ impl EventLog {
                 },
                 None => scanned_cut_from(&self.path, 0, through_seq)?,
             };
-            cut_event_file(&self.path, length)?;
+            let synced = cut_event_file_then_sync(&self.path, length)?;
             cut_length = Some(length);
-            self.durability.cut()?;
+            cut_synced = synced.and_then(|()| self.durability.cut());
         }
         let mut events = self
             .events
@@ -3681,8 +3704,8 @@ impl EventLog {
             .lines
             .as_ref()
             .is_some_and(|lines| lines.held_from().is_some());
-        let validation = match folded {
-            Some(folded) => {
+        let validation = match (folded, kept_validation) {
+            (Some(folded), _) => {
                 events.truncate_lines(through_seq, cut_length);
                 events.index = folded.index;
                 events.physical_model_turns = folded.physical_model_turns;
@@ -3690,17 +3713,24 @@ impl EventLog {
                 events.window = folded.window;
                 events.context = folded.context;
                 events.all = Arc::new(folded.held);
-                events.read_lines_again(&self.path, cut_length, let_go_lines)?;
                 folded.validation
             }
-            None => {
+            (None, validation) => {
                 events.truncate(through_seq, cut_length);
-                events.read_lines_again(&self.path, cut_length, let_go_lines)?;
                 #[cfg(any(test, feature = "test-support"))]
                 state::reference::assert_matches_scans(&events.index.state, &events.all);
-                rebuild_validation(&self.path, self.session_id, &events.all, &kept_taint)?
+                validation.expect("a log holding its records validated what stays")
             }
         };
+        // Without the index, as a window's move does when it cannot read it
+        // again: a pass reads from the file's start, and no state file is
+        // written.
+        if events
+            .read_lines_again(&self.path, cut_length, let_go_lines)
+            .is_err()
+        {
+            events.lines = None;
+        }
         *self
             .initial_validation_taint
             .lock()
@@ -3719,6 +3749,12 @@ impl EventLog {
         {
             let (events, state) = self.snapshot_under_append();
             state::reference::assert_matches_scans(&state, &events);
+        }
+        if let Err(error) = cut_synced {
+            eprintln!(
+                "{}: a revert cut the file, and its sync failed: {error}",
+                self.path.display()
+            );
         }
         Ok(())
     }
@@ -7150,6 +7186,24 @@ fn cut_event_file(path: &Path, length: u64) -> Result<(), EventLogError> {
     file.set_len(length)
         .and_then(|()| file.sync_all())
         .map_err(io_error)
+}
+
+/// [`cut_event_file`] in two steps: the cut, whose error leaves the file as it
+/// was, and then its sync, whose error comes after the cut.
+fn cut_event_file_then_sync(
+    path: &Path,
+    length: u64,
+) -> Result<Result<(), EventLogError>, EventLogError> {
+    let io_error = |source| EventLogError::Io {
+        path: path.to_owned(),
+        source,
+    };
+    let file = OpenOptions::new()
+        .write(true)
+        .open(path)
+        .map_err(io_error)?;
+    file.set_len(length).map_err(io_error)?;
+    Ok(file.sync_all().map_err(io_error))
 }
 
 pub fn append_jsonl<T: Serialize>(path: &Path, value: &T) -> Result<(), EventLogError> {

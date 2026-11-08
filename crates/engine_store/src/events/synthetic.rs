@@ -1383,6 +1383,43 @@ mod tests {
         elide(&log, &oldest).expect("after a refused append, an elision a reopening accepts");
     }
 
+    /// A revert whose line index cannot be read again once the file is cut
+    /// completes in memory all the same, without the index, as a window's move
+    /// does: the log goes on from the cut, validated as what stays (review,
+    /// 2026-11-08).
+    #[test]
+    fn a_revert_that_cannot_read_its_line_index_again_completes_without_it() {
+        let directory = tempfile::tempdir().expect("a directory");
+        let log = appended(directory.path(), 24);
+        assert!(log.window_for_test().is_some(), "a windowed log");
+        let through = log.physical_tip_seq() - 2;
+        super::super::FAIL_NEXT_LINE_SCAN.with(|fail| fail.set(true));
+        let reverted = log.truncate_after_for_test(through);
+        super::super::FAIL_NEXT_LINE_SCAN.with(|fail| fail.set(false));
+        reverted.expect("a revert past its cut completes");
+        assert_eq!(log.physical_tip_seq(), through, "the cut");
+        assert!(log.storage().lines.is_none(), "no line index");
+        log.assert_window_reads_as_reopened();
+        let appended = log
+            .append(
+                None,
+                EventOrigin::new(ORIGIN_CLIENT).expect("an origin"),
+                EventPayload::Diagnostic {
+                    source: cookie_agent_protocol::DiagnosticSource::engine("test")
+                        .expect("a source"),
+                    kind: cookie_agent_protocol::DiagnosticKind::new("after").expect("a kind"),
+                    message: "after the revert".into(),
+                    count: None,
+                    detail: None,
+                },
+            )
+            .expect("an append after the revert");
+        assert_eq!(appended.seq, through + 1, "where the log goes on");
+        log.assert_window_reads_as_reopened();
+        let reopened = EventLog::open(log.path().to_owned(), log.session_id).expect("a reopening");
+        assert_eq!(reopened.physical_tip_seq(), through + 1, "the file");
+    }
+
     /// A revert to well before the window, and a fork through there, read what
     /// the window let go of from the file, and answer as the file does.
     #[test]

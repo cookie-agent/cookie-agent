@@ -1714,3 +1714,15 @@ a review in the golden scenario.
   and `metadata`, which share the naming, and an owned open of its reviewer log those of the
   reviewer's `state.json`, once older than five minutes, so a write in flight keeps its own
   (`an_owned_open_sweeps_the_temporaries_a_crash_left`).
+- **A revert past its cut completes in memory.** Once `truncate_after` cut the file, a failure to
+  read the line index again returned early: a windowed log had its records, index, and window
+  replaced but kept its validation and `next_seq`, and the second cut count was skipped, so the
+  next append took a sequence past the cut (in the test, the file ended at 876 and the next
+  append was 879) and validated against the old state. What else could fail there did the same:
+  the cut's sync, the blobs' sync (`Durability::cut`), and a log holding its records validating
+  what stays. Now what stays is validated before the cut, as a windowed log's fold already was;
+  an index that cannot be read again is dropped, as a window's move drops it, so a pass reads
+  from the file's start and no state file is written; and a failed sync after the cut is logged,
+  leaving it to the next sync, which covers the same file
+  (`a_revert_that_cannot_read_its_line_index_again_completes_without_it`, through a test-only
+  failure of the next line scan; the syncs' failures were not provoked).
