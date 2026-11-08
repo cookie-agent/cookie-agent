@@ -1312,6 +1312,14 @@ impl EventStorage {
         self.window.is_some() && !self.context && self.index.window_start.is_none()
     }
 
+    /// Test-only: whether the log's agent is a native model that reads what it
+    /// holds without reading it whole first, so its validation keeps what that
+    /// model's context names, as a whole read's does.
+    #[cfg(any(test, feature = "test-support"))]
+    fn validates_for_a_native_model(&self) -> bool {
+        self.index.window_start.is_none() && !self.reads_whole_for_its_model()
+    }
+
     /// Narrows as `record`, just pushed, moves the window: an ACP agent's
     /// committed turn, a checkpoint of a native model's, or an epoch of an
     /// approval reviewer's own log.
@@ -2468,15 +2476,19 @@ impl EventLog {
     /// The validation state of what the log holds, wherever it holds it: the
     /// caller holds `append`, and an append that failed left it wrong.
     fn rebuilt_validation(&self) -> Result<ValidationState, EventLogError> {
+        let whole = || -> Result<ValidationState, EventLogError> {
+            let mut state = self.validation_pass(ValidationState::whole(self.initial_taint()))?;
+            state.finish_whole();
+            Ok(state)
+        };
         match self.validation_pass(ValidationState::new(self.initial_taint())) {
-            Err(EventLogError::Corrupt { .. }) => {
-                // A record names what a record-at-a-time validation lets go of,
-                // which a whole read accepted: validate it whole too.
-                let mut state =
-                    self.validation_pass(ValidationState::whole(self.initial_taint()))?;
-                state.finish_whole();
-                Ok(state)
-            }
+            // A record names what a record-at-a-time validation lets go of,
+            // which a whole read accepted: validate it whole too.
+            Err(EventLogError::Corrupt { .. }) => whole(),
+            // A native model's validation keeps every call that ended in its
+            // context, which an ACP agent's window let go of: as
+            // [`Self::read_whole`] validates such a log whole, so does this.
+            Ok(state) if state.let_go && self.storage().index.window_start.is_none() => whole(),
             folded => folded,
         }
     }
@@ -2747,14 +2759,26 @@ impl EventLog {
     }
 
     /// Test-only: panics unless what a windowed log answers is what a reopening
-    /// of its file gives (`docs/site/specs/forever-sessions.md` section 7).
+    /// of its file gives (`docs/site/specs/forever-sessions.md` section 7). A
+    /// log holding its records answers from them, but for one whose validation
+    /// let go of what settled, as a log gone native after an ACP agent's window
+    /// does, which must then validate as a reopening's first model context does.
     #[cfg(any(test, feature = "test-support"))]
     pub fn assert_window_reads_as_reopened(&self) {
         let _append = self
             .append
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if self.storage().window.is_none() {
+        let let_go = self
+            .validation
+            .lock()
+            .expect("validation lock poisoned")
+            .let_go;
+        let reopens = !self.read_only
+            && !self.converted
+            && self.render_only.is_none()
+            && self.persisted.load(Ordering::Acquire);
+        if self.storage().window.is_none() && !(let_go && reopens) {
             return;
         }
         let reopened = Self::parsed_read_only(self.path.clone(), self.session_id)
@@ -2811,10 +2835,11 @@ impl EventLog {
             );
         }
         state::reference::assert_matches_scans(&state, &whole);
+        let native = self.storage().validates_for_a_native_model();
         self.validation
             .lock()
             .expect("validation lock poisoned")
-            .assert_agrees_with_whole(&reopened_validation, "a reopening's");
+            .assert_agrees_with_whole(&reopened_validation, "a reopening's", native);
         let reopened_storage = reopened.storage();
         let storage = self.storage();
         assert_eq!(
@@ -3701,6 +3726,7 @@ impl EventLog {
         let mut storage = EventStorage::new(Vec::new());
         // What the window lets go of, it lets go of from the file.
         storage.lines = Some(LineIndex::default());
+        let taint = validation.taint.clone();
         for record in self.pass(..=through_seq)? {
             let record = record?;
             validate_record_incremental(
@@ -3715,9 +3741,16 @@ impl EventLog {
         }
         validation.finish_whole();
         // Native since an ACP agent's window, which held too little to choose a
-        // context from: whole, and then what its model's context needs.
+        // context from: whole, and then what its model's context needs. Its
+        // validation too, as [`Self::read_whole`] does: what the window let go
+        // of, the model's context may still name, and with the window gone
+        // nothing reads it whole again.
         if storage.reads_whole_for_its_model() {
-            storage.all = Arc::new(self.pass(..=through_seq)?.collect::<Result<Vec<_>, _>>()?);
+            let whole = self.pass(..=through_seq)?.collect::<Result<Vec<_>, _>>()?;
+            if validation.let_go {
+                validation = rebuild_validation(&self.path, self.session_id, &whole, &taint)?;
+            }
+            storage.all = Arc::new(whole);
             storage.window = None;
             storage.view_start = None;
             storage.narrow_to_context();
@@ -4224,9 +4257,11 @@ impl ValidationState {
     /// which let go only at its end, and only if the log was windowed then
     /// (`docs/site/specs/forever-sessions.md` section 12). What this holds, `whole`
     /// holds the same; and once each lets go of all that settled, they are equal,
-    /// which says this let go of nothing it should have kept.
+    /// which says this let go of nothing it should have kept. For `native`, a log
+    /// whose native model reads it without reading it whole first, they are equal
+    /// once each lets go only of what that model's context no longer names.
     #[cfg(any(test, feature = "test-support"))]
-    fn assert_agrees_with_whole(&self, whole: &Self, what: &str) {
+    fn assert_agrees_with_whole(&self, whole: &Self, what: &str, native: bool) {
         fn within<K: Eq + std::hash::Hash, V: PartialEq>(
             held: &HashMap<K, V>,
             whole: &HashMap<K, V>,
@@ -4290,6 +4325,20 @@ impl ValidationState {
         assert!(
             settled(self) == settled(whole),
             "the validation state differs from {what} once each lets go of what settled"
+        );
+        // The calls in view of a native model's context, which its compaction may
+        // still elide, stay as a whole read keeps them.
+        let in_view = |state: &Self| {
+            let mut state = state.clone();
+            state.keep_all = false;
+            if state.letting_go.lets_go() {
+                state.let_go_settled();
+            }
+            state
+        };
+        assert!(
+            !native || in_view(self) == in_view(whole),
+            "the validation state differs from {what} in what a native model's context names"
         );
     }
 

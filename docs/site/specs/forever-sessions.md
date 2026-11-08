@@ -1660,3 +1660,15 @@ a review in the golden scenario.
   native window with pins panicked, as did a range ending before it starts on any log.
   `History::new` now starts no later than it ends, for both of a pass's constructors
   (`a_pass_ending_before_what_a_native_window_holds_gives_only_what_precedes_it`).
+- **A log gone native validates as a reopening's first model context does.** `read_whole`
+  validates a log whole again when its agent turned native after an ACP agent's window let go
+  of what settled, but a revert's fold (`fold_prefix`), which reads such a log whole for its
+  model and drops the window, kept its record-at-a-time validation, and so did the rebuild after
+  a refused append or a failed write (`rebuilt_validation`) of a log that had read itself whole.
+  With the window gone nothing read it whole again, so a compaction's elision of a call the ACP
+  agent ended was refused ("tool elision appeared before its start"). Both now validate whole
+  when the log is native and the record-at-a-time pass let go of anything, as `read_whole` does
+  (`a_log_gone_native_validates_as_its_file_after_a_revert_and_a_refused_append`).
+  `assert_window_reads_as_reopened` no longer skips a log holding its records whose validation
+  let go, and for a native model's log it also compares validation under the native rule, which
+  keeps the calls in view; with the fixes turned off it fails right after the revert.

@@ -1286,6 +1286,103 @@ mod tests {
         assert_eq!(reopened.record_count(), log.record_count(), "the records");
     }
 
+    /// An ACP agent's log of `runs` runs, whose validation let go of what
+    /// settled, then a native model's run started: that run, its start, and the
+    /// oldest call the ACP agent ended, with its run.
+    #[allow(clippy::type_complexity)]
+    fn switched_to_native(
+        directory: &Path,
+        runs: u64,
+    ) -> (Arc<EventLog>, RunId, u64, (RunId, String)) {
+        let log = appended(directory, runs);
+        assert!(
+            log.validation
+                .lock()
+                .expect("validation lock poisoned")
+                .let_go,
+            "it let go of what settled"
+        );
+        let oldest = log
+            .history()
+            .expect("a pass")
+            .find_map(|event| {
+                let event = event.expect("a record");
+                match &event.payload {
+                    EventPayload::ToolCallTerminated { termination } => Some((
+                        event.run_id.expect("a call's run"),
+                        termination.tool_call_id.to_string(),
+                    )),
+                    _ => None,
+                }
+            })
+            .expect("a call that ended");
+        let mut started = Templates::load(true).of("run_started");
+        started["client_run_id"] = json!("native-after-acp");
+        started["input_through_seq"] = json!(log.physical_tip_seq());
+        let run = RunId::new_v7();
+        AppendSink(&log)
+            .record(Some(run), ORIGIN_CLIENT, payload_of(started))
+            .expect("a native model's run starts");
+        assert!(log.window_for_test().is_some(), "the ACP agent's window");
+        let started = log.physical_tip_seq();
+        (log, run, started, oldest)
+    }
+
+    /// A native compaction's elision of `call`'s output, which its model's
+    /// context, the whole log until a checkpoint, still holds.
+    fn elide(log: &EventLog, (run, call): &(RunId, String)) -> Result<(), EventLogError> {
+        AppendSink(log).record(
+            Some(*run),
+            ORIGIN_LOOP,
+            payload_of(json!({
+                "type": "tool_output_elided",
+                "tool_call_id": call,
+                "original_bytes": 4_096,
+                "retained": {"uri": "artifact://synthetic/elided"},
+            })),
+        )
+    }
+
+    /// A log that went from an ACP agent to a native model validates as a
+    /// reopening of its file does, which reads it whole for its model, after a
+    /// revert folded what stays and after an append it refused: a compaction may
+    /// elide the output of a call the ACP agent ended long ago (review,
+    /// 2026-11-08).
+    #[test]
+    fn a_log_gone_native_validates_as_its_file_after_a_revert_and_a_refused_append() {
+        // A revert into the native run, before its model read the log.
+        let directory = tempfile::tempdir().expect("a directory");
+        let (log, run, started, oldest) = switched_to_native(directory.path(), 8);
+        let input = json!({
+            "type": "user_input_submitted",
+            "content": [{"type": "text", "text": "after the native run's start"}],
+        });
+        AppendSink(&log)
+            .record(Some(run), ORIGIN_CLIENT, payload_of(input))
+            .expect("an input");
+        log.truncate_after_for_test(started).expect("a revert");
+        log.assert_window_reads_as_reopened();
+        log.model_context_events().expect("its model's context");
+        elide(&log, &oldest).expect("after a revert, an elision a reopening accepts");
+        log.assert_window_reads_as_reopened();
+
+        // An append refused once its model read the log whole.
+        let directory = tempfile::tempdir().expect("a directory");
+        let (log, _, _, oldest) = switched_to_native(directory.path(), 8);
+        log.model_context_events().expect("its model's context");
+        assert_eq!(log.window_for_test(), None, "read whole for its model");
+        let mut orphan = Templates::load(true).of("tool_call_terminated");
+        orphan["tool_call_id"] = json!(uuid::Uuid::now_v7().to_string());
+        assert!(
+            AppendSink(&log)
+                .record(Some(oldest.0), ORIGIN_RESULT, payload_of(orphan))
+                .is_err(),
+            "a call that never started"
+        );
+        log.assert_window_reads_as_reopened();
+        elide(&log, &oldest).expect("after a refused append, an elision a reopening accepts");
+    }
+
     /// A revert to well before the window, and a fork through there, read what
     /// the window let go of from the file, and answer as the file does.
     #[test]

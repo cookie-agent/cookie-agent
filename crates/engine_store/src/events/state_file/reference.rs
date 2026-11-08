@@ -60,12 +60,14 @@ impl EventLog {
             self.torn_tail_ignored, parsed.torn_tail_ignored,
             "a torn final record"
         );
+        let native = self.storage().validates_for_a_native_model();
         self.validation
             .lock()
             .expect("validation lock poisoned")
             .assert_agrees_with_whole(
                 &parsed.validation.lock().expect("validation lock poisoned"),
                 "a parse of the whole file",
+                native,
             );
         assert!(
             self.initial_taint() == parsed.initial_taint(),
