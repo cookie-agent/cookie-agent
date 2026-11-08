@@ -997,7 +997,31 @@ impl Engine {
                 .registry
                 .get(&policy.agent.agent)
                 .and_then(|agent| agent.document.frontmatter.agent_md);
-            let current = model_history::latest_agent_md_events(&crate::events::event_refs(events))
+            // A machine attached in place since the context was last composed
+            // afresh has only that record, which the checkpoint folds into the
+            // turns before the conversation: it is current too, should its
+            // runtime be away now.
+            let refs = crate::events::event_refs(events);
+            let mut current_events = model_history::latest_agent_md_events(&refs);
+            for added in model_history::unfolded_in_place_agent_md(&refs)
+                .into_iter()
+                .rev()
+            {
+                let Event::AgentMdLoaded { attachment, .. } = &added.payload else {
+                    continue;
+                };
+                let known = current_events.iter().any(|event| {
+                    matches!(&event.payload, Event::AgentMdLoaded {
+                        attachment: known,
+                        project: None,
+                        ..
+                    } if known == attachment)
+                });
+                if !known {
+                    current_events.push(added);
+                }
+            }
+            let current = current_events
                 .into_iter()
                 .filter_map(|event| match &event.payload {
                     Event::AgentMdLoaded {

@@ -1181,6 +1181,8 @@ fn assemble_history_with_replay(
     let boundary = context_boundary(context_events).max(floors.pin);
     let fresh_floor = latest_fresh_checkpoint(context_events).max(floors.fresh);
     let refreshed = latest_refresh(context_events);
+    // In-place additions before this are in the turns before the conversation.
+    let folded = refreshed.max(fresh_floor);
     for event in context_events {
         match &event.payload {
             EventPayload::NativeReplayCut { through_seq, .. } => {
@@ -1313,15 +1315,16 @@ fn assemble_history_with_replay(
             {
                 logical.push(LogicalTurn::User(user_text(rendered_body)));
             }
-            // A machine attached since the latest refresh: its AGENTS.md and
-            // its memories where they were recorded (section 6.3). A refresh
-            // folds earlier ones into the turns before the conversation.
+            // A machine attached since the latest refresh or checkpoint that
+            // composed the context afresh: its AGENTS.md and its memories
+            // where they were recorded (section 6.3). Either reads them again
+            // and folds earlier ones into the turns before the conversation.
             EventPayload::AgentMdLoaded {
                 entries,
                 attachment,
                 project,
                 in_place: true,
-            } if refreshed.is_none_or(|refreshed| envelope.seq > refreshed) => {
+            } if folded.is_none_or(|folded| envelope.seq > folded) => {
                 logical.push(LogicalTurn::User(user_text(&agent_md_turn(&[(
                     attachment.as_str(),
                     project.is_some(),
@@ -1331,7 +1334,7 @@ fn assemble_history_with_replay(
             EventPayload::MemoryLoaded {
                 snapshot,
                 in_place: true,
-            } if refreshed.is_none_or(|refreshed| envelope.seq > refreshed) => {
+            } if folded.is_none_or(|folded| envelope.seq > folded) => {
                 if let Some(turn) = cookie_agent_protocol::model_text::machine_memory_turn(snapshot)
                 {
                     logical.push(LogicalTurn::User(user_text(&turn)));
@@ -1763,6 +1766,24 @@ pub(crate) fn latest_agent_md_events<'a>(events: &[&'a StoredEvent]) -> Vec<&'a 
     crate::events::model_context::current_agent_md_positions(events)
         .into_iter()
         .map(|position| events[position])
+        .collect()
+}
+
+/// The `agent_md_loaded` records of machines attached in place that render
+/// where they were recorded: those after the latest refresh or checkpoint that
+/// composed the context afresh (frozen context spec, section 6.3).
+pub(crate) fn unfolded_in_place_agent_md<'a>(events: &[&'a StoredEvent]) -> Vec<&'a StoredEvent> {
+    let folded = latest_refresh(events).max(latest_fresh_checkpoint(events));
+    events
+        .iter()
+        .copied()
+        .filter(|event| folded.is_none_or(|folded| event.seq > folded))
+        .filter(|event| {
+            matches!(
+                event.payload,
+                EventPayload::AgentMdLoaded { in_place: true, .. }
+            )
+        })
         .collect()
 }
 

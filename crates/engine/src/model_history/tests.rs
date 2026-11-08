@@ -3465,3 +3465,112 @@ fn in_place_context_sits_where_it_was_loaded_until_a_refresh() {
 }
 
 mod forever;
+
+/// A machine attached mid-session renders its `AGENTS.md` and memories where
+/// they were recorded, until a checkpoint that composes the context afresh
+/// reads both again from every attachment: then they are in the turns before
+/// the conversation only, as after a refresh (frozen context spec, section
+/// 6.1), though the checkpoint keeps the records in its tail.
+#[test]
+fn in_place_additions_fold_into_a_fresh_checkpoints_top_turns() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let store =
+        crate::ArtifactRouter::open_flat(directory.path().join("artifacts")).expect("store");
+    let binding = binding();
+    let run = RunId::new_v7();
+    let machine_agent_md = |seq: u64, in_place: bool| {
+        event(
+            seq,
+            run,
+            EventPayload::AgentMdLoaded {
+                project: None,
+                attachment: cookie_agent_protocol::AttachmentName::new("lab").unwrap(),
+                entries: vec![AgentMdEntry {
+                    source: SafeDisplayText::new("/lab/AGENTS.md").unwrap(),
+                    content: "lab machine rules".into(),
+                    byte_length: 17,
+                }],
+                in_place,
+            },
+        )
+    };
+    let machine_memory = |seq: u64, in_place: bool| {
+        event(
+            seq,
+            run,
+            EventPayload::MemoryLoaded {
+                snapshot: cookie_agent_protocol::MemorySnapshot {
+                    machines: vec![cookie_agent_protocol::MemorySnapshotMachine {
+                        machine: cookie_agent_protocol::MachineName::new("lab").unwrap(),
+                        attachments: vec![
+                            cookie_agent_protocol::AttachmentName::new("lab").unwrap(),
+                        ],
+                        memories: vec![cookie_agent_protocol::MemorySnapshotIndexEntry {
+                            url: "machine://lab/gpu-quirks".into(),
+                            description: "the lab gpu quirk".into(),
+                            keywords: Vec::new(),
+                            status: cookie_agent_protocol::MemoryDocumentStatus::default(),
+                        }],
+                        omitted: 0,
+                    }],
+                    // A whole snapshot, which a checkpoint takes, renders
+                    // with the run's agent; one in place, for its machine only.
+                    agent: (!in_place).then(|| cookie_agent_protocol::MemorySnapshotAgent {
+                        agent: cookie_agent_protocol::AgentId::new("build").unwrap(),
+                        memory: None,
+                        omitted: false,
+                        listed: None,
+                    }),
+                    ..cookie_agent_protocol::MemorySnapshot::default()
+                },
+                in_place,
+            },
+        )
+    };
+    let mut events = vec![agent_md_event(1, run, "workspace rules")];
+    events.extend(user_events(2, run, "summarized user"));
+    events.extend(user_events(4, run, "tail user"));
+    events.push(machine_agent_md(6, true));
+    events.push(machine_memory(7, true));
+    events.extend(user_events(8, run, "after the attach"));
+    let count = |events: &[StoredEvent], text: &str| {
+        let history = assemble_model_context(events, &store, &binding, "system")
+            .unwrap()
+            .history;
+        turn_texts(&history).join("\n").matches(text).count()
+    };
+    assert_eq!(count(&events, "lab machine rules"), 1, "in place");
+    assert_eq!(count(&events, "the lab gpu quirk"), 1, "in place");
+
+    // The checkpoint keeps from the tail user on, and reads both again.
+    events.push(agent_md_event(10, run, "workspace rules"));
+    events.push(machine_agent_md(11, false));
+    events.push(machine_memory(12, false));
+    events.push(event(
+        13,
+        run,
+        EventPayload::ContextCheckpointCommitted {
+            commit: ContextCheckpointCommit {
+                context_fresh: true,
+                ..summary_commit("summary", 1, 9, Some(4), None)
+            },
+        },
+    ));
+    let history = assemble_model_context(&events, &store, &binding, "system")
+        .unwrap()
+        .history;
+    let turns = turn_texts(&history);
+    let encoded = turns.join("\n");
+    assert_eq!(
+        encoded.matches("lab machine rules").count(),
+        1,
+        "{turns:#?}"
+    );
+    assert_eq!(
+        encoded.matches("the lab gpu quirk").count(),
+        1,
+        "{turns:#?}"
+    );
+    assert!(turns[1].contains("lab machine rules"), "{turns:#?}");
+    assert!(encoded.contains("tail user") && encoded.contains("after the attach"));
+}

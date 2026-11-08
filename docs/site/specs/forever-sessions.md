@@ -1781,3 +1781,14 @@ a review in the golden scenario.
   `skill` tool, which is exclusive and so runs after the parallel calls, one at a time, and an ACP
   session's approvals are never reviewed. The gate admits concurrent reviews, so the turn keeps its
   order whatever calls it.
+- **What a machine attached in place added folds into a fresh checkpoint.** Its `agent_md_loaded` and
+  `memory_loaded` with `in_place` rendered where they were recorded whenever no `context_refreshed`
+  followed them, so after a checkpoint with `context_fresh`, which reads `AGENTS.md` from every
+  attachment and memory for every machine of the session, the attached machine's showed twice: in the
+  turns before the conversation and again in the kept tail. They now render in place only after the
+  latest refresh and the latest such checkpoint, as the frozen context spec's section 6.1 says
+  (`in_place_additions_fold_into_a_fresh_checkpoints_top_turns`); section 5.3's check of the whole log
+  against `model_context_events()` holds, as both go through the same rule. As a checkpoint now folds
+  them, its fallback for an attachment whose runtime is away keeps such a machine's in-place
+  `AGENTS.md` as its current record, which no test covers on its own; a memory snapshot that cannot be
+  read is written again as before, without the in-place machine memories.
