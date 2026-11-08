@@ -160,6 +160,27 @@ pub(super) fn write_state(log: &EventLog, state: &StateFile) -> Result<(), Sessi
     replace_cache_file(&path, &bytes, CacheSync::Atomic)
 }
 
+/// Writes `state`, which `log` gave when its cut count was `cuts`, and notes it
+/// written, unless a revert cut the log since. A revert removes the file and
+/// notes nothing written; a write in flight would put back the file from before
+/// the cut, which no longer matches, and note the log written as far as it then
+/// was, holding later writes off until the log grew past that again. A revert
+/// between the check and the rename leaves such a file, still noting nothing.
+pub(super) fn write_state_unless_cut(
+    log: &EventLog,
+    state: &StateFile,
+    cuts: u64,
+) -> Result<(), SessionError> {
+    if log.cut_count() != cuts {
+        return Ok(());
+    }
+    write_state(log, state)?;
+    if log.cut_count() == cuts {
+        log.note_state_written(state);
+    }
+    Ok(())
+}
+
 /// The answer to `events.subscribe` with `from: "tail"` for `window`.
 pub(super) fn newest_first(window: display_view::Window) -> EventsSubscribeResult {
     EventsSubscribeResult {
@@ -198,18 +219,34 @@ impl SessionStore {
         let log = Arc::clone(&resident.log);
         drop(resident);
         crate::blocking::off_worker(|| {
-            let state = {
+            // The cut count before the state: a revert in between leaves the
+            // state of what stays, and the write out for nothing.
+            let (state, cuts) = {
                 let _slot = self.lock_session(id);
-                self.get_resident(id)
+                let cuts = log.cut_count();
+                let state = self
+                    .get_resident(id)
                     .filter(|session| Arc::ptr_eq(&session.log, &log))
-                    .and_then(|session| log.state_file(&session))
+                    .and_then(|session| log.state_file(&session));
+                (state, cuts)
             };
             let Some(state) = state else {
                 return;
             };
-            match write_state(&log, &state) {
-                Ok(()) => log.note_state_written(&state),
-                Err(error) => eprintln!("session {id}: state.json was not written: {error}"),
+            #[cfg(any(test, feature = "test-support"))]
+            {
+                let hook = self
+                    .state_write_hook
+                    .0
+                    .lock()
+                    .expect("hook lock poisoned")
+                    .take();
+                if let Some(hook) = hook {
+                    hook(id);
+                }
+            }
+            if let Err(error) = write_state_unless_cut(&log, &state, cuts) {
+                eprintln!("session {id}: state.json was not written: {error}");
             }
         });
     }

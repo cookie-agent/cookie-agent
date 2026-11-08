@@ -179,3 +179,40 @@ fn a_log_shorter_than_the_least_has_no_state_file() {
         "a log as long as the least has one"
     );
 }
+
+/// A revert between taking a state file from the log and writing it wins: the
+/// write is left out, so the file from before the cut does not come back and the
+/// log is not noted as written as far as it then was, which held writes off until
+/// the log grew past that again (review, 2026-11-08).
+#[test]
+fn a_state_write_racing_a_revert_leaves_neither_its_file_nor_its_note() {
+    let temporary = private_tempdir();
+    let (root, _) = golden_acp_tree(&temporary);
+    let store = store_in(&temporary);
+    store.open_for_write(root).expect("an adoption");
+    let log = Arc::clone(&store.get_resident(root).expect("resident").log);
+    let through = log.physical_tip_seq() / 2;
+    let reverting = Arc::downgrade(&store);
+    store.install_state_write_hook_for_test(move |id| {
+        reverting
+            .upgrade()
+            .expect("the store")
+            .truncate(id, through)
+            .expect("a revert");
+    });
+    store.refresh_state(root, |_| true);
+    assert_eq!(log.physical_tip_seq(), through, "the revert");
+    let dir = store.resolve_dir(root).expect("a session");
+    assert!(
+        !dir.join(STATE_FILE).exists(),
+        "no file from before the cut"
+    );
+    let length = fs::metadata(dir.join(crate::session::EVENTS_FILE))
+        .expect("the log")
+        .len();
+    assert_eq!(
+        log.state_behind(),
+        Some(length),
+        "nothing of the log noted as written"
+    );
+}

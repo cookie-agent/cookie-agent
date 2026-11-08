@@ -113,22 +113,22 @@ impl ReviewerLog {
         if !self.log.state_behind().is_some_and(|behind| behind > 0) {
             return;
         }
-        let state = {
+        let (state, cuts) = {
             let projection = self
                 .projection
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            self.log.state_file(&projection)
+            let cuts = self.log.cut_count();
+            (self.log.state_file(&projection), cuts)
         };
         let Some(state) = state else {
             return;
         };
-        match view::write_state(&self.log, &state) {
-            Ok(()) => self.log.note_state_written(&state),
-            Err(error) => eprintln!(
+        if let Err(error) = view::write_state_unless_cut(&self.log, &state, cuts) {
+            eprintln!(
                 "{}: the reviewer's state.json was not written: {error}",
                 self.log.path().display()
-            ),
+            );
         }
     }
 

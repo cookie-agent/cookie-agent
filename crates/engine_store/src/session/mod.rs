@@ -543,6 +543,10 @@ pub struct SessionStore {
     /// it takes any store lock to install it.
     #[cfg(any(test, feature = "test-support"))]
     reopen_parsed_hook: TreeLoadReadHook,
+    /// Test-only: fires once a session's `state.json` was taken from its log,
+    /// before it is written, with no lock held.
+    #[cfg(any(test, feature = "test-support"))]
+    state_write_hook: TreeLoadReadHook,
 }
 
 /// How many parsed read-only logs [`SessionStore::snapshot_events`] keeps.
@@ -923,6 +927,8 @@ impl SessionStore {
             tree_load_read_hook: TreeLoadReadHook::default(),
             #[cfg(any(test, feature = "test-support"))]
             reopen_parsed_hook: TreeLoadReadHook::default(),
+            #[cfg(any(test, feature = "test-support"))]
+            state_write_hook: TreeLoadReadHook::default(),
         });
         // A deletion that stopped after moving its tree aside may not have
         // journaled itself.
@@ -1600,6 +1606,16 @@ impl SessionStore {
             .0
             .lock()
             .expect("hook lock poisoned") = Some(Arc::new(hook));
+    }
+
+    /// Test-only seam: fires once, the next time a session's `state.json` was
+    /// taken from its log and is about to be written, with no lock held.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn install_state_write_hook_for_test(
+        &self,
+        hook: impl Fn(SessionId) + Send + Sync + 'static,
+    ) {
+        *self.state_write_hook.0.lock().expect("hook lock poisoned") = Some(Arc::new(hook));
     }
 
     /// Test-only: whether nobody holds the store's mutation lock in either

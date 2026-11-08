@@ -1691,3 +1691,12 @@ a review in the golden scenario.
   (`a_state_file_whose_line_index_misses_its_window_folds_the_log_from_its_start`). A stricter
   check of validity changes nothing a fold gives, so the digest held and `STATE_VERSION` did not
   rise for it.
+- **A state write racing a revert is left out.** `refresh_state` took the state under the session's
+  slot, let go of it, and wrote and noted it after; a revert in between removed the file and noted
+  nothing written, then the rename in flight put back the file from before the cut, which no
+  longer matches, and noted the log written as far as it then was, holding writes off until the
+  log grew past that again. The cut count is now taken before the state, and the write is left
+  out, or only its note when a revert comes between the check and the rename
+  (`write_state_unless_cut`, which the reviewer's log uses too;
+  `a_state_write_racing_a_revert_leaves_neither_its_file_nor_its_note`, through a test-only seam
+  between taking the state and writing it).
