@@ -159,9 +159,9 @@ impl FilePass {
             source,
         };
         if self.reader.is_none() {
-            let mut file = File::open(&path).map_err(&io_error)?;
+            let mut file = File::open(&path).map_err(io_error)?;
             file.seek(SeekFrom::Start(self.position))
-                .map_err(&io_error)?;
+                .map_err(io_error)?;
             let length = self.range.end.map_or(u64::MAX, |end| end - self.position);
             self.reader = Some(BufReader::with_capacity(
                 READ_AHEAD_BYTES,
@@ -193,7 +193,7 @@ impl FilePass {
             if self.range.cuts.load(Ordering::Acquire) != self.range.seen_cuts {
                 return Err(EventLogError::HistoryCut { path });
             }
-            let length = read.map_err(&io_error)?;
+            let length = read.map_err(io_error)?;
             // The range's end lies within the file's complete lines, and a log
             // without its layout ends the range at a record, so a file that
             // ends first was cut.
