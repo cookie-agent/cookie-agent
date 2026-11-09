@@ -269,6 +269,8 @@ class Browser:
 
     def shot(self, name):
         if SCREENSHOTS:
+            # A name quotes what it waited on, which can hold a path.
+            name = re.sub(r"[^\w.,'@=+-]+", "-", name)
             with open(os.path.join(SCREENSHOTS, name + ".png"), "wb") as file:
                 file.write(base64.b64decode(call("GET", self.path("/screenshot"))))
 
@@ -1235,6 +1237,12 @@ def watched_scroll(browser, what, move, drew=1, wait=2.0, writes=0, strays=1):
     `move`'s own `writes` wrote the position."""
     browser.script(WATCH_ROW)
     move()
+    # A loaded runner can take longer to draw the first page, which a page
+    # that draws nothing reads on to; the window to count pages in starts
+    # when it does.
+    deadline = time.time() + 15
+    while time.time() < deadline and not browser.script("return window.watched.drew"):
+        time.sleep(0.1)
     time.sleep(wait)
     seen = browser.script("const w = window.watched; w.stop = true; return w")
     assert 1 <= seen["drew"] <= drew, "%s drew %d pages: %s" % (what, seen["drew"], seen)
@@ -3284,29 +3292,31 @@ def memory_rows(browser, title):
     """How many tool rows' headers read `title`."""
     return browser.script(
         "return [...document.querySelectorAll('#transcript [data-tool]')]"
-        "  .filter(e => e.querySelector('[data-header-row]')?.innerText.replace(/\\s+/g, ' ').trim().startsWith(arguments[0])).length",
+        "  .filter(e => [...(e.querySelector('[data-header-row]')?.querySelectorAll('[data-header], [data-memory-link]') ?? [])].map(x => x.innerText).join(' ').replace(/\\s+/g, ' ').trim().startsWith(arguments[0])).length",
         title,
     )
 
 
+# A memory row's header is matched by its title and link alone: open, the
+# machine badge and status float ahead of them.
 def open_memory_diff(browser, title):
     """Opens the memory tool row whose header reads `title` and returns its
     diff's summary line and its changed lines."""
     browser.script(
         "const row = [...document.querySelectorAll('#transcript [data-tool]')]"
-        "  .find(e => e.querySelector('[data-header-row]')?.innerText.replace(/\\s+/g, ' ').trim().startsWith(arguments[0]));"
+        "  .find(e => [...(e.querySelector('[data-header-row]')?.querySelectorAll('[data-header], [data-memory-link]') ?? [])].map(x => x.innerText).join(' ').replace(/\\s+/g, ' ').trim().startsWith(arguments[0]));"
         "row.querySelector('[data-action=\"toggle-tool\"]').click()",
         title,
     )
     browser.wait("the diff of %r" % title, lambda: browser.script(
         "const row = [...document.querySelectorAll('#transcript [data-tool]')]"
-        "  .find(e => e.querySelector('[data-header-row]')?.innerText.replace(/\\s+/g, ' ').trim().startsWith(arguments[0]));"
+        "  .find(e => [...(e.querySelector('[data-header-row]')?.querySelectorAll('[data-header], [data-memory-link]') ?? [])].map(x => x.innerText).join(' ').replace(/\\s+/g, ' ').trim().startsWith(arguments[0]));"
         "return !!row.querySelector('[data-tool-body] [data-kind=\"diff\"] table.diff')",
         title,
     ))
     return browser.script(
         "const row = [...document.querySelectorAll('#transcript [data-tool]')]"
-        "  .find(e => e.querySelector('[data-header-row]')?.innerText.replace(/\\s+/g, ' ').trim().startsWith(arguments[0]));"
+        "  .find(e => [...(e.querySelector('[data-header-row]')?.querySelectorAll('[data-header], [data-memory-link]') ?? [])].map(x => x.innerText).join(' ').replace(/\\s+/g, ' ').trim().startsWith(arguments[0]));"
         "const diff = row.querySelector('[data-tool-body] [data-kind=\"diff\"]');"
         "return [diff.firstElementChild.innerText.trim(),"
         "  [...diff.querySelectorAll('tr')].map(r => r.lastElementChild.innerText).filter(t => /^[+-]/.test(t)),"
@@ -3320,7 +3330,7 @@ def click_memory_link(browser, title):
     reads `title`."""
     browser.script(
         "const row = [...document.querySelectorAll('#transcript [data-tool]')]"
-        "  .find(e => e.querySelector('[data-header-row]')?.innerText.replace(/\\s+/g, ' ').trim().startsWith(arguments[0]));"
+        "  .find(e => [...(e.querySelector('[data-header-row]')?.querySelectorAll('[data-header], [data-memory-link]') ?? [])].map(x => x.innerText).join(' ').replace(/\\s+/g, ' ').trim().startsWith(arguments[0]));"
         "row.querySelector('[data-memory-link]').click()",
         title,
     )
