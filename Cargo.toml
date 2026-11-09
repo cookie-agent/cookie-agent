@@ -48,7 +48,7 @@ getrandom = "0.2.17"
 indexmap = { version = "2.12.1", features = ["serde"] }
 jiff = { version = "0.2.35", features = ["serde"] }
 libc = "0.2.189"
-process-wrap = { version = "9.1.0", features = ["tokio1"] }
+process-wrap = { version = "10.0.1", features = ["tokio1"] }
 pulldown-cmark = "=0.13.6"
 ratatui = "0.30.2"
 rustix = { version = "1.1.2", features = ["fs", "process"] }
@@ -92,7 +92,7 @@ oven-sdk-bedrock = { version = "=0.9.0", git = "https://github.com/cookie-agent/
 oven-sdk-azure = { version = "=0.9.0", git = "https://github.com/cookie-agent/oven-sdk.git", rev = "d209b8b9e38c2a21af848b30f6a886deae9bef44" }
 oven-sdk-cohere = { version = "=0.8.0", git = "https://github.com/cookie-agent/oven-sdk.git", rev = "d209b8b9e38c2a21af848b30f6a886deae9bef44" }
 reqwest = { version = "=0.13.4", default-features = false, features = ["json", "stream", "rustls"] }
-rmcp = { version = "=3.1.2", default-features = false, features = ["auth", "client", "transport-child-process", "transport-streamable-http-client-reqwest", "client-side-sse"] }
+rmcp = { version = "=3.9.0", default-features = false, features = ["auth", "client", "transport-child-process", "transport-streamable-http-client-reqwest", "client-side-sse"] }
 
 [profile.dev]
 debug = "line-tables-only"

@@ -609,7 +609,9 @@ impl JobChild {
         let wrapped_child = self.child.as_mut().expect("prepared child exists");
         // SAFETY: only the raw parent's wait state is observed. The wrapper
         // remains owned by JobChild and retains all job/kill state and pipes.
-        unsafe { wrapped_child.inner_child_mut() }.wait().await
+        let child = unsafe { wrapped_child.try_inner_child_mut() }
+            .ok_or_else(|| std::io::Error::other("the shell's wrapper holds no native child"))?;
+        child.wait().await
     }
 
     /// The shell exited on its own: kill what it left in its job.
@@ -1437,7 +1439,10 @@ mod windows_tests {
         .expect("leaves started");
         let parent_status = tokio::time::timeout(Duration::from_secs(2), async {
             // SAFETY: the wrapper remains alive and only parent wait state changes.
-            unsafe { parent.inner_child_mut() }.wait().await
+            unsafe { parent.try_inner_child_mut() }
+                .expect("a native child")
+                .wait()
+                .await
         })
         .await
         .expect("parent prompt return was delayed by descendants")
