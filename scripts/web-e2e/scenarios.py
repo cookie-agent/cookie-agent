@@ -1306,8 +1306,13 @@ def newest_first(browser):
     browser.script("document.documentElement.classList.remove('dark')")
     browser.wait("the slow page", lambda: count(browser, "#transcript [data-history-loading]") == 0, timeout=10)
     browser.script("WebSocket.prototype.send = window.__send")
+    marker = "const rows = document.querySelectorAll('#transcript [data-history]'); return rows.length ? rows[rows.length - 1].dataset.history : null"
+    before = browser.script(marker)
     browser.script("document.querySelector('#transcript').scrollTop = -1e9")
-    browser.wait("the next read's end", lambda: count(browser, "#transcript [data-history-loading]") == 0)
+    # The read can start a frame after the scroll: its end is a new row of
+    # history with no read under way.
+    browser.wait("the next read's end", lambda: browser.script(marker) != before
+                 and count(browser, "#transcript [data-history-loading]") == 0, timeout=30)
     rest = browser.script(row_box)
     assert abs(rest["height"] - block["height"]) <= 1, "the row changed height for the block: %s %s" % (block, rest)
     print("a slow page shows a loading block in view at the top, of the row's own height")
