@@ -2307,6 +2307,8 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
     let history = StoredValue::new(HistoryScroll::default());
     // Whether the view follows the end, for the jump-to-latest button.
     let following = RwSignal::new(true);
+    // The column's width the work rows' machines were last fitted to.
+    let fitted_width = StoredValue::new(0);
     let metrics = move || {
         container.try_get_untracked().flatten().map(|element| {
             let element: web_sys::Element = element.into();
@@ -2435,6 +2437,16 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
         let Some((element, at)) = metrics() else {
             return;
         };
+        // A new width fits the work rows' machines again; a drawing fits
+        // the rows it changed (`fill_row`).
+        if let Some(column) = content.try_get_untracked().flatten() {
+            let column: web_sys::Element = column.into();
+            let width = column.client_width();
+            if fitted_width.try_get_value() != Some(width) {
+                fitted_width.set_value(width);
+                crate::badges::fit_work_machines(&column);
+            }
+        }
         history.update_value(|history| history.resized(at));
         if follow.try_update_value(|follow| follow.pin(at)) == Some(true) {
             element.set_scroll_top(if workspace.new_session.get_untracked() {
@@ -5643,6 +5655,7 @@ fn agent_modes_sheet(
 
 /// Fills in the code and media of `row`, a transcript row or part of one.
 fn fill_row(row: &web_sys::Element, workspace: Workspace) {
+    crate::badges::fit_work_machines(row);
     crate::highlight::highlight_within(row);
     crate::media::show_within(row, workspace);
     crate::assets::show_within(row, workspace);

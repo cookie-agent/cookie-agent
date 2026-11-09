@@ -174,6 +174,55 @@ pub fn keep_fitted(line: NodeRef<leptos::html::Span>) {
     });
 }
 
+/// Fits the machines of the finished work rows within `within`: their
+/// names while the row's label shows whole beside them, else their dots
+/// alone. Every row is shown its names, then measured, then switched, so
+/// that they all take one layout.
+pub fn fit_work_machines(within: &web_sys::Element) {
+    use wasm_bindgen::JsCast as _;
+    let Ok(list) = within.query_selector_all("[data-work-machines-fit]") else {
+        return;
+    };
+    let pairs = (0..list.length())
+        .filter_map(|index| list.item(index))
+        .filter_map(|node| node.dyn_into::<web_sys::Element>().ok())
+        .filter_map(|fit| {
+            let child = |selector: &str| {
+                fit.query_selector(selector)
+                    .ok()
+                    .flatten()
+                    .and_then(|node| node.dyn_into::<web_sys::HtmlElement>().ok())
+            };
+            Some((
+                fit.clone(),
+                child("[data-work-machines]")?,
+                child("[data-work-machines-merged]")?,
+            ))
+        })
+        .collect::<Vec<_>>();
+    for (_, names, dots) in &pairs {
+        names.set_hidden(false);
+        dots.set_hidden(true);
+    }
+    let cut = pairs
+        .iter()
+        .map(|(fit, _, _)| {
+            let Some(line) = fit.parent_element() else {
+                return false;
+            };
+            let label = line.query_selector("[data-work-label]").ok().flatten();
+            label.is_some_and(|label| label.scroll_width() > label.client_width())
+                || line.scroll_width() > line.client_width() + 1
+        })
+        .collect::<Vec<_>>();
+    for ((_, names, dots), cut) in pairs.iter().zip(cut) {
+        if cut {
+            names.set_hidden(true);
+            dots.set_hidden(false);
+        }
+    }
+}
+
 /// Fits `line` once the badges it is drawing now are on the page. The row
 /// may be gone by then (a list redrawn twice within a frame), and its
 /// `line` disposed with it: nothing to fit.

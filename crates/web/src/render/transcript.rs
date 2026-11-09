@@ -983,9 +983,13 @@ pub fn part_element_id(row: u64, part: u64) -> String {
 }
 
 /// Whether HTML holds what the page fills in after drawing it: a code
-/// block to highlight, or media or an asset to read.
+/// block to highlight, media or an asset to read, or a work row's machines
+/// to fit.
 pub fn fills_in(html: &str) -> bool {
-    html.contains("language-") || html.contains("data-media") || html.contains("data-asset")
+    html.contains("language-")
+        || html.contains("data-media")
+        || html.contains("data-asset")
+        || html.contains("data-work-machines-fit")
 }
 
 /// The DOM IDs of the rows, and of the parts of replies, whose HTML changed
@@ -1343,30 +1347,55 @@ fn work_row_html(
     machines: &MachineLabels,
 ) -> String {
     let summary = &row.summary;
-    // A finished row names the machines its work touched.
+    // A finished row names the machines its work touched; when their names
+    // would cut its label, the page merges them to their dots and count
+    // (`badges::fit_work_machines`).
     let touched = if summary.live {
         String::new()
     } else {
         let (shown, more) = machines.work_row(&summary.runtimes);
-        let mut names = shown
-            .into_iter()
-            .map(|label| {
-                format!(
-                    "<span class=\"inline-flex min-w-0 items-center gap-1.5 font-mono text-xs\" title=\"{}\">{}{}</span>",
-                    escape(&label.name),
-                    machine_dot(label),
-                    machine_name(label)
-                )
-            })
-            .collect::<String>();
-        if more > 0 {
-            names.push_str(&format!("<span class=\"text-xs\">+{more}</span>"));
-        }
-        if names.is_empty() {
-            names
+        if shown.is_empty() {
+            String::new()
         } else {
+            let more_badge = if more > 0 {
+                format!("<span class=\"text-xs\">+{more}</span>")
+            } else {
+                String::new()
+            };
+            let names = shown
+                .iter()
+                .map(|label| {
+                    format!(
+                        "<span class=\"inline-flex min-w-0 items-center gap-1.5 font-mono text-xs\" title=\"{}\">{}{}</span>",
+                        escape(&label.name),
+                        machine_dot(label),
+                        machine_name(label)
+                    )
+                })
+                .collect::<String>();
+            // Merged as the composer's workspace chip shows its runtimes:
+            // their dots side by side, then the count.
+            let dots = shown
+                .iter()
+                .map(|label| machine_dot(label))
+                .collect::<String>();
+            let count = shown.len() + more;
+            let count = if count > 1 {
+                format!("<span class=\"text-xs whitespace-nowrap\">{count} machines</span>")
+            } else {
+                String::new()
+            };
+            let mut named = shown
+                .iter()
+                .map(|label| label.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            if more > 0 {
+                named.push_str(&format!(" and {more} more"));
+            }
             format!(
-                "<span class=\"inline-flex min-w-0 shrink-0 items-center gap-2.5\" data-work-machines>{names}</span>"
+                "<span class=\"inline-flex shrink-0\" data-work-machines-fit><span class=\"inline-flex items-center gap-2.5\" data-work-machines>{names}{more_badge}</span><span class=\"inline-flex items-center gap-1.5\" title=\"{named}\" data-work-machines-merged hidden><span class=\"inline-flex shrink-0 items-center gap-0.5\">{dots}</span>{count}<span class=\"sr-only\">{named}</span></span></span>",
+                named = escape(&named),
             )
         }
     };
@@ -1380,7 +1409,7 @@ fn work_row_html(
         .failed_label()
         .map(|failed| {
             format!(
-                "<span class=\"text-accent\" data-work-failed>{}</span>",
+                "<span class=\"shrink-0 whitespace-nowrap text-accent\" data-work-failed>{}</span>",
                 escape(&failed)
             )
         })
@@ -2552,6 +2581,42 @@ mod tests {
             Some(&machines),
         );
         (state, labels)
+    }
+
+    #[test]
+    fn a_finished_work_row_carries_its_machines_named_and_merged() {
+        let (_, labels) = two_machines();
+        let row =
+            |live: bool, runtimes: &[&str]| cookie_agent_client_state::transcript_mode::WorkRow {
+                summary: cookie_agent_client_state::transcript_mode::WorkSummary {
+                    live,
+                    stopped: false,
+                    elapsed: std::time::Duration::from_secs(83),
+                    tool_calls: 7,
+                    failed: 0,
+                    runtimes: runtimes
+                        .iter()
+                        .map(|id| cookie_agent_protocol::RuntimeId::new(*id).unwrap())
+                        .collect(),
+                },
+                lines: None,
+            };
+        let key = cookie_agent_client_state::transcript_mode::WorkKey { item: 1, child: 0 };
+        let both = super::work_row_html(key, &row(false, &["local", "unicorn"]), false, &labels);
+        assert!(super::fills_in(&both), "{both}");
+        let merged = both
+            .split("data-work-machines-merged hidden>")
+            .nth(1)
+            .expect("the merged form, hidden until the page fits it");
+        assert!(merged.contains("2 machines"), "{both}");
+        assert!(merged.contains("yunhao-labserver, unicorn"), "{both}");
+        // One machine merges to its dot, with no count.
+        let one = super::work_row_html(key, &row(false, &["unicorn"]), false, &labels);
+        assert!(one.contains("data-work-machines-merged"), "{one}");
+        assert!(!one.contains("1 machine"), "{one}");
+        // A live row names none.
+        let live = super::work_row_html(key, &row(true, &["local", "unicorn"]), false, &labels);
+        assert!(!live.contains("data-work-machines"), "{live}");
     }
 
     #[test]
