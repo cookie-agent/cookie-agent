@@ -371,6 +371,16 @@ impl SessionStore {
         }
     }
 
+    /// Closes the files of `members`' open reviewer logs, which are in their
+    /// folders: Windows refuses to move a folder with an open file.
+    pub(super) fn suspend_reviewer_writers(&self, members: &[SessionId]) {
+        for id in members {
+            if let Some(open) = self.reviewers.get(*id) {
+                open.log.suspend_writer();
+            }
+        }
+    }
+
     /// Forgets the reviewer logs of `deleted` sessions, whose folders go with
     /// them.
     pub(super) fn forget_reviewers(&self, deleted: &HashSet<SessionId>) {

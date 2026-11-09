@@ -95,6 +95,7 @@ impl TreeDeletion<'_> {
                 }
             }
         }
+        store.suspend_reviewer_writers(&members);
         store
             .read_only_logs
             .lock()

@@ -2980,15 +2980,29 @@ impl Engine {
             .await?;
         let home = process.client.home();
         let platform = process.client.platform();
-        let bridge_tools: Option<Vec<String>> = self
-            .bridged_tool_definitions(active.session, &active.policy)
-            .ok()
-            .map(|tools| tools.into_iter().map(|tool| tool.name).collect());
+        let bridge_tools = |session: SessionId, policy: &crate::policy::FrozenRunPolicy| {
+            self.bridged_tool_definitions(session, policy)
+                .ok()
+                .map(|tools| tools.into_iter().map(|tool| tool.name).collect::<Vec<_>>())
+        };
         // The agent's own subagent sees its parent's bridge: the tools row
-        // names what that offers, as the parent's does.
+        // names what that offers, as the parent's does. The parent records
+        // its list with its first step, which can come after the subagent
+        // starts: until then it is what the parent's run offers.
         let published_tools = match self.acp_subagent_parent(active.session) {
-            Some(parent) => self.latest_model_tool_names(parent).or(bridge_tools),
-            None => bridge_tools,
+            Some(parent) => self.latest_model_tool_names(parent).or_else(|| {
+                let parent_policy = self
+                    .inner
+                    .sessions
+                    .active
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .values()
+                    .find(|run| run.session == parent)
+                    .map(|run| Arc::clone(&run.policy))?;
+                bridge_tools(parent, &parent_policy)
+            }),
+            None => bridge_tools(active.session, &active.policy),
         };
         // The list may have changed since the agent last fetched it, by
         // rules, plugins, or an attached runtime's MCP servers.

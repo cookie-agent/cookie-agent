@@ -140,6 +140,11 @@ pub(crate) struct AssetStores {
     changes: tokio::sync::watch::Sender<u64>,
 }
 
+/// How long after its last write an index's stamp is not trusted: a
+/// filesystem's clock can be coarse enough that a second write of the
+/// same length right after the first keeps the first one's time.
+const SETTLE_TIME: std::time::Duration = std::time::Duration::from_secs(2);
+
 /// What says an index file changed: its modification time and length.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct IndexStamp {
@@ -158,6 +163,16 @@ impl IndexStamp {
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
             Err(error) => Err(store_error(path)(error)),
         }
+    }
+
+    /// Whether a later write must change this stamp: the file was last
+    /// written long enough ago that its time cannot be a later write's.
+    fn settled(self) -> bool {
+        self.modified.is_some_and(|modified| {
+            std::time::SystemTime::now()
+                .duration_since(modified)
+                .is_ok_and(|age| age >= SETTLE_TIME)
+        })
     }
 }
 
@@ -241,7 +256,8 @@ impl AssetStores {
     }
 
     /// The store's index, from memory while its file has not changed
-    /// since it was read. Called under the store's lock.
+    /// since it was read; one written moments ago is read again. Called
+    /// under the store's lock.
     fn index(&self, dir: &Path) -> Result<Arc<IndexFile>, AssetError> {
         let stamp = IndexStamp::of(&dir.join(INDEX_FILE))?;
         if let Some(stamp) = stamp
@@ -252,7 +268,7 @@ impl AssetStores {
         }
         let index = Arc::new(read_index(dir)?);
         match stamp {
-            Some(stamp) => {
+            Some(stamp) if stamp.settled() => {
                 let mut indexes = lock(&self.indexes);
                 // Each session tree has a store, and an index is read again
                 // cheaply: only the ones in use stay for long.
@@ -261,7 +277,7 @@ impl AssetStores {
                 }
                 indexes.insert(dir.to_owned(), (stamp, Arc::clone(&index)));
             }
-            None => {
+            _ => {
                 lock(&self.indexes).remove(dir);
             }
         }
