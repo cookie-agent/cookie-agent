@@ -2537,9 +2537,15 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
                 && history
                     .try_update_value(|history| history.read_on(at, reading_history(workspace)))
                     == Some(true)
-                && load_history_near(&element, workspace, history)
             {
-                history.update_value(HistoryScroll::counted);
+                if load_history_near(&element, workspace, history) {
+                    history.update_value(HistoryScroll::counted);
+                } else {
+                    // The store takes a page before its rows draw: these
+                    // may still be the ones before it, whose row of history
+                    // names what was read. Their next drawing asks again.
+                    history.update_value(|history| history.started(at.height));
+                }
             }
             if let Some(key) = reveal.try_update_value(Option::take).flatten() {
                 reveal_work_row(container, content, pinned_work, &key);
