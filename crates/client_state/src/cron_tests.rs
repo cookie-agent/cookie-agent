@@ -1,5 +1,6 @@
 use cookie_agent_protocol::{
-    CronJob, CronMaxRuns, CronSchedule, CronTarget, ProducerDeliveryMode, SemVer, SessionId,
+    CronJob, CronMaxRuns, CronSchedule, CronTarget, ProducerDeliveryMode, ProjectInfo, SemVer,
+    SessionId,
 };
 use jiff::{Timestamp, tz::TimeZone};
 
@@ -137,17 +138,57 @@ fn a_job_without_a_name_shows_its_prompt_start() {
 #[test]
 fn targets_name_their_session_by_title() {
     let target = CronTarget::Session(session(1));
-    assert_eq!(target_label(&target, |_| None), "0190a5b2");
+    assert_eq!(target_label(&target, &[], |_| None), "0190a5b2");
     assert_eq!(
-        target_label(&target, |_| Some("Build fixes".into())),
+        target_label(&target, &[], |_| Some("Build fixes".into())),
         "Build fixes"
     );
     assert_eq!(
-        target_label(&CronTarget::Subagent(session(1)), |_| None),
+        target_label(&CronTarget::Subagent(session(1)), &[], |_| None),
         "subagent 0190a5b2"
     );
     let new = job(serde_json::json!({"target": {"new": {"agent": "builder"}}}));
-    assert_eq!(target_label(&new.target, |_| None), "new session · builder");
+    assert_eq!(
+        target_label(&new.target, &[], |_| None),
+        "new session · builder"
+    );
+}
+
+#[test]
+fn new_session_targets_name_their_project() {
+    let id = "0192f0c4-7d6e-7a1b-9c2d-3e4f5a6b7c8d";
+    let projects = [serde_json::from_value::<ProjectInfo>(serde_json::json!({
+        "id": id, "name": "cookie", "emoji": "🍪", "revision": "r1",
+        "has_agents_md": false, "sessions": 0, "memories": 0
+    }))
+    .unwrap()];
+    let in_project = job(serde_json::json!({
+        "target": {"new": {"agent": "builder", "project": id}}
+    }));
+    assert_eq!(
+        target_label(&in_project.target, &projects, |_| None),
+        "new session · builder · 🍪 cookie"
+    );
+    assert_eq!(
+        target_label(&in_project.target, &[], |_| None),
+        "new session · builder · 0192f0c4"
+    );
+    let project_detail = |job: &CronJob| {
+        detail_lines(
+            job,
+            Timestamp::UNIX_EPOCH,
+            &TimeZone::UTC,
+            &projects,
+            |_| None,
+        )
+        .into_iter()
+        .find(|detail| detail.label == "project")
+        .map(|detail| detail.value)
+    };
+    assert_eq!(project_detail(&in_project).as_deref(), Some("🍪 cookie"));
+    let outside = job(serde_json::json!({"target": {"new": {"agent": "builder"}}}));
+    assert_eq!(project_detail(&outside).as_deref(), Some("no project"));
+    assert_eq!(project_detail(&job(serde_json::json!({}))), None);
 }
 
 #[test]
@@ -156,7 +197,13 @@ fn details_link_the_target_and_the_creating_session() {
     let by_agent = job(serde_json::json!({
         "created_by": {"agent": {"agent": "builder", "session": session(2)}}
     }));
-    let details = detail_lines(&by_agent, Timestamp::UNIX_EPOCH, &TimeZone::UTC, titles);
+    let details = detail_lines(
+        &by_agent,
+        Timestamp::UNIX_EPOCH,
+        &TimeZone::UTC,
+        &[],
+        titles,
+    );
     let linked: Vec<_> = details
         .iter()
         .filter_map(|detail| Some((detail.label, detail.value.as_str(), detail.session?)))
@@ -178,6 +225,7 @@ fn details_link_the_target_and_the_creating_session() {
         &job(serde_json::json!({})),
         Timestamp::UNIX_EPOCH,
         &TimeZone::UTC,
+        &[],
         |_| None,
     );
     assert!(by_user.iter().all(|detail| detail.label != "created in"));

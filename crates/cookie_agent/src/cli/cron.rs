@@ -10,8 +10,8 @@ use cookie_agent_client_state::cron::{
     update_changes_anything,
 };
 use cookie_agent_protocol::{
-    CronActor, CronJob, CronJobId, CronTarget, CronUpdateParams, ProducerDeliveryMode, ProjectName,
-    SessionGetParams, SessionId, SessionOrigin,
+    CronActor, CronJob, CronJobId, CronTarget, CronUpdateParams, ProducerDeliveryMode, ProjectInfo,
+    ProjectName, SessionGetParams, SessionId, SessionOrigin,
 };
 use cookie_agent_protocol_transport::Client;
 use jiff::{Timestamp, tz::TimeZone};
@@ -195,9 +195,9 @@ pub(crate) async fn run_cron_with<I: MemoryIo>(
             if listed.jobs.is_empty() {
                 return io.write_line("No cron jobs.");
             }
-            let titles = SessionTitles::of(client, &listed.jobs).await;
+            let names = JobNames::of(client, &listed.jobs).await;
             for job in &listed.jobs {
-                for line in job_lines(job, &titles.target(&job.target), Timestamp::now(), &zone) {
+                for line in job_lines(job, &names.target(&job.target), Timestamp::now(), &zone) {
                     io.write_line(&line)?;
                 }
             }
@@ -205,13 +205,8 @@ pub(crate) async fn run_cron_with<I: MemoryIo>(
         }
         CronCommand::Show { id } => {
             let job = find_job(client, &id).await?;
-            let titles = SessionTitles::of(client, std::slice::from_ref(&job)).await;
-            for line in show_lines(
-                &job,
-                |session| titles.title(session),
-                Timestamp::now(),
-                &zone,
-            ) {
+            let names = JobNames::of(client, std::slice::from_ref(&job)).await;
+            for line in show_lines(&job, &names, Timestamp::now(), &zone) {
                 io.write_line(&line)?;
             }
             Ok(())
@@ -330,10 +325,14 @@ async fn find_job(client: &Client, id: &CronJobId) -> anyhow::Result<CronJob> {
 }
 
 /// The titles of the sessions jobs fire into and were created in, as far
-/// as `session.get` finds them.
-struct SessionTitles(Vec<(SessionId, String)>);
+/// as `session.get` finds them, and the projects their new sessions go in,
+/// from `projects.list` when a job names one.
+pub(crate) struct JobNames {
+    titles: Vec<(SessionId, String)>,
+    projects: Vec<ProjectInfo>,
+}
 
-impl SessionTitles {
+impl JobNames {
     async fn of(client: &Client, jobs: &[CronJob]) -> Self {
         let mut titles = Vec::new();
         let sessions = jobs.iter().flat_map(|job| {
@@ -357,18 +356,31 @@ impl SessionTitles {
                 titles.push((session, title.as_str().to_owned()));
             }
         }
-        Self(titles)
+        let names_project = jobs.iter().any(|job| match &job.target {
+            CronTarget::New(template) => template.project.is_some(),
+            _ => false,
+        });
+        let projects = if names_project {
+            client
+                .list_projects()
+                .await
+                .map(|listed| listed.projects)
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        Self { titles, projects }
     }
 
     fn title(&self, session: SessionId) -> Option<String> {
-        self.0
+        self.titles
             .iter()
             .find(|(known, _)| *known == session)
             .map(|(_, title)| title.clone())
     }
 
     fn target(&self, target: &CronTarget) -> String {
-        cron::target_label(target, |session| self.title(session))
+        cron::target_label(target, &self.projects, |session| self.title(session))
     }
 }
 
@@ -406,18 +418,20 @@ pub(crate) fn job_lines(
 /// newest first.
 pub(crate) fn show_lines(
     job: &CronJob,
-    title: impl Fn(SessionId) -> Option<String>,
+    names: &JobNames,
     now: Timestamp,
     zone: &TimeZone,
 ) -> Vec<String> {
     let mut lines = vec![cron::job_title(job)];
     lines.extend(
-        cron::detail_lines(job, now, zone, title)
-            .into_iter()
-            .map(|detail| match detail.session {
-                Some(session) => format!("{}: {} · session {session}", detail.label, detail.value),
-                None => format!("{}: {}", detail.label, detail.value),
-            }),
+        cron::detail_lines(job, now, zone, &names.projects, |session| {
+            names.title(session)
+        })
+        .into_iter()
+        .map(|detail| match detail.session {
+            Some(session) => format!("{}: {} · session {session}", detail.label, detail.value),
+            None => format!("{}: {}", detail.label, detail.value),
+        }),
     );
     lines.push(String::new());
     lines.extend(job.prompt.lines().map(str::to_owned));

@@ -533,7 +533,9 @@ impl App {
 
     /// How the panel names a job's target.
     fn cron_target_label(&self, job: &CronJob) -> String {
-        target_label(&job.target, |session| self.cron_session_title(session))
+        target_label(&job.target, &self.projects, |session| {
+            self.cron_session_title(session)
+        })
     }
 
     fn session_target_label(&self, session: (SessionId, bool)) -> String {
@@ -542,7 +544,7 @@ impl App {
         } else {
             cookie_agent_protocol::CronTarget::Session(session.0)
         };
-        target_label(&target, |id| self.cron_session_title(id))
+        target_label(&target, &self.projects, |id| self.cron_session_title(id))
     }
 
     /// Opens a new job's form: into the session on screen, or into a new
@@ -888,6 +890,7 @@ impl App {
                 job,
                 jiff::Timestamp::now(),
                 &TimeZone::system(),
+                &self.projects,
                 |session| self.cron_session_title(session),
             )
         });

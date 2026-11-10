@@ -121,10 +121,12 @@ fn job_row(
     let title = job_title(&job);
     let reading = schedule_reading(&job.schedule, job.max_runs, &zone);
     let schedule = schedule_text(&job.schedule, &zone);
-    let target = target_label(&job.target, |session| {
-        workspace
-            .sessions
-            .with_untracked(|sessions| session_name(sessions, session))
+    let target = workspace.projects.with_untracked(|projects| {
+        target_label(&job.target, projects, |session| {
+            workspace
+                .sessions
+                .with_untracked(|sessions| session_name(sessions, session))
+        })
     });
     let state = state_label(&job);
     let outcome = last_outcome(&job);
@@ -266,7 +268,9 @@ fn job_details(
             .sessions
             .with_untracked(|sessions| session_name(sessions, session))
     };
-    let lines = detail_lines(&job, now.get_untracked(), &zone, title)
+    let lines = workspace
+        .projects
+        .with_untracked(|projects| detail_lines(&job, now.get_untracked(), &zone, projects, title))
         .into_iter()
         .map(|detail| {
             let value = match detail.session {
@@ -440,10 +444,12 @@ fn cron_form(workspace: Workspace, form: CronForm) -> impl IntoView {
         }
     };
     let target_note = editing.as_ref().map(|job| {
-        target_label(&job.target, |id| {
-            workspace
-                .sessions
-                .with_untracked(|sessions| session_name(sessions, id))
+        workspace.projects.with_untracked(|projects| {
+            target_label(&job.target, projects, |id| {
+                workspace
+                    .sessions
+                    .with_untracked(|sessions| session_name(sessions, id))
+            })
         })
     });
     let this_session = session.map(|(id, subagent)| {

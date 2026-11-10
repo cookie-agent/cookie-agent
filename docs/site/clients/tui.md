@@ -657,13 +657,15 @@ fires on a schedule, into a session or into a new session per fire. Each row
 shows the job's name (or the start of its prompt), its schedule read plainly
 (`every day at 03:00`, `every Monday to Friday at 09:30, once`, `once at
 2026-10-23 03:00`), how long until its next fire, its target (the session's title, `subagent
-<title>`, or `new session · <agent>`),
+<title>`, or `new session · <agent>`, then ` · <project>` when the new
+sessions go in a project),
 whether it is enabled or why not (`finished`, `failed 3 times in a row`,
 `disabled by you`), and what its last fire did. Under the list, **Details**
 gives the selected job's target and, for a job an agent made, the session
 it was created in, both by title; a click on either, or `o` and `c`, shows
 that session's transcript. Then come its schedule, run count, delivery,
-template, and prompt. **History** lists its fires, newest first, each with
+template (with the new sessions' project by name, or `no project`), and
+prompt. **History** lists its fires, newest first, each with
 its outcome and how its run ended. The title says when the daemon's firing is off (`[cron]
 enabled = false`).
 

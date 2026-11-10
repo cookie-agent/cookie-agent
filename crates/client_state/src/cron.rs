@@ -7,7 +7,7 @@
 use cookie_agent_protocol::{
     AgentId, CronCreateParams, CronDisabledReason, CronFire, CronFireOutcome, CronJob, CronMaxRuns,
     CronSchedule, CronSkipReason, CronTarget, CronTemplate, CronUpdateParams, ModelSelection, Open,
-    PermissionMode, ProducerDeliveryMode, SemVer, SessionId, SessionStatus,
+    PermissionMode, ProducerDeliveryMode, ProjectInfo, SemVer, SessionId, SessionStatus,
 };
 use jiff::{Timestamp, tz::TimeZone};
 
@@ -321,14 +321,38 @@ pub fn cron_reading(expression: &str) -> Option<String> {
 }
 
 /// How lists name a job's target: the session's title,
-/// `subagent <title>` for a delegated one, or `new session · <agent>`.
+/// `subagent <title>` for a delegated one, or `new session · <agent>`,
+/// followed by ` · <project>` when the new sessions go in one.
 /// `title` names a session the client knows; another shows its id's start.
-pub fn target_label(target: &CronTarget, title: impl Fn(SessionId) -> Option<String>) -> String {
+/// `projects` is the client's `projects.list`.
+pub fn target_label(
+    target: &CronTarget,
+    projects: &[ProjectInfo],
+    title: impl Fn(SessionId) -> Option<String>,
+) -> String {
     let name = |session: SessionId| title(session).unwrap_or_else(|| short_session(session));
     match target {
         CronTarget::Session(id) => name(*id),
         CronTarget::Subagent(id) => format!("subagent {}", name(*id)),
+        CronTarget::New(template) if template.project.is_some() => format!(
+            "new session · {} · {}",
+            template.agent,
+            template_project(template, projects)
+        ),
         CronTarget::New(template) => format!("new session · {}", template.agent),
+    }
+}
+
+/// The project a new-session job's sessions go in, as clients name a
+/// project: by its label when `projects` holds it, else by its id's start
+/// (one deleted since), and `no project` for none.
+pub fn template_project(template: &CronTemplate, projects: &[ProjectInfo]) -> String {
+    match &template.project {
+        Some(id) => crate::projects::find_project(projects, Some(id)).map_or_else(
+            || id.to_string().chars().take(8).collect(),
+            |project| crate::projects::project_label(Some(project)),
+        ),
+        None => crate::projects::NO_PROJECT.to_owned(),
     }
 }
 
@@ -460,11 +484,13 @@ impl CronDetail {
 
 /// The details of a job, in the order clients show them: its target and,
 /// for an agent's job, the session that created it name their sessions.
-/// `title` names a session the client knows, as `target_label` reads it.
+/// `title` names a session the client knows, as `target_label` reads it;
+/// `projects` is the client's `projects.list`.
 pub fn detail_lines(
     job: &CronJob,
     now: Timestamp,
     zone: &TimeZone,
+    projects: &[ProjectInfo],
     title: impl Fn(SessionId) -> Option<String>,
 ) -> Vec<CronDetail> {
     let mut lines = vec![
@@ -473,7 +499,7 @@ pub fn detail_lines(
         CronDetail::new("reads", schedule_reading(&job.schedule, job.max_runs, zone)),
         CronDetail {
             label: "target",
-            value: target_label(&job.target, &title),
+            value: target_label(&job.target, projects, &title),
             session: job.target.session(),
         },
         CronDetail::new("state", state_label(job)),
@@ -502,9 +528,10 @@ pub fn detail_lines(
         if let Some(model) = &template.model {
             lines.push(CronDetail::new("model", model.to_string()));
         }
-        if let Some(project) = &template.project {
-            lines.push(CronDetail::new("project", project.to_string()));
-        }
+        lines.push(CronDetail::new(
+            "project",
+            template_project(template, projects),
+        ));
         if !template.permission_rules.is_empty() {
             lines.push(CronDetail::new(
                 "rules",

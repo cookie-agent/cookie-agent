@@ -1100,12 +1100,13 @@ changes (`crons.changed`), from any client or agent.
   you`, …), its schedule with a plain reading (`0 9 * * 1-5 · every Monday
   to Friday at 09:00`, `once at 2026-10-23 03:00`), the next fire in this
   browser's time with how long until it, the target (the session's title,
-  `subagent <title>`, or `new session · <agent>`), and
+  `subagent <title>`, or `new session · <agent>`, then ` · <project>` when
+  the new sessions go in a project), and
   how its last fire went. A banner says when the daemon's firing is off
   (`[cron] enabled = false`).
 - **A job.** Click a job for its details (schedule, runs counted against
-  its limit, delivery, a new-session job's agent, model, project, and
-  mode, failures in a row, who made it, and the session an agent made it
+  its limit, delivery, a new-session job's agent, model, project (by name,
+  or `no project`), and mode, failures in a row, who made it, and the session an agent made it
   in; the target and that session are links to their transcripts), its
   prompt, its history (newest
   first: when, what the fire did, and **Open session** for the session it
