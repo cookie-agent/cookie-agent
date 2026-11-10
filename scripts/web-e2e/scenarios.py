@@ -1984,6 +1984,18 @@ def assets_tab(browser):
         timeout=30,
     )
     browser.shot("assets-images")
+    # The browser keeps them by content, so a later load asks only about
+    # new content.
+    shas = browser.script(
+        "return [...document.querySelectorAll(arguments[0])].map(e => e.dataset.assetSha)",
+        row + " [data-asset-view='tile']",
+    )
+    kept = lambda: browser.script_async(
+        "const done = arguments[arguments.length - 1];"
+        "caches.open('cookie-asset-thumbnails-1').then(c => c.keys())"
+        ".then(keys => done(keys.map(k => k.url.split('/').pop())), () => done([]))"
+    )
+    browser.wait("the kept thumbnails", lambda: set(shas) <= set(kept()), timeout=30)
     browser.click(row)
     browser.wait("the viewer", lambda: count(browser, "#media-viewer [data-viewer-file]") == 1, timeout=30)
     assert "1 / %d" % images in browser.text("#media-viewer-position"), browser.text("#media-viewer-position")

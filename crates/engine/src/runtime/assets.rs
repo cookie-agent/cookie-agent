@@ -17,7 +17,7 @@ use cookie_agent_protocol::{
 use super::{Engine, EngineError};
 use crate::assets::{
     AssetError, AssetStores, ThumbnailSource,
-    thumbnail::{self, Drawer, Made, Picture},
+    thumbnail::{self, Drawer, Made},
 };
 
 /// The two stores a session's asset tools reach: its tree's, and its
@@ -240,9 +240,14 @@ impl Engine {
             })
             .await?;
         let mut sha256 = source.asset.sha256.clone();
-        let picture = match source.kept {
-            Some(kept) => Some(kept),
+        let made = match source.kept {
+            Some(kept) => Made::Picture(kept),
             None => self.draw_thumbnail(store, source, &mut sha256).await,
+        };
+        let (picture, retry_later) = match made {
+            Made::Picture(picture) => (Some(picture), false),
+            Made::Cannot => (None, false),
+            Made::Unavailable => (None, true),
         };
         Ok(AssetThumbnailResult {
             sha256,
@@ -252,42 +257,51 @@ impl Engine {
                 width: picture.width,
                 height: picture.height,
             }),
+            retry_later,
         })
     }
 
     /// Draws the thumbnail of `source`, an asset of `store` with none kept,
     /// and keeps it. `sha256` becomes the content drawn, which another
-    /// write may have changed while this one waited its turn.
+    /// write may have changed while this one waited its turn. A kind
+    /// without thumbnails, or content that did not draw before, is
+    /// [`Made::Cannot`].
     async fn draw_thumbnail(
         &self,
         store: AssetStore,
         source: ThumbnailSource,
         sha256: &mut String,
-    ) -> Option<Picture> {
-        Drawer::of(&source.asset.media_type)?;
+    ) -> Made {
         let stores = Arc::clone(&self.inner.assets);
-        if stores.undrawable(sha256) {
-            return None;
+        if Drawer::of(&source.asset.media_type).is_none() || stores.undrawable(sha256) {
+            return Made::Cannot;
         }
-        let _turn = stores.draw_turn().await?;
+        let Some(_turn) = stores.draw_turn().await else {
+            return Made::Unavailable;
+        };
         // Another request may have drawn it while this one waited.
         let id = source.asset.id;
-        let source = self
+        let Ok(source) = self
             .assets_blocking({
                 let store = store.clone();
                 move |_, stores| Ok(stores.thumbnail_source(&store, id)?)
             })
             .await
-            .ok()?;
+        else {
+            return Made::Unavailable;
+        };
         sha256.clone_from(&source.asset.sha256);
-        if source.kept.is_some() {
-            return source.kept;
+        if let Some(kept) = source.kept {
+            return Made::Picture(kept);
         }
-        let drawer = Drawer::of(&source.asset.media_type)?;
+        let Some(drawer) = Drawer::of(&source.asset.media_type) else {
+            return Made::Cannot;
+        };
         if stores.undrawable(sha256) {
-            return None;
+            return Made::Cannot;
         }
-        match thumbnail::make(source.blob, drawer).await {
+        let made = thumbnail::make(source.blob, drawer).await;
+        match &made {
             Made::Picture(picture) => {
                 let kept = picture.clone();
                 let drawn = sha256.clone();
@@ -299,14 +313,11 @@ impl Engine {
                 {
                     eprintln!("cookie-agent: a thumbnail was not kept: {error}");
                 }
-                Some(picture)
             }
-            Made::Cannot => {
-                stores.mark_undrawable(sha256);
-                None
-            }
-            Made::Unavailable => None,
+            Made::Cannot => stores.mark_undrawable(sha256),
+            Made::Unavailable => {}
         }
+        made
     }
 
     /// `asset.rename`.

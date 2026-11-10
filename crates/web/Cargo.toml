@@ -37,6 +37,8 @@ web-sys = { version = "0.3.103", features = [
     "Blob",
     "BlobPropertyBag",
     "BroadcastChannel",
+    "Cache",
+    "CacheStorage",
     "CanvasRenderingContext2d",
     "Clipboard",
     "ClipboardEvent",

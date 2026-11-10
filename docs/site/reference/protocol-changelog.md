@@ -5,6 +5,14 @@ The client protocol's version is `MAJOR.MINOR.PATCH`
 adds and a major breaks; before it, every minor could break the wire (see the
 [compatibility spec](../specs/compatibility-v1.md) section 3).
 
+## 1.94.0
+
+- `AssetThumbnailResult` gains `retry_later` (false when absent): without a
+  `thumbnail`, asking again later may give one, because the tool that draws
+  it was missing or too slow, or the content went while it was read. When
+  false, the content never has one, and a client may remember that by its
+  `sha256` ([Asset thumbnails](../specs/asset-thumbnails.md) section 5).
+
 ## 1.93.0
 
 - `asset.thumbnail { store, asset }` returns `sha256`, the asset's current

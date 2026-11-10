@@ -1,7 +1,7 @@
 # Asset thumbnails
 
-Status: **implemented** (2026-11-10; client protocol 1.93.0). User decisions
-of 2026-11-10. This revises [Opening assets](asset-opening.md) section 3 (the
+Status: **implemented** (2026-11-10; client protocol 1.93.0, and 1.94.0 for
+the browser's cache of section 5). User decisions of 2026-11-10. This revises [Opening assets](asset-opening.md) section 3 (the
 Assets tab's cards) and section 6.2 (a PDF's thumbnail).
 
 ## 1. Problem
@@ -34,7 +34,9 @@ waited behind those reads, and read again what was still in flight.
 `asset.thumbnail { store, asset }` returns `{ sha256, thumbnail? }`:
 `sha256` is the content the answer is about, and `thumbnail` an
 `AssetThumbnail` (`media_type`, base64 `data`, `width`, `height`), absent
-when there is none. A thumbnail is a JPEG (quality 80), or a PNG when a pixel
+when there is none. Without one, `retry_later` (client protocol 1.94.0) says
+whether asking again later may give one: a missing or slow tool, or content
+gone while it was read. Otherwise the content never has one. A thumbnail is a JPEG (quality 80), or a PNG when a pixel
 of the picture is not opaque, whose longer side is at most 768 pixels
 (`ASSET_THUMBNAIL_MAX_EDGE`), enough for a card on a 2× screen. A smaller
 picture keeps its size. A guest of a conversation share may ask for the
@@ -65,11 +67,22 @@ assets it may read, as it may `asset.read` them.
 ## 5. The web client
 
 - A tab card (`data-asset-view="tile"`) starts as its icon card. Once it
-  comes within a screen of the view it asks `asset.thumbnail` and, when
-  there is one, shows it filling the card (a PDF's top first, a video with a
-  play mark). Thumbnails stay in memory by content, up to 16 MiB, and
-  contents without one are remembered, so drawing the list again asks
-  nothing.
+  comes within a screen of the view it shows its thumbnail, a PDF's top
+  first and a video with a play mark, from wherever it is known first:
+  1. **this page**, by content, up to 16 MiB of thumbnails and every
+     content without one;
+  2. **the browser** (user decision 2026-11-10): the Cache Storage cache
+     `cookie-asset-thumbnails-1`, one entry per content `sha256`, the
+     thumbnail or an empty entry for content that never has one. A
+     thumbnail is named by its content, so an entry never goes stale. It
+     holds at most 1,000 entries; past that the oldest tenth goes. Cache
+     Storage exists only on HTTPS or `localhost`; elsewhere only the page
+     keeps them. The service worker still caches nothing;
+  3. **the daemon**, `asset.thumbnail`, whose answer the page and the
+     browser then keep, except a `retry_later` miss, which only the page
+     keeps until it loads again.
+
+  So a load asks the daemon only about content the browser has not seen.
 - A Markdown card reads its first 8 KiB with one `asset.read`; so does a
   Markdown card in the chat.
 - The PDF viewer's thumbnail mode, and the page count it showed on a card,

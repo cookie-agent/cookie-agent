@@ -45,6 +45,7 @@ pub mod render;
 pub mod session_list;
 pub mod skills;
 pub mod theme;
+pub mod thumbnail_store;
 pub mod tree;
 mod views;
 pub mod workspace;

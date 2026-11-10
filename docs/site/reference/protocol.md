@@ -13,7 +13,7 @@ A client must call `handshake` before any other method:
 
 ```json
 { "jsonrpc": "2.0", "id": 1, "method": "handshake", "params": {
-    "protocol_version": "1.93.0",
+    "protocol_version": "1.94.0",
     "client": { "kind": "web", "instance_id": "<uuid>" },
     "token": "<the daemon's token>",
     "features": [] } }
@@ -22,7 +22,7 @@ A client must call `handshake` before any other method:
 The reply:
 
 ```json
-{ "protocol_version": "1.93.0", "engine_version": "0.3.0",
+{ "protocol_version": "1.94.0", "engine_version": "0.3.0",
   "origin": "client:web-<id>", "machine_id": "<opaque>", "features": [],
   "status": { "phase": "ready" } }
 ```
@@ -350,7 +350,7 @@ Idempotent redelivery resolves against the state preceding the original run.
 | `attachment.save_asset` | `session_id`, `model_turn_seq`, `content_index`, `ordinal`, `scope?` (since 1.73.0) | The new `asset` |
 | `asset.get` | `store`, `asset` ID | The `asset` as it is now, or `asset_not_found` |
 | `asset.read` | `store`, `asset` ID, `offset`, `length` (at most 1 MiB) | Base64 `data`, `total_bytes`, `media_type`, and the `sha256` of the content read |
-| `asset.thumbnail` | `store`, `asset` ID (since 1.93.0; see [Assets](#assets)) | The `sha256` of the current content and its `thumbnail?`: `media_type`, base64 `data`, `width`, `height` |
+| `asset.thumbnail` | `store`, `asset` ID (since 1.93.0; see [Assets](#assets)) | The `sha256` of the current content and its `thumbnail?`: `media_type`, base64 `data`, `width`, `height`; without one, `retry_later` (since 1.94.0) |
 | `asset.rename` | `store`, `asset` ID, `title` (1 to 200 characters on one line) | The renamed `asset` |
 | `asset.delete` | `store`, `asset` ID | Empty object |
 | `shares.list` | `asset?` ID, `session?` ID (since 1.88.0; see [Share links](#share-links)) | The live `shares`, newest first, `enabled`, and the live `sessions` (conversation shares, since 1.88.0) |
@@ -852,7 +852,11 @@ picture with transparent pixels, whose longer side is at most 768 pixels.
 The daemon draws PNG, JPEG, GIF, and WebP pictures itself, a video's first
 frame with `ffmpeg`, and a PDF's first page with `pdftoppm`, when each is on
 its `PATH`, and keeps the result with the content until the content goes.
-Other kinds, and content that does not decode, have no `thumbnail`.
+Other kinds, and content that does not decode, have no `thumbnail`. Since
+1.94.0 `retry_later` says, when there is none, that asking again later may
+give one: the tool was missing or too slow, or the content went while it
+was read. A thumbnail is named by its content, so a client may keep it, and
+a `false` `retry_later`, by `sha256` for good.
 
 A figure in a tool result is an `asset` display block: its `store`, the
 `asset` ID, and the `handle`, `title`, `media_type`, `byte_length`, and

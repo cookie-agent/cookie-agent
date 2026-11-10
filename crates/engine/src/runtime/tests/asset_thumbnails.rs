@@ -80,16 +80,33 @@ async fn a_picture_is_drawn_once_and_kept_and_a_page_has_none() {
     let none = engine.asset_thumbnail(ask(page.id)).await.unwrap();
     assert_eq!(none.sha256, page.sha256);
     assert_eq!(none.thumbnail, None);
+    assert!(!none.retry_later, "a page never has one");
 
-    // A picture that does not decode has none, and is not drawn again.
+    // A picture that does not decode has none, for good, and is not drawn
+    // again.
     let broken = write(engine, "broken.png", "image/png", b"not a png".to_vec());
-    assert_eq!(
-        engine
-            .asset_thumbnail(ask(broken.id))
-            .await
-            .unwrap()
-            .thumbnail,
-        None
-    );
+    let none = engine.asset_thumbnail(ask(broken.id)).await.unwrap();
+    assert_eq!(none.thumbnail, None);
+    assert!(!none.retry_later);
     assert!(engine.inner.assets.undrawable(&broken.sha256));
+
+    // Content gone while it is read may draw later.
+    let mut png = Vec::new();
+    image::DynamicImage::ImageRgb8(image::RgbImage::new(8, 8))
+        .write_to(&mut Cursor::new(&mut png), image::ImageFormat::Png)
+        .unwrap();
+    let gone = write(engine, "gone.png", "image/png", png);
+    std::fs::remove_file(
+        engine
+            .inner
+            .assets
+            .dir(&AssetStore::Shared)
+            .join("blobs")
+            .join(&gone.sha256),
+    )
+    .unwrap();
+    let later = engine.asset_thumbnail(ask(gone.id)).await.unwrap();
+    assert_eq!(later.thumbnail, None);
+    assert!(later.retry_later);
+    assert!(!engine.inner.assets.undrawable(&gone.sha256));
 }

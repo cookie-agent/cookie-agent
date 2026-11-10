@@ -16,9 +16,9 @@
 //! - the side panel's `panel` (the asset whole, the page filling it) and
 //!   `source` (its text);
 //! - the Assets tab's `tile`: the thumbnail the daemon makes
-//!   (`asset.thumbnail`, `docs/site/specs/asset-thumbnails.md`), or the
-//!   kind's icon when it makes none; the tab never reads a whole file to
-//!   draw a card.
+//!   (`asset.thumbnail`, `docs/site/specs/asset-thumbnails.md`), kept by
+//!   [`crate::thumbnail_store`] across page loads, or the kind's icon when
+//!   it makes none; the tab never reads a whole file to draw a card.
 //!
 //! A `doc` card of an asset reads only the start of it.
 //!
@@ -942,30 +942,29 @@ async fn fill_tile(
     asset: AssetId,
     workspace: Workspace,
 ) {
-    let kept = |sha256: &str| THUMBNAILS.with(|thumbnails| thumbnails.borrow_mut().get(sha256));
-    let none = |sha256: &str| NO_THUMBNAIL.with(|none| none.borrow().contains(sha256));
-    let (sha256, url) = if let Some(url) = kept(&shown.shown_sha) {
-        (shown.shown_sha.clone(), Some(url))
-    } else if none(&shown.shown_sha) {
-        (shown.shown_sha.clone(), None)
-    } else {
-        let result = match workspace.asset_thumbnail(store, asset).await {
-            Ok(Some(result)) => result,
-            Ok(None) => return card_gone(element),
-            Err(_) => {
-                let _ = element.set_attribute("data-shown", "failed");
-                return;
-            }
-        };
-        let url = match (kept(&result.sha256), result.thumbnail) {
-            (Some(url), _) => Some(url),
-            (None, Some(thumbnail)) => keep_thumbnail(result.sha256.clone(), &thumbnail),
-            (None, None) => {
-                NO_THUMBNAIL.with(|none| none.borrow_mut().insert(result.sha256.clone()));
-                None
-            }
-        };
-        (result.sha256, url)
+    let (sha256, url) = match known_thumbnail(&shown.shown_sha).await {
+        Some(url) => (shown.shown_sha.clone(), url),
+        None => {
+            let result = match workspace.asset_thumbnail(store, asset).await {
+                Ok(Some(result)) => result,
+                Ok(None) => return card_gone(element),
+                Err(_) => {
+                    let _ = element.set_attribute("data-shown", "failed");
+                    return;
+                }
+            };
+            let url = match result.thumbnail {
+                Some(thumbnail) => daemon_thumbnail(&result.sha256, &thumbnail),
+                None => {
+                    NO_THUMBNAIL.with(|none| none.borrow_mut().insert(result.sha256.clone()));
+                    if !result.retry_later {
+                        crate::thumbnail_store::keep_none(result.sha256.clone());
+                    }
+                    None
+                }
+            };
+            (result.sha256, url)
+        }
     };
     let _ = element.set_attribute("data-asset-current", &sha256);
     let Some(url) = url else {
@@ -994,28 +993,59 @@ async fn fill_tile(
     let _ = element.set_attribute("data-shown", "yes");
 }
 
-/// Keeps the daemon's `thumbnail` of the content `sha256` and gives its
-/// `Blob` URL.
-fn keep_thumbnail(
-    sha256: String,
+/// What this page or the browser knows of the content `sha256`'s
+/// thumbnail: `Some(Some(url))` its `Blob` URL, `Some(None)` that it has
+/// none, `None` nothing yet.
+async fn known_thumbnail(sha256: &str) -> Option<Option<String>> {
+    if let Some(url) = THUMBNAILS.with(|thumbnails| thumbnails.borrow_mut().get(sha256)) {
+        return Some(Some(url));
+    }
+    if NO_THUMBNAIL.with(|none| none.borrow().contains(sha256)) {
+        return Some(None);
+    }
+    match crate::thumbnail_store::get(sha256).await? {
+        crate::thumbnail_store::Kept::Thumbnail(blob) => {
+            let url = web_sys::Url::create_object_url_with_blob(&blob).ok()?;
+            Some(Some(remember_thumbnail(sha256, url, &blob)))
+        }
+        crate::thumbnail_store::Kept::None => {
+            NO_THUMBNAIL.with(|none| none.borrow_mut().insert(sha256.to_owned()));
+            Some(None)
+        }
+    }
+}
+
+/// The `Blob` URL of the daemon's `thumbnail` of the content `sha256`,
+/// kept in this page and in the browser.
+fn daemon_thumbnail(
+    sha256: &str,
     thumbnail: &cookie_agent_protocol::AssetThumbnail,
 ) -> Option<String> {
     use base64::Engine as _;
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(&thumbnail.data)
         .ok()?;
-    let (_, url) = blob_url(&bytes, &thumbnail.media_type).ok()?;
+    let (blob, url) = blob_url(&bytes, &thumbnail.media_type).ok()?;
+    crate::thumbnail_store::keep_thumbnail(sha256.to_owned(), blob.clone());
+    Some(remember_thumbnail(sha256, url, &blob))
+}
+
+/// Keeps `url`, the `Blob` URL of `blob`, the content `sha256`'s
+/// thumbnail, in this page while it fits, and gives it back.
+fn remember_thumbnail(sha256: &str, url: String, blob: &web_sys::Blob) -> String {
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let bytes = blob.size() as u64;
     let left = THUMBNAILS.with(|thumbnails| {
         thumbnails
             .borrow_mut()
-            .insert(sha256, url.clone(), bytes.len() as u64, |url| {
+            .insert(sha256.to_owned(), url.clone(), bytes, |url| {
                 url_on_page(url)
             })
     });
     for left in left {
         let _ = web_sys::Url::revoke_object_url(&left);
     }
-    Some(url)
+    url
 }
 
 /// A figure's body: the asset whole, as its type shows.

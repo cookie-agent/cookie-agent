@@ -32,6 +32,10 @@
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
+    "retry_later": {
+      "description": "Without a `thumbnail`: asking again later may give one, because the\ntool that draws it was missing or too slow, or the content went\nwhile it was read (client protocol 1.94.0). When false, this content\nnever has one, and a client may remember that by its `sha256`.",
+      "type": "boolean"
+    },
     "sha256": {
       "description": "The content the thumbnail shows.",
       "type": "string"

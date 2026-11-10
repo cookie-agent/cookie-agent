@@ -301,6 +301,17 @@ pub struct AssetThumbnailResult {
     /// tool that draws it on the daemon's `PATH`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thumbnail: Option<AssetThumbnail>,
+    /// Without a `thumbnail`: asking again later may give one, because the
+    /// tool that draws it was missing or too slow, or the content went
+    /// while it was read (client protocol 1.94.0). When false, this content
+    /// never has one, and a client may remember that by its `sha256`.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub retry_later: bool,
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)]
+const fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 /// A thumbnail: a JPEG, or a PNG for a picture with transparency, whose
