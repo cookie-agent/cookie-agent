@@ -15,6 +15,7 @@ pub const ASSETS_LIST_METHOD: &str = "assets.list";
 pub const ASSETS_SEARCH_METHOD: &str = "assets.search";
 pub const ASSET_GET_METHOD: &str = "asset.get";
 pub const ASSET_READ_METHOD: &str = "asset.read";
+pub const ASSET_THUMBNAIL_METHOD: &str = "asset.thumbnail";
 pub const ASSET_RENAME_METHOD: &str = "asset.rename";
 pub const ASSET_DELETE_METHOD: &str = "asset.delete";
 pub const ASSETS_CHANGED_METHOD: &str = "assets.changed";
@@ -29,6 +30,8 @@ pub const ASSET_CAPTION_MAX_CHARS: usize = 300;
 pub const ASSET_SHOW_MAX: usize = 12;
 /// The most bytes one `asset.read` returns.
 pub const ASSET_CHUNK_BYTES: u64 = 1024 * 1024;
+/// The longest side of an `asset.thumbnail` picture, in pixels.
+pub const ASSET_THUMBNAIL_MAX_EDGE: u32 = 768;
 
 /// Where an asset is kept (section 4.1). A store's assets are listed,
 /// read, and changed together; an asset never moves between stores.
@@ -277,6 +280,38 @@ pub struct AssetReadResult {
     /// The content the bytes come from. A read whose `sha256` differs from
     /// an earlier one's read content written in between: start again.
     pub sha256: String,
+}
+
+/// A small picture of an asset's current content, made by the daemon
+/// (client protocol 1.93.0, `docs/site/specs/asset-thumbnails.md`): a
+/// picture scaled down, a video's first frame, or a PDF's first page.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AssetThumbnailParams {
+    pub store: AssetStore,
+    pub asset: AssetId,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct AssetThumbnailResult {
+    /// The content the thumbnail shows.
+    pub sha256: String,
+    /// Absent when the daemon makes none for this content: a kind it does
+    /// not draw, a file it cannot decode, or a video or PDF without the
+    /// tool that draws it on the daemon's `PATH`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thumbnail: Option<AssetThumbnail>,
+}
+
+/// A thumbnail: a JPEG, or a PNG for a picture with transparency, whose
+/// longer side is at most [`ASSET_THUMBNAIL_MAX_EDGE`] pixels.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct AssetThumbnail {
+    pub media_type: String,
+    /// Base64 of the picture.
+    pub data: String,
+    pub width: u32,
+    pub height: u32,
 }
 
 /// Gives an asset a new title.

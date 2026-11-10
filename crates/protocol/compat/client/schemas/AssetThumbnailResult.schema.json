@@ -1,0 +1,56 @@
+{
+  "$defs": {
+    "AssetThumbnail": {
+      "description": "A thumbnail: a JPEG, or a PNG for a picture with transparency, whose\nlonger side is at most [`ASSET_THUMBNAIL_MAX_EDGE`] pixels.",
+      "properties": {
+        "data": {
+          "description": "Base64 of the picture.",
+          "type": "string"
+        },
+        "height": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "media_type": {
+          "type": "string"
+        },
+        "width": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "media_type",
+        "data",
+        "width",
+        "height"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "sha256": {
+      "description": "The content the thumbnail shows.",
+      "type": "string"
+    },
+    "thumbnail": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/AssetThumbnail"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Absent when the daemon makes none for this content: a kind it does\nnot draw, a file it cannot decode, or a video or PDF without the\ntool that draws it on the daemon's `PATH`."
+    }
+  },
+  "required": [
+    "sha256"
+  ],
+  "title": "AssetThumbnailResult",
+  "type": "object"
+}

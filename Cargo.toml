@@ -45,6 +45,7 @@ foldhash = "0.2.0"
 fs2 = "0.4.3"
 futures-util = "0.3.33"
 getrandom = "0.2.17"
+image = { version = "0.25.10", default-features = false, features = ["gif", "jpeg", "png", "webp"] }
 indexmap = { version = "2.12.1", features = ["serde"] }
 jiff = { version = "0.2.35", features = ["serde"] }
 libc = "0.2.189"

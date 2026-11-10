@@ -14,7 +14,13 @@
 //!   thumbnail, `doc` the first lines, `audio` a player, and `file` only
 //!   the asset's state;
 //! - the side panel's `panel` (the asset whole, the page filling it) and
-//!   `source` (its text).
+//!   `source` (its text);
+//! - the Assets tab's `tile`: the thumbnail the daemon makes
+//!   (`asset.thumbnail`, `docs/site/specs/asset-thumbnails.md`), or the
+//!   kind's icon when it makes none; the tab never reads a whole file to
+//!   draw a card.
+//!
+//! A `doc` card of an asset reads only the start of it.
 //!
 //! `assets.changed` makes every one shown read its asset again: one whose
 //! content changed is filled anew and says when it was updated, one deleted
@@ -39,6 +45,10 @@ use crate::{
 const MAX_DOCUMENT_BYTES: usize = 1024 * 1024;
 /// How much of a document its card shows.
 const EXCERPT_CHARS: usize = 1500;
+/// How much of a document its card reads: [`EXCERPT_CHARS`] of any text.
+const EXCERPT_BYTES: u64 = 8 * 1024;
+/// How many bytes of thumbnails stay in memory.
+const THUMBNAIL_BUDGET_BYTES: u64 = 16 * 1024 * 1024;
 /// An HTML frame's height before its page reports one, and its bounds.
 const FRAME_START: f64 = 480.0;
 const FRAME_MIN: f64 = 120.0;
@@ -61,6 +71,11 @@ thread_local! {
     /// pdf.js and its worker's code, read once from the page's own files
     /// for the PDF viewer (`docs/site/specs/asset-opening.md` section 6.2).
     static PDF_LIBRARY: RefCell<Option<(web_sys::Blob, web_sys::Blob)>> = const { RefCell::new(None) };
+    /// The `Blob` URL of each content's thumbnail, by its digest, kept
+    /// while it fits.
+    static THUMBNAILS: RefCell<BlobCache<String>> = RefCell::new(BlobCache::new(THUMBNAIL_BUDGET_BYTES));
+    /// The contents the daemon made no thumbnail of, by digest.
+    static NO_THUMBNAIL: RefCell<std::collections::HashSet<String>> = RefCell::new(std::collections::HashSet::new());
 }
 
 /// Where the page keeps pdf.js and its worker's code.
@@ -250,51 +265,25 @@ pub fn is_text(media_type: &str) -> bool {
         || media_type.ends_with("+xml") && media_type != "image/svg+xml"
 }
 
-/// The largest video whose card in the Assets tab shows its first frame;
-/// a larger one shows its icon, so drawing the list never reads it
-/// (`docs/site/specs/asset-opening.md` section 3).
-const THUMB_VIDEO_BYTES: u64 = 16 * 1024 * 1024;
-
 /// The Assets tab's thumbnail of `asset`: a placeholder the tab fills once
-/// its card comes into view (a picture, a video's first frame, a page's
-/// live thumbnail, a document's first lines), or the kind's icon and the
-/// file's type.
+/// its card comes into view, with a Markdown document's first lines, or
+/// the thumbnail the daemon makes of anything else; it shows the kind's
+/// icon and the file's type until then, and when there is none.
 pub fn tab_thumbnail_html(asset: &Asset) -> String {
     let media = asset.media_type.as_str();
-    let (view, body) = if (media.starts_with("image/") && asset.byte_length <= BUDGET_BYTES)
-        || (media.starts_with("video/") && asset.byte_length <= THUMB_VIDEO_BYTES)
-    {
-        (
-            "thumb",
-            "<span class=\"absolute inset-0 flex items-center justify-center\" data-asset-body></span>",
-        )
-    } else if media == "application/pdf" && asset.byte_length <= BUDGET_BYTES {
-        (
-            "pdf",
-            "<span class=\"absolute inset-0 overflow-hidden bg-sunken\" data-asset-body></span><span class=\"pointer-events-none absolute bottom-2 left-2 z-10 hidden rounded-md bg-black/60 px-1.5 py-0.5 font-mono text-[0.6875rem] text-white\" data-pdf-pages></span>",
-        )
-    } else if media == "text/html" && asset.byte_length <= BUDGET_BYTES {
-        (
-            "page",
-            "<span class=\"absolute inset-0 overflow-hidden bg-white\" data-asset-body></span>",
-        )
-    } else if media == "text/markdown" && asset.byte_length <= MAX_DOCUMENT_BYTES as u64 {
+    let (view, body) = if media == "text/markdown" {
         (
             "doc",
-            "<span class=\"asset-excerpt absolute inset-0 block overflow-hidden bg-surface px-3 pt-2.5 text-xs text-muted\" data-asset-body></span>",
+            "<span class=\"asset-excerpt absolute inset-0 block overflow-hidden bg-surface px-3 pt-2.5 text-xs text-muted\" data-asset-body></span>".to_owned(),
         )
     } else {
-        let label = crate::render::attachments::type_label_of(asset.filename.as_deref(), media);
-        let hue =
-            crate::badges::hue_class(Some(cookie_agent_client_state::badges::badge_hue(&label)));
-        return format!(
-            "<span class=\"absolute inset-0 flex flex-col items-center justify-center gap-2 text-muted\" data-asset-icon>{}<span class=\"rounded-md border px-1.5 py-0.5 font-mono text-[0.6875rem] font-bold {hue}\">{}</span></span>",
-            crate::icons::svg(
-                crate::icons::asset_icon(cookie_agent_client_state::assets::AssetKind::of(media)),
-                "text-3xl"
+        (
+            "tile",
+            format!(
+                "<span class=\"absolute inset-0\" data-asset-body>{}</span>",
+                icon_html(asset)
             ),
-            escape(&label),
-        );
+        )
     };
     format!(
         "<span class=\"absolute inset-0\" data-asset=\"{}\" data-asset-store=\"{}\" data-asset-sha=\"{}\" data-asset-handle=\"{}\" data-asset-title=\"{}\" data-asset-type=\"{}\" data-asset-view=\"{view}\">{body}</span>",
@@ -304,6 +293,23 @@ pub fn tab_thumbnail_html(asset: &Asset) -> String {
         escape(asset.handle.as_str()),
         escape(&asset.title),
         escape(media),
+    )
+}
+
+/// A card's icon: the kind's, and the file's type.
+fn icon_html(asset: &Asset) -> String {
+    let label =
+        crate::render::attachments::type_label_of(asset.filename.as_deref(), &asset.media_type);
+    let hue = crate::badges::hue_class(Some(cookie_agent_client_state::badges::badge_hue(&label)));
+    format!(
+        "<span class=\"absolute inset-0 flex flex-col items-center justify-center gap-2 text-muted\" data-asset-icon>{}<span class=\"rounded-md border px-1.5 py-0.5 font-mono text-[0.6875rem] font-bold {hue}\">{}</span></span>",
+        crate::icons::svg(
+            crate::icons::asset_icon(cookie_agent_client_state::assets::AssetKind::of(
+                &asset.media_type
+            )),
+            "text-3xl"
+        ),
+        escape(&label),
     )
 }
 
@@ -822,6 +828,12 @@ pub fn refresh(workspace: Workspace) {
 }
 
 async fn fill(element: web_sys::Element, shown: Placeholder, workspace: Workspace) {
+    if shown.view == "tile" {
+        if let Source::Asset { store, asset } = &shown.source {
+            fill_tile(&element, &shown, store.clone(), *asset, workspace).await;
+        }
+        return;
+    }
     let figure = shown.view == "figure";
     let failed = |element: &web_sys::Element, error: String| {
         body(element).set_text_content(Some(&format!("the asset could not be read: {error}")));
@@ -852,6 +864,25 @@ async fn fill(element: web_sys::Element, shown: Placeholder, workspace: Workspac
         let _ = element.set_attribute("data-shown", "yes");
         return;
     }
+    if shown.view == "doc"
+        && let Source::Asset { store, asset: id } = &shown.source
+    {
+        let start = match workspace
+            .read_asset_start(store.clone(), *id, EXCERPT_BYTES)
+            .await
+        {
+            Ok(Some(start)) => start,
+            Ok(None) => return card_gone(&element),
+            Err(error) => return failed(&element, error),
+        };
+        let _ = element.set_attribute("data-asset-current", &asset.sha256);
+        let target = body(&element);
+        target.set_inner_html("");
+        excerpt(&target, text_start(&start));
+        card_state(&element, &asset, &shown);
+        let _ = element.set_attribute("data-shown", "yes");
+        return;
+    }
     let content = match content(&asset, &shown.source, workspace).await {
         Ok(content) => content,
         Err(error) => return failed(&element, error),
@@ -870,7 +901,6 @@ async fn fill(element: web_sys::Element, shown: Placeholder, workspace: Workspac
             Some(text) => excerpt(&target, text),
             None => target.set_text_content(Some("too large to show")),
         },
-        "pdf" => pdf_frame(&target, &content, PdfMode::Thumbnail),
         "audio" => crate::media::show(&target, &content.url, &content.media_type, &asset.title),
         "panel" => panel(&target, &content, &asset),
         "source" => {
@@ -892,6 +922,100 @@ async fn fill(element: web_sys::Element, shown: Placeholder, workspace: Workspac
         card_state(&element, &asset, &shown);
     }
     let _ = element.set_attribute("data-shown", "yes");
+}
+
+/// The text `bytes` start with, up to a character they cut.
+fn text_start(bytes: &[u8]) -> &str {
+    match std::str::from_utf8(bytes) {
+        Ok(text) => text,
+        Err(error) => std::str::from_utf8(&bytes[..error.valid_up_to()]).unwrap_or_default(),
+    }
+}
+
+/// A tab card's thumbnail (`docs/site/specs/asset-thumbnails.md`): the
+/// daemon's picture, or the icon the card shows already when there is
+/// none.
+async fn fill_tile(
+    element: &web_sys::Element,
+    shown: &Placeholder,
+    store: AssetStore,
+    asset: AssetId,
+    workspace: Workspace,
+) {
+    let kept = |sha256: &str| THUMBNAILS.with(|thumbnails| thumbnails.borrow_mut().get(sha256));
+    let none = |sha256: &str| NO_THUMBNAIL.with(|none| none.borrow().contains(sha256));
+    let (sha256, url) = if let Some(url) = kept(&shown.shown_sha) {
+        (shown.shown_sha.clone(), Some(url))
+    } else if none(&shown.shown_sha) {
+        (shown.shown_sha.clone(), None)
+    } else {
+        let result = match workspace.asset_thumbnail(store, asset).await {
+            Ok(Some(result)) => result,
+            Ok(None) => return card_gone(element),
+            Err(_) => {
+                let _ = element.set_attribute("data-shown", "failed");
+                return;
+            }
+        };
+        let url = match (kept(&result.sha256), result.thumbnail) {
+            (Some(url), _) => Some(url),
+            (None, Some(thumbnail)) => keep_thumbnail(result.sha256.clone(), &thumbnail),
+            (None, None) => {
+                NO_THUMBNAIL.with(|none| none.borrow_mut().insert(result.sha256.clone()));
+                None
+            }
+        };
+        (result.sha256, url)
+    };
+    let _ = element.set_attribute("data-asset-current", &sha256);
+    let Some(url) = url else {
+        let _ = element.set_attribute("data-shown", "icon");
+        return;
+    };
+    let media_type = element.get_attribute("data-asset-type").unwrap_or_default();
+    let placed = if media_type == "application/pdf" {
+        " object-top"
+    } else {
+        ""
+    };
+    let play = if media_type.starts_with("video/") {
+        format!(
+            "<span class=\"pointer-events-none absolute inset-0 flex items-center justify-center\">{}</span>",
+            crate::icons::svg(icondata::LuCirclePlay, "text-4xl text-white/90 drop-shadow")
+        )
+    } else {
+        String::new()
+    };
+    body(element).set_inner_html(&format!(
+        "<img src=\"{}\" alt=\"{}\" draggable=\"false\" class=\"pointer-events-none absolute inset-0 h-full w-full object-cover{placed}\" data-asset-thumbnail>{play}",
+        escape(&url),
+        escape(&shown.title),
+    ));
+    let _ = element.set_attribute("data-shown", "yes");
+}
+
+/// Keeps the daemon's `thumbnail` of the content `sha256` and gives its
+/// `Blob` URL.
+fn keep_thumbnail(
+    sha256: String,
+    thumbnail: &cookie_agent_protocol::AssetThumbnail,
+) -> Option<String> {
+    use base64::Engine as _;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(&thumbnail.data)
+        .ok()?;
+    let (_, url) = blob_url(&bytes, &thumbnail.media_type).ok()?;
+    let left = THUMBNAILS.with(|thumbnails| {
+        thumbnails
+            .borrow_mut()
+            .insert(sha256, url.clone(), bytes.len() as u64, |url| {
+                url_on_page(url)
+            })
+    });
+    for left in left {
+        let _ = web_sys::Url::revoke_object_url(&left);
+    }
+    Some(url)
 }
 
 /// A figure's body: the asset whole, as its type shows.
@@ -919,7 +1043,7 @@ fn figure_body(target: &web_sys::Element, content: &Content, asset: &Asset) {
 fn panel(target: &web_sys::Element, content: &Content, asset: &Asset) {
     match (content.media_type.as_str(), &content.text) {
         ("text/html", Some(text)) => frame(target, text, Some(Fixed::Filling)),
-        ("application/pdf", _) => pdf_frame(target, content, PdfMode::Reader),
+        ("application/pdf", _) => pdf_frame(target, content),
         ("text/markdown", Some(text)) => {
             target.set_inner_html(&format!(
                 "<div class=\"markdown mx-auto w-full max-w-3xl p-4\" data-asset-document>{}</div>",
@@ -1246,19 +1370,10 @@ fn thumbnail_style(target: &web_sys::Element) -> String {
     )
 }
 
-/// How a PDF's frame draws it.
-#[derive(Clone, Copy)]
-enum PdfMode {
-    /// A card's thumbnail: the first page, taking no input.
-    Thumbnail,
-    /// The asset page's reader: every page, with its bar.
-    Reader,
-}
-
-/// A PDF in a frame of `pdf-viewer.html`, which gets the PDF and pdf.js
-/// once it loads, with this frame's token, and says back how many pages
-/// the PDF has.
-fn pdf_frame(target: &web_sys::Element, content: &Content, mode: PdfMode) {
+/// A PDF in a frame of `pdf-viewer.html`, the asset page's reader: every
+/// page, with its bar. The frame gets the PDF and pdf.js once it loads,
+/// with this frame's token.
+fn pdf_frame(target: &web_sys::Element, content: &Content) {
     let Some(document) = target.owner_document() else {
         return;
     };
@@ -1266,37 +1381,22 @@ fn pdf_frame(target: &web_sys::Element, content: &Content, mode: PdfMode) {
         return;
     };
     let token = uuid::Uuid::now_v7().simple().to_string();
-    let (class, sandbox) = match mode {
-        PdfMode::Thumbnail => (
-            "pointer-events-none absolute inset-0 block h-full w-full border-0",
-            "allow-scripts",
-        ),
-        PdfMode::Reader => (
-            "block min-h-0 w-full flex-1 border-0",
-            "allow-scripts allow-popups",
-        ),
-    };
     for (name, value) in [
-        ("sandbox", sandbox),
+        ("sandbox", "allow-scripts allow-popups"),
         ("referrerpolicy", "no-referrer"),
         ("src", PDF_VIEWER),
         ("title", "PDF"),
         ("data-pdf-frame", token.as_str()),
-        ("class", class),
+        ("class", "block min-h-0 w-full flex-1 border-0"),
+        ("style", "height: 100%"),
     ] {
         let _ = iframe.set_attribute(name, value);
-    }
-    if matches!(mode, PdfMode::Thumbnail) {
-        let _ = iframe.set_attribute("tabindex", "-1");
-        let _ = iframe.set_attribute("aria-hidden", "true");
-    } else {
-        let _ = iframe.set_attribute("style", "height: 100%");
     }
     let pdf = content.blob.clone();
     let sent = token.clone();
     let frame = iframe.clone();
     let on_load = Closure::<dyn Fn()>::new(move || {
-        spawn_local(send_pdf(frame.clone(), pdf.clone(), sent.clone(), mode));
+        spawn_local(send_pdf(frame.clone(), pdf.clone(), sent.clone()));
     });
     let _ = iframe.add_event_listener_with_callback("load", on_load.as_ref().unchecked_ref());
     on_load.forget();
@@ -1333,7 +1433,7 @@ async fn pdf_library() -> Result<(web_sys::Blob, web_sys::Blob), JsValue> {
 }
 
 /// Sends the PDF `pdf` and pdf.js to the frame `frame`, with `token`.
-async fn send_pdf(frame: web_sys::Element, pdf: web_sys::Blob, token: String, mode: PdfMode) {
+async fn send_pdf(frame: web_sys::Element, pdf: web_sys::Blob, token: String) {
     let sent = async {
         let (library, worker) = pdf_library().await?;
         let window = content_window(&frame).ok_or_else(|| JsValue::from_str("no frame"))?;
@@ -1345,13 +1445,6 @@ async fn send_pdf(frame: web_sys::Element, pdf: web_sys::Blob, token: String, mo
         for (name, value) in [
             ("type", JsValue::from_str("cookie-pdf")),
             ("token", JsValue::from_str(&token)),
-            (
-                "mode",
-                JsValue::from_str(match mode {
-                    PdfMode::Thumbnail => "thumb",
-                    PdfMode::Reader => "full",
-                }),
-            ),
             ("dark", JsValue::from_bool(dark)),
             ("pdf", pdf.into()),
             ("library", library.into()),
@@ -1370,25 +1463,6 @@ async fn send_pdf(frame: web_sys::Element, pdf: web_sys::Blob, token: String, mo
             "<span class=\"p-3 {NOTE}\">the PDF viewer could not be loaded</span>"
         ));
     }
-}
-
-/// The page count a PDF's frame said, on its card.
-fn show_pages(frame: &web_sys::Element, pages: f64) {
-    let Some(badge) = frame
-        .closest("[data-asset]")
-        .ok()
-        .flatten()
-        .and_then(|card| card.query_selector("[data-pdf-pages]").ok().flatten())
-    else {
-        return;
-    };
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    let pages = pages as u64;
-    badge.set_text_content(Some(&format!(
-        "{pages} page{}",
-        if pages == 1 { "" } else { "s" }
-    )));
-    let _ = badge.class_list().remove_1("hidden");
 }
 
 fn send_page(frame: &web_sys::Element, html: &str, token: &str) {
@@ -1432,17 +1506,14 @@ fn listen() {
                     .ok()
                     .and_then(|value| value.as_string())
             };
-            // A page's height, and a PDF's page count.
-            let kind = text("type");
-            let field = match kind.as_deref() {
-                Some("cookie-asset-height") => "height",
-                Some("cookie-pdf-pages") => "pages",
-                _ => return,
-            };
+            // A page's height.
+            if text("type").as_deref() != Some("cookie-asset-height") {
+                return;
+            }
             let Some(token) = text("token") else {
                 return;
             };
-            let Some(number) = js_sys::Reflect::get(&data, &field.into())
+            let Some(height) = js_sys::Reflect::get(&data, &"height".into())
                 .ok()
                 .and_then(|value| value.as_f64())
                 .filter(|number| number.is_finite() && *number > 0.0)
@@ -1461,10 +1532,8 @@ fn listen() {
             if !from_frame {
                 return;
             }
-            match field {
-                "height" if frame.has_attribute("data-asset-frame") => size_frame(&frame, number),
-                "pages" if frame.has_attribute("data-pdf-frame") => show_pages(&frame, number),
-                _ => {}
+            if frame.has_attribute("data-asset-frame") {
+                size_frame(&frame, height);
             }
         });
     let _ = window.add_event_listener_with_callback("message", on_message.as_ref().unchecked_ref());

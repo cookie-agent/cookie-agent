@@ -1977,6 +1977,13 @@ def assets_tab(browser):
     # Another scenario of the same daemons may have shown images too.
     browser.wait("the images", lambda: count(browser, row) >= 2, timeout=30)
     images = count(browser, row)
+    # Their cards show the thumbnails the daemon makes, never the files.
+    browser.wait(
+        "the thumbnails",
+        lambda: count(browser, row + " img[data-asset-thumbnail]") == images,
+        timeout=30,
+    )
+    browser.shot("assets-images")
     browser.click(row)
     browser.wait("the viewer", lambda: count(browser, "#media-viewer [data-viewer-file]") == 1, timeout=30)
     assert "1 / %d" % images in browser.text("#media-viewer-position"), browser.text("#media-viewer-position")
@@ -1992,8 +1999,8 @@ def assets_tab(browser):
     )
     browser.click("#media-viewer-close")
     browser.wait("the closed viewer", lambda: count(browser, "#media-viewer") == 0)
-    # A PDF is a document: its card draws its first page and says how many
-    # it has, and its page holds the PDF viewer.
+    # A PDF is a document: its card shows the first page when the daemon
+    # has pdftoppm, else its icon, and its page holds the PDF viewer.
     view(browser, "chat")
     send(browser, "save a paper")
     idle(browser, "the paper")
@@ -2001,7 +2008,15 @@ def assets_tab(browser):
     browser.click("#assets-page [data-asset-kind='Documents']")
     paper = "#assets-page [data-asset-row]:has([data-asset-type='application/pdf'])"
     browser.wait("the paper's card", lambda: count(browser, paper) == 1, timeout=30)
-    browser.wait("its page count", lambda: browser.text(paper + " [data-pdf-pages]") == "1 page", timeout=60)
+    browser.wait(
+        "its thumbnail or icon",
+        lambda: browser.script(
+            "const e = document.querySelector(arguments[0]); return e && e.dataset.shown",
+            paper + " [data-asset-view='tile']",
+        )
+        in ("yes", "icon"),
+        timeout=60,
+    )
     browser.shot("assets-pdf-card")
     browser.click(paper)
     browser.wait("the PDF viewer", lambda: count(browser, "#asset-page-body iframe[data-pdf-frame]") == 1, timeout=30)

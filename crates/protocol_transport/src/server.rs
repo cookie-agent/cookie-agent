@@ -1154,6 +1154,11 @@ pub trait ServerProtocol: Send + Sync + 'static {
         &self,
         params: cookie_agent_protocol::AssetReadParams,
     ) -> Result<cookie_agent_protocol::AssetReadResult, ServerFault>;
+    /// A small picture of an asset's current content.
+    async fn asset_thumbnail(
+        &self,
+        params: cookie_agent_protocol::AssetThumbnailParams,
+    ) -> Result<cookie_agent_protocol::AssetThumbnailResult, ServerFault>;
     /// Gives an asset a new title.
     async fn rename_asset(
         &self,
@@ -2261,6 +2266,9 @@ async fn dispatch<S: ServerProtocol>(
             value(server.save_attachment_asset(decode(params)?).await?)
         }
         cookie_agent_protocol::ASSET_GET_METHOD => value(server.get_asset(decode(params)?).await?),
+        cookie_agent_protocol::ASSET_THUMBNAIL_METHOD => {
+            value(server.asset_thumbnail(decode(params)?).await?)
+        }
         cookie_agent_protocol::ASSET_READ_METHOD => {
             let params: cookie_agent_protocol::AssetReadParams = decode(params)?;
             if params.length == 0 || params.length > cookie_agent_protocol::ASSET_CHUNK_BYTES {

@@ -146,6 +146,14 @@
       "result": "AssetRenameResult"
     },
     {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "asset.thumbnail",
+      "params": "AssetThumbnailParams",
+      "params_role": "command",
+      "result": "AssetThumbnailResult"
+    },
+    {
       "direction": "from_daemon",
       "kind": "notification",
       "method": "assets.changed",

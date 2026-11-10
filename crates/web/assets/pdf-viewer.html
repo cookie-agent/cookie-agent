@@ -22,7 +22,6 @@ body { display: flex; flex-direction: column; background: var(--ground); color: 
 #bar .num { font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--muted); padding: 0 6px; min-width: 4.5em; text-align: center; font-variant-numeric: tabular-nums; }
 #bar .sep { width: 1px; height: 18px; background: var(--line); margin: 0 4px; }
 #pages { flex: 1; min-height: 0; overflow: auto; scrollbar-gutter: stable; display: flex; flex-direction: column; align-items: safe center; gap: 14px; padding: 16px; }
-body.thumb #pages { overflow: hidden; padding: 6% 8% 0; gap: 0; }
 .page { position: relative; flex-shrink: 0; background: #fff; box-shadow: 0 1px 4px rgb(0 0 0 / 0.25); }
 .page canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
 .textLayer { position: absolute; inset: 0; overflow: hidden; line-height: 1; text-size-adjust: none; forced-color-adjust: none; transform-origin: 0 0; z-index: 1; }
@@ -51,9 +50,8 @@ body.thumb #pages { overflow: hidden; padding: 6% 8% 0; gap: 0; }
 // It holds nothing and reaches no network: the page that frames it reads the
 // PDF and pdf.js's two files over its own connection and sends all three
 // here with a token. pdf.js runs from `blob:` URLs of this frame's opaque
-// origin, its worker's code on this thread, and draws the pages: all of them, each when it
-// nears the view, or only the first, for a card's thumbnail. The page count
-// and a failure go back to the parent tagged with the token.
+// origin, its worker's code on this thread, and draws the pages, each when
+// it nears the view. A failure goes back to the parent tagged with the token.
 (function () {
   "use strict";
   var token = null;
@@ -83,10 +81,6 @@ body.thumb #pages { overflow: hidden; padding: 6% 8% 0; gap: 0; }
   });
 
   async function show(data) {
-    var thumb = data.mode === "thumb";
-    if (thumb) {
-      document.body.classList.add("thumb");
-    }
     var library = await import(URL.createObjectURL(data.library));
     // A sandboxed frame without its origin may not start workers, so
     // pdf.js runs its worker's code on this frame's thread, which a
@@ -99,23 +93,7 @@ body.thumb #pages { overflow: hidden; padding: 6% 8% 0; gap: 0; }
       enableXfa: false,
       stopAtErrors: false,
     }).promise;
-    tell({ type: "cookie-pdf-pages", pages: pdf.numPages });
-    if (thumb) {
-      await thumbnail(pdf);
-    } else {
-      await reader(library, pdf);
-    }
-  }
-
-  // A card's thumbnail: the first page, as wide as the frame allows.
-  async function thumbnail(pdf) {
-    var page = await pdf.getPage(1);
-    var base = page.getViewport({ scale: 1 });
-    var width = pages.clientWidth * 0.84;
-    var viewport = page.getViewport({ scale: width / base.width });
-    var box = sheet(viewport);
-    pages.appendChild(box);
-    await draw(page, viewport, box);
+    await reader(library, pdf);
   }
 
   function sheet(viewport) {

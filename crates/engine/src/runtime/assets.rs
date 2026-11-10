@@ -1,7 +1,7 @@
 //! The engine's asset requests (`docs/site/specs/assets.md`): the client
 //! methods `assets.list`, `assets.search`, `asset.get`, `asset.read`,
-//! `asset.rename`, and `asset.delete`, and the stores a session's asset
-//! tools use.
+//! `asset.thumbnail`, `asset.rename`, and `asset.delete`, and the stores a
+//! session's asset tools use.
 
 use std::sync::Arc;
 
@@ -9,12 +9,16 @@ use base64::Engine as _;
 use cookie_agent_protocol::{
     Asset, AssetDeleteParams, AssetDeleteResult, AssetGetParams, AssetGetResult,
     AssetProjectFilter, AssetReadParams, AssetReadResult, AssetRenameParams, AssetRenameResult,
-    AssetScope, AssetSession, AssetStore, AssetsListParams, AssetsListResult, AssetsSearchParams,
+    AssetScope, AssetSession, AssetStore, AssetThumbnail, AssetThumbnailParams,
+    AssetThumbnailResult, AssetsListParams, AssetsListResult, AssetsSearchParams,
     AssetsSearchResult, SessionId,
 };
 
 use super::{Engine, EngineError};
-use crate::assets::{AssetError, AssetStores};
+use crate::assets::{
+    AssetError, AssetStores, ThumbnailSource,
+    thumbnail::{self, Drawer, Made, Picture},
+};
 
 /// The two stores a session's asset tools reach: its tree's, and its
 /// project's (or the shared store, for a session in no project).
@@ -220,6 +224,89 @@ impl Engine {
             })
         })
         .await
+    }
+
+    /// `asset.thumbnail`: the thumbnail kept of the asset's content, or
+    /// one drawn now and kept.
+    pub async fn asset_thumbnail(
+        &self,
+        params: AssetThumbnailParams,
+    ) -> Result<AssetThumbnailResult, EngineError> {
+        let store = params.store.clone();
+        let source = self
+            .assets_blocking(move |engine, stores| {
+                engine.check_client_store(&params.store)?;
+                Ok(stores.thumbnail_source(&params.store, params.asset)?)
+            })
+            .await?;
+        let mut sha256 = source.asset.sha256.clone();
+        let picture = match source.kept {
+            Some(kept) => Some(kept),
+            None => self.draw_thumbnail(store, source, &mut sha256).await,
+        };
+        Ok(AssetThumbnailResult {
+            sha256,
+            thumbnail: picture.map(|picture| AssetThumbnail {
+                media_type: picture.format.media_type().to_owned(),
+                data: base64::engine::general_purpose::STANDARD.encode(&picture.bytes),
+                width: picture.width,
+                height: picture.height,
+            }),
+        })
+    }
+
+    /// Draws the thumbnail of `source`, an asset of `store` with none kept,
+    /// and keeps it. `sha256` becomes the content drawn, which another
+    /// write may have changed while this one waited its turn.
+    async fn draw_thumbnail(
+        &self,
+        store: AssetStore,
+        source: ThumbnailSource,
+        sha256: &mut String,
+    ) -> Option<Picture> {
+        Drawer::of(&source.asset.media_type)?;
+        let stores = Arc::clone(&self.inner.assets);
+        if stores.undrawable(sha256) {
+            return None;
+        }
+        let _turn = stores.draw_turn().await?;
+        // Another request may have drawn it while this one waited.
+        let id = source.asset.id;
+        let source = self
+            .assets_blocking({
+                let store = store.clone();
+                move |_, stores| Ok(stores.thumbnail_source(&store, id)?)
+            })
+            .await
+            .ok()?;
+        sha256.clone_from(&source.asset.sha256);
+        if source.kept.is_some() {
+            return source.kept;
+        }
+        let drawer = Drawer::of(&source.asset.media_type)?;
+        if stores.undrawable(sha256) {
+            return None;
+        }
+        match thumbnail::make(source.blob, drawer).await {
+            Made::Picture(picture) => {
+                let kept = picture.clone();
+                let drawn = sha256.clone();
+                if let Err(error) = self
+                    .assets_blocking(move |_, stores| {
+                        Ok(stores.keep_thumbnail(&store, &drawn, &kept)?)
+                    })
+                    .await
+                {
+                    eprintln!("cookie-agent: a thumbnail was not kept: {error}");
+                }
+                Some(picture)
+            }
+            Made::Cannot => {
+                stores.mark_undrawable(sha256);
+                None
+            }
+            Made::Unavailable => None,
+        }
     }
 
     /// `asset.rename`.

@@ -62,7 +62,10 @@ All projects · All levels · 13 assets · 54 MB
     (SVG on white), a video's first frame with its length, a page's live
     thumbnail taking no input, a Markdown document's first lines, a PDF's
     first page with its page count (section 6.2), and for audio, office,
-    and other files the kind's icon and the file's extension.
+    and other files the kind's icon and the file's extension. *Revised by
+    [Asset thumbnails](asset-thumbnails.md) (2026-11-10): the daemon
+    draws pictures, a video's first frame, and a PDF's first page; every
+    other kind but Markdown shows its icon.*
   - **Hover or focus** shows *Copy handle* and **⋯** in the corner. On a
     touch screen **⋯** is always there and *Copy handle* is in the menu.
 - **A row** (list): a small thumbnail, the title, where it lives; on a wide
@@ -73,7 +76,9 @@ All projects · All levels · 13 assets · 54 MB
   *Delete…*. Rename and delete open a small dialog: the title to edit, or
   "Delete <title>? Every place it was shown will say it was deleted." The
   row buttons, inline forms, and *Open* under the row are gone.
-- **Thumbnails load when they come into view**, not all at once: a card
+- **Thumbnails load when they come into view** (*since 2026-11-10 from
+  `asset.thumbnail`, never the file; see
+  [Asset thumbnails](asset-thumbnails.md)*), not all at once: a card
   reads its asset only once it is within a screen of the visible part of
   the list. A video over 16 MiB shows its icon instead of its first frame,
   so the list never reads large videos to draw it. Pictures and pages over
@@ -201,7 +206,8 @@ names `application/octet-stream` stays Other.
   count, previous and next page, zoom out, the zoom, zoom in, and *Fit
   width* (the default). Text is selectable (pdf.js's text layer). Links
   open in a new tab. Forms and the PDF's own scripts do not run.
-- **The thumbnail:** the same frame, made small, draws the first page only
+- **The thumbnail** (*replaced 2026-11-10 by the daemon's, see
+  [Asset thumbnails](asset-thumbnails.md)*)**:** the same frame, made small, draws the first page only
   and reports the page count back with the token, which the card shows.
 - **Messages**, as section 8.2's: the frame takes the PDF only from its
   parent, and the parent takes from the frame only `ready`, the page count,

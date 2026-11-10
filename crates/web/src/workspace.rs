@@ -3173,6 +3173,56 @@ impl Workspace {
         }
     }
 
+    /// The thumbnail the daemon makes of an asset's current content
+    /// (`asset.thumbnail`); `None` when the asset is gone.
+    pub async fn asset_thumbnail(
+        self,
+        store: cookie_agent_protocol::AssetStore,
+        asset: cookie_agent_protocol::AssetId,
+    ) -> Result<Option<cookie_agent_protocol::AssetThumbnailResult>, String> {
+        let Some(client) = self.client() else {
+            return Err("not connected".into());
+        };
+        match client
+            .asset_thumbnail(cookie_agent_protocol::AssetThumbnailParams { store, asset })
+            .await
+        {
+            Ok(result) => Ok(Some(result)),
+            Err(error) if error.is(&cookie_agent_protocol::errors::ASSET_NOT_FOUND) => Ok(None),
+            Err(error) => Err(crate::errors::describe_full(&error)),
+        }
+    }
+
+    /// The first `length` bytes of an asset's current content, at most one
+    /// chunk; `None` when the asset is gone.
+    pub async fn read_asset_start(
+        self,
+        store: cookie_agent_protocol::AssetStore,
+        asset: cookie_agent_protocol::AssetId,
+        length: u64,
+    ) -> Result<Option<Vec<u8>>, String> {
+        use base64::Engine as _;
+        let Some(client) = self.client() else {
+            return Err("not connected".into());
+        };
+        match client
+            .read_asset(cookie_agent_protocol::AssetReadParams {
+                store,
+                asset,
+                offset: 0,
+                length: length.min(cookie_agent_protocol::ASSET_CHUNK_BYTES),
+            })
+            .await
+        {
+            Ok(read) => base64::engine::general_purpose::STANDARD
+                .decode(read.data)
+                .map(Some)
+                .map_err(|error| error.to_string()),
+            Err(error) if error.is(&cookie_agent_protocol::errors::ASSET_NOT_FOUND) => Ok(None),
+            Err(error) => Err(crate::errors::describe_full(&error)),
+        }
+    }
+
     /// An asset's whole content, its digest, and its media type, read one
     /// content: a chunk of content written in between starts the read over.
     pub async fn read_asset_bytes(

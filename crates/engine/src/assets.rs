@@ -2,8 +2,10 @@
 //! write for the user, kept by a session tree, a project, or the shared
 //! store of sessions in no project.
 //!
-//! Every store is a folder holding `index.json` (every asset's fields) and
-//! `blobs/<sha256>`:
+//! Every store is a folder holding `index.json` (every asset's fields),
+//! `blobs/<sha256>`, and `thumbnails/<sha256>.jpg` or `.png`, the
+//! thumbnails `asset.thumbnail` made of a content
+//! (`docs/site/specs/asset-thumbnails.md`):
 //!
 //! - a session tree's in `<data_root>/session-assets/<root-id>/`, apart
 //!   from the sessions, so listing that folder finds every tree that has
@@ -21,7 +23,8 @@
 //! index entry names its digest: replacing or deleting an asset rewrites the
 //! index, then deletes the old blob unless another entry still names it. A
 //! crash between the two leaves a blob no entry names, which the store's
-//! first open in a process removes, with half-written temporaries.
+//! first open in a process removes, with half-written temporaries. A
+//! thumbnail goes with its blob.
 //!
 //! Every change and every read of a store holds that store's lock, so a
 //! read never sees a blob deleted under it. Files are replaced by renaming
@@ -43,6 +46,7 @@ use sha2::{Digest as _, Sha256};
 
 #[cfg(test)]
 mod tests;
+pub(crate) mod thumbnail;
 
 /// The folder of a project's store, and of the shared store.
 pub(crate) const ASSETS_DIR: &str = "assets";
@@ -50,6 +54,7 @@ pub(crate) const ASSETS_DIR: &str = "assets";
 pub(crate) const SESSION_ASSETS_DIR: &str = "session-assets";
 const INDEX_FILE: &str = "index.json";
 const BLOBS_DIR: &str = "blobs";
+const THUMBNAILS_DIR: &str = "thumbnails";
 const INDEX_VERSION: u32 = 1;
 
 /// An asset request was refused or failed.
@@ -112,6 +117,14 @@ impl Record {
     }
 }
 
+/// What `asset.thumbnail` starts from: the asset, where its content is,
+/// and the thumbnail kept of that content, if any.
+pub(crate) struct ThumbnailSource {
+    pub(crate) asset: Asset,
+    pub(crate) blob: PathBuf,
+    pub(crate) kept: Option<thumbnail::Picture>,
+}
+
 /// What a write stores: new content for a new asset, or for the asset
 /// `replace`.
 #[derive(Debug)]
@@ -138,7 +151,18 @@ pub(crate) struct AssetStores {
     /// Each store's index as last read, with the stamp of its file then.
     indexes: Mutex<HashMap<PathBuf, (IndexStamp, Arc<IndexFile>)>>,
     changes: tokio::sync::watch::Sender<u64>,
+    /// How many thumbnails are drawn at once.
+    drawing: tokio::sync::Semaphore,
+    /// The contents, by digest, that did not draw: asked again, they have
+    /// no thumbnail at once.
+    undrawable: Mutex<HashSet<String>>,
 }
+
+/// How many thumbnails are drawn at once: a list's worth of cards asking
+/// together must not start a tool for each.
+const DRAWING_AT_ONCE: usize = 2;
+/// How many contents that did not draw are remembered.
+const MAX_UNDRAWABLE_HELD: usize = 4096;
 
 /// How long after its last write an index's stamp is not trusted: a
 /// filesystem's clock can be coarse enough that a second write of the
@@ -190,7 +214,28 @@ impl AssetStores {
             swept: Mutex::default(),
             indexes: Mutex::default(),
             changes: tokio::sync::watch::channel(0).0,
+            drawing: tokio::sync::Semaphore::new(DRAWING_AT_ONCE),
+            undrawable: Mutex::default(),
         }
+    }
+
+    /// A turn to draw a thumbnail.
+    pub(crate) async fn draw_turn(&self) -> Option<tokio::sync::SemaphorePermit<'_>> {
+        self.drawing.acquire().await.ok()
+    }
+
+    /// Whether the content `sha256` did not draw before.
+    pub(crate) fn undrawable(&self, sha256: &str) -> bool {
+        lock(&self.undrawable).contains(sha256)
+    }
+
+    /// Remembers that the content `sha256` does not draw.
+    pub(crate) fn mark_undrawable(&self, sha256: &str) {
+        let mut undrawable = lock(&self.undrawable);
+        if undrawable.len() >= MAX_UNDRAWABLE_HELD {
+            undrawable.clear();
+        }
+        undrawable.insert(sha256.to_owned());
     }
 
     /// Signals every change this process makes to any store.
@@ -493,6 +538,55 @@ impl AssetStores {
         Ok(deleted)
     }
 
+    /// The asset `id`, the path of its blob, and the thumbnail kept of its
+    /// content. The blob is read outside the lock: content replaced
+    /// meanwhile deletes it, and reading it then fails.
+    pub(crate) fn thumbnail_source(
+        &self,
+        store: &AssetStore,
+        id: AssetId,
+    ) -> Result<ThumbnailSource, AssetError> {
+        self.locked(store, |dir| {
+            let index = self.index(dir)?;
+            let record = index
+                .assets
+                .iter()
+                .find(|record| record.id == id)
+                .ok_or(AssetError::NotFound(id))?;
+            let kept = thumbnail::Format::ALL.into_iter().find_map(|format| {
+                let path = thumbnail_path(dir, &record.sha256, format);
+                let bytes = fs::read(path).ok()?;
+                thumbnail::Picture::of(bytes, format)
+            });
+            Ok(ThumbnailSource {
+                asset: record.asset(store),
+                blob: dir.join(BLOBS_DIR).join(&record.sha256),
+                kept,
+            })
+        })
+    }
+
+    /// Keeps `picture`, a thumbnail of the content `sha256`, while an
+    /// asset of the store still has that content.
+    pub(crate) fn keep_thumbnail(
+        &self,
+        store: &AssetStore,
+        sha256: &str,
+        picture: &thumbnail::Picture,
+    ) -> Result<(), AssetError> {
+        self.locked(store, |dir| {
+            if !self
+                .index(dir)?
+                .assets
+                .iter()
+                .any(|record| record.sha256 == sha256)
+            {
+                return Ok(());
+            }
+            write_atomic(&thumbnail_path(dir, sha256, picture.format), &picture.bytes)
+        })
+    }
+
     /// Tells clients that stores changed outside a write here, such as a
     /// project's or a tree's deleted with it.
     pub(crate) fn announce(&self) {
@@ -537,19 +631,40 @@ fn release_blob(dir: &Path, index: &IndexFile, sha256: &str) {
     if index.assets.iter().any(|record| record.sha256 == sha256) {
         return;
     }
-    let path = dir.join(BLOBS_DIR).join(sha256);
-    if let Err(error) = fs::remove_file(&path)
-        && error.kind() != io::ErrorKind::NotFound
-    {
-        eprintln!(
-            "cookie-agent: the unused asset blob {} stays: {error}",
-            path.display()
-        );
+    let thumbnails = thumbnail::Format::ALL
+        .into_iter()
+        .map(|format| thumbnail_path(dir, sha256, format));
+    for path in std::iter::once(dir.join(BLOBS_DIR).join(sha256)).chain(thumbnails) {
+        if let Err(error) = fs::remove_file(&path)
+            && error.kind() != io::ErrorKind::NotFound
+        {
+            eprintln!(
+                "cookie-agent: the unused asset file {} stays: {error}",
+                path.display()
+            );
+        }
     }
 }
 
-/// Removes the blobs no entry names and every half-written temporary of
-/// the store at `dir`. A store whose index does not read is left alone.
+/// Where the store at `dir` keeps its thumbnail of the content `sha256`.
+fn thumbnail_path(dir: &Path, sha256: &str, format: thumbnail::Format) -> PathBuf {
+    dir.join(THUMBNAILS_DIR)
+        .join(format!("{sha256}.{}", format.extension()))
+}
+
+/// Whether `name`, a file of the thumbnails folder, is the thumbnail of a
+/// content in `named`.
+fn names_thumbnail(name: &str, named: &HashSet<&str>) -> bool {
+    name.split_once('.').is_some_and(|(sha256, extension)| {
+        named.contains(sha256)
+            && thumbnail::Format::ALL
+                .into_iter()
+                .any(|format| format.extension() == extension)
+    })
+}
+
+/// Removes the blobs and thumbnails no entry names and every half-written
+/// temporary of the store at `dir`. A store whose index does not read is left alone.
 fn sweep(dir: &Path) -> Result<(), AssetError> {
     if !dir.is_dir() {
         return Ok(());
@@ -560,7 +675,9 @@ fn sweep(dir: &Path) -> Result<(), AssetError> {
         .iter()
         .map(|record| record.sha256.as_str())
         .collect::<HashSet<_>>();
-    for folder in [dir.to_owned(), dir.join(BLOBS_DIR)] {
+    let blobs = dir.join(BLOBS_DIR);
+    let thumbnails = dir.join(THUMBNAILS_DIR);
+    for folder in [dir.to_owned(), blobs.clone(), thumbnails.clone()] {
         let Ok(entries) = fs::read_dir(&folder) else {
             continue;
         };
@@ -568,7 +685,14 @@ fn sweep(dir: &Path) -> Result<(), AssetError> {
             let name = entry.file_name();
             let name = name.to_string_lossy();
             let temporary = name.starts_with('.') && name.ends_with(".tmp");
-            let unnamed = folder != dir && !temporary && !named.contains(name.as_ref());
+            let unnamed = !temporary
+                && if folder == blobs {
+                    !named.contains(name.as_ref())
+                } else if folder == thumbnails {
+                    !names_thumbnail(&name, &named)
+                } else {
+                    false
+                };
             if temporary || unnamed {
                 let path = entry.path();
                 fs::remove_file(&path).map_err(store_error(&path))?;

@@ -613,6 +613,12 @@ impl ServerProtocol for StubServer {
     ) -> Result<cookie_agent_protocol::AssetReadResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
+    async fn asset_thumbnail(
+        &self,
+        _: cookie_agent_protocol::AssetThumbnailParams,
+    ) -> Result<cookie_agent_protocol::AssetThumbnailResult, ServerFault> {
+        Err(ServerFault::method_not_found("stub"))
+    }
     async fn rename_asset(
         &self,
         _: cookie_agent_protocol::AssetRenameParams,

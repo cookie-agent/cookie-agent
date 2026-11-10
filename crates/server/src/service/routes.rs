@@ -1202,6 +1202,16 @@ impl ServerProtocol for Server {
         self.engine.read_asset(params).await.map_err(protocol_fault)
     }
 
+    async fn asset_thumbnail(
+        &self,
+        params: cookie_agent_protocol::AssetThumbnailParams,
+    ) -> Result<cookie_agent_protocol::AssetThumbnailResult> {
+        self.engine
+            .asset_thumbnail(params)
+            .await
+            .map_err(protocol_fault)
+    }
+
     async fn rename_asset(
         &self,
         params: cookie_agent_protocol::AssetRenameParams,

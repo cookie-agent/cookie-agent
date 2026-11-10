@@ -5,6 +5,19 @@ The client protocol's version is `MAJOR.MINOR.PATCH`
 adds and a major breaks; before it, every minor could break the wire (see the
 [compatibility spec](../specs/compatibility-v1.md) section 3).
 
+## 1.93.0
+
+- `asset.thumbnail { store, asset }` returns `sha256`, the asset's current
+  content, and `thumbnail?`, an `AssetThumbnail` (`media_type`, base64
+  `data`, `width`, `height`): a JPEG, or a PNG for a picture with
+  transparency, whose longer side is at most 768 pixels
+  (`ASSET_THUMBNAIL_MAX_EDGE`). The daemon makes it of PNG, JPEG, GIF, and
+  WebP pictures itself, of a video's first frame with `ffmpeg`, and of a
+  PDF's first page with `pdftoppm`, each when it is on the daemon's `PATH`,
+  and keeps it with the content. Other kinds have none
+  ([Asset thumbnails](../specs/asset-thumbnails.md)). A guest of a
+  conversation share may ask for the assets it may read.
+
 ## 1.92.0
 
 - A new state event, `reviewer_turn_recorded { turn }`: a turn of the approval

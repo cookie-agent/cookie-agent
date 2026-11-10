@@ -12,6 +12,7 @@ mod agent_memory;
 mod agents;
 mod approvals;
 mod artifacts;
+mod asset_thumbnails;
 mod background_tasks;
 mod background_waits;
 mod cache_expiry;

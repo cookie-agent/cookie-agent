@@ -123,7 +123,11 @@ from, so your `read` rules decide which files can become assets. See
   project. Chips by kind and a search of titles and file names narrow
   further. Each row says where the asset lives, a session's own naming
   its session, and opens to show it, or is renamed, downloaded, or
-  deleted.
+  deleted. A card shows a thumbnail the daemon makes, so the view never
+  reads whole files: pictures always, a video's first frame when `ffmpeg`
+  is on the daemon's `PATH`, and a PDF's first page when `pdftoppm`
+  (poppler) is. Anything else shows its kind's icon, and a Markdown
+  document its first lines.
 
 See [the web client](../clients/web.md#assets).
 

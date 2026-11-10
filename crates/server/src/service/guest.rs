@@ -80,7 +80,9 @@ fn access(method: &str) -> Access {
         | protocol::SESSION_RUNTIMES_LIST_METHOD
         | protocol::ARTIFACT_READ_METHOD => Access::Read("session_id"),
         "approval.list" => Access::Read("root_session_id"),
-        protocol::ASSET_GET_METHOD | protocol::ASSET_READ_METHOD => Access::ReadAsset,
+        protocol::ASSET_GET_METHOD
+        | protocol::ASSET_READ_METHOD
+        | protocol::ASSET_THUMBNAIL_METHOD => Access::ReadAsset,
         "session.compact"
         | "session.revert"
         | protocol::SESSION_COMPACT_CANCEL_METHOD

@@ -383,6 +383,7 @@ fn client_methods() -> Vec<MethodSpec> {
         request!(ATTACHMENT_SAVE_ASSET_METHOD, ToDaemon, AttachmentSaveAssetParams => AttachmentSaveAssetResult),
         request!(ASSET_GET_METHOD, ToDaemon, AssetGetParams => AssetGetResult),
         request!(ASSET_READ_METHOD, ToDaemon, AssetReadParams => AssetReadResult),
+        request!(ASSET_THUMBNAIL_METHOD, ToDaemon, AssetThumbnailParams => AssetThumbnailResult),
         request!(ASSET_RENAME_METHOD, ToDaemon, AssetRenameParams => AssetRenameResult),
         request!(ASSET_DELETE_METHOD, ToDaemon, AssetDeleteParams => AssetDeleteResult),
         request!(SHARES_LIST_METHOD, ToDaemon, SharesListParams => SharesListResult),

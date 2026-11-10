@@ -2,7 +2,10 @@ use std::{collections::HashSet, fs, path::Path, sync::Arc};
 
 use cookie_agent_protocol::{AssetHandle, AssetStamp, AssetStore, SessionId};
 
-use super::{AssetError, AssetStores, AssetWrite, BLOBS_DIR, INDEX_FILE, media_type};
+use super::{
+    AssetError, AssetStores, AssetWrite, BLOBS_DIR, INDEX_FILE, THUMBNAILS_DIR, media_type,
+    thumbnail::{Format, Picture},
+};
 
 fn stores(root: &Path) -> AssetStores {
     AssetStores::new(root)
@@ -333,4 +336,106 @@ fn an_index_kept_in_memory_follows_writes_from_elsewhere() {
         .rename(&store, there.list(&store).unwrap()[0].id, "Mine".into())
         .unwrap();
     assert_eq!(there.list(&store).unwrap()[0].title, "Mine");
+}
+
+fn thumbnails(stores: &AssetStores, store: &AssetStore) -> Vec<String> {
+    let mut names = fs::read_dir(stores.dir(store).join(THUMBNAILS_DIR))
+        .map(|entries| {
+            entries
+                .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    names.sort();
+    names
+}
+
+fn picture() -> Picture {
+    let mut bytes = Vec::new();
+    image::DynamicImage::ImageRgb8(image::RgbImage::new(4, 3))
+        .write_to(
+            &mut std::io::Cursor::new(&mut bytes),
+            image::ImageFormat::Png,
+        )
+        .unwrap();
+    Picture::of(bytes, Format::Png).unwrap()
+}
+
+#[test]
+fn a_thumbnail_is_kept_for_its_content_and_goes_with_it() {
+    let root = tempfile::tempdir().unwrap();
+    let stores = stores(root.path());
+    let store = AssetStore::Shared;
+    let none = HashSet::new();
+    let (asset, _) = stores
+        .write(&store, new_asset(b"first", "a.txt"), &none)
+        .unwrap();
+    let source = stores.thumbnail_source(&store, asset.id).unwrap();
+    assert_eq!(source.asset.sha256, asset.sha256);
+    assert_eq!(fs::read(&source.blob).unwrap(), b"first");
+    assert_eq!(source.kept, None);
+
+    stores
+        .keep_thumbnail(&store, &asset.sha256, &picture())
+        .unwrap();
+    assert_eq!(
+        stores.thumbnail_source(&store, asset.id).unwrap().kept,
+        Some(picture())
+    );
+    // Content no asset has keeps no thumbnail.
+    stores
+        .keep_thumbnail(&store, &"0".repeat(64), &picture())
+        .unwrap();
+    assert_eq!(
+        thumbnails(&stores, &store),
+        vec![format!("{}.png", asset.sha256)]
+    );
+
+    // New content has none, and the old one's goes with its blob.
+    let mut replace = new_asset(b"second", "a.txt");
+    replace.replace = Some(asset.id);
+    let (replaced, _) = stores.write(&store, replace, &none).unwrap();
+    assert_eq!(
+        stores.thumbnail_source(&store, asset.id).unwrap().kept,
+        None
+    );
+    assert!(thumbnails(&stores, &store).is_empty());
+
+    stores
+        .keep_thumbnail(&store, &replaced.sha256, &picture())
+        .unwrap();
+    stores.delete(&store, asset.id).unwrap();
+    assert!(thumbnails(&stores, &store).is_empty());
+}
+
+#[test]
+fn the_first_open_removes_thumbnails_no_content_has() {
+    let root = tempfile::tempdir().unwrap();
+    let store = AssetStore::Shared;
+    let kept = {
+        let stores = stores(root.path());
+        let (asset, _) = stores
+            .write(&store, new_asset(b"kept", "kept.txt"), &HashSet::new())
+            .unwrap();
+        stores
+            .keep_thumbnail(&store, &asset.sha256, &picture())
+            .unwrap();
+        asset
+    };
+    let dir = root.path().join("assets").join(THUMBNAILS_DIR);
+    for name in [
+        format!("{}.png", "0".repeat(64)),
+        format!("{}.gif", kept.sha256),
+        format!(".{}.jpg.123.tmp", kept.sha256),
+        "stray".to_owned(),
+    ] {
+        fs::write(dir.join(name), b"x").unwrap();
+    }
+
+    let stores = stores(root.path());
+    assert_eq!(stores.list(&store).unwrap().len(), 1);
+    assert_eq!(
+        thumbnails(&stores, &store),
+        vec![format!("{}.png", kept.sha256)]
+    );
 }

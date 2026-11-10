@@ -1130,6 +1130,16 @@ impl Client {
             .await
     }
 
+    /// A small picture of an asset's current content (`asset.thumbnail`,
+    /// client protocol 1.93.0).
+    pub async fn asset_thumbnail(
+        &self,
+        params: cookie_agent_protocol::AssetThumbnailParams,
+    ) -> Result<cookie_agent_protocol::AssetThumbnailResult, ClientError> {
+        self.call(cookie_agent_protocol::ASSET_THUMBNAIL_METHOD, &params)
+            .await
+    }
+
     /// Give an asset a new title (`asset.rename`).
     pub async fn rename_asset(
         &self,
