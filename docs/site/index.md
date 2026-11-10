@@ -1,11 +1,12 @@
 # Cookie Agent
 
-Cookie Agent is a subagent-first coding harness. A daemon owns your provider
-connections, sessions, agents, permissions, and memory, and runs the models.
-Runtimes give its sessions their tools: the files and shell of a workspace on
-this machine or another one. Clients, the terminal UI, the web page, and the
-command line, all speak one versioned protocol to the daemon, so several of
-them can work in the same session at once.
+Cookie Agent is one home for all your agents. A daemon that stays on owns
+your provider connections, sessions, agents, permissions, memory, and
+schedules, and runs the models. Runtimes give its sessions their tools: the
+files and shell of a workspace on this machine or another one, and external
+agents such as Claude Code and Codex. Clients, the terminal UI, the web page,
+and the command line, all speak one versioned protocol to the daemon, so
+several of them can work in the same session at once.
 
 ```mermaid
 flowchart LR

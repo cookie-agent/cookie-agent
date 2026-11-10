@@ -2,15 +2,16 @@
 
 <p align="center"><img src="assets/logo.png" alt="Cookie Agent logo" width="256"></p>
 
-Simple and mighty coding agent.
+One home for all your agents.
 
 [![Website](https://img.shields.io/badge/website-cookie--agent.github.io-orange)](https://cookie-agent.github.io/)
 [![Documentation](https://img.shields.io/badge/docs-cookie--agent.github.io%2Fdoc-blue)](https://cookie-agent.github.io/doc/)
 
-Cookie Agent is a Rust-powered terminal coding agent. The surface stays
-minimalistic — a daemon, a TUI, a web client, a headless runner — while the batteries are
-included underneath: providers, permissions, delegation, sessions, plugins,
-and observability are all built in.
+Cookie Agent keeps your agents in one always-on daemon. They remember what
+they learn, work on any of your machines, run on a schedule, and hand you what
+they make, and you open every session from a terminal, a browser, or your
+phone. Use Cookie Agent's own agents, or bring Claude Code and Codex. Written
+in Rust.
 
 ## Quick start
 

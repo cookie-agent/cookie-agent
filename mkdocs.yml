@@ -22,7 +22,7 @@ theme:
   logo: assets/logo.svg
   favicon: assets/logo.svg
   font:
-    text: Instrument Sans
+    text: Inter
     code: JetBrains Mono
   features:
     - navigation.tabs
