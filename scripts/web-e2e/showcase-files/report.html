@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>greet() benchmark</title>
+<style>
+body{margin:0;font-family:Inter,system-ui,sans-serif;color:#09090b;background:#fff;line-height:1.55}
+main{max-width:720px;margin:0 auto;padding:40px 28px}
+h1{font-size:28px;letter-spacing:-.02em;margin:0}
+.sub{color:#71717a;margin:6px 0 28px}
+.kpis{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:28px}
+.kpi{border:1px solid #e4e4e7;border-radius:12px;padding:14px 16px}
+.kpi b{display:block;font-size:24px;letter-spacing:-.02em}.kpi span{color:#71717a;font-size:13px}
+table{width:100%;border-collapse:collapse;font-size:14px}
+th,td{text-align:left;padding:10px 8px;border-bottom:1px solid #f0f0f2}th{color:#71717a;font-weight:500}
+td.n{text-align:right;font-variant-numeric:tabular-nums}tr.best td{color:#5b5bd6;font-weight:600}
+</style></head><body><main>
+<h1>greet() benchmark</h1><p class="sub">Python 3.12 · 1,000,000 calls per variant · median of 5 runs</p>
+<div class="kpis"><div class="kpi"><b>41 ns</b><span>f-string, per call</span></div><div class="kpi"><b>2.7×</b><span>faster than concat</span></div><div class="kpi"><b>0</b><span>regressions</span></div></div>
+<table><thead><tr><th>Variant</th><th class="n">Median</th><th class="n">p95</th></tr></thead><tbody>
+<tr><td>"Hello " + name</td><td class="n">110 ns</td><td class="n">131 ns</td></tr>
+<tr><td>"Hello, {}!".format(name)</td><td class="n">90 ns</td><td class="n">104 ns</td></tr>
+<tr><td>"Hello, %s!" % name</td><td class="n">60 ns</td><td class="n">72 ns</td></tr>
+<tr class="best"><td>f"Hello, {name}!"</td><td class="n">41 ns</td><td class="n">49 ns</td></tr>
+</tbody></table></main></body></html>

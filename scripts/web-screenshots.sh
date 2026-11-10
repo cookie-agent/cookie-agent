@@ -3,10 +3,14 @@
 # scratch home with a scripted model (scripts/web-e2e/showcase-model.py)
 # answers one request with an edit, a `bash` check, and a markdown reply, and
 # scripts/web-e2e/showcase.py captures the page in headless Chrome, light
-# and dark, at desktop and phone sizes. Run scripts/build-web.sh first so the
-# daemon embeds the real page.
+# and dark, at desktop and phone sizes. Without a mode it then replays the
+# session in the TUI's `render_preview` test and photographs that too, as
+# `tui-light.png` and `tui-dark.png` (scripts/tui_preview_html.py). Run
+# scripts/build-web.sh first so the daemon embeds the real page.
 #
-# Usage: scripts/web-screenshots.sh [--all | --composer] <output-dir>
+# Usage: scripts/web-screenshots.sh [--all | --composer | --share] <output-dir>
+# With --share it also photographs a reply that attaches a chart and an HTML
+# report, the report open beside the chat (share-light.png, share-dark.png).
 # With --all it also photographs every panel, sheet, and menu, and the
 # connect screen, at both sizes and in both themes, under <output-dir>/all/.
 # With --composer it photographs the composer in each of its states, the
@@ -23,6 +27,9 @@ if [[ "${1:-}" == "--all" ]]; then
     shift
 elif [[ "${1:-}" == "--composer" ]]; then
     mode="composer"
+    shift
+elif [[ "${1:-}" == "--share" ]]; then
+    mode="share"
     shift
 fi
 if (($# != 1)); then
@@ -135,6 +142,7 @@ from greet import greet
 assert greet("Ada") == "Hello, Ada!", greet("Ada")
 print("ok: greet(\"Ada\") == \"Hello, Ada!\"")
 PY
+cp scripts/web-e2e/showcase-files/* "$workspace/"
 port="$(free_port)"
 # Set up for onboarding (a provider and the default, small, and utility
 # models), so no first-run sheet covers the page.
@@ -192,3 +200,27 @@ driver_port="$(free_port)"
 start_chromedriver "$driver_port" "$scratch/browsers" "$scratch/chromedriver.log"
 pids+=("$!")
 python3 -I scripts/web-e2e/showcase.py "$driver_port" "$link" "$out" $mode
+
+# The TUI: the same session, replayed up to the end of its first run, in a
+# 96×34 terminal. The replacements hide what only the test harness shows: its
+# stand-in model, the scratch home, and its closed transport.
+if [[ -z "$mode" ]]; then
+    events="$(grep -l 'Fix the greeting' "$home"/.cookie-agent/sessions/*/*/events.jsonl | head -n 1)"
+    first_run="$(grep -n '"type":"run_finished"' "$events" | head -n 1 | cut -d: -f1)"
+    for theme in light dark; do
+        dark=()
+        [[ "$theme" == dark ]] && dark=(--dark)
+        env PREVIEW_EVENTS="$events" PREVIEW_OUT="$scratch/tui-$theme.jsonl" \
+            PREVIEW_WIDTH=96 PREVIEW_HEIGHT=34 PREVIEW_EVENT_LIMIT="$first_run" \
+            ${dark:+PREVIEW_DARK=1} \
+            cargo test --locked -q -p cookie_agent_tui render_preview -- --ignored >/dev/null
+        python3 -I scripts/tui_preview_html.py "$scratch/tui-$theme.jsonl" "$scratch/tui-$theme.html" \
+            "${dark[@]}" --blank-scrollbar \
+            --replace 'Arbitrary Model\[base\] =GPT-5 |─' \
+            --replace ' transport closed =|─' \
+            --replace "${scratch//./\\.}\\S*=~/greeter" \
+            --replace 'events ≥ warning='
+        python3 -I scripts/web-e2e/screenshot.py "$driver_port" "file://$scratch/tui-$theme.html" \
+            "$out/tui-$theme.png" 888 700
+    done
+fi

@@ -69,6 +69,16 @@ def reply(request):
         return text(["Noted."])
     if isinstance(asked, str) and "take your time" in asked:
         return text(["Looking at it slowly. "] * 160, pause=0.25)
+    if isinstance(asked, str) and asked.startswith("Benchmark"):
+        if results == 0:
+            return tool("", "bash", {"command": "python3 bench.py"})
+        return text(
+            [
+                "The f-string is the fastest: **41 ns** a call, 2.7× faster than concatenation.\n\n",
+                '<attach src="bench.png" title="greet() latency by version"/>\n',
+                '<attach src="report.html" title="Benchmark report"/>\n',
+            ]
+        )
     if results == 0:
         return tool(
             "The greeting is missing its comma and exclamation mark.",

@@ -3,7 +3,7 @@
 
 Run by scripts/web-screenshots.sh:
 
-    python3 -I showcase.py <driver-port> <link> <output-dir> [all]
+    python3 -I showcase.py <driver-port> <link> <output-dir> [all | composer | share]
 
 It starts a session, sends one request the scripted model
 (showcase-model.py) answers with an edit, a `bash` check, and a markdown
@@ -17,6 +17,10 @@ phone, and phone-landscape sizes, and saves each in light and dark under
 as a whole. First it starts three more sessions on the runtime cards, so
 the sessions list shows every kind of badge, and it photographs a row's
 title and the title bar's as fields.
+
+With `share`, it then asks for a benchmark, which the model answers with a
+chart and an HTML report as attachments, opens the report beside the chat,
+and saves `share-light.png` and `share-dark.png` at 1440×900.
 
 In the environment, `CHROME` and `CHROME_ARGS` (a JSON list) are the
 browser and its switches.
@@ -34,6 +38,7 @@ DRIVER = "http://127.0.0.1:%s" % sys.argv[1]
 LINK, OUT = sys.argv[2:4]
 ALL = sys.argv[4:5] == ["all"]
 COMPOSER = sys.argv[4:5] == ["composer"]
+SHARE = sys.argv[4:5] == ["share"]
 ELEMENT = "element-6066-11e4-a52e-4f735466cecf"
 ENTER = "\ue007"  # WebDriver key: Enter
 # What a desktop with a mouse reports, which headless Chrome does not:
@@ -218,6 +223,31 @@ for theme in ("light", "dark"):
         "t.scrollTop += m.getBoundingClientRect().top - t.getBoundingClientRect().top - 8"
     )
     browser.shot("web-phone-%s.png" % theme)
+
+if SHARE:
+    # A second request: the agent benchmarks greet() and hands over a
+    # chart and an HTML report, the report open beside the chat.
+    browser.size(1440, 900)
+    time.sleep(1)
+    browser.type("#composer", "Benchmark the greeting variants and chart them.")
+    browser.type("#composer", ENTER)
+    browser.wait(
+        "the attachments",
+        lambda: browser.count("#transcript [data-attach-item]") >= 2
+        and "working" not in browser.text("#status-bar"),
+    )
+    time.sleep(2)
+    browser.script("document.querySelector('#transcript [data-action=asset-panel]').click()")
+    time.sleep(2)
+    browser.script("document.querySelector('#composer').blur()")
+    for theme in ("light", "dark"):
+        browser.theme(theme)
+        browser.script(
+            "const t = document.querySelector('#transcript'); t.scrollTop = t.scrollHeight"
+        )
+        browser.shot("share-%s.png" % theme)
+    call("DELETE", browser.path(""))
+    sys.exit(0)
 
 # Every sheet and menu of the chat view: the bottom bar's pickers, then the
 # ⋮ menu's entries, each by its clicks.
