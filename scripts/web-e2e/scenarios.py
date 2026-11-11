@@ -4784,14 +4784,14 @@ def phone_layout():
         assert count(phone, SESSIONS_PAGE) == 1 and title == opened, "the long press opened the session"
         phone.shot("phone-delete-revealed")
         # The long press offers Rename too, which makes the title a field.
-        phone.click("#sidebar [data-rename-reveal]")
+        phone.click("#sidebar [data-reveal-item=rename]")
         phone.wait("the row's field", lambda: count(phone, '#sidebar [data-rename-field="%s"]' % doomed) == 1)
         phone.shot("phone-rename-row")
         phone.type('#sidebar [data-rename-field="%s"]' % doomed, "Doomed" + ENTER)
         phone.wait("the renamed row", lambda: phone.text('#sidebar [data-session-row="%s"] [data-session-title]' % doomed) == "Doomed")
         long_press(phone, row)
         phone.wait("the delete action", lambda: count(phone, "#sidebar [data-delete-actions]") == 1)
-        phone.click("#sidebar [data-delete-reveal]")
+        phone.click("#sidebar [data-reveal-item=delete]")
         phone.wait("the confirmation", lambda: count(phone, "#sidebar [data-delete-confirm-box]") == 1)
         phone.shot("phone-delete-confirm")
         phone.click('#sidebar [data-delete-confirm="%s"]' % doomed)
@@ -6056,63 +6056,30 @@ def projects_phone():
             " clientX: r.left + 30, clientY: r.top + r.height / 2, bubbles: true}))"
         )
         phone.script(finger, held, "pointerdown")
-        phone.wait("the row's actions while held", lambda: count(phone, "#sidebar [data-delete-actions] [data-row-menu]") == 1, timeout=5)
+        actions = "#sidebar [data-delete-actions]"
+        phone.wait("the row's actions while held", lambda: count(phone, actions + " [data-reveal-item=move]") == 1, timeout=5)
         phone.script(finger, held, "pointerup")
-        phone.wait("the row's actions", lambda: count(phone, "#sidebar [data-delete-actions] [data-row-menu]") == 1)
+        phone.wait("the row's actions", lambda: count(phone, actions + " [data-reveal-item=move]") == 1)
+        # Every action laid out flat, no ⋮: Rename first, Delete and Cancel last.
         labels = phone.script(
-            "return [...document.querySelectorAll('#sidebar [data-delete-actions] button')].map((b) => b.getAttribute('aria-label'))"
+            "return [...document.querySelectorAll(arguments[0] + ' button')].map((b) => b.innerText.trim())", actions
         )
-        assert labels == ["More actions", "Rename", "Delete", "Cancel"], labels
-        # A narrow phone shows the four as icons, on one line.
-        tops = phone.script(
-            "return [...new Set([...document.querySelectorAll('#sidebar [data-delete-actions] button')].map((b) => Math.round(b.getBoundingClientRect().top)))]"
-        )
-        assert len(tops) == 1, "the row's actions wrap: %s" % tops
+        assert labels[0] == "Rename" and labels[-2:] == ["Delete…", "Cancel"], labels
+        assert "Move to project…" in labels and count(phone, actions + " [data-row-menu]") == 0, labels
         fits(phone, "the row's actions")
         phone.shot("phone-row-actions")
-        # The ⋮'s sheet moves it into the project.
-        phone.click("#sidebar [data-delete-actions] [data-row-menu]")
-        phone.wait("the row's sheet", lambda: count(phone, "#sidebar [data-row-menu-list]") == 1)
-        phone.click("#sidebar [data-row-menu-list] [data-menu-item=move]")
-        phone.wait("the picker", lambda: count(phone, "#sheet [data-move-to]") >= 2)
-        phone.click('#sheet [data-move-to="%s"]' % project)
-        phone.wait("the closed picker", lambda: count(phone, "#sheet") == 0)
-        phone.click("main [data-sidebar-toggle]")
-        phone.wait("the moved row", lambda: phone_section_of(phone, row) == "project:" + project)
-        print("phone: long presses show the header's and the row's buttons, the row's while held; its sheet moved it into the project")
-        # The ⋮ a long press reveals opens a sheet from the bottom, the
-        # screen's width, with rows a finger can hit; a tap outside closes
-        # it, and its Move to project… moves the row back out.
-        long_press(phone, '#sidebar [data-session-row="%s"] [data-session]' % row)
-        phone.wait("the row's ⋮", lambda: count(phone, "#sidebar [data-delete-actions] [data-row-menu]") == 1)
-        menu = "#sidebar [data-row-menu-list]"
-        phone.click("#sidebar [data-delete-actions] [data-row-menu]")
-        phone.wait("the row's sheet", lambda: count(phone, menu) == 1)
-        frame = lambda: phone.script(
-            "const m = document.querySelector(arguments[0]).getBoundingClientRect();"
-            "return [Math.round(m.left), Math.round(m.width), Math.round(innerWidth), Math.round(m.bottom), Math.round(innerHeight)]",
-            menu,
-        )
-        # It settles into place as a bottom sheet.
-        phone.wait(
-            "a bottom sheet",
-            lambda: frame()[0] == 0 and frame()[1] == frame()[2] and abs(frame()[3] - frame()[4]) <= 1,
-        )
-        assert "Move to project…" in phone.text(menu), phone.text(menu)
-        fits(phone, "the row's sheet")
-        phone.shot("phone-row-menu")
-        phone.click("#sidebar [data-row-menu-backdrop]")
-        phone.wait("the sheet closed by a tap outside", lambda: count(phone, menu) == 0)
-        assert count(phone, SESSIONS_PAGE) == 1, "the tap outside closed the sessions"
-        phone.click("#sidebar [data-delete-actions] [data-row-menu]")
-        phone.wait("the row's sheet", lambda: count(phone, menu) == 1)
-        phone.click(menu + " [data-menu-item=move]")
-        phone.wait("the picker", lambda: count(phone, "#sheet [data-move-to]") >= 2)
-        phone.click('#sheet [data-move-to="none"]')
-        phone.wait("the closed picker", lambda: count(phone, "#sheet") == 0)
-        phone.click("main [data-sidebar-toggle]")
-        phone.wait("the row moved back out", lambda: phone_section_of(phone, row) == "none")
-        print("phone: the row's ⋮ opens a bottom sheet a tap outside closes; its Move to project… moved the row")
+        # Its Move to project… moves the row into the project, and back out.
+        for target, section in ((project, "project:" + project), ("none", "none")):
+            if target == "none":
+                long_press(phone, '#sidebar [data-session-row="%s"] [data-session]' % row)
+                phone.wait("the row's actions", lambda: count(phone, actions + " [data-reveal-item=move]") == 1)
+            phone.click(actions + " [data-reveal-item=move]")
+            phone.wait("the picker", lambda: count(phone, "#sheet [data-move-to]") >= 2)
+            phone.click('#sheet [data-move-to="%s"]' % target)
+            phone.wait("the closed picker", lambda: count(phone, "#sheet") == 0)
+            phone.click("main [data-sidebar-toggle]")
+            phone.wait("the moved row", lambda: phone_section_of(phone, row) == section)
+        print("phone: long presses show the header's buttons and every action of the row, flat, the row's while held; its Move to project… moved it in and out")
     finally:
         phone.close()
 

@@ -118,9 +118,9 @@ const ROW_ACTIONS: &str = "absolute inset-y-0 right-0 items-center gap-0.5 round
 /// open row's hover colour is the same), one palette step darker on hover
 /// (lighter in dark), and further still when pressed. 44 px square.
 const ROW_ACTION: &str = "inline-flex min-h-11 min-w-11 items-center justify-center rounded-md bg-sunken text-muted hover:bg-press hover:text-fg active:bg-press";
-/// A button of a row's actions a long press revealed: narrower than
-/// [`BUTTON`], so that ⋮, Rename, Delete, and ✕ share a phone's line.
-const REVEALED: &str = "inline-flex min-h-11 min-w-11 items-center justify-center gap-1.5 rounded-lg bg-raised px-2 text-sm shadow-[0_0_0_1px_var(--color-line-2)] hover:bg-sunken active:bg-press";
+/// A button of the row's actions a long press laid out, two to a line:
+/// its icon, then its name, on two lines where a narrow phone needs them.
+const REVEALED: &str = "flex min-h-11 min-w-0 items-center gap-2 rounded-lg bg-raised px-3 py-1.5 text-left text-sm shadow-[0_0_0_1px_var(--color-line-2)] hover:bg-sunken active:bg-press";
 /// A session's title as a field: in a session row, and in the title bar.
 const TITLE_FIELD: &str = "min-h-9 w-full min-w-0 rounded-lg bg-surface px-2 text-sm font-semibold text-fg shadow-[inset_0_0_0_1px_var(--color-accent),0_0_0_3px_var(--color-accent-soft)] focus:outline-none";
 /// "Use the automatic title", under an emptied title field.
@@ -1094,9 +1094,8 @@ struct RowActions {
     draft: RwSignal<String>,
     /// The field just opened: its text is selected once it shows.
     fresh: StoredValue<bool>,
-    /// The row whose ⋮ menu is open, and whether it is the ⋮ a long press
-    /// revealed (or the one on hover).
-    menu: RwSignal<Option<(SessionId, bool)>>,
+    /// The row whose ⋮ menu is open.
+    menu: RwSignal<Option<SessionId>>,
     /// The row a right-click opened its menu over, and where.
     context: RwSignal<Option<(SessionId, f64, f64)>>,
 }
@@ -1192,7 +1191,6 @@ fn session_row(
     let label = session_label(&session);
     let confirm_label = label.clone();
     let menu_label = label.clone();
-    let reveal_label = label.clone();
     let context_label = label.clone();
     let RowActions {
         hovered,
@@ -1208,7 +1206,7 @@ fn session_row(
     let picked = move || workspace.is_picked(session_id);
     // The hover buttons stay while their ⋮ menu is open.
     let shown = move || {
-        (hovered.get() == Some(session_id) || menu.get() == Some((session_id, false)))
+        (hovered.get() == Some(session_id) || menu.get() == Some(session_id))
             && !is_renaming()
             && !picking()
     };
@@ -1280,9 +1278,10 @@ fn session_row(
             items
         }
     };
-    // A right-click's menu: everything the row offers, Rename first and
-    // Delete last.
-    let context_items = move || {
+    // Everything the row offers, Rename first and Delete last: a
+    // right-click's menu, and the buttons a long press lays out
+    // (`revealed_row`), which let go of the row once one is pressed.
+    let all_items = move |revealed_row: bool| {
         let mut items = vec![row_menu::MenuItem {
             id: "rename",
             label: "Rename",
@@ -1290,7 +1289,7 @@ fn session_row(
             act: Callback::new(move |()| actions.begin_rename(workspace, session_id)),
             danger: false,
         }];
-        items.extend(menu_items(false)());
+        items.extend(menu_items(revealed_row)());
         if workspace.can_delete.get() {
             items.push(row_menu::MenuItem {
                 id: "delete",
@@ -1490,7 +1489,7 @@ fn session_row(
                 }
                 data-row-actions
             >
-                {row_menu::row_menu(menu, (session_id, false), session_id.to_string(), menu_label.clone(), ROW_ACTION, menu_items(false))}
+                {row_menu::row_menu(menu, session_id, session_id.to_string(), menu_label.clone(), ROW_ACTION, menu_items(false))}
                 <button
                     type="button"
                     class=ROW_ACTION
@@ -1520,48 +1519,41 @@ fn session_row(
             </div>
             </Show>
         </div>
-        {row_menu::context_menu(actions.context, session_id, context_label.clone(), context_items)}
+        {row_menu::context_menu(actions.context, session_id, context_label.clone(), move || all_items(false))}
         <Show when=move || revealed.get() == Some(session_id) && confirming.get() != Some(session_id)>
-            // Labels only where the line fits them: on a narrow phone
-            // Rename and Delete are icons, named by their aria-labels, so
-            // the four buttons stay on one line. The ⋮ is always an icon.
-            <div class="@container" data-delete-actions-frame>
-            <div class="flex flex-wrap gap-1.5 px-2 pb-1" data-delete-actions>
-                {row_menu::row_menu(menu, (session_id, true), session_id.to_string(), reveal_label.clone(), REVEALED, menu_items(true))}
+            // Every action at once, two to a line, then Cancel.
+            <div class="grid grid-cols-2 gap-1.5 px-2 pb-1" data-delete-actions>
+                {move || {
+                    all_items(true)
+                        .into_iter()
+                        .map(|item| {
+                            let act = item.act;
+                            view! {
+                                <button
+                                    type="button"
+                                    class=format!("{REVEALED} {}", if item.danger { "text-bad" } else { "" })
+                                    data-reveal-item=item.id
+                                    on:click=move |_| act.run(())
+                                >
+                                    <Glyph
+                                        icon=item.icon
+                                        class=if item.danger { "shrink-0 text-bad" } else { "shrink-0 text-muted" }
+                                    />
+                                    <span class="leading-tight">{item.label}</span>
+                                </button>
+                            }
+                        })
+                        .collect_view()
+                }}
                 <button
                     type="button"
                     class=REVEALED
-                    aria-label="Rename"
-                    data-rename-reveal=session_id.to_string()
-                    on:click=move |_| actions.begin_rename(workspace, session_id)
-                >
-                    <Glyph icon=icondata::LuPencil />
-                    <span class="hidden @[22rem]:inline">"Rename"</span>
-                </button>
-                <Show when=move || workspace.can_delete.get()>
-                    <button
-                        type="button"
-                        class=REVEALED
-                        aria-label="Delete"
-                        data-delete-reveal=session_id.to_string()
-                        on:click=move |_| confirming.set(Some(session_id))
-                    >
-                        <Glyph icon=icondata::LuTrash2 />
-                        <span class="hidden @[22rem]:inline">"Delete"</span>
-                    </button>
-                </Show>
-                // An icon, so the four fit a phone's session row on one line.
-                <button
-                    type="button"
-                    class=BUTTON.replace("px-3", "px-0")
-                    aria-label="Cancel"
-                    title="Cancel"
                     data-actions-cancel
                     on:click=move |_| revealed.set(None)
                 >
-                    <Glyph icon=icondata::LuX />
+                    <Glyph icon=icondata::LuX class="shrink-0 text-muted" />
+                    <span class="leading-tight">"Cancel"</span>
                 </button>
-            </div>
             </div>
         </Show>
         <Show when=move || confirming.get() == Some(session_id)>

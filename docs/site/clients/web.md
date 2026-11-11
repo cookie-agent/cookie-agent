@@ -1164,11 +1164,12 @@ changes (`crons.changed`), from any client or agent.
   Back (Android's Back gesture and button too), the sidebar button in its
   title bar, or choosing a session or a view hides it, and a tap on the
   open session's row switches its tree and leaves it shown. A long press
-  on a session's row reveals, as soon as it is held, its **⋮**, a sheet
-  with **Move to project…**, which lists the projects, its **Rename**,
-  which makes its title a field, and its **Delete**, then the
-  confirmation. A long press on a project's header shows its pencil and
-  trash.
+  on a session's row lays out, as soon as it is held, every action of the
+  row under it, two to a line: **Rename**, which makes its title a field,
+  **Pin**, **Move to project…**, which lists the projects, **Mark read**
+  or **unread**, **Share conversation…**, and **Delete**, then the
+  confirmation (each where the daemon offers it), and **Cancel**. A long
+  press on a project's header shows its pencil and trash.
 - **Back.** Back steps out of the innermost thing open: a sheet, then an
   item open in a view, then the sidebar shown as the page, then a view
   other than Chat, back to the conversation. Only Back from the
