@@ -236,10 +236,18 @@ Description=Cookie Agent daemon
 ExecStart=%h/.cargo/bin/cookie daemon --listen 0.0.0.0:7419
 Restart=on-failure
 RestartSec=5
+OOMPolicy=continue
 
 [Install]
 WantedBy=default.target
 ```
+
+`OOMPolicy=continue` keeps the daemon running when the kernel's OOM killer
+kills one of its child processes. Commands that agents run, background jobs
+included, start inside the daemon's service, even under `setsid` or `nohup`.
+With systemd's default policy (`stop`), one oversized job that the OOM
+killer kills stops the whole service: the daemon restarts, and every other
+running command, background job and ACP agent dies with it.
 
 Enable and start it, and let it run without a login session, so it starts at
 boot rather than at your first login:

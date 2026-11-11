@@ -92,6 +92,7 @@ Wants=network-online.target
 ExecStart=%h/.cargo/bin/cookie runtime serve --daemon wss://host.example.ts.net/ws --id <id> --token <token>
 Restart=on-failure
 RestartSec=5
+OOMPolicy=continue
 
 [Install]
 WantedBy=default.target
@@ -109,6 +110,11 @@ loginctl enable-linger "$USER"
 `enable-linger` starts the user's services at boot without a login session.
 Without it the runtime runs only while you are logged in. Follow the output
 with `journalctl --user -u cookie-runtime -f`.
+
+The commands the runtime runs start inside its service.
+`OOMPolicy=continue` keeps the runtime up when the OOM killer kills one of
+them; without it, systemd stops the whole service and every other running
+command with it.
 
 A user service starts with a minimal environment, not your shell's. The
 runtime captures your shell's environment when it connects, so the commands,
