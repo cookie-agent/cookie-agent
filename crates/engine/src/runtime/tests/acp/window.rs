@@ -412,7 +412,9 @@ async fn a_long_scripted_session_holds_one_turn_and_answers_as_its_file() {
             .expect("input submitted");
     }
     finished(engine, session, run).await;
-    wait_for_session_not_running(engine, session).await;
+    // The queued input's run starts only once the steered one ends: the
+    // session is briefly not running between them.
+    super::super::golden_history::quiesce(engine, session).await;
     let log = log_of(engine, session);
     let all = log.event_snapshot().len();
     assert!(all > 200, "{all}");
