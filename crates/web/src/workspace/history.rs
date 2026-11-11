@@ -181,6 +181,19 @@ impl Workspace {
         }
     }
 
+    /// The last block of the finished reply the viewed session's assistant
+    /// block `item_id` is part of, whose menu a long press on its text
+    /// opens. `None` while its run goes on.
+    pub fn reply_end(self, item_id: u64) -> Option<u64> {
+        let session_id = self.selected.get_untracked()?;
+        self.store.with_value(|store| {
+            store
+                .sessions
+                .get(&session_id)
+                .and_then(|state| state.reply_end(item_id))
+        })
+    }
+
     /// Opens the menu of the reply that ends with the viewed session's
     /// assistant block `item_id`.
     pub fn open_reply_menu(self, item_id: u64) {

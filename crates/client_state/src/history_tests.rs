@@ -543,10 +543,23 @@ fn a_reply_has_its_cut_once_its_run_finishes_and_keeps_later_settings() {
             .expect("block")
     };
     let item = last_block(&store);
+    let blocks = |state: &SessionState| {
+        state
+            .transcript
+            .iter()
+            .filter(|item| matches!(item, TranscriptItem::Assistant { .. }))
+            .map(TranscriptItem::id)
+            .collect::<Vec<_>>()
+    };
     assert_eq!(store.sessions[&session_id].reply_cut(item), None);
+    assert_eq!(store.sessions[&session_id].reply_end(item), None);
     assert!(store.apply_event((*events[49]).clone()));
     let state = &store.sessions[&session_id];
     assert_eq!(state.reply_cut(item), Some(50));
+    // Each of its blocks, the first too, is part of the reply ending there.
+    for block in blocks(state) {
+        assert_eq!(state.reply_end(block), Some(item));
+    }
     // Its text is every text part of the run, whichever block holds it.
     let text = state.reply_text(item).expect("reply text");
     assert!(!text.is_empty() && !text.starts_with('\n'));

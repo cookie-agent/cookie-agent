@@ -2781,7 +2781,7 @@ def message_menu(browser):
 
 def touch_message_menu():
     """On a touch screen the icons are gone: a long press on the bubble
-    opens the message's menu."""
+    or a finished reply's text opens the message's or the reply's menu."""
     # A coarse pointer that cannot hover: a phone's.
     phone = Browser(touch=True)
     try:
@@ -2811,7 +2811,16 @@ def touch_message_menu():
         phone.shot("phone-message-long-press")
         small = phone.script(SMALL_TARGETS)
         assert not small, "small targets in the message menu: %s" % small
-        print("phone: no icons on a touch screen; a long press on the bubble opens the message menu")
+        # A finished reply's text opens the reply's menu the same way.
+        phone.click("#sheet h2 ~ button")
+        phone.wait("the closed menu", lambda: count(phone, "#sheet") == 0)
+        phone.script(
+            "const parts = document.querySelectorAll('#transcript [data-reply-block] .markdown[data-part]');"
+            "const part = parts[parts.length - 1]; part.id = 'pressed-reply'; part.scrollIntoView({block: 'center'})"
+        )
+        long_press(phone, "#pressed-reply")
+        phone.wait("the reply menu", lambda: "Reply" in phone.text("#sheet") and "Fork" in phone.text("#sheet"))
+        print("phone: no icons on a touch screen; a long press on the bubble or a reply's text opens its menu")
     finally:
         phone.close()
 

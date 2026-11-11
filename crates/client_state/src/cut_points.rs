@@ -142,6 +142,16 @@ impl SessionState {
             })
     }
 
+    /// The last block of the finished reply the assistant block `item_id`
+    /// is part of, which [`Self::reply_point`] takes. `None` while its run
+    /// goes on.
+    #[must_use]
+    pub fn reply_end(&self, item_id: u64) -> Option<u64> {
+        let run = self.assistant_runs.get(&item_id)?;
+        let last = *self.run_last_blocks.get(run)?;
+        self.reply_cut(last).is_some().then_some(last)
+    }
+
     /// The sequence a revert or fork that keeps the reply ending with the
     /// assistant block `item_id` cuts through: just before what came next
     /// ([`Self::reply_boundaries`]), else the session's last event, so the

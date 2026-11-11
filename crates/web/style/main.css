@@ -113,9 +113,9 @@ html.dark {
    while a mouse or pen is over its row (the page marks it `pointer-over`)
    or the keyboard is in it, and always under the newest message and reply;
    their room stays, so nothing moves. A touch screen has none: a long press
-   on a message's bubble, or a reply's ⋯, opens the same actions in a menu,
-   without the browser's callout or a text selection. A session another
-   client owns offers no revert or fork. */
+   on a message's bubble or a reply's text opens the same actions in a
+   menu, without the browser's callout or a text selection. A session
+   another client owns offers no revert or fork. */
 [data-message-actions] {
   opacity: 0;
   transition: opacity 120ms;
@@ -124,9 +124,6 @@ html.dark {
 .transcript-item:focus-within [data-message-actions],
 [data-message-actions][data-latest] {
   opacity: 1;
-}
-[data-reply-footer] [data-action="reply-menu"] {
-  display: none;
 }
 #transcript[data-read-only] :is([data-action$="-revert"], [data-action$="-fork"]) {
   display: none;
@@ -139,10 +136,8 @@ html.dark {
   [data-message-actions] {
     display: none;
   }
-  [data-reply-footer] [data-action="reply-menu"] {
-    display: inline-flex;
-  }
-  .user-row [data-bubble] {
+  .user-row [data-bubble],
+  [data-reply-block] :is(.markdown[data-part], [data-reply-footer]) {
     -webkit-touch-callout: none;
     -webkit-user-select: none;
     user-select: none;

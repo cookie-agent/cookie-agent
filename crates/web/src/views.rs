@@ -2654,14 +2654,6 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
                     workspace.reply_action(item, action, anchor);
                 }
             }
-            "reply-menu" => {
-                if let Some(item) = target
-                    .get_attribute("data-item")
-                    .and_then(|item| item.parse().ok())
-                {
-                    workspace.open_reply_menu(item);
-                }
-            }
             "compaction-revert" => {
                 if let Some(seq) = target
                     .get_attribute("data-seq")
@@ -2717,7 +2709,7 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
         workspace,
         press: StoredValue::new(Press::default()),
         timer: StoredValue::new(None),
-        seq: StoredValue::new(None),
+        on: StoredValue::new(None),
     };
     // Following stops the moment the user scrolls toward older rows (a
     // wheel, a key, a finger, the scrollbar, a flick's momentum) and
@@ -2837,7 +2829,8 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
             on:pointerover=move |event: ev::PointerEvent| mark_message_row(&event, marked_row)
             on:pointerleave=move |_| unmark_message_row(marked_row)
             on:contextmenu=move |event: ev::MouseEvent| {
-                // A long press on a bubble is its menu, not the browser's.
+                // A long press on a message or a reply is its menu, not the
+                // browser's.
                 if message_press.held() {
                     event.prevent_default();
                     return;
@@ -3174,8 +3167,11 @@ impl<V: Clone + PartialEq + Send + Sync + 'static> Slots<V> {
 /// changes, and only a change to its own HTML redraws it.
 #[component]
 fn TranscriptRow(row: ArcRwSignal<Option<RowHtml>>, id: u64) -> impl IntoView {
-    let reply = row.with_untracked(|row| matches!(row, Some(RowHtml::Reply { .. })));
-    if !reply {
+    let block = row.with_untracked(|row| match row {
+        Some(RowHtml::Reply { block, .. }) => Some(*block),
+        _ => None,
+    });
+    let Some(block) = block else {
         let html = move || {
             row.with(|row| match row {
                 Some(RowHtml::Html(html)) => Arc::clone(html),
@@ -3195,7 +3191,7 @@ fn TranscriptRow(row: ArcRwSignal<Option<RowHtml>>, id: u64) -> impl IntoView {
             ></div>
         }
         .into_any();
-    }
+    };
     let node = NodeRef::<html::Div>::new();
     drawn_later(node);
     let header = Memo::new({
@@ -3229,7 +3225,12 @@ fn TranscriptRow(row: ArcRwSignal<Option<RowHtml>>, id: u64) -> impl IntoView {
         parts.with(|parts| part_slots.update(parts.iter().map(|(part, html)| (*part, html))));
     });
     view! {
-        <div class="transcript-item min-w-0" id=row_element_id(id) node_ref=node>
+        <div
+            class="transcript-item min-w-0"
+            id=row_element_id(id)
+            data-reply-block=block.to_string()
+            node_ref=node
+        >
             <div class="flex flex-col gap-1">
                 <div class="contents" inner_html=move || header.get().to_string()></div>
                 <For
@@ -3450,48 +3451,86 @@ fn unmark_message_row(marked: StoredValue<Option<web_sys::Element>, LocalStorage
     }
 }
 
-/// A touch held on a user message's bubble: after [`LONG_PRESS`] without
-/// moving it opens the message's menu, as the ⋯ does with a mouse.
+/// What a finger's long press in the transcript opens the menu of.
+#[derive(Clone, Copy)]
+enum Pressed {
+    /// A user message's bubble, by the message's sequence.
+    Message(u64),
+    /// A finished reply's text or footer, by the reply's last block.
+    Reply(u64),
+}
+
+/// A touch held on a user message's bubble or a finished reply's text:
+/// after [`LONG_PRESS`] without moving it opens the message's or the
+/// reply's menu, the actions a mouse finds in the icons under them.
 #[derive(Clone, Copy)]
 struct MessagePress {
     workspace: Workspace,
     press: StoredValue<Press>,
     timer: StoredValue<Option<TimeoutHandle>>,
-    /// The message the press is on, until it ends.
-    seq: StoredValue<Option<u64>>,
+    /// What the press is on, until it ends.
+    on: StoredValue<Option<Pressed>>,
 }
 
 impl MessagePress {
     fn down(self, event: &ev::PointerEvent) {
         self.cancel();
         self.press.set_value(Press::default());
-        self.seq.set_value(None);
+        self.on.set_value(None);
         if event.pointer_type() != "touch" {
             return;
         }
-        let Some(seq) = event
+        let Some(on) = event
             .target()
             .and_then(|target| target.dyn_into::<web_sys::Element>().ok())
-            .and_then(|target| target.closest("[data-bubble]").ok().flatten())
-            .and_then(|bubble| bubble.closest(".user-row").ok().flatten())
-            .and_then(|row| row.get_attribute("data-seq"))
-            .and_then(|seq| seq.parse().ok())
+            .and_then(|target| self.pressed(&target))
         else {
             return;
         };
         let (x, y) = (f64::from(event.client_x()), f64::from(event.client_y()));
         self.press.update_value(|press| press.start(x, y));
-        self.seq.set_value(Some(seq));
+        self.on.set_value(Some(on));
         let timer = set_timeout_with_handle(
             move || {
                 if self.press.try_update_value(Press::elapse).unwrap_or(false) {
-                    self.workspace.open_user_menu(seq);
+                    match on {
+                        Pressed::Message(seq) => self.workspace.open_user_menu(seq),
+                        Pressed::Reply(block) => self.workspace.open_reply_menu(block),
+                    }
                 }
             },
             LONG_PRESS,
         )
         .ok();
         self.timer.set_value(timer);
+    }
+
+    /// What a press starting at `target` is on: a user message's bubble, or
+    /// a finished reply's text or footer, but not a link, button, or player
+    /// in it, which keep their own press.
+    fn pressed(self, target: &web_sys::Element) -> Option<Pressed> {
+        let closest = |selector: &str| target.closest(selector).ok().flatten();
+        if let Some(bubble) = closest("[data-bubble]") {
+            return bubble
+                .closest(".user-row")
+                .ok()
+                .flatten()?
+                .get_attribute("data-seq")?
+                .parse()
+                .ok()
+                .map(Pressed::Message);
+        }
+        if closest("a, button, [data-action], video, audio").is_some() {
+            return None;
+        }
+        let block = closest(".markdown[data-part], [data-reply-footer]")?
+            .closest("[data-reply-block]")
+            .ok()
+            .flatten()?
+            .get_attribute("data-reply-block")?
+            .parse()
+            .ok()?;
+        self.workspace.reply_end(block).map(Pressed::Reply)
     }
 
     fn moved(self, event: &ev::PointerEvent) {
@@ -3516,9 +3555,9 @@ impl MessagePress {
         self.press.with_value(Press::fired)
     }
 
-    /// Whether a press is on a bubble now, held or just fired.
+    /// Whether a press is on a message or reply now, held or just fired.
     fn held(self) -> bool {
-        self.seq.get_value().is_some()
+        self.on.get_value().is_some()
     }
 
     fn stop_timer(self) {

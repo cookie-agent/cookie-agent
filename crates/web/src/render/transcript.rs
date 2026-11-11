@@ -955,6 +955,9 @@ pub enum RowHtml {
     /// An assistant reply: its header, then each part under its ID, so a
     /// part that did not change keeps its node while a later one streams.
     Reply {
+        /// The assistant block it draws: a long press on its text opens
+        /// the menu of the reply the block is part of.
+        block: u64,
         header: Arc<str>,
         parts: Arc<[(u64, PartHtml)]>,
         /// The parts that show as the work of an open fold, each with the
@@ -1197,6 +1200,7 @@ pub fn transcript_rows(
                         let headless = pass.block_fold(*id).is_some_and(|fold| !fold.first);
                         CachedRow {
                             html: RowHtml::Reply {
+                                block: *id,
                                 header: Arc::from(if headless {
                                     String::new()
                                 } else {
@@ -1512,7 +1516,8 @@ fn agent_header_html(header: &str) -> String {
 /// speed, the context it left, its cost, and whether it was interrupted.
 /// The last block of a finished run always has one, with the icons that
 /// copy, revert to, and fork from the reply (`latest`: the newest reply's,
-/// which always show), and for a touch screen the ⋯ of its menu instead.
+/// which always show); a touch screen long-presses the reply's text
+/// instead.
 fn reply_footer_html(state: &SessionState, item_id: u64, latest: bool) -> Option<String> {
     let footer = cookie_agent_client_state::reply::assistant_footer(state, item_id);
     let point = state.reply_point(item_id);
@@ -1527,13 +1532,9 @@ fn reply_footer_html(state: &SessionState, item_id: u64, latest: bool) -> Option
             "<div class=\"text-xs text-faint tabular-nums\" data-reply-footer>{text}</div>"
         ));
     };
-    let touch_menu = format!(
-        "<button type=\"button\" data-action=\"reply-menu\" data-item=\"{item_id}\" aria-label=\"Reply actions\" title=\"Reply actions\" class=\"-my-3 inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-md text-muted hover:bg-hover active:bg-press\">{}</button>",
-        svg(icondata::LuEllipsis, ""),
-    );
     let revertible = point.revertible();
     Some(format!(
-        "<div class=\"flex flex-col items-start\" data-reply-footer><div class=\"flex min-h-5 items-center gap-1 text-xs text-faint tabular-nums\">{text}{touch_menu}</div>{}</div>",
+        "<div class=\"flex flex-col items-start\" data-reply-footer><div class=\"flex min-h-5 items-center gap-1 text-xs text-faint tabular-nums\">{text}</div>{}</div>",
         point_actions_html(
             "reply",
             &format!("data-item=\"{item_id}\""),

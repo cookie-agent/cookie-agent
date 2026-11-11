@@ -598,8 +598,9 @@ refreshes no longer change). Reset and Replace ask once more.
     added to the session since. A **compaction** row's **Revert** reverts
     to before the compaction. A session another client owns offers no
     revert or fork. On a touch screen there are no icons: a long press on
-    a message (about half a second; moving or scrolling cancels it), or a
-    reply's **⋯**, opens the same actions in a menu. See
+    a message or a finished reply's text (about half a second; moving or
+    scrolling cancels it) opens the same actions in a menu. Reply text is
+    not selectable there; the menu's **copy** takes the whole reply. See
     [Revert](../sessions/index.md#revert).
 - **An ACP agent's commands.** In a session of an
   [ACP agent](../extend/acp-agents.md), typing `/` in the composer lists the
