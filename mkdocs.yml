@@ -212,6 +212,7 @@ nav:
           - Tree-local sessions: specs/tree-local-sessions.md
           - Store lock retention: specs/store-lock-retention.md
       - Drafts and records:
+          - "Web polish: a second pass after Quiet Ink": specs/web-polish.md
           - Session tool groups and skills: specs/session-tool-groups.md
           - Responsive session loading and storage v3: specs/session-storage-v3.md
           - Session store locks and durability: specs/store-locks-and-durability.md
