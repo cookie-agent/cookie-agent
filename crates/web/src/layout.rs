@@ -54,9 +54,9 @@ impl View {
             Self::Skills => "Skills",
             Self::Mcp => "MCP servers",
             Self::Settings => "Settings",
-            Self::Machines => "Machines & runtimes",
+            Self::Machines => "Machines",
             Self::Memory => "Memory",
-            Self::Cron => "Scheduled prompts",
+            Self::Cron => "Schedules",
             Self::Assets => "Assets",
             Self::Sharing => "Sharing",
         }

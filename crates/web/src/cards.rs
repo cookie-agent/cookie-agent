@@ -90,6 +90,41 @@ impl Card {
     }
 }
 
+/// The New session's "Runs on" chip (`docs/site/specs/web-polish.md`, P2):
+/// the machine the selected cards run on and their names, `devbox · global
+/// + coding`, or how many machines when they are several. `local` and
+/// `global` go by their capability; any other runtime by its ID.
+pub fn runs_on(selected: &[&Card]) -> String {
+    if selected.is_empty() {
+        return "Pick where it runs".to_owned();
+    }
+    let mut machines: Vec<String> = Vec::new();
+    for card in selected {
+        let machine = card
+            .machine
+            .as_ref()
+            .map_or_else(|| card.runtime_id.to_string(), ToString::to_string);
+        if !machines.contains(&machine) {
+            machines.push(machine);
+        }
+    }
+    let names = selected
+        .iter()
+        .map(|card| match card.runtime_id.as_str() {
+            RuntimeId::LOCAL | RuntimeId::GLOBAL => card
+                .capability
+                .as_ref()
+                .map_or_else(|| card.runtime_id.to_string(), ToString::to_string),
+            _ => card.runtime_id.to_string(),
+        })
+        .collect::<Vec<_>>()
+        .join(" + ");
+    match machines.as_slice() {
+        [machine] => format!("{machine} · {names}"),
+        several => format!("{} machines · {names}", several.len()),
+    }
+}
+
 fn card_key(runtime_id: &str, capability: Option<&str>) -> String {
     match capability {
         Some(capability) => format!("{runtime_id}/{capability}"),
@@ -1087,5 +1122,25 @@ mod tests {
         assert!(recent_from_storage(None).is_empty());
         assert_eq!(recent_key("local"), "cookie.recent_workspaces:local");
         assert_eq!(group_key("devbox"), "cookie.machine_open:devbox");
+    }
+
+    #[test]
+    fn runs_on_names_the_machine_and_the_runtimes() {
+        let cards = cards(&sample());
+        let pick = |keys: &[&str]| -> Vec<&Card> {
+            keys.iter()
+                .map(|key| {
+                    cards
+                        .iter()
+                        .find(|card| card.key() == *key)
+                        .expect("a card")
+                })
+                .collect()
+        };
+        assert_eq!(
+            runs_on(&pick(&["global/global", "local/coding"])),
+            "devbox · global + coding"
+        );
+        assert_eq!(runs_on(&[]), "Pick where it runs");
     }
 }

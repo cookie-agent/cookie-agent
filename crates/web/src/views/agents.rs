@@ -10,6 +10,7 @@
 //! (`docs/site/specs/acp-onboarding.md` section 7).
 
 use leptos::prelude::*;
+use wasm_bindgen::JsCast as _;
 
 use super::{
     BUTTON, ERROR, ICON_BUTTON, NOTE, PRIMARY, ROW, empty_state, loading,
@@ -18,6 +19,7 @@ use super::{
 use cookie_agent_client_state::agent_documents::AgentDocumentAction;
 
 use crate::{
+    agents::AgentSummary,
     agents::{AgentEntry, agent_groups, agent_id, agent_summary},
     icons::Glyph,
     workspace::Workspace,
@@ -211,6 +213,8 @@ fn agent_panel(workspace: Workspace) -> impl IntoView {
     };
     // An action that asks first, waiting for its second click.
     let pending = RwSignal::new(None::<(String, AgentDocumentAction)>);
+    // The one open ⋯ menu among the rows.
+    let menu = RwSignal::new(None::<String>);
     move || {
         let documents = match workspace.agent_documents.get() {
             None => return None,
@@ -240,49 +244,41 @@ fn agent_panel(workspace: Workspace) -> impl IntoView {
                     .into_iter()
                     .map(|info| {
                         let reason = unavailable_line(&info, &agents);
-                        let buttons = actions(&info)
-                            .into_iter()
-                            .map(|action| {
-                                let key = (info.id.clone(), action);
-                                let asking = {
-                                    let key = key.clone();
-                                    move || pending.get().as_ref() == Some(&key)
-                                };
-                                let (id, preset, path) =
-                                    (info.id.clone(), info.preset.clone(), info.path.clone());
-                                let click = {
-                                    let key = key.clone();
-                                    let asking = asking.clone();
-                                    move |_| {
-                                        if action.confirms() && !asking() {
-                                            pending.set(Some(key.clone()));
-                                            return;
-                                        }
-                                        pending.set(None);
-                                        workspace.agent_document_action(
-                                            action,
-                                            id.clone(),
-                                            preset.clone(),
-                                            path.clone(),
-                                        );
+                        let description = agents
+                            .iter()
+                            .find(|agent| agent.id.as_str() == info.id.as_str())
+                            .map(|agent| agent.description.clone())
+                            .filter(|description| !description.is_empty());
+                        // An action that asks first asks on the row.
+                        let asking = {
+                            let id = info.id.clone();
+                            move || pending.get().filter(|(pending, _)| *pending == id).map(|(_, action)| action)
+                        };
+                        let confirm = {
+                            let (id, preset, path) = (info.id.clone(), info.preset.clone(), info.path.clone());
+                            move || {
+                                asking().map(|action| {
+                                    let (id, preset, path) = (id.clone(), preset.clone(), path.clone());
+                                    view! {
+                                        <span class="flex flex-wrap items-center gap-2 text-xs" data-agent-confirm>
+                                            <span class="text-muted">{format!("{}: this overwrites your document.", action.label())}</span>
+                                            <button
+                                                type="button"
+                                                class=format!("{PANEL_BUTTON} text-bad")
+                                                data-agent-action=format!("{:?}", action).to_lowercase()
+                                                on:click=move |_| {
+                                                    pending.set(None);
+                                                    workspace.agent_document_action(action, id.clone(), preset.clone(), path.clone());
+                                                }
+                                            >
+                                                {action.label()}
+                                            </button>
+                                            <button type="button" class=PANEL_BUTTON on:click=move |_| pending.set(None)>"Cancel"</button>
+                                        </span>
                                     }
-                                };
-                                view! {
-                                    <button
-                                        type="button"
-                                        class=PANEL_BUTTON
-                                        data-agent-action=format!("{:?}", action).to_lowercase()
-                                        on:click=click
-                                    >
-                                        {move || if asking() {
-                                            format!("Sure? {}", action.label())
-                                        } else {
-                                            action.label().to_owned()
-                                        }}
-                                    </button>
-                                }
-                            })
-                            .collect_view();
+                                })
+                            }
+                        };
                         // A right-click offers the same actions; one that
                         // asks first asks on the row, as its button does.
                         let context = RwSignal::new(None);
@@ -316,19 +312,25 @@ fn agent_panel(workspace: Workspace) -> impl IntoView {
                                     .collect::<Vec<_>>()
                             }
                         };
+                        let menu_items = context_items.clone();
                         view! {
                             {super::row_menu::context_menu(context, (), info.id.clone(), context_items)}
+                            // Its name, what it does, and its actions in ⋯
+                            // (docs/site/specs/web-polish.md, P5).
                             <div
-                                class="flex flex-col gap-1 rounded-lg px-3 py-1.5 transition-colors hover:bg-hover"
+                                class="group flex flex-col gap-0.5 rounded-lg px-3 py-1.5 transition-colors hover:bg-hover"
                                 data-agent-document=info.id.clone()
                                 on:contextmenu=super::row_menu::on_context(context)
                             >
                                 <span class="flex w-full items-center gap-2">
-                                    <span class="min-w-0 flex-1 truncate font-mono text-sm font-bold">{info.id.clone()}</span>
+                                    <span class="min-w-0 truncate text-sm font-semibold">{info.id.clone()}</span>
                                     <span class=STATE>{origin_label(&info)}</span>
+                                    <span class="flex-1"></span>
+                                    {super::row_menu::row_menu(menu, info.id.clone(), info.id.clone(), info.id.clone(), ROW_MENU_BUTTON, menu_items)}
                                 </span>
+                                {description.map(|description| view! { <span class=format!("{NOTE} line-clamp-2") data-agent-description>{description}</span> })}
                                 {reason.map(|reason| view! { <span class=NOTE data-agent-unavailable>{reason}</span> })}
-                                <span class="flex flex-wrap gap-1">{buttons}</span>
+                                {confirm}
                             </div>
                         }
                     })
@@ -348,6 +350,9 @@ fn agent_panel(workspace: Workspace) -> impl IntoView {
         )
     }
 }
+
+/// A row's ⋯: quiet until the row is hovered or the menu is open.
+const ROW_MENU_BUTTON: &str = "inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-muted opacity-60 transition hover:bg-sunken hover:text-fg hover:opacity-100 group-hover:opacity-100 aria-expanded:opacity-100";
 
 /// A panel row's action: small, beside the others.
 const PANEL_BUTTON: &str = "inline-flex min-h-11 items-center rounded-lg px-2 text-xs hover:bg-sunken active:bg-press bg-raised shadow-[0_0_0_1px_var(--color-line-2)]";
@@ -396,7 +401,7 @@ fn agent_row(workspace: Workspace, agent: AgentEntry) -> impl IntoView {
             >
                 <span class="flex w-full items-center gap-2">
                     <Glyph icon=mode_icon(summary.mode.as_deref()) class="text-sm opacity-80" />
-                    <span class="min-w-0 flex-1 truncate font-mono text-sm font-bold">{agent.id}</span>
+                    <span class="min-w-0 flex-1 truncate text-sm font-semibold">{agent.id}</span>
                     {(!summary.enabled).then(|| view! { <span class=STATE>"off"</span> })}
                     <Show when=draft.clone()>
                         <span class="text-xs text-accent">"not applied"</span>
@@ -444,6 +449,14 @@ fn agent_detail(workspace: Workspace) -> impl IntoView {
             .map(|(preset, _)| preset.to_owned());
         let deletable = edit.original.is_some();
         let deleted = path.clone();
+        // The form reads the file's text as it opens, and writes each
+        // change back into it, so Save saves either.
+        let form = RwSignal::new(false);
+        let fields = RwSignal::new(AgentSummary::default());
+        let open_form = move || {
+            fields.set(crate::agents::agent_summary(&area_value("config-text")));
+            form.set(true);
+        };
         view! {
             <div class=EDITOR_PAGE>
                 <div class="flex items-center gap-2">
@@ -456,9 +469,19 @@ fn agent_detail(workspace: Workspace) -> impl IntoView {
                     })}
                     {(!deletable).then(|| view! { <span class=STATE>"new"</span> })}
                 </div>
-                <p class=format!("font-mono {NOTE}") id="config-path">{path.clone()}</p>
+                <div class="flex flex-wrap items-center gap-2">
+                    <p class=format!("min-w-0 flex-1 font-mono {NOTE}") id="config-path">{path.clone()}</p>
+                    // The same text two ways (docs/site/specs/web-polish.md, P5).
+                    <div class="inline-flex rounded-lg bg-sunken p-0.5 text-xs" role="tablist" aria-label="Edit as">
+                        <button type="button" role="tab" class=move || seg_class(form.get()) aria-selected=move || form.get().to_string() data-agent-form-tab on:click=move |_| open_form()>"Form"</button>
+                        <button type="button" role="tab" class=move || seg_class(!form.get()) aria-selected=move || (!form.get()).to_string() data-agent-file-tab on:click=move |_| form.set(false)>"File"</button>
+                    </div>
+                </div>
                 {move || workspace.config_error.get().map(|error| view! { <p class=ERROR id="config-error">{error}</p> })}
-                <textarea id="config-text" class=EDITOR spellcheck="false">{edit.text.clone()}</textarea>
+                <Show when=move || form.get()>
+                    {agent_form(fields, form)}
+                </Show>
+                <textarea id="config-text" class=EDITOR class:hidden=move || form.get() spellcheck="false">{edit.text.clone()}</textarea>
                 <Show when=move || confirm_delete.get()>
                     <div class=CONFIRM role="alertdialog">
                         <p class="text-sm">{format!("Delete {}? This cannot be undone.", deleted.clone())}</p>
@@ -511,5 +534,81 @@ fn agent_detail(workspace: Workspace) -> impl IntoView {
             </div>
         }
         .into_any()
+    }
+}
+
+/// A segment of the editor's Form | File switch.
+fn seg_class(on: bool) -> &'static str {
+    if on {
+        "rounded-md bg-raised px-2.5 py-1 font-medium text-fg shadow-[0_1px_2px_rgb(0_0_0/0.08)]"
+    } else {
+        "rounded-md px-2.5 py-1 text-muted hover:text-fg"
+    }
+}
+
+/// The agent editor's form: its description and mode, written into the
+/// file's front matter as they change (`agents::set_front_matter`); the
+/// rest of the document is the file's.
+fn agent_form(fields: RwSignal<AgentSummary>, form: RwSignal<bool>) -> impl IntoView {
+    let write = move |key: &'static str, value: String| {
+        let text = area_value("config-text");
+        match crate::agents::set_front_matter(&text, key, &value) {
+            Some(text) => {
+                if let Some(area) = document()
+                    .get_element_by_id("config-text")
+                    .and_then(|area| area.dyn_into::<web_sys::HtmlTextAreaElement>().ok())
+                {
+                    area.set_value(&text);
+                }
+            }
+            // A key the file writes as a block: the file edits it.
+            None => form.set(false),
+        }
+    };
+    let mode =
+        move || fields.with(|fields| fields.mode.clone().unwrap_or_else(|| "primary".to_owned()));
+    let mode_button = move |value: &'static str, label: &'static str| {
+        view! {
+            <button
+                type="button"
+                class=move || seg_class(mode() == value)
+                aria-pressed=move || (mode() == value).to_string()
+                data-agent-mode=value
+                on:click=move |_| {
+                    fields.update(|fields| fields.mode = Some(value.to_owned()));
+                    write("mode", value.to_owned());
+                }
+            >
+                {label}
+            </button>
+        }
+    };
+    view! {
+        <div class="grid grid-cols-1 items-center gap-x-5 gap-y-3 rounded-xl bg-raised p-4 shadow-[0_0_0_1px_var(--color-line)] sm:grid-cols-[9rem_1fr]" data-agent-form>
+            <label class="text-[0.8125rem] text-muted" for="agent-form-description">"Description"</label>
+            <input
+                type="text"
+                id="agent-form-description"
+                class=FIELD
+                prop:value=move || fields.with(|fields| fields.description.clone().unwrap_or_default())
+                on:input=move |event| {
+                    let value = event_target_value(&event);
+                    fields.update(|fields| fields.description = Some(value.clone()));
+                    write("description", value);
+                }
+            />
+            <span class="text-[0.8125rem] text-muted">"Mode"</span>
+            <div class="inline-flex w-fit rounded-lg bg-sunken p-0.5 text-xs">
+                {mode_button("primary", "Primary")}
+                {mode_button("subagent", "Subagent")}
+                {mode_button("all", "Both")}
+            </div>
+            <span class="text-[0.8125rem] text-muted sm:self-start">"The rest"</span>
+            <p class=NOTE>
+                "Models, permissions, tool groups, and the instructions are in the file; "
+                <button type="button" class="text-accent underline-offset-2 hover:underline" on:click=move |_| form.set(false)>"edit them there"</button>
+                "."
+            </p>
+        </div>
     }
 }

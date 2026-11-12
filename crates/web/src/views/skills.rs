@@ -111,9 +111,11 @@ pub fn skills_page(workspace: Workspace) -> impl IntoView {
     };
     view! {
         <div class="flex flex-col gap-2" data-skills-page>
-            <p class=NOTE>
-                "Skills are instructions an agent loads when a task calls for them; you can run one with /skills in a session."
-            </p>
+            {super::view_header(
+                "Skills",
+                "Instructions an agent loads when a task calls for them; run one with /skills in a session.",
+                (),
+            )}
             <div class="flex flex-wrap items-center gap-2">
                 <Show when=session_open>
                     <div class="flex flex-wrap gap-1.5" role="radiogroup" aria-label="Which skills">

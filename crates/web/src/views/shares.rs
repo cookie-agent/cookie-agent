@@ -883,9 +883,11 @@ pub fn sharing_page(workspace: Workspace) -> impl IntoView {
         }
     };
     view! {
-        <p class="text-sm text-muted">
-            "Public links to assets and conversations: anyone with one can open it in a browser until it expires or you revoke it."
-        </p>
+        {super::view_header(
+            "Sharing",
+            "Public links to assets and conversations: anyone with one can open it in a browser until it expires or you revoke it.",
+            (),
+        )}
         {list}
     }
 }

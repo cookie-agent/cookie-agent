@@ -198,7 +198,9 @@ pub fn LiveBadges(workspace: Workspace) -> impl IntoView {
                     on:click=move |_| workspace.run_command(Command::Background)
                 >
                     <Glyph icon=icondata::LuLoaderCircle class="animate-spin text-sm text-accent" />
-                    <span>{move || background.get()}</span>
+                    // A word beside the count where there is room
+                    // (docs/site/specs/web-polish.md, P3).
+                    <span>{move || background.get()}<span class="hidden lg:inline">" running"</span></span>
                 </button>
             </Show>
             <Show when=move || { approvals.get() > 0 }>
@@ -211,7 +213,10 @@ pub fn LiveBadges(workspace: Workspace) -> impl IntoView {
                     on:click=move |_| workspace.panel.set(Some(Panel::Approvals))
                 >
                     <Glyph icon=icondata::LuShield class="text-sm" />
-                    <span>{move || approvals.get()}</span>
+                    <span>
+                        {move || approvals.get()}
+                        <span class="hidden lg:inline">{move || if approvals.get() == 1 { " approval" } else { " approvals" }}</span>
+                    </span>
                 </button>
             </Show>
             {move || context().map(|(tokens, window)| {

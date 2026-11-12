@@ -110,6 +110,78 @@ pub fn agent_summary(text: &str) -> AgentSummary {
     summary
 }
 
+/// `text` with its front matter's top-level `key` set to `value`, for the
+/// agent editor's form (`docs/site/specs/web-polish.md`, P5): the key's one
+/// line replaced, or added before the closing `---`, or a front matter made
+/// when the document has none. Every other line stays as written. `None`
+/// when the key holds a nested block (an indented line follows it), which
+/// a one-line value would cut short: the file view edits those.
+pub fn set_front_matter(text: &str, key: &str, value: &str) -> Option<String> {
+    let line = format!("{key}: {}", yaml_scalar(value));
+    let lines: Vec<&str> = text.lines().collect();
+    if lines.first().map(|first| first.trim_end()) != Some("---") {
+        return Some(format!("---\n{line}\n---\n{text}"));
+    }
+    let close = lines
+        .iter()
+        .skip(1)
+        .position(|line| line.trim_end() == "---")
+        .map(|at| at + 1)?;
+    let at = (1..close).find(|&index| {
+        let line = lines[index];
+        !line.starts_with([' ', '\t'])
+            && line
+                .split_once(':')
+                .is_some_and(|(name, _)| name.trim() == key)
+    });
+    let mut out: Vec<String> = lines.iter().map(|line| (*line).to_owned()).collect();
+    match at {
+        Some(index) => {
+            if lines
+                .get(index + 1)
+                .is_some_and(|next| index + 1 < close && next.starts_with([' ', '\t']))
+            {
+                return None;
+            }
+            out[index] = line;
+        }
+        None => out.insert(close, line),
+    }
+    let mut joined = out.join("\n");
+    if text.ends_with('\n') {
+        joined.push('\n');
+    }
+    Some(joined)
+}
+
+/// `value` as a YAML scalar on one line: as it is when that reads back the
+/// same, else double-quoted.
+fn yaml_scalar(value: &str) -> String {
+    let plain = !value.is_empty()
+        && value.trim() == value
+        && !value.contains([
+            ':', '#', '"', '\'', '\\', '\n', '[', ']', '{', '}', ',', '&', '*', '!', '|', '>', '%',
+            '@', '`',
+        ])
+        && !matches!(
+            value.to_ascii_lowercase().as_str(),
+            "true" | "false" | "yes" | "no" | "on" | "off" | "null" | "~"
+        )
+        && value.parse::<f64>().is_err()
+        && !value.starts_with(['-', '?']);
+    if plain {
+        value.to_owned()
+    } else {
+        format!(
+            "\"{}\"",
+            value
+                .replace('\\', "\\\\")
+                .replace('"', "\\\"")
+                .replace('\n', "\\n")
+        )
+    }
+}
+
 /// A YAML scalar's text: trimmed, without its quotes.
 fn scalar(value: &str) -> &str {
     let value = value.trim();
@@ -134,7 +206,7 @@ pub fn agent_id(path: &str) -> &str {
 mod tests {
     use cookie_agent_protocol::ConfigGetResult;
 
-    use super::{AgentSummary, agent_groups, agent_id, agent_summary};
+    use super::{AgentSummary, agent_groups, agent_id, agent_summary, set_front_matter};
 
     fn config() -> ConfigGetResult {
         serde_json::from_value(serde_json::json!({
@@ -209,5 +281,43 @@ mod tests {
     fn the_editor_names_the_agent_by_its_file() {
         assert_eq!(agent_id("agents/fast/helper.md"), "helper");
         assert_eq!(agent_id("agents/primary.md"), "primary");
+    }
+
+    #[test]
+    fn the_form_sets_one_top_level_key_and_leaves_the_rest() {
+        let text = "---\ndescription: Old\nmode: primary\nmodels:\n  - { model: x }\n---\nBody.\n";
+        let set = set_front_matter(text, "description", "Reviews: diffs").expect("set");
+        assert_eq!(
+            set,
+            "---\ndescription: \"Reviews: diffs\"\nmode: primary\nmodels:\n  - { model: x }\n---\nBody.\n"
+        );
+        assert_eq!(
+            agent_summary(&set).description.as_deref(),
+            Some("Reviews: diffs")
+        );
+        let moded = set_front_matter(&set, "mode", "subagent").expect("set");
+        assert_eq!(agent_summary(&moded).mode.as_deref(), Some("subagent"));
+        assert!(moded.ends_with("---\nBody.\n"));
+    }
+
+    #[test]
+    fn the_form_adds_a_missing_key_and_refuses_a_block() {
+        let added =
+            set_front_matter("---\nmode: all\n---\nBody", "description", "Plain").expect("set");
+        assert_eq!(added, "---\nmode: all\ndescription: Plain\n---\nBody");
+        let made = set_front_matter("Body only", "mode", "primary").expect("set");
+        assert_eq!(made, "---\nmode: primary\n---\nBody only");
+        assert_eq!(
+            set_front_matter("---\nmodels:\n  - a\n---\n", "models", "x"),
+            None
+        );
+        assert_eq!(
+            set_front_matter("---\nmode: all\n", "mode", "x"),
+            None,
+            "an unclosed front matter"
+        );
+        // Values YAML would read as something else are quoted.
+        let quoted = set_front_matter("---\n---\n", "description", "true").expect("set");
+        assert!(quoted.contains("description: \"true\""), "{quoted}");
     }
 }

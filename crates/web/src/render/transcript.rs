@@ -1953,10 +1953,37 @@ fn tool_header_text(view: &TranscriptView<'_>, tool: &ToolCallState) -> String {
     crate::places::paths_under_home(&tool.header_text(), home)
 }
 
+/// How much of a tool's header is its title, which the row draws as the
+/// verb, before the argument (docs/site/specs/web-polish.md, P3): all of
+/// it when the header does not start with the title as written.
+fn header_title_len(view: &TranscriptView<'_>, tool: &ToolCallState, header: &str) -> usize {
+    let home = match tool
+        .presentation
+        .tool
+        .source
+        .as_ref()
+        .and_then(|source| source.known())
+    {
+        Some(
+            cookie_agent_protocol::ToolSource::Runtime { runtime_id, .. }
+            | cookie_agent_protocol::ToolSource::Acp { runtime_id, .. },
+        ) => view.homes.get(runtime_id),
+        _ => None,
+    };
+    let title = crate::places::paths_under_home(&tool.header_title(), home);
+    if header.starts_with(&title) && header[title.len()..].starts_with(' ') {
+        title.len()
+    } else {
+        header.len()
+    }
+}
+
 /// The parts of a tool row's header, each already HTML but the texts.
 struct ToolHeader<'a> {
     id: &'a str,
     header: &'a str,
+    /// How much of `header` is the title (`header_title_len`).
+    title_len: usize,
     /// Where in `header` the memory URL it links starts, and the URL.
     link: Option<(usize, &'a str)>,
     chevron: &'a str,
@@ -1971,15 +1998,32 @@ struct ToolHeader<'a> {
 /// A tool's title with its code spans drawn without their backticks: an
 /// ACP agent titles a call "Run `cargo test`" (docs/site/specs/web-polish.md,
 /// B6).
-fn header_text(header: &str) -> String {
+fn header_text(header: &str, title_len: usize) -> String {
     use cookie_agent_client_state::format::{Span, code_spans};
-    code_spans(header)
+    // The title is the verb, in the sans; its code spans, and the argument
+    // after it, are what the call works on, in mono
+    // (docs/site/specs/web-polish.md, P3).
+    let (title, argument) = header.split_at(title_len.min(header.len()));
+    let mut html: String = code_spans(title)
         .into_iter()
         .map(|span| match span {
-            Span::Text(text) => escape(text),
-            Span::Code(code) => format!("<span data-code>{}</span>", escape(code)),
+            Span::Text(text) => format!(
+                "<span class=\"font-sans font-medium text-fg\" data-verb>{}</span>",
+                escape(text)
+            ),
+            Span::Code(code) => format!(
+                "<span class=\"text-fg-2\" data-code>{}</span>",
+                escape(code)
+            ),
         })
-        .collect()
+        .collect();
+    if !argument.is_empty() {
+        html.push_str(&format!(
+            "<span class=\"text-fg-2\" data-argument>{}</span>",
+            escape(argument)
+        ));
+    }
+    html
 }
 
 impl ToolHeader<'_> {
@@ -2010,7 +2054,7 @@ impl ToolHeader<'_> {
         let toggle = match self.link {
             None => format!(
                 "<button type=\"button\" data-action=\"toggle-tool\" data-call=\"{id}\" aria-expanded=\"false\" class=\"flex min-h-11 min-w-0 flex-1 items-center gap-2 rounded-lg px-2 py-1 text-left font-mono text-[0.8125rem] hover:bg-hover active:bg-press\">{chevron}{icon}<span class=\"min-w-0 shrink truncate\" data-header>{}</span>{progress}<span class=\"flex-1\"></span>{machine}{status}</button>",
-                header_text(self.header),
+                header_text(self.header, self.title_len),
             ),
             Some((at, url)) => {
                 let suffix = self.header[at + url.len()..].trim();
@@ -2075,7 +2119,10 @@ impl ToolHeader<'_> {
         );
         let (title, marker) = match self.link {
             None => (
-                format!("<span data-header>{}</span>", header_text(self.header)),
+                format!(
+                    "<span data-header>{}</span>",
+                    header_text(self.header, self.title_len)
+                ),
                 "",
             ),
             Some((at, url)) => {
@@ -2127,6 +2174,29 @@ fn tool_html(view: &TranscriptView<'_>, tool: &ToolCallState) -> String {
         svg(mark.icon, if mark.spins { "animate-spin" } else { "" }),
         mark.label
     );
+    // What the result comes to, before the status: the lines it changed,
+    // and a command's exit code (docs/site/specs/web-polish.md, P3).
+    let summary = tool.result_summary();
+    let mut result = String::new();
+    if summary.added > 0 || summary.removed > 0 {
+        result.push_str(&format!(
+            "<span class=\"text-ok\">+{}</span><span class=\"text-bad\">−{}</span>",
+            summary.added, summary.removed
+        ));
+    }
+    if let Some(code) = summary.exit_code {
+        result.push_str(&format!(
+            "<span class=\"{}\">exit {code}</span>",
+            if code == 0 { "text-faint" } else { "text-bad" }
+        ));
+    }
+    let status = if result.is_empty() {
+        status
+    } else {
+        format!(
+            "<span class=\"inline-flex shrink-0 items-center gap-1.5 text-xs tabular-nums\" data-tool-result>{result}</span>{status}"
+        )
+    };
     let expanded = view.expanded.tool(&tool.id);
     // A call waiting for an approval says so on its header, and opens the
     // approvals from there.
@@ -2175,9 +2245,11 @@ fn tool_html(view: &TranscriptView<'_>, tool: &ToolCallState) -> String {
     let link = tool
         .memory_url()
         .and_then(|url| header.find(url).map(|at| (at, url)));
+    let title_len = header_title_len(view, tool, &header);
     let parts = ToolHeader {
         id: &id,
         header: &header,
+        title_len,
         link,
         chevron: &chevron,
         icon: &icon,
@@ -2193,7 +2265,13 @@ fn tool_html(view: &TranscriptView<'_>, tool: &ToolCallState) -> String {
         parts.folded()
     };
     let mut html = format!(
-        "<div class=\"rounded-[0.625rem] bg-raised ring-1 ring-line transition-shadow hover:ring-line-2\" data-tool=\"{}\" data-expanded=\"{expanded}\">{header_row}",
+        "<div class=\"rounded-[0.625rem] bg-raised ring-1 transition-shadow {}\" data-tool=\"{}\" data-expanded=\"{expanded}\">{header_row}",
+        // A call that failed shows it in a closed fold too.
+        if summary.failed() || tool.status == ToolStatus::Failed {
+            "ring-bad/35 hover:ring-bad/50"
+        } else {
+            "ring-line hover:ring-line-2"
+        },
         escape(&id),
     );
     if let Some(delegate) = view.delegates.get(&tool.id) {
@@ -4222,12 +4300,9 @@ mod tests {
 
     #[test]
     fn a_tool_title_draws_its_code_spans_without_their_backticks() {
-        let header = super::header_text("Run `a < b` now");
+        let header = super::header_text("Run `a < b` now", "Run `a < b` now".len());
         assert!(!header.contains('`'), "{header}");
-        assert!(
-            header.contains("<span data-code>a &lt; b</span>"),
-            "{header}"
-        );
-        assert!(header.starts_with("Run "), "{header}");
+        assert!(header.contains("data-code>a &lt; b</span>"), "{header}");
+        assert!(header.contains(">Run </span>"), "{header}");
     }
 }

@@ -121,7 +121,7 @@ const ROW_ACTIONS: &str = "absolute inset-y-0 right-0 items-center gap-0.5 round
 /// One of them: at rest in the row's hover colour so it blends in (the
 /// open row's hover colour is the same), one palette step darker on hover
 /// (lighter in dark), and further still when pressed. 44 px square.
-const ROW_ACTION: &str = "inline-flex min-h-11 min-w-11 items-center justify-center rounded-md bg-sunken text-muted hover:bg-press hover:text-fg active:bg-press";
+const ROW_ACTION: &str = "inline-flex min-h-11 min-w-11 items-center justify-center rounded-md bg-sunken text-muted hover:bg-press hover:text-fg active:bg-press lg:min-h-8 lg:min-w-8";
 /// A button of the row's actions a long press laid out, two to a line:
 /// its icon, then its name, on two lines where a narrow phone needs them.
 const REVEALED: &str = "flex min-h-11 min-w-0 items-center gap-2 rounded-lg bg-raised px-3 py-1.5 text-left text-sm shadow-[0_0_0_1px_var(--color-line-2)] hover:bg-sunken active:bg-press";
@@ -160,6 +160,25 @@ fn with_code(line: &str) -> impl IntoView + use<> {
             }
         })
         .collect_view()
+}
+
+/// The head of a workspace view (docs/site/specs/web-polish.md, P5): its
+/// title as the sidebar names it, one sentence on what it is for, and its
+/// actions on the right, the primary one last.
+fn view_header(
+    title: &'static str,
+    description: &'static str,
+    actions: impl IntoView + 'static,
+) -> impl IntoView {
+    view! {
+        <div class="flex flex-wrap items-start gap-x-4 gap-y-2 pb-1" data-view-header>
+            <div class="min-w-0 flex-1 basis-64">
+                <h2 class="text-xl font-semibold tracking-tight text-fg">{title}</h2>
+                <p class="mt-1 max-w-xl text-[0.8125rem] text-muted">{description}</p>
+            </div>
+            <div class="flex shrink-0 flex-wrap items-center gap-2" data-view-actions>{actions}</div>
+        </div>
+    }
 }
 
 /// What a sheet shows when it has nothing to list.
@@ -273,6 +292,14 @@ fn ChatView(workspace: Workspace) -> impl IntoView {
                 // loads shows a skeleton there until it has.
                 <div class="relative flex min-h-0 flex-1 flex-col">
                     <Transcript workspace=workspace />
+                    // The transcript fades out above the composer instead
+                    // of stopping at its edge (docs/site/specs/web-polish.md,
+                    // P3).
+                    <div
+                        class="pointer-events-none absolute inset-x-0 bottom-0 h-8 bg-[linear-gradient(to_bottom,transparent,var(--color-surface))]"
+                        aria-hidden="true"
+                        data-transcript-fade
+                    ></div>
                     <loader::TranscriptLoader workspace=workspace />
                 </div>
                 <DraftFiles workspace=workspace />
@@ -355,6 +382,41 @@ fn SessionList(workspace: Workspace) -> impl IntoView {
         })
     });
     let nothing_shown = Memo::new(move |_| shown.with(Vec::is_empty));
+    // Each project's usual badges, which its rows leave out
+    // (docs/site/specs/web-polish.md, P1): worked out once for the list.
+    let usual = Memo::new(move |_| {
+        let listed = workspace.lists_attachments.get();
+        workspace.runtime_homes.with(|homes| {
+            workspace.runtimes.with(|listing| {
+                workspace.sessions.with(|sessions| {
+                    let mut by_project: HashMap<
+                        cookie_agent_protocol::ProjectId,
+                        Vec<Vec<cookie_agent_client_state::badges::SessionBadge>>,
+                    > = HashMap::new();
+                    for session in sessions.iter().filter(|session| {
+                        matches!(session.origin, cookie_agent_protocol::SessionOrigin::Root)
+                    }) {
+                        if let Some(project) = &session.project {
+                            by_project
+                                .entry(project.clone())
+                                .or_default()
+                                .push(session_badges(session, listing.as_ref(), homes, listed));
+                        }
+                    }
+                    by_project
+                        .into_iter()
+                        .map(|(project, rows)| {
+                            (
+                                project,
+                                cookie_agent_client_state::badges::usual_badges(rows),
+                            )
+                        })
+                        .collect::<HashMap<_, _>>()
+                })
+            })
+        })
+    });
+    provide_context(UsualBadges(usual));
     // The rows' "5m ago" moves on while the list shows.
     let now = RwSignal::new(jiff::Timestamp::now());
     let ticker = set_interval_with_handle(
@@ -530,6 +592,24 @@ fn SessionTools(workspace: Workspace) -> impl IntoView {
             ),
         }
     };
+    // The chip's words: how far back the list reaches, short, and how many
+    // other filters there are.
+    let short_summary = move || {
+        if workspace.rollback_start().is_some() {
+            return summary();
+        }
+        let within = workspace.session_filter.with(|filter| filter.within);
+        let others = filter_changes.get()
+            - usize::from(
+                within != cookie_agent_client_state::session_filter::ActiveWithin::default(),
+            );
+        let reach = within.short(crate::workspace::local_today());
+        if others == 0 {
+            reach
+        } else {
+            format!("{reach} · {others}")
+        }
+    };
     // A closed search lets go of what it held: it opens empty again.
     Effect::new(move |_| {
         if !searching()
@@ -547,13 +627,18 @@ fn SessionTools(workspace: Workspace) -> impl IntoView {
             node_ref=row
         >
             <p class="session-tool shrink-0 text-[0.6875rem] font-semibold text-muted" data-tool="heading">"Sessions"</p>
-            <span
-                class="session-tool min-w-0 flex-1 truncate pr-1 pl-2 text-[0.6875rem] text-faint"
-                data-tool="summary"
-                data-filter-summary
-                title=summary
-            >
-                {summary}
+            // What the filter keeps, as a chip that opens it.
+            <span class="session-tool flex min-w-0 flex-1 pr-1 pl-1.5" data-tool="summary">
+                <button
+                    type="button"
+                    class="inline-flex h-5 min-w-0 items-center rounded-md bg-sunken px-1.5 text-[0.6875rem] whitespace-nowrap text-fg-2 transition-colors hover:bg-hover"
+                    data-filter-summary
+                    title=summary
+                    inert=tool_inert
+                    on:click=move |_| workspace.filter_open.update(|open| *open = !*open)
+                >
+                    <span class="truncate">{short_summary}</span>
+                </button>
             </span>
             // Several sessions at once: mark them read or unread, or
             // delete them.
@@ -1142,6 +1227,18 @@ impl RowActions {
     }
 }
 
+/// Each project's usual badges, which its rows leave out: the session
+/// list provides them to its rows.
+#[derive(Clone, Copy)]
+struct UsualBadges(
+    Memo<
+        HashMap<
+            cookie_agent_protocol::ProjectId,
+            Vec<cookie_agent_client_state::badges::SessionBadge>,
+        >,
+    >,
+);
+
 /// A root session's row: a click opens it. On hover (or a long press on
 /// a touch screen) its buttons offer to rename it, in place, and to
 /// delete it, behind an inline confirmation. Its second line says where
@@ -1208,6 +1305,40 @@ fn session_row(
     };
     let badge_line = NodeRef::<html::Span>::new();
     crate::badges::keep_fitted(badge_line);
+    // The second line shows only when it says something: the machine or
+    // folder is not the project's usual one, or the session is in none
+    // (docs/site/specs/web-polish.md, P1).
+    let usual = use_context::<UsualBadges>();
+    let project = session.project.clone();
+    let second_line = Memo::new(move |_| {
+        let usual = project.as_ref().and_then(|project| {
+            usual.and_then(|usual| usual.0.with(|map| map.get(project).cloned()))
+        });
+        shown_badges.with(|badges| {
+            cookie_agent_client_state::badges::row_shows_badges(badges, usual.as_deref())
+        })
+    });
+    // The row's state as one dot before the title: amber while it waits on
+    // the user, a pulsing accent while it runs, red when it failed or a
+    // failing run held it, a solid accent when unread.
+    let dot = {
+        use cookie_agent_client_state::activity::SessionActivity;
+        match &activity {
+            SessionActivity::Waiting(_) => Some("bg-warn"),
+            SessionActivity::Running => Some("bg-accent row-live"),
+            SessionActivity::Held(cookie_agent_protocol::Open::Known(
+                cookie_agent_protocol::HeldReason::Failing { .. },
+            ))
+            | SessionActivity::Problem(_)
+                if status_mark.is_some() =>
+            {
+                Some("bg-bad")
+            }
+            SessionActivity::Held(_) => Some("bg-warn"),
+            _ if session.unread => Some("bg-accent"),
+            _ => None,
+        }
+    };
     let title = {
         let session = session.clone();
         let status = status_text.clone();
@@ -1370,9 +1501,12 @@ fn session_row(
                 // too, which sit over it, or the keyboard is in it.
                 // One class closure for all of it: `class:` toggles beside
                 // it would be dropped each time it changes.
+                // While its buttons show, the title ends before them
+                // (docs/site/specs/web-polish.md, B7).
                 class=move || format!(
-                    "{ROW} no-callout select-none pr-3 {} group-hover:bg-hover group-has-focus-visible:bg-hover",
-                    if current() || (picking() && picked()) { "bg-sunken" } else { "" },
+                    "{ROW} no-callout select-none lg:min-h-9 lg:py-1.5 {} {} group-hover:bg-hover group-has-focus-visible:bg-hover",
+                    if shown() { "pr-36 lg:pr-28" } else { "pr-3" },
+                    if current() || (picking() && picked()) { "bg-sel" } else { "" },
                 )
                 aria-current=move || current().then_some("true")
                 aria-pressed=move || picking().then(|| picked().to_string())
@@ -1446,22 +1580,19 @@ fn session_row(
                             <Glyph icon=Signal::derive(move || if picked() { icondata::LuSquareCheck } else { icondata::LuSquare }) />
                         </span>
                     </Show>
-                    // The status slot, only when there is a mark.
-                    {status_mark.map(|mark| view! {
-                        <span class="inline-flex shrink-0" data-session-activity=mark.label>
-                            <Glyph icon=mark.icon class=mark.class("text-xs") />
-                        </span>
-                    })}
+                    // The state's dot, in a slot every row keeps so titles
+                    // line up.
+                    <span class="inline-flex h-2 w-2 shrink-0 items-center justify-center" aria-hidden="true">
+                        {dot.map(|class| view! {
+                            <span
+                                class=format!("h-2 w-2 rounded-full {class}")
+                                data-session-activity=status_mark.map(|mark| mark.label)
+                            ></span>
+                        })}
+                    </span>
                     <span class="sr-only">{status_text.clone()}</span>
-                    // Before the title: the row's buttons cover its right
-                    // end on hover.
                     {unread.then(|| view! {
-                        <span
-                            class="h-2 w-2 shrink-0 rounded-full bg-accent"
-                            data-unread
-                            title="Unread: it finished, or asked for you, while you were away"
-                        ></span>
-                        <span class="sr-only">"unread"</span>
+                        <span class="sr-only" data-unread title="Unread: it finished, or asked for you, while you were away">"unread"</span>
                     })}
                     {pinned.then(|| view! {
                         <span
@@ -1475,18 +1606,36 @@ fn session_row(
                     })}
                     {cron.clone().map(|cron| cron::clock_mark(workspace, cron))}
                     // The whole title on hover, as a long one is cut here.
-                    <span class="min-w-0 flex-1 truncate text-sm font-bold" data-session-title title=label.clone()>{label.clone()}</span>
-                    // The time sits beside the title, so the badges have
-                    // the whole second line.
+                    // Unread titles stand out; read ones are quieter.
                     <span
-                        class=format!("shrink-0 {NOTE}")
-                        data-session-time
-                        title=move || format!("last event {}", relative_time(now.get(), last_activity))
+                        class=move || format!(
+                            "min-w-0 flex-1 truncate text-sm {}",
+                            if unread { "font-semibold text-fg" } else if current() { "font-medium text-fg" } else { "font-medium text-fg-2" },
+                        )
+                        data-session-title
+                        title=label.clone()
                     >
-                        {move || relative_time(now.get(), listed_at)}
+                        {label.clone()}
+                    </span>
+                    // The time sits beside the title; the row's buttons
+                    // take its place on hover.
+                    <span
+                        class=move || format!("shrink-0 text-[0.6875rem] text-faint tabular-nums {}", if shown() { "invisible" } else { "" })
+                        data-session-time
+                        title=move || format!(
+                            "{} · last event {}",
+                            relative_time(now.get(), listed_at),
+                            relative_time(now.get(), last_activity),
+                        )
+                    >
+                        {move || cookie_agent_client_state::format::short_relative_time(now.get(), listed_at)}
                     </span>
                 </span>
-                <span class=format!("flex w-full min-w-0 items-center gap-1.5 {NOTE}")>
+                <span
+                    class=format!("w-full min-w-0 items-center gap-1.5 pl-4 {NOTE}")
+                    class:flex=move || second_line.get() || tree_root()
+                    class:hidden=move || !(second_line.get() || tree_root())
+                >
                     // The open session's row folds and unfolds its subagent
                     // tree: its chevron, before the badges, turns with it.
                     // With a subagent open, the row's click opens the root
@@ -1826,7 +1975,7 @@ fn Subagents(workspace: Workspace) -> impl IntoView {
                                             <span class="sr-only">{format!("{}: ", mark.label)}</span>
                                         })}
                                         // The handle gives way before the agent's name.
-                                        <span class="max-w-[75%] shrink-0 truncate font-mono font-bold">{row.agent.clone()}</span>
+                                        <span class="max-w-[75%] shrink-0 truncate font-semibold">{row.agent.clone()}</span>
                                         {row.handle.clone().map(|handle| view! {
                                             <span class=format!("min-w-0 truncate font-mono {NOTE}") data-handle>{handle}</span>
                                         })}
@@ -2023,6 +2172,50 @@ fn TitleBar(workspace: Workspace) -> impl IntoView {
                     >
                         <Glyph icon=icondata::LuChevronLeft class="text-lg" />
                     </button>
+                })
+            }}
+            // The open session's project before its title
+            // (docs/site/specs/web-polish.md, P3): it shows the project's
+            // sessions in the sidebar.
+            {move || {
+                let session = workspace.selected.get()?;
+                let project_id = workspace.sessions.with(|sessions| {
+                    sessions.iter().find(|meta| meta.session_id == session).and_then(|meta| meta.project.clone())
+                })?;
+                let project = workspace.project(Some(&project_id))?;
+                let label = match &project.emoji {
+                    Some(emoji) => format!("{emoji} {}", project.name),
+                    None => project.name.to_string(),
+                };
+                let header = format!("#sidebar [data-project-header=\"{project_id}\"]");
+                let tip = format!("{label}: its sessions");
+                Some(view! {
+                    <button
+                        type="button"
+                        class="hidden min-h-11 max-w-[12rem] min-w-0 shrink-0 items-center gap-1 rounded-md px-2 text-sm text-muted hover:bg-hover hover:text-fg active:bg-press sm:inline-flex"
+                        title=tip
+                        data-project-crumb=project_id.to_string()
+                        on:click=move |_| {
+                            let shown = if workspace.desktop.get_untracked() {
+                                workspace.sidebar_pinned.get_untracked()
+                            } else {
+                                workspace.sidebar_open.get_untracked()
+                            };
+                            if !shown {
+                                workspace.toggle_sidebar();
+                            }
+                            let key = cookie_agent_client_state::projects::section_key(Some(&project_id));
+                            if !workspace.section_open(&key) {
+                                workspace.toggle_section(&key);
+                            }
+                            if let Some(header) = document().query_selector(&header).ok().flatten() {
+                                header.scroll_into_view();
+                            }
+                        }
+                    >
+                        <span class="truncate">{label}</span>
+                    </button>
+                    <Glyph icon=icondata::LuChevronRight class="hidden shrink-0 text-[0.625rem] opacity-60 sm:inline-flex" />
                 })
             }}
             <Show when=move || !crumbs().is_empty()>
@@ -2882,7 +3075,14 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
                 }
             }
         >
-            <div class="mb-auto w-full shrink-0">
+            // A new session's heading and chips sit in the middle of the
+            // empty transcript, above the composer
+            // (docs/site/specs/web-polish.md, P2).
+            <div
+                class="w-full shrink-0"
+                class:mb-auto=move || !workspace.new_session.get()
+                class:my-auto=move || workspace.new_session.get()
+            >
                 <Show when=move || workspace.new_session.get()>
                     <cards::NewSessionCards workspace=workspace />
                 </Show>
@@ -3961,9 +4161,14 @@ fn ComposerChips(workspace: Workspace, composing: RwSignal<bool>) -> impl IntoVi
         let Some(draft) = workspace.draft.get() else {
             return "agent".into();
         };
+        // Where it runs, only when it could run elsewhere
+        // (docs/site/specs/web-polish.md, P3).
+        let elsewhere = workspace
+            .draft_acp_agent()
+            .is_some_and(|agent| agent.runtimes.len() > 1);
         match workspace.agent_place() {
-            Some((runtime, _)) => format!("{} · on {runtime}", draft.agent),
-            None => draft.agent.to_string(),
+            Some((runtime, _)) if elsewhere => format!("{} · on {runtime}", draft.agent),
+            _ => draft.agent.to_string(),
         }
     };
     let model = move || {
@@ -4013,16 +4218,26 @@ fn ComposerChips(workspace: Workspace, composing: RwSignal<bool>) -> impl IntoVi
             class:compact:hidden=move || composing.get()
         >
             <span class="mx-1 h-4 w-px shrink-0 bg-line-2" aria-hidden="true"></span>
+            // A phone has one chip for the three (docs/site/specs/web-polish.md,
+            // P7): the model's, which names them all.
             <button
                 type="button"
                 id="agent-chip"
-                class=CHIP
+                class=format!("{CHIP} max-sm:hidden")
                 disabled=move || workspace.is_guest()
                 aria-label=move || format!("Agent: {}", agent())
-                title=move || if workspace.is_guest() {
-                    format!("Agent: {}. Only the owner can change this.", agent())
-                } else {
-                    format!("Agent: {} (click to change)", agent())
+                // The tooltip always says where an ACP agent runs.
+                title=move || {
+                    let place = workspace
+                        .agent_place()
+                        .map(|(runtime, _)| format!(" on {runtime}"))
+                        .unwrap_or_default();
+                    let name = workspace.draft.get().map(|draft| draft.agent.to_string()).unwrap_or_else(agent);
+                    if workspace.is_guest() {
+                        format!("Agent: {name}{place}. Only the owner can change this.")
+                    } else {
+                        format!("Agent: {name}{place} (click to change)")
+                    }
                 }
                 on:click=move |_| workspace.panel.set(Some(Panel::Agents))
             >
@@ -4041,16 +4256,24 @@ fn ComposerChips(workspace: Workspace, composing: RwSignal<bool>) -> impl IntoVi
                 } else {
                     format!("Model: {} (click to change)", model())
                 }
-                on:click=move |_| workspace.panel.set(Some(Panel::Models))
+                // A phone's one chip opens one sheet for all three.
+                on:click=move |_| workspace.panel.set(Some(if workspace.narrow.get_untracked() { Panel::Composer } else { Panel::Models }))
             >
                 <Glyph icon=icondata::LuSparkles class="text-sm text-muted" />
-                <span class="min-w-0 flex-1 truncate text-left">{model}</span>
+                <span class="min-w-0 flex-1 truncate text-left">
+                    {move || if workspace.narrow.get() {
+                        let agent = workspace.draft.get().map(|draft| draft.agent.to_string()).unwrap_or_default();
+                        format!("{agent} · {} · {}", model(), mode_label())
+                    } else {
+                        model()
+                    }}
+                </span>
                 <Glyph icon=icondata::LuChevronDown class="text-[0.625rem] opacity-50 compact:hidden" />
             </button>
             <button
                 type="button"
                 id="permission-mode"
-                class=CHIP
+                class=format!("{CHIP} max-sm:hidden")
                 disabled=move || workspace.is_guest()
                 aria-label=move || format!("Permission mode: {}", mode_label())
                 aria-haspopup="dialog"
@@ -4071,7 +4294,8 @@ fn ComposerChips(workspace: Workspace, composing: RwSignal<bool>) -> impl IntoVi
                 <button
                     type="button"
                     id="places"
-                    class=format!("{CHIP} compact:hidden")
+                    // The first chip to give way when the row runs short.
+                    class=format!("{} compact:hidden", CHIP.replace("shrink-0", "shrink"))
                     aria-label=format!("Runtimes: {places}")
                     title=format!("Works in {places} (click for the runtimes)")
                     on:click=move |_| workspace.run_command(Command::Runtime)
@@ -4096,7 +4320,7 @@ fn ComposerChips(workspace: Workspace, composing: RwSignal<bool>) -> impl IntoVi
                             .into_any()
                         }
                     }}
-                    <span class="min-w-0 truncate">{places.clone()}</span>
+                    <span class="min-w-0 truncate">{crate::places::folder_names(&places)}</span>
                 </button>
             })}
             <span class="flex-1" aria-hidden="true"></span>
@@ -4271,7 +4495,7 @@ fn session_tabs(workspace: Workspace) -> impl IntoView {
                 <button
                     type="button"
                     role="tab"
-                    class="relative inline-flex h-11 min-w-11 shrink-0 items-center justify-center gap-1.5 px-2 text-[0.8125rem] text-muted transition-colors hover:text-fg aria-selected:font-semibold aria-selected:text-fg lg:h-9 lg:min-w-9"
+                    class="relative inline-flex h-11 min-w-11 shrink-0 items-center justify-center gap-1.5 px-2 text-[0.8125rem] text-muted transition-colors hover:text-fg aria-selected:font-semibold aria-selected:text-fg max-sm:gap-1 max-sm:px-0.5 lg:h-9 lg:min-w-9"
                     aria-selected=move || current().to_string()
                     aria-label=label
                     title=label
@@ -4279,8 +4503,9 @@ fn session_tabs(workspace: Workspace) -> impl IntoView {
                     on:click=move |_| workspace.run_command(command)
                 >
                     <Glyph icon=icon class="text-sm" />
+                    // A phone shows the icons alone: seven fit at 360 px.
                     <Show when=current>
-                        <span aria-hidden="true">{label}</span>
+                        <span class="max-sm:hidden" aria-hidden="true">{label}</span>
                     </Show>
                     {move || count().map(|count| view! {
                         <span class="rounded-full bg-sunken px-1.5 text-[0.6875rem] leading-4 font-normal text-muted tabular-nums">{count}</span>
@@ -4295,7 +4520,7 @@ fn session_tabs(workspace: Workspace) -> impl IntoView {
         })
         .collect_view();
     view! {
-        <div role="tablist" aria-label="Session" class="flex overflow-x-auto px-2 [scrollbar-width:none]" data-session-tabs>
+        <div role="tablist" aria-label="Session" class="flex overflow-x-auto px-2 [scrollbar-width:none] max-sm:justify-between max-sm:px-1" data-session-tabs>
             {tabs}
         </div>
     }
@@ -4441,6 +4666,7 @@ fn Sheet(workspace: Workspace) -> impl IntoView {
         _ if session_tab() => "Session",
         Some(Panel::Agents) => "Agent",
         Some(Panel::Models) => "Model",
+        Some(Panel::Composer) => "Agent, model, and mode",
         Some(Panel::AgentOptions) => "Agent options",
         Some(Panel::Presets) => "Preset",
         Some(Panel::Approvals) => "Approvals",
@@ -4544,6 +4770,7 @@ fn Sheet(workspace: Workspace) -> impl IntoView {
                             untrack(|| match panel {
                             Some(Panel::Agents) => agents_sheet(workspace).into_any(),
                             Some(Panel::Models) => models_sheet(workspace).into_any(),
+                            Some(Panel::Composer) => composer_sheet(workspace).into_any(),
                             Some(Panel::AgentOptions) => agent_options_sheet(workspace).into_any(),
                             Some(Panel::Presets) => presets_sheet(workspace).into_any(),
                             Some(Panel::Approvals) => approvals_sheet(workspace).into_any(),
@@ -4980,6 +5207,23 @@ fn acp_models_sheet(workspace: Workspace) -> impl IntoView {
 }
 
 /// The models to start the session with, built again as they change.
+/// A phone's one sheet for what its one composer chip names: the agent,
+/// the model with its level, and the permission mode
+/// (docs/site/specs/web-polish.md, P7).
+fn composer_sheet(workspace: Workspace) -> impl IntoView {
+    let heading = |text: &'static str| {
+        view! { <h3 class="px-1 pt-2 text-xs font-semibold text-muted">{text}</h3> }
+    };
+    view! {
+        {heading("Agent")}
+        {agents_sheet(workspace)}
+        {heading("Model")}
+        {models_sheet(workspace)}
+        {heading("Permission mode")}
+        {modes_sheet(workspace)}
+    }
+}
+
 fn models_sheet(workspace: Workspace) -> impl IntoView {
     built_on(
         move || (workspace.draft_is_acp(), workspace.models()),

@@ -117,6 +117,9 @@ pub enum Panel {
     AgentCommand,
     /// The deferred tools prompt, from the tools row's link.
     DeferredPrompt,
+    /// A phone's one sheet for the agent, the model and its level, and the
+    /// permission mode (`docs/site/specs/web-polish.md`, P7).
+    Composer,
 }
 
 /// Why the daemon did not create the new session, with the runtimes it was
@@ -156,6 +159,15 @@ pub type OpenPluginSettings = (
     String,
     Option<Result<cookie_agent_protocol::PluginsSettingsGetResult, String>>,
 );
+
+/// A panel of the New session page, under its chips.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DraftPanel {
+    /// The runtime cards: where the session runs.
+    Where,
+    /// The tools the cards bring and the skills.
+    Tools,
+}
 
 /// The connected page's state. Every field is a handle, so the struct is
 /// `Copy` and closures capture it whole.
@@ -273,6 +285,9 @@ pub struct Workspace {
     pub draft_exposure: RwSignal<cookie_agent_protocol::ToolExposure>,
     /// The new session's page is scrolled to its skills, not its cards.
     pub draft_at_skills: RwSignal<bool>,
+    /// The New session panel open under its chips: where it runs, or its
+    /// tools and skills (`docs/site/specs/web-polish.md`, P2).
+    pub draft_panel: RwSignal<Option<DraftPanel>>,
     /// The project editor's tool group and skill choices for new sessions.
     pub editor_exposure: RwSignal<cookie_agent_protocol::ToolExposure>,
     /// What each runtime capability offers (`runtimes.groups`), by
@@ -669,6 +684,7 @@ impl Workspace {
             session_tools: RwSignal::new(None),
             draft_exposure: RwSignal::new(Default::default()),
             draft_at_skills: RwSignal::new(false),
+            draft_panel: RwSignal::new(None),
             editor_exposure: RwSignal::new(Default::default()),
             runtime_groups: RwSignal::new(HashMap::new()),
             skill_query: RwSignal::new(String::new()),
@@ -1759,6 +1775,7 @@ impl Workspace {
         self.draft_rules.set(Vec::new());
         self.draft_exposure.set(Default::default());
         self.draft_at_skills.set(false);
+        self.draft_panel.set(None);
         // What runtimes offer is read again for each draft.
         self.runtime_groups.set(HashMap::new());
         self.draft_agent_options.set(Default::default());

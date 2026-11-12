@@ -11,7 +11,7 @@ use super::{ICON_BUTTON, NOTE};
 use crate::{
     cards::{Card, CardState, Group},
     icons::Glyph,
-    workspace::{CardSet, Workspace},
+    workspace::{CardSet, DraftPanel, Workspace},
 };
 
 const FIELD: &str = "min-h-11 w-full min-w-0 rounded-lg bg-surface px-3 font-mono text-sm hover:shadow-[inset_0_0_0_1px_var(--color-faint)] focus:shadow-[inset_0_0_0_1px_var(--color-accent),0_0_0_3px_var(--color-accent-soft)] focus:outline-none shadow-[inset_0_0_0_1px_var(--color-line-2)]";
@@ -41,16 +41,6 @@ fn state_class(state: CardState) -> &'static str {
     }
 }
 
-/// A segment of the links between the cards and the skills: the one the
-/// view is at in the selection's tint.
-fn jump_class(current: bool) -> &'static str {
-    if current {
-        "hit-area inline-flex min-w-11 items-center justify-center rounded-md bg-sel px-3 font-medium text-fg transition-colors"
-    } else {
-        "hit-area inline-flex min-w-11 items-center justify-center rounded-md px-3 text-muted transition-colors hover:bg-hover hover:text-fg"
-    }
-}
-
 /// The new session's runtime cards, above the composer whose first message
 /// creates the session with them.
 #[component]
@@ -70,6 +60,38 @@ pub fn NewSessionCards(workspace: Workspace) -> impl IntoView {
             workspace.draft_error.set(None);
         }
     });
+    // The chips' words (docs/site/specs/web-polish.md, P2).
+    let runs_on = move || {
+        cards.with(|cards| {
+            workspace.selection.with(|selection| {
+                let selected: Vec<&Card> = cards
+                    .iter()
+                    .filter(|card| selection.selected(card))
+                    .collect();
+                crate::cards::runs_on(&selected)
+            })
+        })
+    };
+    // The folder chip, only when a coding runtime has a folder: "global
+    // only" is said by Runs on.
+    let folder = move || {
+        workspace
+            .places_label()
+            .filter(|places| places.contains('/'))
+            .map(|places| crate::places::folder_names(&places))
+            .unwrap_or_default()
+    };
+    let skills_off = move || super::tool_groups::cards_skills_off(workspace, workspace.new_cards());
+    let panel = move || workspace.draft_panel.get();
+    let toggle = move |which: DraftPanel| {
+        workspace.draft_panel.update(|open| {
+            *open = if *open == Some(which) {
+                None
+            } else {
+                Some(which)
+            }
+        });
+    };
     view! {
         <section
             id="new-session"
@@ -79,77 +101,105 @@ pub fn NewSessionCards(workspace: Workspace) -> impl IntoView {
             class:opacity-60=move || workspace.creating.get()
             class:pointer-events-none=move || workspace.creating.get()
         >
-            // The title bar names the view: no heading here. The links
-            // beside the project picker jump between the cards and the
-            // skills, and stay in view.
-            <div class="sticky -top-2 z-10 flex items-end gap-2 bg-surface pt-2 pb-1">
-                <div class="min-w-0 flex-1">
-                    <super::projects::NewSessionProject workspace=workspace />
-                </div>
-                <div
-                    class="flex h-11 shrink-0 gap-0.5 rounded-lg bg-surface p-1 text-sm shadow-[inset_0_0_0_1px_var(--color-line-2)]"
-                    role="group"
-                    aria-label="Jump to"
-                    data-jump=""
+            // The composer comes first: a heading over it, and one row of
+            // chips for what the session gets, each opening its panel.
+            <div class="flex flex-col items-center pt-4 pb-1">
+                <h2 class="text-center text-[1.375rem] font-semibold tracking-tight text-fg">"What should cookie work on?"</h2>
+            </div>
+            <div class="flex flex-wrap items-center justify-center gap-1.5" data-draft-chips>
+                <super::projects::NewSessionProject workspace=workspace />
+                <button
+                    type="button"
+                    class=move || chip_class(panel() == Some(DraftPanel::Where))
+                    aria-expanded=move || (panel() == Some(DraftPanel::Where)).to_string()
+                    aria-controls="draft-where"
+                    title="Where the session runs: click for the runtimes"
+                    data-new-session-chip="where"
+                    on:click=move |_| toggle(DraftPanel::Where)
                 >
-                    <button
-                        type="button"
-                        class=move || jump_class(!workspace.draft_at_skills.get())
-                        aria-current=move || (!workspace.draft_at_skills.get()).then_some("true")
-                        data-jump-to="runtimes"
-                        on:click=move |_| {
-                            workspace.draft_at_skills.set(false);
-                            crate::browser::jump("#new-session");
+                    <Glyph icon=icondata::LuHouse class="shrink-0 text-muted" />
+                    <span class="min-w-0 truncate" data-runs-on>{runs_on}</span>
+                    <Glyph icon=icondata::LuChevronDown class="shrink-0 text-[0.625rem] opacity-50" />
+                </button>
+                {move || {
+                    let folder = folder();
+                    (!folder.is_empty()).then(|| view! {
+                        <button
+                            type="button"
+                            class=chip_class(false)
+                            title=move || workspace.places_label().unwrap_or_default()
+                            data-new-session-chip="folder"
+                            on:click=move |_| workspace.draft_panel.set(Some(DraftPanel::Where))
+                        >
+                            <Glyph icon=icondata::LuFolder class="shrink-0 text-muted" />
+                            <span class="min-w-0 truncate font-mono text-xs">{folder}</span>
+                        </button>
+                    })
+                }}
+                <button
+                    type="button"
+                    class=move || chip_class(panel() == Some(DraftPanel::Tools))
+                    aria-expanded=move || (panel() == Some(DraftPanel::Tools)).to_string()
+                    aria-controls="draft-tools"
+                    title="The tools the runtimes bring, and the skills"
+                    data-new-session-chip="tools"
+                    on:click=move |_| toggle(DraftPanel::Tools)
+                >
+                    <Glyph icon=icondata::LuWandSparkles class="shrink-0 text-muted" />
+                    <span>"Tools & skills"</span>
+                    {move || {
+                        let off = skills_off();
+                        (off > 0).then(|| view! { <span class="text-xs font-semibold text-warn">{format!("{off} off")}</span> })
+                    }}
+                    <Glyph icon=icondata::LuChevronDown class="shrink-0 text-[0.625rem] opacity-50" />
+                </button>
+            </div>
+            {move || blocker().map(|blocker| view! {
+                <p id="start-blocker" class=format!("text-center {NOTE}")>{blocker}</p>
+            })}
+            <Show when=move || panel() == Some(DraftPanel::Where)>
+                <div id="draft-where" class=PANEL>
+                    <p class=NOTE>
+                        "Pick the runtimes this session uses; a coding runtime needs a folder. With only global, the session hands work on files to subagents."
+                    </p>
+                    {move || {
+                        if workspace.runtimes.with(Option::is_none) {
+                            return super::loading("Reading the runtimes…").into_any();
                         }
-                    >
-                        "Runtimes"
-                    </button>
-                    <button
-                        type="button"
-                        class=move || jump_class(workspace.draft_at_skills.get())
-                        aria-current=move || workspace.draft_at_skills.get().then_some("true")
-                        data-jump-to="skills"
-                        on:click=move |_| {
-                            workspace.draft_at_skills.set(true);
-                            crate::browser::jump("#new-session-skills");
-                        }
-                    >
-                        "Skills"
-                        {move || {
-                            let off = super::tool_groups::cards_skills_off(workspace, workspace.new_cards());
-                            (off > 0).then(|| view! { <span class="ml-1.5 text-xs font-semibold text-warn">{format!("{off} off")}</span> })
-                        }}
-                    </button>
+                        groups
+                            .get()
+                            .into_iter()
+                            .map(|group| group_view(workspace, group, workspace.new_cards()))
+                            .collect_view()
+                            .into_any()
+                    }}
+                    <p class="flex items-start gap-2 text-sm" id="draft-places">
+                        <Glyph icon=icondata::LuFolderOpen class="mt-0.5 text-accent" />
+                        <span class="min-w-0 break-words font-mono" data-draft-places>
+                            {move || workspace.places_label().unwrap_or_default()}
+                        </span>
+                    </p>
                 </div>
-            </div>
-            <p class=NOTE>
-                "Pick where the new session works: click a card to select it, and give a coding runtime its workspace. With only global, the session has no workspace: it hands work that needs files or commands to subagents on the runtimes it names. The first message creates the session, starting the runtimes that are not running."
-            </p>
-            {move || {
-                if workspace.runtimes.with(Option::is_none) {
-                    return super::loading("Reading the runtimes…").into_any();
-                }
-                groups
-                    .get()
-                    .into_iter()
-                    .map(|group| group_view(workspace, group, workspace.new_cards()))
-                    .collect_view()
-                    .into_any()
-            }}
-            <div class="flex flex-col gap-1">
-                {move || blocker().map(|blocker| view! {
-                    <p id="start-blocker" class=NOTE>{blocker}</p>
-                })}
-                <p class="flex items-start gap-2 text-sm" id="draft-places">
-                    <Glyph icon=icondata::LuFolderOpen class="mt-0.5 text-accent" />
-                    <span class="min-w-0 break-words font-mono" data-draft-places>
-                        {move || workspace.places_label().unwrap_or_default()}
-                    </span>
-                </p>
-                {super::tool_groups::draft_figures(workspace, workspace.new_cards())}
-            </div>
-            {super::tool_groups::cards_skills(workspace, workspace.new_cards(), "Skills", "new-session-skills")}
+            </Show>
+            <Show when=move || panel() == Some(DraftPanel::Tools)>
+                <div id="draft-tools" class=PANEL>
+                    {super::tool_groups::draft_figures(workspace, workspace.new_cards())}
+                    {super::tool_groups::cards_skills(workspace, workspace.new_cards(), "Skills", "new-session-skills")}
+                </div>
+            </Show>
         </section>
+    }
+}
+
+/// A panel the New session's chips open, under them.
+const PANEL: &str = "flex flex-col gap-3 rounded-xl bg-raised p-3 shadow-[0_0_0_1px_var(--color-line),0_8px_24px_-12px_rgb(0_0_0/0.18)]";
+
+/// A chip of the New session's row, tinted while its panel is open.
+fn chip_class(open: bool) -> &'static str {
+    if open {
+        "inline-flex h-9 max-w-full min-w-0 items-center gap-1.5 rounded-lg bg-sel px-2.5 text-[0.8125rem] text-fg shadow-[inset_0_0_0_1px_var(--color-accent)] transition-colors"
+    } else {
+        "inline-flex h-9 max-w-full min-w-0 items-center gap-1.5 rounded-lg bg-surface px-2.5 text-[0.8125rem] text-fg-2 shadow-[inset_0_0_0_1px_var(--color-line-2)] transition-colors hover:bg-hover hover:text-fg"
     }
 }
 
@@ -279,7 +329,7 @@ fn card_view(workspace: Workspace, card: Card, set: CardSet) -> impl IntoView {
                                 &card.machine.as_ref().map_or_else(|| card.runtime_id.to_string(), ToString::to_string),
                                 card.runtime_id.as_str(),
                             )}
-                            <span class="truncate font-mono text-sm font-bold">{card.label()}</span>
+                            <span class="truncate text-sm font-semibold">{card.label()}</span>
                         </span>
                         {(!card.description.is_empty()).then(|| view! {
                             <span class=format!("line-clamp-2 {NOTE}")>{card.description.clone()}</span>

@@ -279,27 +279,27 @@ pub fn machines_page(workspace: Workspace) -> impl IntoView {
     let registry = Memo::new(move |_| workspace.runtimes.get());
     let mcp = Memo::new(move |_| workspace.mcp_servers.get().and_then(Result::ok));
     view! {
-        <div class="flex flex-wrap items-center gap-2">
-            <h2 class="min-w-0 flex-1 text-sm font-bold">"Machines"</h2>
-            <button
-                type="button"
-                id="machines-add"
-                class=PRIMARY
-                aria-expanded=move || adding.get().to_string()
-                on:click=move |_| {
-                    if !adding.get_untracked() {
-                        workspace.poll_config();
+        {super::view_header(
+            "Machines",
+            "Where sessions can work. Drag a runtime onto another machine to move it there (on a touch screen, hold it first), or use its Move to… button.",
+            view! {
+                <button
+                    type="button"
+                    id="machines-add"
+                    class=PRIMARY
+                    aria-expanded=move || adding.get().to_string()
+                    on:click=move |_| {
+                        if !adding.get_untracked() {
+                            workspace.poll_config();
+                        }
+                        adding.update(|adding| *adding = !*adding);
                     }
-                    adding.update(|adding| *adding = !*adding);
-                }
-            >
-                <Glyph icon=Signal::derive(move || if adding.get() { icondata::LuMinus } else { icondata::LuPlus }) />
-                "Add a runtime"
-            </button>
-        </div>
-        <p class=NOTE>
-            "Drag a runtime onto another machine to move it there (on a touch screen, hold it first), or use its Move to… button."
-        </p>
+                >
+                    <Glyph icon=Signal::derive(move || if adding.get() { icondata::LuMinus } else { icondata::LuPlus }) />
+                    "Add a runtime"
+                </button>
+            },
+        )}
         <Show when=move || adding.get()>
             {add_runtime(workspace, adding)}
         </Show>
@@ -756,7 +756,7 @@ fn machine_card(
     let form_entry = entry.clone();
     view! {
         <section
-            class="machine-card rounded-xl border border-transparent bg-raised shadow-[0_0_0_1px_var(--color-line),0_1px_2px_rgb(0_0_0/0.03)] transition-colors"
+            class="machine-card rounded-xl border border-transparent bg-raised shadow-[0_0_0_1px_var(--color-line)] transition-colors"
             class:ring-2=over_ring
             class:ring-accent=over.clone()
             class:border-dashed=target.clone()
@@ -768,7 +768,7 @@ fn machine_card(
                     <Glyph icon=platform_icon(platform.as_deref()) class="text-lg" />
                 </span>
                 <div class="min-w-0 flex-1 py-1">
-                    <p class="truncate font-mono text-sm font-bold">{key.clone()}</p>
+                    <p class="truncate text-sm font-semibold">{key.clone()}</p>
                     <p class=NOTE>{detail}</p>
                 </div>
                 {actions}
@@ -995,7 +995,7 @@ fn runtime_acp_agent_list(
                 >
                     <div class="flex min-w-0 items-center gap-2">
                         <Glyph icon=icon class=format!("shrink-0 text-[0.6rem] {icon_class}") />
-                        <span class="min-w-16 flex-1 truncate font-mono text-sm">{agent.to_string()}</span>
+                        <span class="min-w-16 flex-1 truncate text-sm font-medium">{agent.to_string()}</span>
                         <span class=STATE>
                             {if !declaration.definition.enabled {
                                 "disabled"
@@ -1094,7 +1094,7 @@ fn runtime_acp_agent_list(
                 >
                     <div class="flex min-w-0 items-center gap-2">
                         <Glyph icon=icon class=format!("shrink-0 text-[0.6rem] {icon_class}") />
-                        <span class="min-w-16 flex-1 truncate font-mono text-sm">{agent.to_string()}</span>
+                        <span class="min-w-16 flex-1 truncate text-sm font-medium">{agent.to_string()}</span>
                         <span class=STATE>"every runtime"</span>
                         <span class=STATE>
                             {if !enabled {
@@ -1150,8 +1150,10 @@ fn runtime_acp_agent_list(
         })
         .collect_view();
     view! {
-        <div class="flex flex-col gap-1 rounded-md bg-surface-2 px-2 py-1.5" data-runtime-acp>
-            <span class="text-xs font-bold opacity-70">"ACP agents"</span>
+        // An indented list under its runtime, not a card inside the card
+        // (docs/site/specs/web-polish.md, P5).
+        <div class="ml-1 flex flex-col gap-1 border-l-2 border-line py-0.5 pl-3" data-runtime-acp>
+            <span class="text-[0.6875rem] font-semibold text-muted">"ACP agents"</span>
             <ul class="flex flex-col gap-1">{declared}{shared_rows}{offered}</ul>
         </div>
     }
@@ -1412,7 +1414,7 @@ fn runtime_row(
             </span>
             <div class="flex min-w-0 flex-1 flex-col gap-0.5 py-1">
                 <span class="flex min-w-0 items-center gap-2" class:opacity-60=!card.connected>
-                    <span class="min-w-0 truncate font-mono text-sm font-bold">{id.to_string()}</span>
+                    <span class="min-w-0 truncate text-sm font-semibold">{id.to_string()}</span>
                     {card.pinned.then(|| view! {
                         <span class=format!("{STATE} inline-flex items-center gap-1") title="Pinned to this machine, whatever it reports">
                             <Glyph icon=icondata::LuPin />

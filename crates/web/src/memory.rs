@@ -32,6 +32,37 @@ pub enum MemoryLine {
     },
 }
 
+/// The memories the Memory view's search and layer filter keep
+/// (`docs/site/specs/web-polish.md`, P5): of the layer whose URL scheme is
+/// `layer` (`user`, `agent`, `project`, `machine`; `None` for all), and
+/// whose URL, description, or keywords hold `query` in any case. What is
+/// not a memory goes while either narrows the list.
+pub fn filter_listing(
+    listing: &MemoryListResult,
+    layer: Option<&str>,
+    query: &str,
+) -> MemoryListResult {
+    let query = query.trim().to_lowercase();
+    let mut kept = listing.clone();
+    kept.memories.retain(|memory| {
+        layer.is_none_or(|layer| memory.url.starts_with(&format!("{layer}://")))
+            && (query.is_empty()
+                || memory.url.to_lowercase().contains(&query)
+                || memory
+                    .description
+                    .as_deref()
+                    .is_some_and(|description| description.to_lowercase().contains(&query))
+                || memory
+                    .keywords
+                    .iter()
+                    .any(|keyword| keyword.to_lowercase().contains(&query)))
+    });
+    if layer.is_some() || !query.is_empty() {
+        kept.ignored.clear();
+    }
+    kept
+}
+
 /// The lines of `listing`: the shared rows, with each project's group a
 /// folder whose memories show only while `open(project)` says so.
 pub fn memory_lines(listing: &MemoryListResult, open: impl Fn(&str) -> bool) -> Vec<MemoryLine> {
@@ -227,5 +258,34 @@ mod tests {
             project_delete_status("shop", 1, 2, Some("project://shop/test changed")),
             "Deleted 1 of 2 memories of project shop; project://shop/test changed"
         );
+    }
+
+    #[test]
+    fn the_search_and_the_layer_filter_narrow_the_listing() {
+        let urls = |listing: &MemoryListResult| -> Vec<String> {
+            listing
+                .memories
+                .iter()
+                .map(|memory| memory.url.clone())
+                .collect()
+        };
+        let all = filter_listing(&listing(), None, "");
+        assert_eq!(all.memories.len(), 4);
+        assert_eq!(all.ignored.len(), 2, "nothing narrowed: nothing goes");
+        assert_eq!(
+            urls(&filter_listing(&listing(), Some("user"), "")),
+            ["user://style"]
+        );
+        assert_eq!(
+            urls(&filter_listing(&listing(), None, "DEPLOY")),
+            ["project://web/deploy"],
+            "any case, in the description"
+        );
+        let narrowed = filter_listing(&listing(), Some("project"), "shop");
+        assert_eq!(
+            urls(&narrowed),
+            ["project://shop/build", "project://shop/test"]
+        );
+        assert!(narrowed.ignored.is_empty());
     }
 }

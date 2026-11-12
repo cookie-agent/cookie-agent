@@ -79,7 +79,10 @@ pub fn memory_sheet(workspace: Workspace) -> impl IntoView {
             }
         });
     });
-    move || {
+    // The search and the layer filter (docs/site/specs/web-polish.md, P5).
+    let query = RwSignal::new(String::new());
+    let layer = RwSignal::new(None::<&'static str>);
+    let list = move || {
         if let Some(edit) = workspace.memory_edit.get() {
             return memory_editor(workspace, edit).into_any();
         }
@@ -97,7 +100,10 @@ pub fn memory_sheet(workspace: Workspace) -> impl IntoView {
             .memory_focus
             .get()
             .filter(|url| !listing.memories.iter().any(|memory| memory.url == *url));
-        let lines = memory_lines(&listing, is_open)
+        let narrowed = !query.with(|query| query.trim().is_empty()) || layer.get().is_some();
+        let listing = crate::memory::filter_listing(&listing, layer.get(), &query.get());
+        // While narrowed, every folder shows what it keeps.
+        let lines = memory_lines(&listing, move |project| narrowed || is_open(project))
             .into_iter()
             .map(|line| match line {
                 MemoryLine::Project {
@@ -168,6 +174,51 @@ pub fn memory_sheet(workspace: Workspace) -> impl IntoView {
             </div>
         }
         .into_any()
+    };
+    view! {
+        <Show when=move || workspace.memory_edit.with(Option::is_none) && workspace.memory_pending.with(Option::is_none)>
+            {super::view_header(
+                "Memory",
+                "What agents remember between sessions. They keep it themselves; read, edit, or delete anything here.",
+                (),
+            )}
+            <div class="flex flex-wrap items-center gap-2" data-memory-tools>
+                <label class="relative flex min-w-48 flex-1 items-center">
+                    <Glyph icon=icondata::LuSearch class="pointer-events-none absolute left-2.5 text-sm text-muted" />
+                    <input
+                        type="search"
+                        id="memory-search"
+                        class="h-9 w-full rounded-lg bg-sunken pr-3 pl-8 text-[0.8125rem] text-fg placeholder:text-faint focus:shadow-[inset_0_0_0_1px_var(--color-accent),0_0_0_3px_var(--color-accent-soft)] focus:outline-none"
+                        placeholder="Search memory"
+                        aria-label="Search memory"
+                        prop:value=move || query.get()
+                        on:input=move |event| query.set(event_target_value(&event))
+                    />
+                </label>
+                <div class="inline-flex rounded-lg bg-sunken p-0.5 text-xs" role="radiogroup" aria-label="Layer">
+                    {[(None, "All"), (Some("user"), "You"), (Some("agent"), "Agents"), (Some("project"), "Projects"), (Some("machine"), "Machines")]
+                        .into_iter()
+                        .map(|(value, label)| view! {
+                            <button
+                                type="button"
+                                role="radio"
+                                class=move || if layer.get() == value {
+                                    "rounded-md bg-raised px-2.5 py-1.5 font-medium text-fg shadow-[0_1px_2px_rgb(0_0_0/0.08)]"
+                                } else {
+                                    "rounded-md px-2.5 py-1.5 text-muted hover:text-fg"
+                                }
+                                aria-checked=move || (layer.get() == value).to_string()
+                                data-memory-layer=value.unwrap_or("all")
+                                on:click=move |_| layer.set(value)
+                            >
+                                {label}
+                            </button>
+                        })
+                        .collect_view()}
+                </div>
+            </div>
+        </Show>
+        {list}
     }
 }
 
@@ -264,7 +315,7 @@ fn memory_row(
                 <div
                     on:contextmenu=super::row_menu::on_context(context)
                     class=move || format!(
-                        "memory-row flex items-center gap-2 rounded-md {indent} {}",
+                        "memory-row group flex items-center gap-2 rounded-md {indent} {}",
                         if focused.get() { "ring-2 ring-accent" } else { "" }
                     )
                     data-memory=memory.url.clone()
@@ -273,7 +324,8 @@ fn memory_row(
                     data-memory-over=over.then_some("")
                 >
                     <button type="button" class=format!("{ROW} min-w-0 flex-1") on:click=move |_| workspace.edit_memory(url.clone())>
-                        <span class="flex w-full items-center gap-2 font-mono text-sm">
+                        // Names in the sans (docs/site/specs/web-polish.md, P8).
+                        <span class="flex w-full items-center gap-2 text-sm font-medium">
                             <Glyph icon=icondata::LuFileText class="opacity-60" />
                             <span class="min-w-0 truncate">{memory_name(&memory).to_owned()}</span>
                             {over.then(|| view! {
@@ -288,9 +340,11 @@ fn memory_row(
                         })}
                         {memory.invalid.clone().map(|reason| view! { <span class=ERROR>{reason}</span> })}
                     </button>
+                    // Shown on hover and to the keyboard only; a right-click
+                    // offers it too (docs/site/specs/web-polish.md, P5).
                     <button
                         type="button"
-                        class=ICON_BUTTON
+                        class=format!("{ICON_BUTTON} opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100 [@media(hover:none)]:opacity-100")
                         aria-label="Delete"
                         title="Delete"
                         data-memory-delete

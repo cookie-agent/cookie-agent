@@ -80,15 +80,16 @@ pub fn cron_page(workspace: Workspace) -> impl IntoView {
                 .into_any()
         };
         view! {
-            <div class="flex flex-wrap items-center gap-2">
-                <p class=format!("min-w-0 flex-1 {NOTE}")>
-                    "Cron times are the daemon host's local time; the times shown here are this browser's."
-                </p>
-                <button type="button" id="cron-new" class=PRIMARY on:click=move |_| workspace.new_cron_job()>
-                    <Glyph icon=icondata::LuPlus />
-                    "New"
-                </button>
-            </div>
+            {super::view_header(
+                "Schedules",
+                "Prompts sent to a session on a schedule. Cron times are the daemon host's local time; the times shown here are this browser's.",
+                view! {
+                    <button type="button" id="cron-new" class=PRIMARY on:click=move |_| workspace.new_cron_job()>
+                        <Glyph icon=icondata::LuPlus />
+                        "New schedule"
+                    </button>
+                },
+            )}
             {(!listing.firing).then(|| view! {
                 <p class=ERROR id="cron-firing-off">
                     "Firing is off ([cron] enabled = false): jobs stay, and each fire is recorded as skipped."
@@ -219,9 +220,26 @@ fn job_row(
             data-title=title.clone()
             data-enabled=enabled.to_string()
         >
+            <div class="relative">
+            // On or off, in the row (docs/site/specs/web-polish.md, P5).
             <button
                 type="button"
-                class=ROW
+                role="switch"
+                class="absolute top-2.5 right-2.5 z-[1] inline-flex h-7 w-11 items-center justify-center rounded-full"
+                aria-checked=enabled.to_string()
+                aria-label=if enabled { "Turn the schedule off" } else { "Turn the schedule on" }
+                title=if enabled { "On: click to pause it" } else { "Off: click to turn it on" }
+                data-cron-switch
+                on:click={
+                    let id = id.clone();
+                    move |_| workspace.set_cron_enabled(id.clone(), !enabled)
+                }
+            >
+                <span class="effort-switch" class:effort-switch-on=enabled aria-hidden="true"></span>
+            </button>
+            <button
+                type="button"
+                class=format!("{ROW} pr-16")
                 aria-expanded=move || selected.get().to_string()
                 on:click=toggle
             >
@@ -233,10 +251,11 @@ fn job_row(
                     <span class="min-w-0 flex-1 truncate text-sm font-bold" data-cron-title>{title.clone()}</span>
                     <span class=STATE data-cron-state>{state}</span>
                 </span>
-                <span class=format!("pl-6 {NOTE}") data-cron-reading>
-                    <span class="font-mono">{schedule}</span>
-                    " · "
+                // The schedule in words, its cron line quietly after it
+                // (docs/site/specs/web-polish.md, P5).
+                <span class="pl-6 text-[0.8125rem] text-fg-2" data-cron-reading>
                     {reading}
+                    <span class="ml-2 font-mono text-[0.6875rem] text-faint">{schedule}</span>
                 </span>
                 <span class=format!("flex w-full flex-wrap gap-x-3 pl-6 {NOTE}")>
                     <span data-cron-next>
@@ -249,6 +268,7 @@ fn job_row(
                     <span data-cron-outcome>{format!("last: {outcome}")}</span>
                 </span>
             </button>
+            </div>
             {details}
         </div>
     }

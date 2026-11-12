@@ -1141,3 +1141,25 @@ body {
     transition: none;
   }
 }
+
+/* A running session's dot in the sidebar pulses (docs/site/specs/
+   web-polish.md, P1). */
+.row-live {
+  animation: row-live 1.6s ease-out infinite;
+}
+@keyframes row-live {
+  0% {
+    box-shadow: 0 0 0 0 var(--color-accent-soft);
+  }
+  70% {
+    box-shadow: 0 0 0 5px transparent;
+  }
+  100% {
+    box-shadow: 0 0 0 0 transparent;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .row-live {
+    animation: none;
+  }
+}

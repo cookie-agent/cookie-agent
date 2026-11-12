@@ -703,12 +703,14 @@ pub(super) fn NewSessionProject(workspace: Workspace) -> impl IntoView {
     };
     view! {
         <Show when=move || workspace.has_projects.get()>
-            <label class="flex flex-col gap-1 text-xs font-bold text-muted">
-                <span>"Project"</span>
+            // One of the New session's chips (docs/site/specs/web-polish.md,
+            // P2).
+            <label class="flex min-w-0 text-[0.8125rem]">
+                <span class="sr-only">"Project"</span>
                 <select
                     id="new-session-project"
                     node_ref=select
-                    class="min-h-11 w-full min-w-0 rounded-lg bg-surface text-sm font-normal text-fg hover:shadow-[inset_0_0_0_1px_var(--color-faint)] shadow-[inset_0_0_0_1px_var(--color-line-2)]"
+                    class="h-9 max-w-[14rem] min-w-0 rounded-lg bg-surface pr-8 pl-2.5 text-[0.8125rem] font-normal text-fg-2 hover:bg-hover shadow-[inset_0_0_0_1px_var(--color-line-2)]"
                     prop:value=current
                     on:change=move |event| {
                         let value = event_target_value(&event);
@@ -1064,7 +1066,7 @@ fn agent_choices(workspace: Workspace, open: RwSignal<bool>) -> impl IntoView {
                             open.set(false);
                         }
                     >
-                        {choice_line(label.clone(), chosen, "font-mono text-sm font-bold")}
+                        {choice_line(label.clone(), chosen, "text-sm font-semibold")}
                         <span class=format!("line-clamp-2 {NOTE}")>{agent.description.clone()}</span>
                     </button>
                 }

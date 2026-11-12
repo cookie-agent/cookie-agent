@@ -459,24 +459,43 @@ fn control(
                         .map(|choices| {
                             choices
                                 .iter()
+                                .map(|choice| display_choice(workspace, choice))
+                                .collect::<Vec<_>>()
+                                .join(", then ")
+                        })
+                }
+            };
+            // The IDs, for the tooltip.
+            let ids_of = {
+                let form_field = form_field.clone();
+                move || {
+                    let text = draft.get().unwrap_or_else(|| form_field.current_text());
+                    serde_json::from_str::<Value>(&text)
+                        .ok()
+                        .as_ref()
+                        .and_then(models_from_value)
+                        .map(|choices| {
+                            choices
+                                .iter()
                                 .map(choice_label)
                                 .collect::<Vec<_>>()
                                 .join(", then ")
                         })
+                        .unwrap_or_default()
                 }
             };
             let has_value = {
                 let label_of = label_of.clone();
                 move || label_of().is_some()
             };
+            // One picker: the models by their display names
+            // (docs/site/specs/web-polish.md, P6).
             view! {
                 <div class="flex flex-col items-start gap-1 lg:items-end">
-                    <p class="font-mono text-xs wrap-anywhere lg:text-right" class:text-faint=move || !has_value() data-model-label>
-                        {move || label_of().unwrap_or_else(|| note.to_owned())}
-                    </p>
                     <button
                         type="button"
-                        class=BUTTON
+                        class=format!("{BUTTON} w-full max-w-[18rem] justify-between lg:w-[16rem]")
+                        title=ids_of
                         data-model-change
                         on:click=move |_| {
                             if picker_open.get_untracked() {
@@ -497,7 +516,13 @@ fn control(
                             picker_open.set(true);
                         }
                     >
-                        "Change"
+                        <span class="flex min-w-0 items-center gap-1.5">
+                            <Glyph icon=icondata::LuSparkles class="shrink-0 text-muted" />
+                            <span class="min-w-0 truncate" class:text-faint=move || !has_value() data-model-label>
+                                {move || label_of().unwrap_or_else(|| note.to_owned())}
+                            </span>
+                        </span>
+                        <Glyph icon=icondata::LuChevronDown class="shrink-0 text-xs text-muted" />
                     </button>
                 </div>
             }
@@ -578,5 +603,25 @@ fn other_box(workspace: Workspace, entry: &OtherEntry) -> impl IntoView + use<> 
             </div>
             <pre class="font-mono text-xs leading-relaxed whitespace-pre-wrap text-fg-2 wrap-anywhere">{snippet(&entry.key, &entry.value)}</pre>
         </div>
+    }
+}
+
+/// A model choice by its display names, as the composer's chip names a
+/// model and its level: `Claude Opus 5.5 · High`.
+fn display_choice(workspace: Workspace, choice: &ModelChoice) -> String {
+    match choice {
+        ModelChoice::Model { model, variant } => {
+            let name = workspace.with_runtime(|runtime| runtime.model_names().short_label(model));
+            let level = variant.as_ref().map(|variant| {
+                workspace
+                    .models()
+                    .into_iter()
+                    .find(|each| &each.key == model)
+                    .and_then(|each| each.variants.into_iter().find(|each| &each.id == variant))
+                    .map_or_else(|| variant.to_string(), |each| each.display_name)
+            });
+            cookie_agent_client_state::effort::chip_label(&name, level.as_deref())
+        }
+        other => choice_label(other),
     }
 }

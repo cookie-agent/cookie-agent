@@ -441,7 +441,7 @@ pub fn skills_sheet(workspace: Workspace) -> impl IntoView {
                             data-skill=skill.name.clone()
                             on:click=move |_| workspace.skill_pick.set(Some(picked.clone()))
                         >
-                            <span class="pr-20 font-mono text-sm font-bold">{skill.name.clone()}</span>
+                            <span class="pr-20 text-sm font-semibold">{skill.name.clone()}</span>
                             {(skill.source == cookie_agent_protocol::SkillSource::Official)
                                 .then(|| {
                                     view! {
@@ -480,7 +480,7 @@ pub fn skills_sheet(workspace: Workspace) -> impl IntoView {
                     let hint = skill.argument_hint.clone().unwrap_or_else(|| "arguments".into());
                     view! {
                         <div class="mt-3 flex flex-col gap-2 border-t border-line pt-3">
-                            <p class="font-mono text-sm font-bold">{skill.name.clone()}</p>
+                            <p class="text-sm font-semibold">{skill.name.clone()}</p>
                             <input
                                 type="text"
                                 id="skill-args"

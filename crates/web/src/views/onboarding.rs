@@ -540,7 +540,7 @@ fn acp_declarations(workspace: Workspace) -> impl IntoView {
                 view! {
                     <li class="flex flex-col gap-1" data-acp-agent=agent.id.to_string()>
                         <span class="text-sm">
-                            <span class="font-mono font-bold">{agent.id.to_string()}</span>
+                            <span class="font-semibold">{agent.id.to_string()}</span>
                             {format!(" · {place}{}", if agent.enabled { "" } else { " · turned off" })}
                         </span>
                         <ul class="flex flex-col gap-1 pl-3">{runtimes}</ul>

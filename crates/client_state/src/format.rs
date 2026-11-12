@@ -182,6 +182,25 @@ pub fn relative_time(now: Timestamp, then: Timestamp) -> String {
     }
 }
 
+/// [`relative_time`] for a list's narrow column: "now", "5m", "3h", "2d",
+/// else the month and day ("Nov 3").
+pub fn short_relative_time(now: Timestamp, then: Timestamp) -> String {
+    const MONTHS: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    match Ago::of(now, then) {
+        Ago::JustNow => "now".to_owned(),
+        Ago::Minutes(minutes) => format!("{minutes}m"),
+        Ago::Hours(hours) => format!("{hours}h"),
+        Ago::Days(days) => format!("{days}d"),
+        Ago::On(date) => format!(
+            "{} {}",
+            MONTHS[usize::try_from(date.month() - 1).unwrap_or(0)],
+            date.day()
+        ),
+    }
+}
+
 /// A piece of a line [`code_spans`] split: plain text, or the inside of a
 /// Markdown code span.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -371,5 +390,18 @@ mod tests {
             code_spans("`x` and `y"),
             [Span::Code("x"), Span::Text(" and `y")]
         );
+    }
+
+    #[test]
+    fn short_relative_times_step_like_the_long_ones() {
+        let now: Timestamp = "2026-11-12T12:00:00Z".parse().expect("a time");
+        let ago = |seconds: i64| now - SignedDuration::from_secs(seconds);
+        assert_eq!(short_relative_time(now, ago(59)), "now");
+        assert_eq!(short_relative_time(now, ago(60)), "1m");
+        assert_eq!(short_relative_time(now, ago(3_599)), "59m");
+        assert_eq!(short_relative_time(now, ago(3_600)), "1h");
+        assert_eq!(short_relative_time(now, ago(86_400)), "1d");
+        assert_eq!(short_relative_time(now, ago(604_799)), "6d");
+        assert_eq!(short_relative_time(now, ago(604_800)), "Nov 5");
     }
 }

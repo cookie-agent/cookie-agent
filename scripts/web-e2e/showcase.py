@@ -177,6 +177,9 @@ browser.click("aside [data-new-session]")
 browser.wait("the new session", lambda: "New session" in browser.text("#session-title"))
 # The runtime cards above the composer: `global`, and `local` at the
 # greeter.
+# The runtime cards are in the "Runs on" panel, under the New session's chips.
+browser.wait("the chips", lambda: browser.count('[data-new-session-chip="where"]') == 1)
+browser.script("document.querySelector('[data-new-session-chip=\"where\"]').click()")
 browser.wait("the cards", lambda: browser.count('#new-session [data-card="local/coding"]') > 0)
 if browser.count('#new-session [data-card="local/coding"][data-selected=true]') == 0:
     browser.click('#new-session [data-card="local/coding"] [data-card-toggle]')
@@ -262,12 +265,22 @@ COMMANDS = [
 CLICKS = [
     ("commands", "button[aria-label=Commands]"),
     ("message-revert", "#transcript [data-latest] [data-action=message-revert]"),
-    ("connection", "#sidebar button[aria-haspopup=dialog]"),
+    # The connection's button at the sidebar's foot, not the sessions
+    # filter's, which also opens a dialog.
+    ("connection", "#sidebar button:has(#connected)"),
     ("sessions", "main [data-sidebar-toggle]"),
 ]
 # The sidebar's views, and the Settings sections.
 VIEWS = ["agents", "skills", "mcp", "settings", "machines", "memory"]
 SECTIONS = ["configuration", "providers", "plugins", "browser"]
+
+
+def open_where():
+    """Opens the New session's "Runs on" panel, where its runtime cards are."""
+    browser.wait("the chips", lambda: browser.count('[data-new-session-chip="where"]') == 1)
+    if browser.count('[data-new-session-chip="where"][aria-expanded="false"]') == 1:
+        browser.script("document.querySelector('[data-new-session-chip=\"where\"]').click()")
+        time.sleep(0.4)
 
 
 def view(name):
@@ -290,6 +303,7 @@ def close_all():
         "const m = document.querySelector('[data-row-menu-backdrop]'); if (m) m.click();"
         "const s = document.querySelector('#sheet h2 ~ button'); if (s) s.click();"
         "const c = document.querySelector('#connection-close'); if (c) c.click();"
+        "const f = document.querySelector('#filter-sessions[aria-expanded=true]'); if (f) f.click();"
         "const d = document.querySelector('#sidebar [data-sidebar-toggle]'); if (d) d.click();"
     )
     time.sleep(0.3)
@@ -372,6 +386,7 @@ def badge_session(note, picks):
     """Starts a session on the runtime cards with `global` and `picks`,
     (runtime, workspace) pairs, and sends `note`, which titles it."""
     click("aside [data-new-session]")
+    open_where()
     browser.wait("the cards", lambda: browser.count("#new-session [data-card]") > 0)
     browser.script(
         "for (const g of document.querySelectorAll('#new-session [data-group][data-open=false] [data-group-toggle]'))"

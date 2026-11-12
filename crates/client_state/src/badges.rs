@@ -366,6 +366,34 @@ fn placed_tooltip(
     lines.join("\n")
 }
 
+/// The badges most of a project's sessions show (the first of them in the
+/// list on a tie): its usual machine and workspace, which its rows leave
+/// out (`docs/site/specs/web-polish.md`, P1).
+#[must_use]
+pub fn usual_badges(rows: impl IntoIterator<Item = Vec<SessionBadge>>) -> Vec<SessionBadge> {
+    let mut counts: Vec<(Vec<SessionBadge>, usize)> = Vec::new();
+    for badges in rows {
+        match counts.iter_mut().find(|(known, _)| *known == badges) {
+            Some((_, count)) => *count += 1,
+            None => counts.push((badges, 1)),
+        }
+    }
+    let most = counts.iter().map(|(_, count)| *count).max().unwrap_or(0);
+    counts
+        .into_iter()
+        .find(|(_, count)| *count == most)
+        .map(|(badges, _)| badges)
+        .unwrap_or_default()
+}
+
+/// Whether a row shows its badges, a second line under its title: when it
+/// has some and they are not its project's usual ones. A session outside
+/// any project (`usual` is `None`) always shows its own.
+#[must_use]
+pub fn row_shows_badges(badges: &[SessionBadge], usual: Option<&[SessionBadge]>) -> bool {
+    !badges.is_empty() && usual != Some(badges)
+}
+
 #[cfg(test)]
 mod tests {
     use cookie_agent_protocol::{
@@ -656,5 +684,28 @@ mod tests {
             ),
             "no workspace"
         );
+    }
+
+    #[test]
+    fn a_projects_usual_badges_are_the_most_common_and_its_rows_leave_them_out() {
+        let machine = |name: &str| SessionBadge::Machine {
+            name: name.to_owned(),
+            platform: None,
+        };
+        let here = vec![
+            machine("labserver"),
+            SessionBadge::Workspace("~/code".to_owned()),
+        ];
+        let there = vec![machine("labpc")];
+        let usual = usual_badges([there.clone(), here.clone(), here.clone()]);
+        assert_eq!(usual, here);
+        // A tie goes to the first in the list.
+        assert_eq!(usual_badges([there.clone(), here.clone()]), there);
+        assert!(usual_badges(Vec::<Vec<SessionBadge>>::new()).is_empty());
+        assert!(!row_shows_badges(&here, Some(&usual)));
+        assert!(row_shows_badges(&there, Some(&usual)));
+        // Outside a project, a row always shows its own; nothing shows none.
+        assert!(row_shows_badges(&here, None));
+        assert!(!row_shows_badges(&[], None));
     }
 }

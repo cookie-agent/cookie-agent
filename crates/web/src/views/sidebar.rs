@@ -26,7 +26,9 @@ const FOOT_BUTTON: &str = "inline-flex h-11 w-11 shrink-0 items-center justify-c
 
 /// A view's entry on a phone, where the views are a grid of tiles so the
 /// sessions keep the room.
-const NAV_TILE: &str = "group flex h-14 min-w-0 flex-col items-center justify-center gap-1 rounded-xl text-[0.6875rem] text-fg-2 transition-colors hover:bg-hover active:bg-press aria-[current=page]:bg-sel aria-[current=page]:text-fg";
+/// A view's entry on a phone: a pill in one row that scrolls sideways, so
+/// the sessions keep the room (docs/site/specs/web-polish.md, P7).
+const NAV_TILE: &str = "group inline-flex h-11 shrink-0 items-center gap-1.5 rounded-full bg-surface px-3.5 text-[0.8125rem] text-fg-2 shadow-[inset_0_0_0_1px_var(--color-line-2)] transition-colors hover:bg-hover active:bg-press aria-[current=page]:bg-sel aria-[current=page]:text-fg aria-[current=page]:shadow-[inset_0_0_0_1px_var(--color-accent)]";
 
 /// The views the sidebar lists under *Workspace*: every view but Chat,
 /// which is the session list itself, and Settings, at the foot.
@@ -49,12 +51,10 @@ fn nav_entry(workspace: Workspace, view: View) -> impl IntoView {
         (view != View::Cron || workspace.has_crons.get())
             && (view != View::Sharing || workspace.has_shares.get())
     };
-    let label = if view == View::Machines {
-        "Machines"
-    } else if view == View::Cron {
-        "Schedules"
-    } else {
-        view.label()
+    let label = match view {
+        // Short enough for the sidebar's two columns.
+        View::Mcp => "MCP",
+        _ => view.label(),
     };
     view! {
         <button
@@ -97,7 +97,9 @@ pub fn Sidebar(
             class:absolute=paged
             class:inset-0=paged
             class:w-full=paged
-            class:lg:flex=move || workspace.sidebar_pinned.get()
+            // Settings takes the sidebar's place on a desktop
+            // (docs/site/specs/web-polish.md, P6).
+            class:lg:flex=move || workspace.sidebar_pinned.get() && workspace.view.get() != View::Settings
             aria-label="Sidebar"
         >
             <div class="flex h-12 shrink-0 items-center gap-2 px-3">
@@ -121,8 +123,9 @@ pub fn Sidebar(
                     <Glyph icon=icondata::LuSquarePen class="text-base text-muted group-hover:text-fg-2 group-aria-[current=page]:text-accent" />
                     <span class="truncate">"New session"</span>
                 </button>
-                <p class="px-2 pt-4 pb-1 text-[0.6875rem] font-semibold text-muted">"Workspace"</p>
-                <div class=move || if workspace.narrow.get() { "grid grid-cols-4 gap-1" } else { "flex flex-col gap-px" }>{nav}</div>
+                // Two columns on a desktop, so the sessions keep the room
+                // (docs/site/specs/web-polish.md, P1); a phone's tiles.
+                <div class=move || if workspace.narrow.get() { "-mx-2 mt-2 flex gap-1.5 overflow-x-auto px-2 pb-1 [scrollbar-width:none]" } else { "mt-1.5 grid grid-cols-2 gap-x-1 gap-y-px" }>{nav}</div>
             </nav>
             <SessionList workspace=workspace />
             <div class="flex shrink-0 items-center gap-1 border-t border-line px-2 py-1.5">

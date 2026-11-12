@@ -464,7 +464,11 @@ def field(key, index=0):
 
 
 def show_cards(browser):
-    """Waits for the new session's runtime cards, above its composer."""
+    """Opens the new session's "Runs on" panel, under its chips, and waits
+    for its runtime cards."""
+    browser.wait("the New session chips", lambda: count(browser, '[data-new-session-chip="where"]') == 1)
+    if count(browser, '[data-new-session-chip="where"][aria-expanded="false"]') == 1:
+        browser.click('[data-new-session-chip="where"]')
     # A folded machine group shows no cards: its header is enough.
     browser.wait(
         "the runtime cards",
@@ -2944,9 +2948,12 @@ def management(browser):
         timeout=40,
     )
     browser.shot("mcp")
-    browser.click('#page [data-server="broken"] [data-mcp-toggle]')
+    # Turning off and removing are in the row's ⋯ (docs/site/specs/web-polish.md, P5).
+    browser.click('#page [data-server="broken"] [data-row-menu]')
+    browser.click('[data-row-menu-list] [data-menu-item="disable"]')
     browser.wait("the disabled server", lambda: browser.text('#page [data-server="broken"] .mcp-state') == "disabled")
-    browser.click('#page [data-server="broken"] [data-mcp-remove]')
+    browser.click('#page [data-server="broken"] [data-row-menu]')
+    browser.click('[data-row-menu-list] [data-menu-item="remove"]')
     browser.wait("the removed server", lambda: count(browser, '#page [data-server="broken"]') == 0)
     print("added an MCP server that cannot start, disabled it, and removed it")
     close_sheet(browser)
@@ -3062,6 +3069,8 @@ def management(browser):
         overwrite = hashlib.sha256(file.read()).hexdigest()[:16]
     browser.wait("the overwrite listed", lambda: browser.script(
         "return document.querySelector('#page [data-memory=\"project://e2e/notes\"]')?.dataset.revision") == overwrite)
+    # The trash shows on hover (docs/site/specs/web-polish.md, P5).
+    hover_at(browser, '#page [data-memory="project://e2e/notes"]')
     browser.click('#page [data-memory="project://e2e/notes"] [data-memory-delete]')
     browser.click("#memory-delete-confirm")
     browser.wait("the deleted memory", lambda: count(browser, '#page [data-memory="project://e2e/notes"]') == 0)
@@ -3162,6 +3171,18 @@ def views_2026(browser):
     assert os.path.exists(os.path.join(HOME, ".cookie-agent", "agents", "e2e.md"))
     browser.click('#agents-sidebar [data-config-path="agents/e2e.md"] button')
     browser.wait("its editor", lambda: browser.text("#agent-name") == "e2e")
+    # The form edits the same text: the description and the mode, one
+    # front-matter line each, the rest as written
+    # (docs/site/specs/web-polish.md, P5).
+    browser.click("#page [data-agent-form-tab]")
+    browser.wait("the form", lambda: count(browser, "#page [data-agent-form]") == 1)
+    assert browser.script("return document.querySelector('#agent-form-description').value") == "Browser scenario agent"
+    set_text(browser, "#agent-form-description", "Reviews: the diff")
+    browser.click('#page [data-agent-mode="all"]')
+    text = browser.script("return document.querySelector('#config-text').value")
+    assert 'description: "Reviews: the diff"' in text and "mode: all" in text, text
+    assert "  - { model: \"custom.local/test\", variant: null }" in text and text.endswith("---\nHelp.\n"), text
+    browser.click("#page [data-agent-file-tab]")
     browser.click("#page [data-config-delete]")
     browser.click("#config-delete-confirm")
     browser.wait("the deleted agent", lambda: count(browser, '#agents-sidebar [data-config-path="agents/e2e.md"]') == 0)
@@ -4848,14 +4869,16 @@ def phone_layout():
         phone.wait("a bottom sheet", lambda: rect()[0] > 40 and abs(rect()[1] - rect()[2]) <= 2)
         phone.shot("phone-bottom-sheet")
         close_sheet(phone)
-        # The mode chip is a shield that opens a bottom sheet of the modes.
-        phone.click("#permission-mode")
+        # A phone's one chip opens one sheet for the agent, the model, and
+        # the mode (docs/site/specs/web-polish.md, P7).
+        assert not shown(phone, "#permission-mode") and not shown(phone, "#agent-chip")
+        phone.click("#model-chip")
         phone.wait("the mode sheet", lambda: count(phone, "#sheet [data-mode]") == 5)
         phone.wait("the mode picker as a bottom sheet", lambda: abs(rect()[1] - rect()[2]) <= 2)
         phone.shot("phone-mode-picker")
         phone.click('#sheet [data-mode="ask"]')
         phone.wait("the ask mode", lambda: "ask" in phone.script("return document.querySelector('#permission-mode').getAttribute('aria-label')"))
-        phone.click("#permission-mode")
+        phone.click("#model-chip")
         phone.click('#sheet [data-mode="auto-approve"]')
         phone.wait("the default mode", lambda: count(phone, "#sheet") == 0)
         # The ⋮ menu and its sheets rise from the bottom too.
@@ -6316,7 +6339,8 @@ def http_warning():
         browser.phone(390, 844)
         browser.script("document.querySelector(arguments[0]).scrollIntoView({block: 'start'})", row)
         browser.shot("mcp-sign-in-http-warning-phone")
-        browser.click(row + " [data-mcp-remove]")
+        browser.click(row + " [data-row-menu]")
+        browser.click('[data-row-menu-list] [data-menu-item="remove"]')
         browser.wait("the removed server", lambda: count(browser, row) == 0)
         print("a plain http page away from loopback warns, and still offers sign-in")
     finally:
@@ -6745,8 +6769,10 @@ def acp_agents(browser):
     browser.shot("acp-agent-picker")
     browser.click(fixture)
     browser.wait("the picked agent", lambda: "fixture" in browser.text("#agent-chip"))
-    # The chip names where the agent runs.
-    assert "fixture · on local" in browser.text("#agent-chip"), browser.text("#agent-chip")
+    # The chip names the agent; where it runs is in its tooltip, as the
+    # agent runs in one place only (docs/site/specs/web-polish.md, P3).
+    assert browser.text("#agent-chip").strip() == "fixture", browser.text("#agent-chip")
+    assert "fixture on local" in browser.script("return document.querySelector('#agent-chip').title")
     send(browser, "work")
     browser.wait("the agent's turn", lambda: "Done." in browser.text("#transcript"), timeout=60)
     statuses = browser.script(
@@ -7434,9 +7460,11 @@ def guest_link(browser):
         guest.shot("guest-link-permissions")
         # Every tab of the session panel opens without a refused request.
         for tab in ["Usage", "Runtimes", "Skills", "Goal", "Background", "Events"]:
+            # The tabs show their icons; each names itself in its label
+            # (docs/site/specs/web-polish.md, B10).
             guest.script(
-                "[...document.querySelectorAll('button')].find(b => b.textContent.trim().startsWith(arguments[0])).click()",
-                tab,
+                "document.querySelector('[data-session-tab=\"' + arguments[0] + '\"]').click()",
+                tab.lower(),
             )
             settle(guest)
             guest.shot("guest-link-tab-" + tab.lower())

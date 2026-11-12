@@ -158,7 +158,9 @@ pub fn PageView(workspace: Workspace, connection: Connection) -> impl IntoView {
                 .into_any(),
                 view => view! {
                     <div class="flex min-h-0 flex-1 flex-col overflow-y-auto px-3 py-4 sm:px-8 sm:py-6" data-page-body>
-                        <div class="mx-auto flex w-full max-w-3xl flex-1 flex-col gap-3">
+                        // One width for every view (docs/site/specs/web-polish.md,
+                        // P5).
+                        <div class="mx-auto flex w-full max-w-[55rem] flex-1 flex-col gap-3">
                             {match view {
                                 View::Machines => machines_page(workspace).into_any(),
                                 View::Memory => memory_sheet(workspace).into_any(),
@@ -221,11 +223,26 @@ fn settings_page(workspace: Workspace, connection: Connection) -> impl IntoView 
         .collect_view();
     view! {
         <div class="flex min-h-0 flex-1">
+            // On a desktop the section list is the sidebar: Back to the
+            // sessions at its top, the connection at its foot
+            // (docs/site/specs/web-polish.md, P6).
             <nav
                 aria-label="Settings sections"
-                class="flex w-full shrink-0 flex-col gap-px overflow-y-auto p-2 sm:w-56 sm:border-r sm:border-line"
+                class="flex w-full shrink-0 flex-col gap-px overflow-y-auto p-2 sm:w-56 sm:border-r sm:border-line lg:w-64 lg:bg-surface-2"
                 class:hidden=move || workspace.shown_section().is_some() && workspace.narrow.get()
             >
+                <button
+                    type="button"
+                    class=format!("{SECTION_ROW} mb-2 hidden lg:flex")
+                    data-settings-back
+                    on:click=move |_| workspace.open_view(View::Chat, None)
+                >
+                    <span class="flex w-full items-center gap-2.5">
+                        <Glyph icon=icondata::LuArrowLeft class="text-base text-muted" />
+                        <span class="min-w-0 flex-1 text-[0.8125rem] text-fg-2">"Back to sessions"</span>
+                    </span>
+                </button>
+                <p class="hidden px-2.5 pt-1 pb-1 text-[0.6875rem] font-semibold text-muted lg:block">"Settings"</p>
                 <Show when=move || workspace.onboarding.status.with(Option::is_some)>
                     <button
                         type="button"
@@ -241,6 +258,10 @@ fn settings_page(workspace: Workspace, connection: Connection) -> impl IntoView 
                     </button>
                 </Show>
                 {entries}
+                <div class="mt-auto hidden items-center gap-2 border-t border-line px-1 pt-2 lg:flex">
+                    <crate::app::ConnectionStatus connection=connection compact=true primary=true />
+                    <span class="text-xs text-muted">{concat!("cookie ", env!("CARGO_PKG_VERSION"))}</span>
+                </div>
             </nav>
             {move || {
                 workspace.shown_section().map(|section| view! {

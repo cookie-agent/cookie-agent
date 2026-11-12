@@ -7,6 +7,45 @@ use cookie_agent_protocol::{DisplayBlock, Open, ToolHint, ToolPresentation};
 
 use crate::ToolCallState;
 
+/// What a call's result comes to, for its header: see
+/// [`ToolCallState::result_summary`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ResultSummary {
+    /// The exit code of the last command the result shows.
+    pub exit_code: Option<i32>,
+    /// Lines the call's changes added and removed.
+    pub added: u64,
+    pub removed: u64,
+}
+
+impl ResultSummary {
+    /// The summary of a result's display blocks.
+    pub fn of(display: &[Open<DisplayBlock>]) -> Self {
+        let mut summary = Self::default();
+        for block in display.iter().filter_map(Open::known) {
+            match block {
+                DisplayBlock::Terminal { exit_code, .. } => {
+                    if exit_code.is_some() {
+                        summary.exit_code = *exit_code;
+                    }
+                }
+                DisplayBlock::Diff(diff) => {
+                    summary.added += diff.added;
+                    summary.removed += diff.removed;
+                }
+                _ => {}
+            }
+        }
+        summary
+    }
+
+    /// Whether the result says the call went wrong: a command exited
+    /// non-zero.
+    pub fn failed(self) -> bool {
+        self.exit_code.is_some_and(|code| code != 0)
+    }
+}
+
 /// The icon for a tool hint (spec 12.2). Hints are open labels: one this
 /// build does not document, or none, gets the generic icon. The tool's name
 /// is never consulted.
@@ -215,6 +254,19 @@ impl ToolCallState {
         (!title_names_argument(&self.header_text(), &flat)).then_some(progress)
     }
 
+    /// The header's title alone, as [`header_text`](Self::header_text)
+    /// starts with it.
+    pub fn header_title(&self) -> String {
+        flatten_header_argument(self.presentation.title.as_str())
+    }
+
+    /// What the call's result comes to, for its header's end
+    /// (`docs/site/specs/web-polish.md`, P3): the last command's exit code,
+    /// and the lines its changes added and removed.
+    pub fn result_summary(&self) -> ResultSummary {
+        ResultSummary::of(&self.display)
+    }
+
     /// The header's text: the title, then the argument it does not name.
     pub fn header_text(&self) -> String {
         let title = flatten_header_argument(self.presentation.title.as_str());
@@ -385,5 +437,26 @@ mod tests {
         );
         assert_eq!(memory_url_span("Search memory build"), None);
         assert_eq!(memory_url_span("Fetch xuser://a"), None);
+    }
+
+    #[test]
+    fn a_results_summary_takes_the_last_exit_code_and_says_when_it_failed() {
+        let terminal = |exit_code| {
+            Open::Known(DisplayBlock::Terminal {
+                segments: Vec::new(),
+                exit_code,
+                omitted_lines: None,
+                full: None,
+            })
+        };
+        let summary =
+            super::ResultSummary::of(&[terminal(Some(1)), terminal(None), terminal(Some(0))]);
+        assert_eq!(summary.exit_code, Some(0));
+        assert!(!summary.failed());
+        assert!(super::ResultSummary::of(&[terminal(Some(101))]).failed());
+        assert_eq!(
+            super::ResultSummary::of(&[]),
+            super::ResultSummary::default()
+        );
     }
 }

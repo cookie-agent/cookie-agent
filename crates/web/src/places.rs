@@ -155,6 +155,32 @@ pub fn paths_under_home(text: &str, home: Option<&str>) -> String {
     shown
 }
 
+/// The folder chip's words for a places label (`labpc:~/code/site, ~/greeter`):
+/// each folder's name alone (`site, greeter`), the full paths left for its
+/// tooltip (`docs/site/specs/web-polish.md`, P3). Words that are no path
+/// stay as they are.
+pub fn folder_names(label: &str) -> String {
+    label
+        .split(", ")
+        .map(|place| {
+            if !place.contains('/') {
+                return place;
+            }
+            let name = place
+                .trim_end_matches('/')
+                .rsplit('/')
+                .next()
+                .unwrap_or(place);
+            if name.is_empty() || name == "~" {
+                place
+            } else {
+                name
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 #[cfg(test)]
 mod tests {
     use cookie_agent_protocol::{
@@ -316,5 +342,23 @@ mod tests {
             "Read /home/ada/x"
         );
         assert_eq!(paths_under_home("  two  spaces ", home), "  two  spaces ");
+    }
+
+    #[test]
+    fn the_folder_chip_names_each_folder() {
+        use super::folder_names;
+        assert_eq!(
+            folder_names("~/Documents/Projects/cookie_code"),
+            "cookie_code"
+        );
+        assert_eq!(
+            folder_names("labpc:~/code/site, ~/greeter/"),
+            "site, greeter"
+        );
+        assert_eq!(
+            folder_names("global only: no workspace"),
+            "global only: no workspace"
+        );
+        assert_eq!(folder_names("~/"), "~/");
     }
 }

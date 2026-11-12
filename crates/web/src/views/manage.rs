@@ -135,7 +135,7 @@ fn attachments_view(workspace: Workspace) -> impl IntoView {
                 view! {
                     <div class="runtime-row flex flex-col gap-1 border-b border-line py-2" data-attachment=row.attachment.name.to_string()>
                         <div class="flex items-center gap-2">
-                            <span class="min-w-0 flex-1 truncate font-mono text-sm font-bold">
+                            <span class="min-w-0 flex-1 truncate text-sm font-semibold">
                                 {format!("{} · {}", row.attachment.name, row.attachment.kind)}
                             </span>
                             // A guest does not read how the daemon's runtimes are.
@@ -492,6 +492,8 @@ pub fn mcp_sheet(workspace: Workspace) -> impl IntoView {
     let form = RwSignal::new(None::<McpEdit>);
     let persist = RwSignal::new(PersistChoice::Runtime);
     let error = RwSignal::new(None::<String>);
+    // The one open ⋯ menu among the servers' rows.
+    let menu = RwSignal::new(None::<String>);
     let list = move || {
         match workspace.mcp_servers.get() {
         None => loading("Reading MCP servers…").into_any(),
@@ -514,11 +516,55 @@ pub fn mcp_sheet(workspace: Workspace) -> impl IntoView {
                 let toggled = (server.clone(), !server.definition.enabled);
                 let reconnected = server.clone();
                 let editable = refusal.is_none();
+                // Edit, turn off, and remove in the row's ⋯
+                // (docs/site/specs/web-polish.md, P5).
+                let items = {
+                    let (edited, toggled, removed) = (edited.clone(), toggled.clone(), removed.clone());
+                    move || {
+                        use super::row_menu::MenuItem;
+                        if !editable {
+                            return Vec::new();
+                        }
+                        let (edited, toggled, removed) = (edited.clone(), toggled.clone(), removed.clone());
+                        vec![
+                            MenuItem {
+                                id: "edit",
+                                label: "Edit",
+                                icon: icondata::LuPencil,
+                                act: Callback::new(move |()| {
+                                    error.set(None);
+                                    form.set(Some(McpEdit::edit(&edited)));
+                                }),
+                                danger: false,
+                            },
+                            MenuItem {
+                                id: if toggled.1 { "enable" } else { "disable" },
+                                label: if toggled.1 { "Turn on" } else { "Turn off" },
+                                icon: if toggled.1 { icondata::LuPlay } else { icondata::LuPause },
+                                act: Callback::new(move |()| workspace.toggle_mcp(&toggled.0, toggled.1)),
+                                danger: false,
+                            },
+                            MenuItem {
+                                id: "remove",
+                                label: "Remove",
+                                icon: icondata::LuTrash2,
+                                act: Callback::new(move |()| workspace.remove_mcp(&removed)),
+                                danger: true,
+                            },
+                        ]
+                    }
+                };
                 view! {
-                    <div class="mcp-server flex flex-col gap-1 border-b border-line py-2" data-server=name.clone()>
+                    <div class="mcp-server flex flex-col gap-1 border-b border-line px-1 py-3 last:border-b-0" data-server=name.clone()>
                         <div class="flex items-center gap-2">
-                            <span class="min-w-0 flex-1 truncate font-mono text-sm font-bold">{name.clone()}</span>
+                            <Glyph icon=icondata::LuPlug class="shrink-0 text-muted" />
+                            <span class="min-w-0 truncate text-sm font-semibold">{name.clone()}</span>
                             <span class=format!("mcp-state {STATE}")>{mcp_state_label(server.state)}</span>
+                            <span class="flex-1"></span>
+                            <button type="button" class=format!("{BUTTON} h-8 text-xs") data-mcp-reconnect on:click=move |_| workspace.reconnect_mcp(&reconnected)>
+                                {if idle { "Connect" } else { "Reconnect" }}
+                            </button>
+                            {super::row_menu::row_menu(menu, name.clone(), name.clone(), name.clone(), ICON_BUTTON, items)}
                         </div>
                         <span class=NOTE>
                             {format!(
@@ -538,34 +584,6 @@ pub fn mcp_sheet(workspace: Workspace) -> impl IntoView {
                         })}
                         {needs_auth.then(|| sign_in_offer(workspace, &server))}
                         {refusal.clone().map(|refusal| view! { <span class=NOTE>{refusal}</span> })}
-                        <div class="flex flex-wrap gap-2">
-                            <Show when=move || editable>
-                                <button type="button" class=BUTTON data-mcp-edit on:click={
-                                    let edited = edited.clone();
-                                    move |_| {
-                                        error.set(None);
-                                        form.set(Some(McpEdit::edit(&edited)));
-                                    }
-                                }>
-                                    "Edit"
-                                </button>
-                                <button type="button" class=BUTTON data-mcp-toggle on:click={
-                                    let toggled = toggled.clone();
-                                    move |_| workspace.toggle_mcp(&toggled.0, toggled.1)
-                                }>
-                                    {if toggled.1 { "Enable" } else { "Disable" }}
-                                </button>
-                                <button type="button" class=BUTTON data-mcp-remove on:click={
-                                    let removed = removed.clone();
-                                    move |_| workspace.remove_mcp(&removed)
-                                }>
-                                    "Remove"
-                                </button>
-                            </Show>
-                            <button type="button" class=BUTTON data-mcp-reconnect on:click=move |_| workspace.reconnect_mcp(&reconnected)>
-                                {if idle { "Connect" } else { "Reconnect" }}
-                            </button>
-                        </div>
                     </div>
                 }
             })
@@ -574,21 +592,27 @@ pub fn mcp_sheet(workspace: Workspace) -> impl IntoView {
     }
     };
     view! {
+        {super::view_header(
+            "MCP servers",
+            "Tools from outside cookie, offered to every session; a session can turn any of them off.",
+            view! {
+                <button
+                    type="button"
+                    id="mcp-new"
+                    class=PRIMARY
+                    on:click=move |_| {
+                        error.set(None);
+                        form.set(Some(McpEdit::add(None)));
+                    }
+                >
+                    <Glyph icon=icondata::LuPlus />
+                    "Add a server"
+                </button>
+            },
+        )}
         {move || sign_in_outcome(workspace)}
         {move || sign_ins(workspace)}
-        {list}
-        <button
-            type="button"
-            id="mcp-new"
-            class=PRIMARY
-            on:click=move |_| {
-                error.set(None);
-                form.set(Some(McpEdit::add(None)));
-            }
-        >
-            <Glyph icon=icondata::LuPlus />
-            "New server"
-        </button>
+        <div class="flex flex-col rounded-xl bg-raised px-3 shadow-[0_0_0_1px_var(--color-line)]" data-mcp-list>{list}</div>
         {move || form.get().map(|edit| {
             edit_dialog("mcp-form", move || form.set(None), mcp_form(workspace, form, persist, error, edit))
         })}
@@ -1621,7 +1645,7 @@ pub fn plugins_sheet(workspace: Workspace) -> impl IntoView {
                 view! {
                     <div class="plugin flex flex-col gap-1 border-b border-line py-2" data-plugin=plugin.name.clone()>
                         <div class="flex items-center gap-2">
-                            <span class="min-w-0 flex-1 truncate font-mono text-sm font-bold">{plugin.name.clone()}</span>
+                            <span class="min-w-0 flex-1 truncate text-sm font-semibold">{plugin.name.clone()}</span>
                             <span class=format!("plugin-state {STATE}")>{plugin_state_label(plugin.state)}</span>
                         </div>
                         <pre class=format!("{NOTE} whitespace-pre-wrap font-mono")>{plugin_detail(&plugin, crate::browser::page_href().filter(|_| workspace.plugin_pages_here.get()).as_deref())}</pre>
@@ -1668,7 +1692,7 @@ fn plugin_settings_sheet(workspace: Workspace) -> impl IntoView {
                         <Glyph icon=icondata::LuArrowLeft />
                         "Plugins"
                     </button>
-                    <span class="min-w-0 flex-1 truncate font-mono text-sm font-bold">{name}</span>
+                    <span class="min-w-0 flex-1 truncate text-sm font-semibold">{name}</span>
                 </div>
             }
         };
@@ -1736,7 +1760,7 @@ fn plugin_page_frame(workspace: Workspace) -> impl IntoView {
                     <Glyph icon=icondata::LuArrowLeft />
                     "Plugins"
                 </button>
-                <span class="min-w-0 flex-1 truncate font-mono text-sm font-bold">{move || open().0}</span>
+                <span class="min-w-0 flex-1 truncate text-sm font-semibold">{move || open().0}</span>
                 <button type="button" class=BUTTON data-plugin-page-reload on:click=reload>
                     <Glyph icon=icondata::LuRefreshCw />
                     "Reload"
