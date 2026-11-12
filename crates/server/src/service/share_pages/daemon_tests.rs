@@ -351,7 +351,7 @@ async fn the_share_only_listener_serves_links_and_nothing_else() {
         cookie_agent_protocol::DaemonPhase::Starting,
     ));
     let shares = listener
-        .serve_shares_on(std::net::SocketAddr::from(([127, 0, 0, 1], 0)))
+        .serve_public_on(std::net::SocketAddr::from(([127, 0, 0, 1], 0)))
         .await
         .unwrap();
     let port = shares.address().port();

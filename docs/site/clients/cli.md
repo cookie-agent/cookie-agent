@@ -660,7 +660,7 @@ public URLs for assets and conversations, which anyone can open without a
 token. It connects
 to the daemon at `--url`, or `[server] url` of this machine's `config.toml`,
 or the local daemon, with `--token` or `[server] token`. A link the daemon
-has no `[share] url` or `[server] page_url` for is printed on the address of
+has no `[public] url` or `[server] page_url` for is printed on the address of
 the daemon's web page.
 
 #### `cookie share list`

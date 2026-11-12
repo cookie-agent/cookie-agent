@@ -831,7 +831,7 @@ async fn execute_share(
     let share = result.share;
     let address = share.url.clone().unwrap_or_else(|| {
         format!(
-            "{} below the address of the daemon's web page (the daemon has no [share] url or \
+            "{} below the address of the daemon's web page (the daemon has no [public] url or \
              [server] page_url, so ask the user for that address)",
             share.path
         )

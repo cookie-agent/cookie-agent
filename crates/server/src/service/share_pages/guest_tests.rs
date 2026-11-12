@@ -453,7 +453,7 @@ async fn the_share_port_serves_guests_and_still_nothing_else() {
     ));
     listener.hand_over(Arc::clone(&daemon.harness.server));
     let share_port = listener
-        .serve_shares_on(std::net::SocketAddr::from(([127, 0, 0, 1], 0)))
+        .serve_public_on(std::net::SocketAddr::from(([127, 0, 0, 1], 0)))
         .await
         .unwrap();
     let port = share_port.address().port();

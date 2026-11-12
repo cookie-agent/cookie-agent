@@ -67,7 +67,7 @@ The reply:
   path. It is derived from the daemon token, so rotating the token revokes
   it, and it opens plugin pages only, never `/ws` or `/runtime`.
 - **`share_url`** (since 1.86.0) is the base of the daemon's share links,
-  its `[share] url`, else its `[server] page_url`, when either is set
+  its `[public] url`, else its `[server] page_url`, when either is set
   ([Share links](#share-links)).
 
 **Authentication.** A client authenticates with the daemon's bearer token

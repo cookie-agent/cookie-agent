@@ -30,10 +30,10 @@ fn loaded(key: &[&str], value: Option<&serde_json::Value>) -> Result<String, Str
 fn sample(path: &str) -> &'static str {
     match path {
         "server.url" => "ws://127.0.0.1:1/ws",
-        "server.page_url" | "share.url" => "https://example.com",
+        "server.page_url" | "public.url" => "https://example.com",
         "notifications.contact" => "mailto:me@example.com",
         "agents.default" => "primary",
-        "share.listen" => "127.0.0.1:7420",
+        "public.listen" => "127.0.0.1:7420",
         "shell_environment.shell" => "/bin/sh",
         other => panic!("no sample for {other}"),
     }

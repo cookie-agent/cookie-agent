@@ -388,9 +388,11 @@ async fn listen(
     })
 }
 
-/// The share-only listener's routes: `/s/…` and nothing else
-/// (`docs/site/specs/share-links.md` section 6.2).
-fn share_router(shared: Arc<Shared>, server: ServerSlot, token: Arc<Zeroizing<String>>) -> Router {
+/// The public listener's routes (`[public] listen`): the public paths and
+/// nothing else, today share links (`/s/…`,
+/// `docs/site/specs/share-links.md` section 6.2). Webhooks
+/// (`docs/site/specs/webhooks.md` section 5) add `/hooks/` here.
+fn public_router(shared: Arc<Shared>, server: ServerSlot, token: Arc<Zeroizing<String>>) -> Router {
     Router::new()
         .route(
             "/s/{*path}",
@@ -406,12 +408,12 @@ fn share_router(shared: Arc<Shared>, server: ServerSlot, token: Arc<Zeroizing<St
 }
 
 impl DaemonListener {
-    /// Serves share links and nothing else on `address`, over plain HTTP,
-    /// for a tunnel to point at (`[share] listen`). Links answer as gone
-    /// until the daemon is ready.
-    pub async fn serve_shares_on(&self, address: SocketAddr) -> Result<RunningServer, ServerError> {
-        // The share routes never read the token; the state only carries one.
-        let router = share_router(
+    /// Serves the public paths and nothing else on `address`, over plain
+    /// HTTP, for a tunnel to point at (`[public] listen`). Links answer as
+    /// gone until the daemon is ready.
+    pub async fn serve_public_on(&self, address: SocketAddr) -> Result<RunningServer, ServerError> {
+        // The public routes never read the token; the state only carries one.
+        let router = public_router(
             Arc::clone(&self.shared),
             Arc::clone(&self.server),
             Arc::new(Zeroizing::new(String::new())),

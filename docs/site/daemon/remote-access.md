@@ -74,12 +74,13 @@ port forwards both. The page then finds the daemon at its own address.
 
 A [share link](../sessions/sharing.md), of an asset or a conversation, is
 meant for people who have no token, so it must be reachable from the internet. Exposing the daemon's
-own port would expose its connect screen and `/ws` too. Instead, give share
-links a port of their own, which serves `/s/…` and nothing else, and put
-only that port on the internet:
+own port would expose its connect screen and `/ws` too. Instead, give the
+public paths a port of their own, which serves share links (`/s/…`) and
+webhooks (`/hooks/…`) and nothing else, and put only that port on the
+internet:
 
 ```toml
-[share]
+[public]
 url = "https://share.example.com"
 listen = "127.0.0.1:7420"
 ```
@@ -105,7 +106,7 @@ Restart the daemon after changing `listen`. Then point a public tunnel at
   tailscale funnel --bg --https=8443 127.0.0.1:7420
   ```
 
-  Set `[share] url` to `https://<host>.<tailnet>.ts.net:8443`. Turn it off
+  Set `[public] url` to `https://<host>.<tailnet>.ts.net:8443`. Turn it off
   with `tailscale funnel --bg --https=8443 off`.
 
 Links still open on the daemon's own address too, for whoever reaches it.

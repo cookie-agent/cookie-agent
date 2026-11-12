@@ -141,7 +141,9 @@ nav:
       - 'Shell Environment [shell_environment]': engine/shell_environment.md
       - 'ACP Agents [acp]': engine/acp.md
       - 'Transfers [transfer]': engine/transfer.md
+      - 'Public Address [public]': engine/public.md
       - 'Share links [share]': engine/share.md
+      - 'Webhooks [webhooks]': engine/webhooks.md
       - 'Request Header [headers]': engine/headers.md
       - tui.toml:
           - tui.toml: tui/configuration.md

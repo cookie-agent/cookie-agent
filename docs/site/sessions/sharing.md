@@ -56,13 +56,13 @@ too.
 
 ## Where links point
 
-A link is built on `[share] url`, else `[server] page_url`, else the address
+A link is built on `[public] url`, else `[server] page_url`, else the address
 your browser reached the daemon at. That address must be one the people you
 send it to can reach. The dialog warns when it looks private (plain `http`,
 loopback, a LAN or Tailscale address). The safe way to go public is the
-share-only port: see
+public port: see
 [Remote access](../daemon/remote-access.md#public-share-links) and
-[`[share]`](../engine/share.md).
+[`[public]`](../engine/public.md).
 
 ## Sharing a conversation
 

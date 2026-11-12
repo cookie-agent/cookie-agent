@@ -77,7 +77,7 @@ pub(crate) struct Shared {
     /// well as the client token, and `/ws` never
     /// (`docs/site/specs/runtime-token.md`).
     pub(crate) runtime_token: std::sync::OnceLock<Zeroizing<String>>,
-    /// The base of the daemon's share links, `[share] url` or `[server]
+    /// The base of the daemon's share links, `[public] url` or `[server]
     /// page_url`, which handshakes report while the daemon starts.
     pub(crate) share_url: std::sync::RwLock<Option<String>>,
 }

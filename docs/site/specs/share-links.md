@@ -437,3 +437,6 @@ draft left open, or differs:
   expiry already past.
 - **Not yet:** the per-link title in `share.update` has no control in the
   web client, only in the protocol.
+- **Renamed (2026-11-12):** `[share] url` and `[share] listen` are now
+  `[public] url` and `[public] listen`, which webhooks share
+  ([webhooks](webhooks.md) decision 5); `[share]` keeps `enabled`.

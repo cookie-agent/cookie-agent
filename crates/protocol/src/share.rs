@@ -39,7 +39,7 @@ pub struct Share {
     /// The landing page's path relative to the share base, `s/<id>`.
     pub path: String,
     /// The landing page's full URL, when the daemon knows its share base
-    /// (`[share] url` or `[server] page_url`). Absent, a client puts the
+    /// (`[public] url` or `[server] page_url`). Absent, a client puts the
     /// address it reached the daemon's page at before `path`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,

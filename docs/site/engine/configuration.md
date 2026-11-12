@@ -60,7 +60,9 @@ Every key is optional. Unknown keys, including removed top-level `pricing`, fail
 | `shell_environment` | [Shell Environment](shell_environment.md): the environment runtimes start processes in |
 | `acp` | [ACP Agents](acp.md) |
 | `transfer` | [Transfers](transfer.md): `max_bytes`, the most one `transfer` call moves |
-| `share` | [Share links](share.md): `enabled`, `url`, the public address links use, and `listen`, a port that serves only share links |
+| `public` | [Public address](public.md): `url`, the public address share links and webhook URLs use, and `listen`, a port that serves only those paths |
+| `share` | [Share links](share.md): `enabled` |
+| `webhooks` | [Webhooks](webhooks.md): whether webhooks are accepted, body sizes, rate, failure, backlog, and history limits |
 | `skills` | [Official skills](../extend/skills.md#official-skills): `official`, whether the daemon keeps the official skills up to date and offers them |
 | `agents` | [Official agents](../extend/agents.md#official-agents): `official`, whether the daemon keeps the official agents up to date and offers them, and `default`, the agent new sessions start with |
 | `headers` | [Request Header](headers.md) |
@@ -159,7 +161,7 @@ error. Applying a configuration does this:
 | `default_model`, `small_model`, `utility_model` | At once for new runs: the agents are recompiled, and every entry naming them follows |
 | `skills` | `official = false` stops refreshing at once; whether the official skills are offered follows at the next start |
 | `agents` | At once: `official = false` stops refreshing and leaves the official agents out; `default` is the agent the next new session starts with |
-| `tool_output`, `subagent_output`, `agent_md`, `loop_warning`, `approval`, `model_retry`, `context_compaction`, `session_title`, `delegation`, `messaging`, `producers`, `memory`, `cron`, `notifications` | At once, from each setting's next use; a run keeps the result limits, retry policy, and delegation depth it started with |
+| `tool_output`, `subagent_output`, `agent_md`, `loop_warning`, `approval`, `model_retry`, `context_compaction`, `session_title`, `delegation`, `messaging`, `producers`, `memory`, `cron`, `notifications`, `share`, `webhooks`, `public.url` | At once, from each setting's next use; a run keeps the result limits, retry policy, and delegation depth it started with |
 | Agent documents and presets | At once for new runs; a run in progress keeps its agent, and its delegated children resolve against the agents it started with |
 | `providers`, `headers` | At once: models are recompiled |
 | `mcp` | At once: changed servers restart, removed ones stop; servers added or changed at runtime (`/mcp`) stay on top |
@@ -167,7 +169,7 @@ error. Applying a configuration does this:
 | `server.session_idle_eviction_after` | At once, from the next check of idle sessions |
 | `runtimes.<id>.mcp`, `runtimes.<id>.acp` | At once, for a connected runtime: added servers and agents start, removed ones stop, changed ones restart (see [Runtime templates](../runtimes/templates.md)) |
 | `shell_environment`, `runtimes.<id>.shell_environment` | At once: each connected runtime captures again, and processes it starts afterwards get the new environment; a reload captures again even when nothing changed (see [Shell Environment](shell_environment.md)) |
-| `server` (its other keys), `plugins`, a template's `command`, `env`, and timeouts | Only after the daemon restarts; the reload reports them as needing a restart, and a client can restart the daemon (see [Restarting the daemon](../daemon/persistent.md#restarting-the-daemon)) |
+| `server` (its other keys), `public.listen`, `plugins`, a template's `command`, `env`, and timeouts | Only after the daemon restarts; the reload reports them as needing a restart, and a client can restart the daemon (see [Restarting the daemon](../daemon/persistent.md#restarting-the-daemon)) |
 
 Skills are not reloaded.
 

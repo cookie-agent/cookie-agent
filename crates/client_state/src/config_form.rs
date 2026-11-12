@@ -863,7 +863,7 @@ pub const SECTIONS: &[ConfigSection] = &[
     ConfigSection {
         id: "sharing",
         title: "Transfers and sharing",
-        tables: &["transfer", "share"],
+        tables: &["transfer", "public", "share"],
         fields: &[
             integer(
                 &["transfer", "max_bytes"],
@@ -878,16 +878,65 @@ pub const SECTIONS: &[ConfigSection] = &[
                 true,
             ),
             text(
-                &["share", "url"],
-                "Share address",
-                "The public address links are built on.",
+                &["public", "url"],
+                "Public address",
+                "The address share links and webhook URLs are built on.",
                 "the page URL",
             ),
             text(
-                &["share", "listen"],
-                "Share-only listener",
-                "An address, such as 127.0.0.1:7420, that serves share links and nothing else.",
+                &["public", "listen"],
+                "Public-only listener",
+                "An address, such as 127.0.0.1:7420, that serves share links and webhooks and nothing else.",
                 "none",
+            ),
+        ],
+    },
+    ConfigSection {
+        id: "webhooks",
+        title: "Webhooks",
+        tables: &["webhooks"],
+        fields: &[
+            switch(
+                &["webhooks", "enabled"],
+                "Accept webhooks",
+                "Off, every webhook URL answers 404, and webhooks are kept.",
+                true,
+            ),
+            integer(
+                &["webhooks", "max_body_bytes"],
+                "Largest request body",
+                "In bytes; a larger request is refused.",
+                "1048576",
+            ),
+            integer(
+                &["webhooks", "inline_body_bytes"],
+                "Body shown inline",
+                "In bytes; a larger body is stored as an artifact and only its start shown.",
+                "16384",
+            ),
+            integer(
+                &["webhooks", "max_per_hour"],
+                "Events per hour",
+                "Per webhook, unless it sets its own; 0 or less means no limit.",
+                "60",
+            ),
+            integer(
+                &["webhooks", "max_consecutive_failures"],
+                "Failures before disabling",
+                "In a row, unless a webhook sets its own; 0 or less never disables.",
+                "3",
+            ),
+            integer(
+                &["webhooks", "backlog"],
+                "Events waiting",
+                "How many a new-session webhook holds while its sessions are busy.",
+                "100",
+            ),
+            integer(
+                &["webhooks", "history"],
+                "Events kept",
+                "How many each webhook's history keeps, up to 1000.",
+                "50",
             ),
         ],
     },

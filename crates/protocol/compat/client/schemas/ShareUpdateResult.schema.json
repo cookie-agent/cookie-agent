@@ -110,7 +110,7 @@
           "type": "string"
         },
         "url": {
-          "description": "The landing page's full URL, when the daemon knows its share base\n(`[share] url` or `[server] page_url`). Absent, a client puts the\naddress it reached the daemon's page at before `path`.",
+          "description": "The landing page's full URL, when the daemon knows its share base\n(`[public] url` or `[server] page_url`). Absent, a client puts the\naddress it reached the daemon's page at before `path`.",
           "type": [
             "string",
             "null"

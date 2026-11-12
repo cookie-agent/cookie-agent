@@ -423,7 +423,7 @@ pub struct ServerHello {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub page_ticket: Option<String>,
     /// The base of the daemon's share links (client protocol 1.86.0,
-    /// `docs/site/specs/share-links.md` section 6.1): its `[share] url`,
+    /// `docs/site/specs/share-links.md` section 6.1): its `[public] url`,
     /// else its `[server] page_url`, when either is set. Clients warn
     /// before making a link when it looks private.
     #[serde(default, skip_serializing_if = "Option::is_none")]

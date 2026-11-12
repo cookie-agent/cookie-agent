@@ -59,14 +59,14 @@ impl Engine {
         self.inner.config.load().runtime.share.enabled
     }
 
-    /// The base links are built on: `[share] url`, else `[server]
+    /// The base links are built on: `[public] url`, else `[server]
     /// page_url`.
     #[must_use]
     pub fn share_base(&self) -> Option<String> {
         let config = self.inner.config.load();
         config
             .runtime
-            .share
+            .public
             .url
             .clone()
             .or_else(|| config.runtime.server.page_url.clone())

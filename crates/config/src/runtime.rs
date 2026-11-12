@@ -784,9 +784,15 @@ pub struct EngineConfig {
     /// stays connected; `None` keeps it.
     #[serde(skip)]
     pub mcp_idle_stop_after: McpIdleStop,
+    /// `[public]`: the public address and the public-only listener.
+    #[serde(default)]
+    pub public: PublicConfig,
     /// `[share]`: public share links to assets.
     #[serde(default)]
     pub share: ShareConfig,
+    /// `[webhooks]`: incoming webhooks.
+    #[serde(default)]
+    pub webhooks: WebhooksConfig,
     #[serde(skip)]
     pub pricing: PricingConfig,
     /// Each model's authored `cache_ttl`: zero is a cache that never
@@ -838,7 +844,9 @@ pub(crate) struct RawRuntimeLayer {
     pub(crate) skills: Option<SkillsConfig>,
     pub(crate) agents: Option<AgentsConfig>,
     pub(crate) transfer: Option<TransferConfig>,
+    pub(crate) public: Option<PublicConfig>,
     pub(crate) share: Option<ShareConfig>,
+    pub(crate) webhooks: Option<WebhooksConfig>,
     #[serde(default)]
     #[serde(deserialize_with = "deserialize_optional_headers")]
     pub(crate) headers: Option<BTreeMap<HeaderName, SafeStaticHeaderValue>>,
@@ -1652,6 +1660,35 @@ impl TransferConfig {
     }
 }
 
+/// `[public]`: the daemon's public address and its public-only listener
+/// (`docs/site/specs/share-links.md` section 6, renamed from `[share]` by
+/// `docs/site/specs/webhooks.md` decision 5).
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct PublicConfig {
+    /// The public address share links and webhook URLs are built on, such
+    /// as `https://hooks.example.com`: an `http://` or `https://` URL with
+    /// no credentials, query, or fragment. Unset, `[server] page_url`.
+    #[serde(default)]
+    pub url: Option<String>,
+    /// A second listener that serves only the public paths (share links
+    /// and webhooks), such as `127.0.0.1:7420`, for a tunnel to point at.
+    #[serde(default)]
+    pub listen: Option<std::net::SocketAddr>,
+}
+
+impl PublicConfig {
+    fn invalid_reason(&self) -> Option<&'static str> {
+        if self.url.as_deref().is_some_and(|url| !valid_page_url(url)) {
+            return Some("public.url must be an http:// or https:// URL with no query or fragment");
+        }
+        if self.listen.is_some_and(|address| address.port() == 0) {
+            return Some("public.listen must name a port other than 0");
+        }
+        None
+    }
+}
+
 /// `[share]`: public share links to assets
 /// (`docs/site/specs/share-links.md` section 6).
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
@@ -1661,37 +1698,128 @@ pub struct ShareConfig {
     /// every link answers as gone, and links are kept.
     #[serde(default = "yes")]
     pub enabled: bool,
-    /// The public address links are built on, such as
-    /// `https://share.example.com`: an `http://` or `https://` URL with no
-    /// credentials, query, or fragment. Unset, `[server] page_url`.
-    #[serde(default)]
-    pub url: Option<String>,
-    /// A second listener that serves share links and nothing else, such as
-    /// `127.0.0.1:7420`, for a tunnel to point at.
-    #[serde(default)]
-    pub listen: Option<std::net::SocketAddr>,
 }
 
 impl Default for ShareConfig {
     fn default() -> Self {
+        Self { enabled: true }
+    }
+}
+
+/// `[webhooks]`: incoming webhooks (`docs/site/specs/webhooks.md`
+/// section 11).
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct WebhooksConfig {
+    /// Whether the daemon accepts requests; off, every webhook URL answers
+    /// `404` and the webhooks are kept.
+    #[serde(default = "yes")]
+    pub enabled: bool,
+    /// The largest request body accepted, in bytes; a larger one answers
+    /// `413`.
+    #[serde(default = "default_webhooks_max_body_bytes")]
+    pub max_body_bytes: u64,
+    /// The most of a body shown inline in the event's message, in bytes;
+    /// a larger body is stored as an artifact and only its start shown.
+    #[serde(default = "default_webhooks_inline_body_bytes")]
+    pub inline_body_bytes: u64,
+    /// Events a webhook accepts per rolling hour unless it sets its own;
+    /// 0 or less means no limit.
+    #[serde(default = "default_webhooks_max_per_hour")]
+    pub max_per_hour: i64,
+    /// Failures in a row that disable a webhook unless it sets its own;
+    /// 0 or less never disables.
+    #[serde(default = "default_webhooks_max_consecutive_failures")]
+    pub max_consecutive_failures: i64,
+    /// Events a new-session webhook's backlog holds while its sessions are
+    /// all busy; a full backlog answers `503`.
+    #[serde(default = "default_webhooks_backlog")]
+    pub backlog: usize,
+    /// Events each webhook's history keeps, oldest dropped first.
+    #[serde(default = "default_webhooks_history")]
+    pub history: usize,
+}
+
+impl Default for WebhooksConfig {
+    fn default() -> Self {
         Self {
             enabled: true,
-            url: None,
-            listen: None,
+            max_body_bytes: default_webhooks_max_body_bytes(),
+            inline_body_bytes: default_webhooks_inline_body_bytes(),
+            max_per_hour: default_webhooks_max_per_hour(),
+            max_consecutive_failures: default_webhooks_max_consecutive_failures(),
+            backlog: default_webhooks_backlog(),
+            history: default_webhooks_history(),
         }
     }
 }
 
-impl ShareConfig {
+impl WebhooksConfig {
+    /// The largest `max_body_bytes`: 64 MiB.
+    pub const MAX_BODY_BYTES: u64 = 64 * 1024 * 1024;
+    /// The largest `inline_body_bytes`: 1 MiB, so an event's message stays
+    /// within the producer body limit.
+    pub const MAX_INLINE_BODY_BYTES: u64 = 1024 * 1024;
+    /// The largest `backlog`.
+    pub const MAX_BACKLOG: usize = 10_000;
+    /// The largest `history`.
+    pub const MAX_HISTORY: usize = 1000;
+
+    /// The rate limit per hour, `None` when there is none.
+    #[must_use]
+    pub fn per_hour_limit(&self) -> Option<u64> {
+        u64::try_from(self.max_per_hour)
+            .ok()
+            .filter(|limit| *limit > 0)
+    }
+
+    /// The failures in a row that disable a webhook, `None` when none do.
+    #[must_use]
+    pub fn failure_limit(&self) -> Option<u64> {
+        u64::try_from(self.max_consecutive_failures)
+            .ok()
+            .filter(|limit| *limit > 0)
+    }
+
     fn invalid_reason(&self) -> Option<&'static str> {
-        if self.url.as_deref().is_some_and(|url| !valid_page_url(url)) {
-            return Some("share.url must be an http:// or https:// URL with no query or fragment");
+        if self.max_body_bytes == 0 || self.max_body_bytes > Self::MAX_BODY_BYTES {
+            return Some("webhooks.max_body_bytes must be 1..67108864");
         }
-        if self.listen.is_some_and(|address| address.port() == 0) {
-            return Some("share.listen must name a port other than 0");
+        if self.inline_body_bytes == 0 || self.inline_body_bytes > Self::MAX_INLINE_BODY_BYTES {
+            return Some("webhooks.inline_body_bytes must be 1..1048576");
+        }
+        if self.backlog == 0 || self.backlog > Self::MAX_BACKLOG {
+            return Some("webhooks.backlog must be 1..10000");
+        }
+        if self.history == 0 || self.history > Self::MAX_HISTORY {
+            return Some("webhooks.history must be 1..1000");
         }
         None
     }
+}
+
+const fn default_webhooks_max_body_bytes() -> u64 {
+    1024 * 1024
+}
+
+const fn default_webhooks_inline_body_bytes() -> u64 {
+    16 * 1024
+}
+
+const fn default_webhooks_max_per_hour() -> i64 {
+    60
+}
+
+const fn default_webhooks_max_consecutive_failures() -> i64 {
+    3
+}
+
+const fn default_webhooks_backlog() -> usize {
+    100
+}
+
+const fn default_webhooks_history() -> usize {
+    50
 }
 
 /// `[acp]`: how the daemon runs ACP agents
@@ -2173,8 +2301,14 @@ pub(crate) fn apply_settings(runtime: &mut EngineConfig, layer: &RawRuntimeLayer
     if let Some(value) = &layer.agents {
         runtime.agents = value.clone();
     }
+    if let Some(value) = &layer.public {
+        runtime.public = value.clone();
+    }
     if let Some(value) = &layer.share {
         runtime.share = value.clone();
+    }
+    if let Some(value) = layer.webhooks {
+        runtime.webhooks = value;
     }
     if let Some(value) = layer.transfer {
         runtime.transfer = value;
@@ -2397,7 +2531,10 @@ pub(crate) fn validate_runtime(runtime: &EngineConfig) -> Result<(), ConfigError
     if let Some(reason) = runtime.notifications.invalid_reason() {
         return Err(ConfigError::InvalidRuntime(reason));
     }
-    if let Some(reason) = runtime.share.invalid_reason() {
+    if let Some(reason) = runtime.public.invalid_reason() {
+        return Err(ConfigError::InvalidRuntime(reason));
+    }
+    if let Some(reason) = runtime.webhooks.invalid_reason() {
         return Err(ConfigError::InvalidRuntime(reason));
     }
     if let Some(reason) = runtime.acp.invalid_reason() {

@@ -172,12 +172,12 @@ pub(super) async fn run_daemon(
     .with_share_url(
         configuration
             .runtime
-            .share
+            .public
             .url
             .clone()
             .or_else(|| configuration.runtime.server.page_url.clone()),
     );
-    let share_listen = configuration.runtime.share.listen;
+    let public_listen = configuration.runtime.public.listen;
     let mut signals =
         cookie_agent_protocol::StopSignals::new().context("listen for stop signals")?;
     let running = daemon_restart::bind_retrying(bind_wait, || {
@@ -197,19 +197,19 @@ pub(super) async fn run_daemon(
     if let Some(line) = web_page_line(&url) {
         println!("{line}");
     }
-    // The share-only listener (`[share] listen`): links answer as gone
-    // until the daemon is ready.
-    let shares = match share_listen {
-        Some(address) => match listener.serve_shares_on(address).await {
+    // The public listener (`[public] listen`): links answer as gone until
+    // the daemon is ready.
+    let shares = match public_listen {
+        Some(address) => match listener.serve_public_on(address).await {
             Ok(shares) => {
-                println!("share links served alone at http://{}/s/", shares.address());
+                println!("public paths served alone at http://{}/", shares.address());
                 Some(shares)
             }
             Err(error) => {
                 listener.shutdown();
                 running.wait().await;
                 return Err(anyhow::Error::new(error)
-                    .context(format!("listen for share links on {address}")));
+                    .context(format!("listen for the public paths on {address}")));
             }
         },
         None => None,
