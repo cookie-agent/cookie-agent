@@ -233,7 +233,7 @@ See [Terminal UI](../clients/tui.md#scheduled-prompts).
 **Schedules** in the sidebar opens **Scheduled prompts**, with the same list,
 details, history, and actions. In a session, **Schedule a prompt** in the ⋮
 menu creates a job that fires into it. A run session's clock mark in the
-session list opens its job. See [Web](../clients/web.md#scheduled-prompts).
+session list opens its job. See [Web](../clients/web.md#schedules).
 
 ### Command line
 

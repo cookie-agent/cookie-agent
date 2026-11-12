@@ -379,3 +379,71 @@ Each phase is looked at in light and dark at desktop and phone sizes
   sheet on a phone; its entries are one line each, their descriptions in
   tooltips. The Usage tab's tiles show the context's tokens rather than a
   share of the window, which the tab does not know.
+- **Phase 3 (2026-11-12).** The sidebar's views are two columns on a
+  desktop and stay the phone's tiles until P7; "MCP servers" reads "MCP"
+  there. **Search stays in the Sessions row**, not beside New session as
+  P1 said: its box grows out of the Search button within that row and
+  filters the list under it, which a button above the views would lose.
+  The filter's summary is a chip that opens the filter ("7 days ▾", with
+  the count of other filters). A project's usual badges are the ones most
+  of its sessions show (`badges::usual_badges`, the first on a tie), worked
+  out once for the list and given to its rows; a session in no project
+  keeps its second line. **Hover keeps Rename and Delete beside the ⋮**
+  rather than folding them into one ⋯: the time gives way to them and the
+  title ends before them, which is what B7 asked, and both stay one click
+  away; on a desktop they are 32 px. The state's dot takes the status
+  icon's and the unread dot's place, in a slot every row keeps so titles
+  line up; failed and held-by-failing sessions are red, held ones amber.
+  The project crumb opens the sidebar at the project's section. Tool
+  headers draw the title as the verb in the sans and the argument in mono,
+  and end with the lines a call changed and its last exit code
+  (`ToolCallState::result_summary`); a non-zero exit or a failed call
+  rings the card in red. Durations and match counts are not shown: a
+  call's result carries neither. The folder chip shows folder names
+  (`places::folder_names`) and gives way first when the row runs short; the
+  agent chip names where an ACP agent runs only when it could run in more
+  than one place, and its tooltip always does. The fade is 32 px at the
+  transcript's foot, as the composer sits below the transcript rather
+  than over it.
+- **Phase 4 (2026-11-12).** The heading and the chips sit in the middle of
+  the empty transcript, **above** the composer rather than under it: the
+  composer stays where every session has it, at the window's foot, so a
+  draft and a session never move it. The chips open their panels in place
+  under them (`DraftPanel::Where`, `DraftPanel::Tools`) rather than as
+  floating popovers: the runtime cards keep their markup, fields, and
+  drag targets. "Runs on" names the machine and the runtimes
+  (`cards::runs_on`); the folder chip opens the same panel. The paragraph
+  and the Runtimes | Skills switch are gone, which settles B3.
+- **Phase 5 (2026-11-12).** `view_header` heads Machines, Memory,
+  Schedules, Skills, Sharing, and MCP servers, at one width (880 px);
+  "Machines & runtimes" and "Scheduled prompts" are now "Machines" and
+  "Schedules" everywhere. MCP servers' Edit, Turn off, and Remove, and the
+  official agents' actions, moved into each row's ⋯ (a confirming action
+  asks on the row); Memory's trash shows on hover, on touch screens always.
+  Agents rows say what each agent does. Machines keeps its panels: a
+  machine's runtimes were already rows, and each runtime's ACP agents are
+  now an indented list instead of a box inside it. Schedules read in words
+  first with the cron line after it, and each row has an on/off switch.
+  The agent editor's **Form | File** switch (Q7) edits the same text two
+  ways: the form sets the description and the mode, one front-matter line
+  each (`agents::set_front_matter`, which leaves every other line as
+  written and refuses a key the file writes as a block), and points at the
+  file for models, permissions, tool groups, and the instructions, which a
+  form cannot set without reading and writing YAML whole. File stays the
+  view an agent opens in. Memory has a search and a layer filter
+  (`memory::filter_listing`); while either narrows the list every folder
+  shows what it keeps. **Not built:** Agents' search and filter; the list
+  is short.
+- **Phase 5, Settings (2026-11-12).** On a desktop the app's sidebar gives
+  way to Settings' section list, with Back to sessions at its top and the
+  connection and version at its foot; a phone keeps its list-then-section
+  pages. A model row is one button naming the models by their display
+  names, the IDs in its tooltip. The diagnostics' fix-it action is not
+  built.
+- **Phase 6 (2026-11-12).** On a phone the model chip names the agent, the
+  model, and the mode, and opens one sheet (`Panel::Composer`) with the
+  three pickers; the agent and mode chips hide. The drawer's views are one
+  row of pills that scrolls sideways. The session panel's tabs show their
+  icons alone on a phone so all seven fit at 360 px. Names left monospace
+  for Agents, runtime cards, skills, plugins, providers, projects, and
+  onboarding; IDs, paths, `config.toml`, and slash commands keep it.

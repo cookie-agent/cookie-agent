@@ -132,8 +132,8 @@ refreshes no longer change). Reset and Replace ask once more.
 ## Layout
 
 - **The sidebar.** One column on the left holds the whole page's
-  navigation: **New session**, then under *Workspace* the views, then the
-  sessions by project (see [Sessions and chat](#sessions-and-chat)), and
+  navigation: **New session**, then the views in two columns (on a phone,
+  one row of pills that scrolls sideways), then the sessions by project (see [Sessions and chat](#sessions-and-chat)), and
   at its foot **Settings**, the connection, and the theme button. The view
   shown is tinted and marked. The views:
   - **Agents**: the agent documents and their presets, listed beside the
@@ -145,7 +145,7 @@ refreshes no longer change). Reset and Replace ask once more.
   - **MCP servers**: every runtime's MCP servers;
   - **Schedules**: the daemon's cron jobs, shown only by a daemon of
     client protocol 1.15 or later (see
-    [Scheduled prompts](#scheduled-prompts));
+    [Schedules](#schedules));
   - **Settings**: **Set up Cookie** (see
     [Setting up a daemon](#setting-up-a-daemon)), `config.toml`,
     providers, plugins, and this browser's preferences.
@@ -217,16 +217,20 @@ refreshes no longer change). Reset and Replace ask once more.
     plugin or runtime), then the others, each newest first by your last
     message or delegation in it (its own output does not move it, so a busy
     session keeps its place; a session with none goes by its last event).
-    A session that
-    runs has a turning circle before its title, a held one has a pause (red
-    when its runs kept failing; its tooltip says why, such as `held:
-    stopped by you`), one that waits has a clock (its tooltip says what it
-    waits on, such as `waiting on: goal, background call`), and one whose last run
-    failed or was interrupted has a mark; the others have none. A daemon
+    A dot before each title says its state: a pulsing accent while it
+    runs, amber while it waits on you or something that will start its
+    next run (its tooltip says what, such as `waiting on: goal, background
+    call`) or is held (`held: stopped by you`), red when its runs kept
+    failing or its last run failed or was interrupted, and a solid accent
+    when it is unread; the others have none. Unread titles are bold, read
+    ones quieter. The time beside a title is the time the list orders by
+    (`22h`, `1d`); its tooltip adds the last event's. On hover the time
+    gives way to the row's ⋮, rename, and delete, and the title ends before
+    them. A daemon
     older than client protocol 1.9 does not say what a session waits on.
     A session a scheduled prompt started has a filled clock before its
     title, which names the job; click it to open the job in
-    [Scheduled prompts](#scheduled-prompts).
+    [Schedules](#schedules).
     The open session's row has a chevron before its badges, which turns
     with its subagent tree. Hover over a row for its status and every
     workspace with its machine, runtime, and path, and over its title for
@@ -269,7 +273,9 @@ refreshes no longer change). Reset and Replace ask once more.
     eight colours, chosen from its name, so it looks the same in every row
     and every browser; the dots marking runtimes in the bottom bar and on
     the runtime cards take their machine's colour. The badges have the
-    row's second line to themselves. A machine's name is never cut: when
+    row's second line to themselves, which a row shows only when they say
+    something: in a project, only when they differ from the ones most of
+    its sessions show; a session in no project always shows its own. A machine's name is never cut: when
     the line is too narrow, the workspaces shrink first, down to `…`, then
     give way, and then the last machines give way to a **+N** badge whose tooltip names
     them. The row's tooltip lists every
@@ -280,9 +286,9 @@ refreshes no longer change). Reset and Replace ask once more.
     and the composer under them (below); the first message creates the
     session with the selected cards and the agent, model, and permission
     mode in the bottom bar.
-  - **The tools row.** Under **New session**, a row holds the select
-    button, the magnifier, and the filter, with what the filter shows
-    beside them (**Last 7 days**, say).
+  - **The tools row.** Above the sessions, a row holds what the filter
+    shows as a chip (**7 days**, with how many other filters), which opens
+    the filter, then the select button, the magnifier, and the filter.
   - **Searching.** The magnifier turns the tools row into a search box,
     which grows out of it as the other buttons fade: the list shows only
     the sessions whose title holds what you type (any case), in folded
@@ -384,9 +390,14 @@ refreshes no longer change). Reset and Replace ask once more.
     your system's emoji keyboard too, and says at once when what you typed
     is not one. **No emoji** clears it. On a phone the picker rises from
     the bottom.
-- **New session.** The new session's runtime cards fill the page where
-  its transcript will be, with the composer under them, so you draft the
-  first message right away: text, files, and the agent, model, preset,
+- **New session.** The page asks *What should cookie work on?* above the
+  composer, with one row of chips for what the session gets: **Project**,
+  **Runs on** (the machine and the runtimes selected, such as
+  `devbox · global + coding`), the **folder** a coding runtime works in,
+  and **Tools & skills** (with how many skills are off). Runs on and the
+  folder open the runtime cards in a panel under the chips; Tools & skills
+  opens the tool figures and the skills. You draft the first message right
+  away: text, files, and the agent, model, preset,
   permission mode, and permission rules, as in any session. There is no
   Start button: **sending the first message creates the session** with the
   selected cards, starting every runtime that is not running (a template,
@@ -396,9 +407,9 @@ refreshes no longer change). Reset and Replace ask once more.
   the runtimes it names (see
   [Delegating to runtimes](../sessions/delegation.md)). The browser
   remembers no selection: each new session starts with `global` alone, or
-  with its project's defaults. On a phone the cards scroll above the
+  with its project's defaults. On a phone the chips sit in rows above the
   composer, which stays at the foot.
-  - **Project.** The **Project** picker comes first: the section whose
+  - **Project.** The **Project** chip comes first: the section whose
     **+** you used, else **No project**, and **New project…**, which opens
     the editor and picks the project it makes. A project whose defaults
     attach runtimes prefills the cards with them; left as they are, the
@@ -452,10 +463,8 @@ refreshes no longer change). Reset and Replace ask once more.
     up-front, deferred, and off figures, and in a project the choices it
     gives, with **reset to the project's**. Then **Skills**: those the
     selected cards bring (each card's project skills, then the user's and
-    the official ones), each with a switch. **Runtimes · Skills** beside
-    the project picker jump between the two and mark which one the page is
-    at, and Skills counts the skills that are off. The session is created
-    with these choices.
+    the official ones), each with a switch. Both are in the **Tools &
+    skills** panel. The session is created with these choices.
 - **Subagents.** Only the open session's row has its subagents nested
   under it, each with its status (a turning circle while it runs, a check,
   failed, or cancelled), its agent, its short handle, and its task. Click
@@ -662,7 +671,7 @@ refreshes no longer change). Reset and Replace ask once more.
   each by name with an icon and a line saying what it does, and each opens
   a sheet with labelled fields and a main button: **Compact context**,
   **Goal**, **Schedule a prompt** (which opens the job form in
-  [Scheduled prompts](#scheduled-prompts) instead), **Skills**, **Background calls**, **Runtimes**, **Permission
+  [Schedules](#schedules) instead), **Skills**, **Background calls**, **Runtimes**, **Permission
   rules**, **Usage**, **Diagnostics**, and **Agent preset**. The others
   have their place in the page: the bottom bar picks the agent, model, and
   permission mode; the composer attaches, sends, and stops; and the
@@ -758,16 +767,21 @@ refreshes no longer change). Reset and Replace ask once more.
     runtimes offer with the runtime the draft (or the viewed session)
     would run them on; one that cannot run there (no attached runtime
     offers it, two do, or its runtime is away) is dimmed with why and
-    cannot be picked. For an ACP agent the model chip shows the agent's
-    own model and effort (`Opus • High`) and opens their values, each
-    with its value ID muted beside its name (as for cookie's models, whose
-    rows show the `provider/model` key and whose variant chips the variant
-    ID: what an agent document's `models` writes), a click
-    changing them on the agent (on a new session's draft, the values its
-    session starts with; a draft offers what the agent last started a
-    session with); **All agent options** there lists every option the
-    agent offers (model, mode, effort) with its values, the current one
-    pressed;
+    cannot be picked. The model chip names the model and its level
+    (`Opus 5.5 · High`) and opens a menu of the models, each with the ID an
+    agent document's `models` writes in its tooltip, and at its foot the
+    **effort**: a sliding pill of the levels the model or agent offers
+    (an ACP agent's effort option, or a model's variants in their order),
+    which you drag, click, or step with the arrow keys; it warms in colour
+    as the level rises, marks the default, and offers **Reset**. A model
+    with only *off* and *on* gets a switch, one with more than seven levels
+    a list. Choosing another model keeps the level when it offers it. For
+    an ACP agent a choice changes it on the agent (on a new session's
+    draft, the values its session starts with; a draft offers what the
+    agent last started a session with); **All agent options** there lists
+    every option the agent offers (model, mode, effort) with its values,
+    the current one pressed. On a phone the agent, model, and mode are one
+    chip, which opens one sheet with all three;
   - the approvals waiting, when there are any (click to answer them); each
     card shows the call and, when the approval reviewer passed it to you,
     its reason ("The reviewer asks: …", or that its review failed);
@@ -883,8 +897,8 @@ setup disabled.
     the groups that are off.
   - The open panel reads the runtimes again as `runtimes.changed` and
     `machines.changed` announce changes, and every ten seconds in case a
-    notice was missed, and links to the Machines & runtimes view.
-- **Machines.** The **Machines & runtimes** view shows each machine as a
+    notice was missed, and links to the Machines view.
+- **Machines.** The **Machines** view shows each machine as a
   card: an icon for its operating system (Linux, macOS, Windows, or a
   generic computer), its name, its runtimes and memories, and buttons to
   rename it, merge it into another (its memories move too), or forget it.
@@ -1061,7 +1075,7 @@ setup disabled.
     description and the first keywords (the agent's ID and its mode)
     belong to the daemon and show locked; the other keywords (separated
     by commas) and the memory itself are yours to edit.
-- **Scheduled prompts.** See [Scheduled prompts](#scheduled-prompts).
+- **Schedules.** See [Schedules](#schedules).
 - **Plugins.** Settings › Plugins lists each plugin with its state, tools, hooks,
   and why it last failed, and restarts one. A plugin's events show in the
   bottom bar. A plugin with its own pages, such as settings or a sign-in,
@@ -1088,9 +1102,9 @@ setup disabled.
   cookie's website, documentation, and GitHub repository, cookie's
   license and the third-party notices, and the [credits](#credits).
 
-## Scheduled prompts
+## Schedules
 
-**Schedules** in the sidebar opens **Scheduled prompts**, the daemon's
+**Schedules** in the sidebar opens the daemon's
 [cron jobs](../sessions/scheduling.md); a daemon older than client
 protocol 1.15 keeps none, and the page hides the icon and the ⋮ menu's
 **Schedule a prompt**. The view reads `crons.list` again whenever a job
