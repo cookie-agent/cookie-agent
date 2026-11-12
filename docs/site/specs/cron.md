@@ -8,6 +8,9 @@ Status: **implemented** (2026-10-23): the engine and the protocol (phase
 let a session page out), [projects](projects.md), and the
 [memory spec](memory.md) (its permission defaults).
 
+*Amended (2026-11-12):* new-session jobs gain thread keys and thread
+instructions, specified in [webhooks](webhooks.md#8-threads-for-cron-jobs).
+
 ## 1. Goal and scope
 
 You and agents can schedule prompts: once after a delay, or on a cron
