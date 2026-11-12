@@ -442,8 +442,12 @@ Each phase is looked at in light and dark at desktop and phone sizes
   built.
 - **Phase 6 (2026-11-12).** On a phone the model chip names the agent, the
   model, and the mode, and opens one sheet (`Panel::Composer`) with the
-  three pickers; the agent and mode chips hide. The drawer's views are one
-  row of pills that scrolls sideways. The session panel's tabs show their
+  three pickers; the agent and mode chips hide. **The drawer keeps its grid
+  of view tiles** (Q11 not followed): a row that scrolls sideways leaves
+  targets cut off at its edge, which the phone audit
+  (`scripts/web-e2e/scenarios.py`, `phone_audit`) refuses, and the tiles
+  already take two rows. Every new control is 44 px tall below desktop
+  widths, as the audit asks. The session panel's tabs show their
   icons alone on a phone so all seven fit at 360 px. Names left monospace
   for Agents, runtime cards, skills, plugins, providers, projects, and
   onboarding; IDs, paths, `config.toml`, and slash commands keep it.

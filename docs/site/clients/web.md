@@ -133,7 +133,7 @@ refreshes no longer change). Reset and Replace ask once more.
 
 - **The sidebar.** One column on the left holds the whole page's
   navigation: **New session**, then the views in two columns (on a phone,
-  one row of pills that scrolls sideways), then the sessions by project (see [Sessions and chat](#sessions-and-chat)), and
+  a grid of tiles), then the sessions by project (see [Sessions and chat](#sessions-and-chat)), and
   at its foot **Settings**, the connection, and the theme button. The view
   shown is tinted and marked. The views:
   - **Agents**: the agent documents and their presets, listed beside the
