@@ -104,7 +104,10 @@ const PRIMARY: &str = "inline-flex min-h-11 min-w-11 items-center justify-center
 const ICON_BUTTON: &str = "inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-lg text-muted transition-colors hover:bg-hover hover:text-fg active:bg-press disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent lg:min-h-9 lg:min-w-9";
 /// A bottom bar control showing its current value: the agent, the model,
 /// and the permission mode share it. 32 px to see, 44 px to hit.
-const CHIP: &str = "hit-area inline-flex h-8 min-w-0 max-w-[14rem] shrink-0 items-center gap-1.5 rounded-lg px-2 text-[0.8125rem] whitespace-nowrap text-fg-2 transition-colors hover:bg-hover hover:text-fg active:bg-press aria-expanded:bg-hover";
+// The focus ring is drawn inside the chip: the composer's row of chips
+// clips what reaches past it, which cut an outside ring to "( Auto )"
+// (docs/site/specs/web-polish.md, B2).
+const CHIP: &str = "hit-area inline-flex h-8 min-w-0 max-w-[14rem] shrink-0 items-center gap-1.5 rounded-lg px-2 text-[0.8125rem] whitespace-nowrap text-fg-2 transition-colors hover:bg-hover hover:text-fg active:bg-press aria-expanded:bg-hover focus-visible:-outline-offset-2";
 /// A status bar indicator that does something when clicked.
 /// A small borderless icon button of the sidebar's session tools.
 const SIDEBAR_TOOL: &str = "hit-area inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted transition-colors hover:bg-hover hover:text-fg active:bg-press";
@@ -131,6 +134,29 @@ const NOTE: &str = "text-xs text-muted";
 /// A message about something that went wrong.
 const ERROR: &str =
     "rounded-lg bg-bad-soft px-3 py-2 text-[0.8125rem] whitespace-pre-wrap break-words text-bad";
+
+/// Something to look at, though nothing failed: a configuration
+/// diagnostic. An amber callout with its icon (docs/site/specs/web-polish.md,
+/// B5).
+const WARNING: &str = "flex gap-2 rounded-lg bg-warn-soft px-3 py-2 text-[0.8125rem] text-fg";
+/// Inline code, as a Markdown reply draws it.
+const INLINE_CODE: &str =
+    "rounded-[0.3rem] bg-sunken px-[0.3em] py-[0.1em] font-mono text-[0.86em]";
+
+/// A line of text with its code spans drawn as code instead of showing
+/// their backticks (`format::code_spans`).
+fn with_code(line: &str) -> impl IntoView + use<> {
+    use cookie_agent_client_state::format::{Span, code_spans};
+    code_spans(line)
+        .into_iter()
+        .map(|span| match span {
+            Span::Text(text) => text.to_owned().into_any(),
+            Span::Code(code) => {
+                view! { <code class=INLINE_CODE>{code.to_owned()}</code> }.into_any()
+            }
+        })
+        .collect_view()
+}
 
 /// What a sheet shows when it has nothing to list.
 fn empty_state(icon: icons::Icon, text: &'static str) -> impl IntoView {
@@ -1145,6 +1171,10 @@ fn session_row(
         ),
         _ => mark.label.to_owned(),
     };
+    // The time the list orders by (the user's last input or delegation),
+    // not the last event, which a working session moves on its own, so
+    // that "1d" never sits above "22h" (docs/site/specs/web-polish.md, B8).
+    let listed_at = cookie_agent_client_state::rows::ordering_activity(&session);
     let last_activity = session.last_activity;
     let unread = session.unread;
     let pinned = session.pinned;
@@ -1444,8 +1474,12 @@ fn session_row(
                     <span class="min-w-0 flex-1 truncate text-sm font-bold" data-session-title title=label.clone()>{label.clone()}</span>
                     // The time sits beside the title, so the badges have
                     // the whole second line.
-                    <span class=format!("shrink-0 {NOTE}") data-session-time>
-                        {move || relative_time(now.get(), last_activity)}
+                    <span
+                        class=format!("shrink-0 {NOTE}")
+                        data-session-time
+                        title=move || format!("last event {}", relative_time(now.get(), last_activity))
+                    >
+                        {move || relative_time(now.get(), listed_at)}
                     </span>
                 </span>
                 <span class=format!("flex w-full min-w-0 items-center gap-1.5 {NOTE}")>
@@ -3731,6 +3765,9 @@ fn Composer(workspace: Workspace, composing: RwSignal<bool>) -> impl IntoView {
             ComposerAction::Queue => workspace.submit(InputDelivery::Queue),
             ComposerAction::Newline if event.shift_key() => return,
             ComposerAction::Newline => insert_newline(),
+            // With a sheet or menu open, Escape closes that instead (the
+            // sheet's own listener), never the run behind it.
+            ComposerAction::Cancel if workspace.panel.get_untracked().is_some() => return,
             ComposerAction::Cancel => workspace.cancel(),
             ComposerAction::Recall => workspace.recall_newest(),
         }
@@ -4214,6 +4251,36 @@ fn session_tabs(workspace: Workspace) -> impl IntoView {
 fn Sheet(workspace: Workspace) -> impl IntoView {
     let close = move |_| workspace.close_panel();
     let open_panel = Memo::new(move |_| workspace.panel.get());
+    // Escape closes the sheet, as × does (docs/site/specs/web-polish.md,
+    // B1), unless a field in it already took the key (a rename field
+    // cancels its edit) or a smaller overlay is open over it (a row's
+    // menu, which closes itself first). A chip's menu gives the focus back
+    // to its chip.
+    let escape = window_event_listener(ev::keydown, move |event| {
+        if event.key() != "Escape" || event.default_prevented() {
+            return;
+        }
+        let Some(panel) = workspace.panel.get_untracked() else {
+            return;
+        };
+        if workspace.transient_open() {
+            return;
+        }
+        event.prevent_default();
+        workspace.close_panel();
+        if let Some(chip) = chip_of(panel)
+            .and_then(|id| document().get_element_by_id(id))
+            .and_then(|chip| chip.dyn_into::<web_sys::HtmlElement>().ok())
+        {
+            let _ = chip.focus();
+        }
+    });
+    let escape = StoredValue::new_local(Some(escape));
+    on_cleanup(move || {
+        if let Some(escape) = escape.try_update_value(Option::take).flatten() {
+            escape.remove();
+        }
+    });
     let session_tab = move || {
         workspace
             .panel

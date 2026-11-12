@@ -532,9 +532,8 @@ def projects_showcase(size, width):
         click("main [data-sidebar-toggle]")
         long_press(row_of("Brainstorm release names", scope) + " [data-session]")
         both_themes("%s-project-row-actions" % size)
-        click(row_of("Brainstorm release names", scope) + " ~ [data-delete-actions-frame] [data-row-menu]")
-        both_themes("%s-project-row-menu" % size)
-        click("[data-row-menu-list] [data-menu-item=move]")
+        # A long press lays every action out flat (b1ff06691), Move among them.
+        click("#sidebar [data-delete-actions] [data-reveal-item=move]")
     else:
         row = row_of("Brainstorm release names")
         hover(row + " [data-session]", dx=-80)
@@ -590,7 +589,7 @@ def badges_and_titles(size, width):
     if narrow:
         long_press(row + " [data-session]")
         both_themes("%s-row-actions" % size)
-        click(row + " ~ [data-delete-actions-frame] [data-rename-reveal]")
+        click("#sidebar [data-delete-actions] [data-reveal-item=rename]")
     else:
         mouse = {"type": "pointer", "id": "mouse", "parameters": {"pointerType": "mouse"}}
         call("POST", browser.path("/actions"), {"actions": [dict(mouse, actions=[

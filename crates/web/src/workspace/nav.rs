@@ -279,6 +279,12 @@ impl Workspace {
         self.transient.set(true);
     }
 
+    /// Whether a small overlay (a row's menu, a context menu, the media
+    /// viewer) is open over everything else.
+    pub fn transient_open(self) -> bool {
+        self.transient.get_untracked()
+    }
+
     /// The small overlay closed by other means than Back.
     pub fn transient_closed(self) {
         self.transient_close.set_value(None);

@@ -345,3 +345,21 @@ Each phase is looked at in light and dark at desktop and phone sizes
 6. **Phone and type**: P7 (B4) and the P8 sweep.
 7. **Pictures and docs**: the bundled screenshots, the install manifest's
    screenshots, and user docs that describe the views changed here.
+
+## 10. Implementation notes
+
+- **Phase 1 (2026-11-12).** B1: the sheet listens for Escape on the
+  window; it leaves a key a field already took (a rename field cancels its
+  edit) and a smaller overlay open over it (the `Transient` layer) alone,
+  and gives the focus back to the chip that opened it. The composer's
+  Escape no longer cancels the run while a sheet or menu is open, so
+  Escape closes the menu instead. B2: the chips' ring is drawn inside them.
+  B3 was not an overlap: after the page scrolled a little, the sticky
+  Project row covered the paragraph's first line; P2 removes both, so it
+  lands with P2. B5: diagnostics are callouts; the daemon's record lines
+  (native compaction, deferred tools) are a quiet note under them, no
+  longer in the accent colour. B5 and B6 share `format::code_spans` in
+  `client_state`. B8: the row's time is `rows::ordering_activity`, its
+  tooltip the last event's. B9: the row is 56 px whether it waits or reads
+  (it was 144 px), so a page arriving still moves nothing. The showcase's
+  long-press step clicks the flat Rename of `b1ff06691`.

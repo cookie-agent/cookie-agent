@@ -1968,6 +1968,20 @@ struct ToolHeader<'a> {
     background: &'a str,
 }
 
+/// A tool's title with its code spans drawn without their backticks: an
+/// ACP agent titles a call "Run `cargo test`" (docs/site/specs/web-polish.md,
+/// B6).
+fn header_text(header: &str) -> String {
+    use cookie_agent_client_state::format::{Span, code_spans};
+    code_spans(header)
+        .into_iter()
+        .map(|span| match span {
+            Span::Text(text) => escape(text),
+            Span::Code(code) => format!("<span data-code>{}</span>", escape(code)),
+        })
+        .collect()
+}
+
 impl ToolHeader<'_> {
     /// A folded call's header: one line, cut to fit, its machine, status
     /// and buttons at the end.
@@ -1996,7 +2010,7 @@ impl ToolHeader<'_> {
         let toggle = match self.link {
             None => format!(
                 "<button type=\"button\" data-action=\"toggle-tool\" data-call=\"{id}\" aria-expanded=\"false\" class=\"flex min-h-11 min-w-0 flex-1 items-center gap-2 rounded-lg px-2 py-1 text-left font-mono text-[0.8125rem] hover:bg-hover active:bg-press\">{chevron}{icon}<span class=\"min-w-0 shrink truncate\" data-header>{}</span>{progress}<span class=\"flex-1\"></span>{machine}{status}</button>",
-                escape(self.header),
+                header_text(self.header),
             ),
             Some((at, url)) => {
                 let suffix = self.header[at + url.len()..].trim();
@@ -2061,7 +2075,7 @@ impl ToolHeader<'_> {
         );
         let (title, marker) = match self.link {
             None => (
-                format!("<span data-header>{}</span>", escape(self.header)),
+                format!("<span data-header>{}</span>", header_text(self.header)),
                 "",
             ),
             Some((at, url)) => {
@@ -2277,7 +2291,9 @@ fn cut_result_html(
 }
 
 /// A row of history the display view has not loaded: a button that reads
-/// it, which also reads it when a scroll brings it near the view.
+/// it, which also reads it when a scroll brings it near the view. One pill,
+/// "21 earlier events of this run · Load", in a row of the transcript's
+/// normal spacing (docs/site/specs/web-polish.md, B9).
 fn history_html(before: u64, skipped: Option<u64>, loading: bool, failed: Option<&str>) -> String {
     let what = match skipped {
         Some(1) => "1 earlier event of this run".to_owned(),
@@ -2290,22 +2306,18 @@ fn history_html(before: u64, skipped: Option<u64>, loading: bool, failed: Option
             "Could not load {} ({error}) · try again",
             what.to_lowercase()
         ),
-        (false, None) => format!("{what} not loaded · load"),
+        (false, None) => format!("{what} · Load"),
     };
-    // While it reads, a block of skeleton lines. The row is as tall either way:
+    // While it reads, a spinner in the pill. The row is as tall either way:
     // rows above a reversed scroller grow out of a view resting at the top,
     // and this must show to whoever waits there.
     let reading = if loading {
-        "<span class=\"flex w-full max-w-md flex-col gap-2.5\" aria-hidden=\"true\">\
-         <span class=\"skeleton block h-2.5 w-11/12\"></span>\
-         <span class=\"skeleton block h-2.5 w-3/4\"></span>\
-         <span class=\"skeleton block h-2.5 w-1/2\"></span></span>\
-         <span class=\"size-3.5 shrink-0 animate-spin rounded-full border-2 border-line-2 border-t-accent\" aria-hidden=\"true\"></span>"
+        "<span class=\"size-3 shrink-0 animate-spin rounded-full border-2 border-line-2 border-t-accent\" aria-hidden=\"true\"></span>"
     } else {
-        ""
+        "<svg class=\"size-3 shrink-0\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8\"/><path d=\"M3 3v5h5M12 7v5l4 2\"/></svg>"
     };
     format!(
-        "<button type=\"button\" data-action=\"history\" data-history=\"{before}\"{}{} class=\"flex h-36 w-full flex-col items-center justify-center gap-3 rounded-md px-2 text-center text-xs text-muted hover:bg-hover active:bg-press\">{reading}<span>{}</span></button>",
+        "<button type=\"button\" data-action=\"history\" data-history=\"{before}\"{}{} class=\"group flex h-14 w-full items-center justify-center px-2 text-center text-xs text-muted\"><span class=\"inline-flex min-h-8 max-w-full items-center gap-2 rounded-full bg-raised px-3 py-1 shadow-[0_0_0_1px_var(--color-line)] transition-colors group-hover:bg-hover group-hover:text-fg-2 group-active:bg-press\">{reading}<span>{}</span></span></button>",
         if failed.is_some() {
             " data-history-failed"
         } else {
@@ -2674,9 +2686,28 @@ mod tests {
     }
 
     /// The text of the header's title span.
-    fn header(html: &str) -> &str {
+    /// The header's text, its code spans' tags left out.
+    fn header(html: &str) -> String {
         let start = html.find("data-header>").expect("a header") + "data-header>".len();
-        &html[start..start + html[start..].find('<').expect("its end")]
+        let body = &html[start..];
+        let mut text = String::new();
+        let mut depth = 0usize;
+        let mut rest = body;
+        while let Some(at) = rest.find('<') {
+            text.push_str(&rest[..at]);
+            let tag_end = rest[at..].find('>').expect("a tag's end") + at;
+            let tag = &rest[at..=tag_end];
+            if tag.starts_with("</") {
+                if depth == 0 {
+                    return text;
+                }
+                depth -= 1;
+            } else {
+                depth += 1;
+            }
+            rest = &rest[tag_end + 1..];
+        }
+        text
     }
 
     #[test]
@@ -2731,7 +2762,8 @@ mod tests {
     fn the_collapsed_header_shows_the_title_and_the_argument_it_does_not_name() {
         let named = run("Run `cargo test`", "cargo test");
         let html = rendered(&named, &Expanded::default());
-        assert_eq!(header(&html), "Run `cargo test`");
+        // The title's code span is drawn as code, without its backticks.
+        assert_eq!(header(&html), "Run cargo test");
         let unnamed = run("Run a command", "cargo test");
         assert_eq!(
             header(&rendered(&unnamed, &Expanded::default())),
@@ -4186,5 +4218,16 @@ mod tests {
         assert!(!loading.contains("data-action"), "{loading}");
         let failed = super::cut_result_html("call", Some(&cut(CutState::Failed("closed".into()))));
         assert!(failed.contains("data-action=\"cut-result\""), "{failed}");
+    }
+
+    #[test]
+    fn a_tool_title_draws_its_code_spans_without_their_backticks() {
+        let header = super::header_text("Run `a < b` now");
+        assert!(!header.contains('`'), "{header}");
+        assert!(
+            header.contains("<span data-code>a &lt; b</span>"),
+            "{header}"
+        );
+        assert!(header.starts_with("Run "), "{header}");
     }
 }

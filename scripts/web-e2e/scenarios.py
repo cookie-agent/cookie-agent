@@ -4664,7 +4664,13 @@ def desktop_layout(browser):
         ) == "true", "%s is not checked" % mode
         close_sheet(browser)
     assert count(browser, "#mode-toast") == 0
-    print("the bottom bar's agent, model, and mode pickers work")
+    # Escape closes a chip's menu and gives the focus back to its chip.
+    browser.click("#model-chip")
+    browser.wait("the model picker", lambda: count(browser, "#sheet") == 1)
+    browser.type("#model-chip", ESCAPE)
+    browser.wait("Escape to close the picker", lambda: count(browser, "#sheet") == 0)
+    assert browser.script("return document.activeElement.id") == "model-chip", "the focus left the chip"
+    print("the bottom bar's agent, model, and mode pickers work, and Escape closes them")
 
 
 def phone_layout():

@@ -24,7 +24,9 @@ use cookie_agent_protocol::{
 use leptos::prelude::*;
 use wasm_bindgen::JsCast as _;
 
-use super::{BUTTON, ERROR, ICON_BUTTON, NOTE, PRIMARY, ROW, empty_state, loading};
+use super::{
+    BUTTON, ERROR, ICON_BUTTON, NOTE, PRIMARY, ROW, WARNING, empty_state, loading, with_code,
+};
 use crate::{
     browser,
     icons::Glyph,
@@ -1551,9 +1553,22 @@ pub fn config_sheet(workspace: Workspace) -> impl IntoView {
             })}
             {move || workspace.config_error.get().map(|error| view! { <p class=ERROR id="config-error">{error}</p> })}
             {config.status.error.clone().map(|error| view! { <p class=ERROR>{format!("The running configuration has an error: {error}")}</p> })}
-            {(!config.status.diagnostics.is_empty() || !config.status.native_compaction.is_empty() || !config.status.deferred_tools.is_empty()).then(|| view! {
-                <ul class="flex flex-col gap-1 text-sm text-accent wrap-anywhere" id="config-diagnostics">
-                    {config.status.diagnostics.iter().cloned().chain(cookie_agent_client_state::config::record_lines(&config.status)).map(|line| view! { <li>{line}</li> }).collect_view()}
+            // Diagnostics are amber callouts with their code drawn as code;
+            // what the daemon's records mark is a quiet note
+            // (docs/site/specs/web-polish.md, B5).
+            {(!config.status.diagnostics.is_empty()).then(|| view! {
+                <div class="flex flex-col gap-2" id="config-diagnostics">
+                    {config.status.diagnostics.iter().map(|line| view! {
+                        <div class=WARNING role="note">
+                            <Glyph icon=icondata::LuTriangleAlert class="mt-0.5 shrink-0 text-warn" />
+                            <p class="min-w-0 wrap-anywhere">{with_code(line)}</p>
+                        </div>
+                    }).collect_view()}
+                </div>
+            })}
+            {(!config.status.native_compaction.is_empty() || !config.status.deferred_tools.is_empty()).then(|| view! {
+                <ul class="flex flex-col gap-1 text-xs text-muted wrap-anywhere" id="config-records">
+                    {cookie_agent_client_state::config::record_lines(&config.status).into_iter().map(|line| view! { <li>{line}</li> }).collect_view()}
                 </ul>
             })}
             {super::config_form::config_form(workspace)}

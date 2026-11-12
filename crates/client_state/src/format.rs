@@ -182,6 +182,44 @@ pub fn relative_time(now: Timestamp, then: Timestamp) -> String {
     }
 }
 
+/// A piece of a line [`code_spans`] split: plain text, or the inside of a
+/// Markdown code span.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Span<'a> {
+    Text(&'a str),
+    Code(&'a str),
+}
+
+/// Splits a line of text at its Markdown code spans, so a client can draw
+/// `` `cookie daemon restart` `` as code instead of showing its backticks
+/// (a configuration diagnostic, an ACP agent's tool title). A span is a
+/// backtick, some text, and the next backtick; a backtick with no partner,
+/// or a pair with nothing between, stays as written.
+pub fn code_spans(line: &str) -> Vec<Span<'_>> {
+    let mut spans = Vec::new();
+    let mut text_start = 0;
+    let mut at = 0;
+    while let Some(open) = line[at..].find('`').map(|offset| at + offset) {
+        let Some(close) = line[open + 1..].find('`').map(|offset| open + 1 + offset) else {
+            break;
+        };
+        if close == open + 1 {
+            at = close + 1;
+            continue;
+        }
+        if open > text_start {
+            spans.push(Span::Text(&line[text_start..open]));
+        }
+        spans.push(Span::Code(&line[open + 1..close]));
+        text_start = close + 1;
+        at = close + 1;
+    }
+    if text_start < line.len() {
+        spans.push(Span::Text(&line[text_start..]));
+    }
+    spans
+}
+
 /// How long ago a time was, in the largest whole unit under a week, else
 /// its UTC date.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -306,5 +344,32 @@ mod tests {
         assert_eq!(ago(86_400), Ago::Days(1));
         assert_eq!(ago(604_799), Ago::Days(6));
         assert_eq!(ago(604_800), Ago::On(date(2027, 1, 8)));
+    }
+
+    #[test]
+    fn code_spans_split_at_backtick_pairs() {
+        assert_eq!(
+            code_spans("Run `cargo test` then `git push`."),
+            [
+                Span::Text("Run "),
+                Span::Code("cargo test"),
+                Span::Text(" then "),
+                Span::Code("git push"),
+                Span::Text("."),
+            ]
+        );
+        assert_eq!(code_spans("`a`"), [Span::Code("a")]);
+        assert_eq!(code_spans("plain"), [Span::Text("plain")]);
+        assert!(code_spans("").is_empty());
+    }
+
+    #[test]
+    fn code_spans_keep_unpaired_and_empty_backticks() {
+        assert_eq!(code_spans("it's `open"), [Span::Text("it's `open")]);
+        assert_eq!(code_spans("a `` b"), [Span::Text("a `` b")]);
+        assert_eq!(
+            code_spans("`x` and `y"),
+            [Span::Code("x"), Span::Text(" and `y")]
+        );
     }
 }
