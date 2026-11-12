@@ -4455,8 +4455,14 @@ def session_badges(browser):
     browser.wait("the session", lambda: count(browser, OPEN_SESSION_ROW) == 1)
     subprocess.run([COOKIE, "machine", "unassign", "alt"], check=True, env=dict(os.environ, HOME=HOME),
                    stdout=subprocess.DEVNULL)
-    # Back on this machine, the session's two runtimes share its badge.
-    browser.wait("alt back on this machine", lambda: badge_kinds(browser, rows["two machines"]) == ["machine", "workspace"])
+    # Back on this machine, the session's two runtimes share its badge; in a
+    # project whose sessions mostly run there, the row leaves its usual
+    # badges out (docs/site/specs/web-polish.md, P1).
+    browser.wait(
+        "alt back on this machine",
+        lambda: badge_kinds(browser, rows["two machines"]) == ["machine", "workspace"]
+        or not shown(browser, rows["two machines"] + " [data-session-badges]"),
+    )
     # A narrowing sidebar: the workspaces give way first, down to "…";
     # a machine's name is never cut, and the time stays whole.
     hover(browser, "#transcript")
@@ -4768,8 +4774,9 @@ def phone_layout():
         phone.click("main [data-sidebar-toggle]")
         phone.click("#sidebar [data-new-session]")
         phone.wait("the new session", lambda: page_view(phone) == "chat" and count(phone, SESSIONS_PAGE) == 0)
-        # The cards stack in one column above the composer, which stays at
-        # the foot.
+        # The cards, in the "Runs on" panel under the chips, stack in one
+        # column above the composer, which stays at the foot.
+        show_cards(phone)
         phone.wait("the cards", lambda: count(phone, "#new-session [data-card]") > 1 and count(phone, "#composer") == 1)
         phone.click(card("local/coding") + " [data-card-toggle]")
         phone.wait("the workspace field", lambda: count(phone, card("local/coding") + " [data-workspace-field]") == 1)
@@ -5911,10 +5918,12 @@ def projects(browser):
     before = browser.script(ROW_LAYOUT, row)
     hover(browser, row)
     browser.wait("the ⋮", lambda: shown(browser, row + " [data-row-menu]"))
-    # The buttons lie over the row's end: its title, time, and badges keep
-    # their layout.
+    # The title ends before the buttons, which no longer cover it; the
+    # badges keep their layout (docs/site/specs/web-polish.md, B7).
     time.sleep(0.3)
-    assert browser.script(ROW_LAYOUT, row) == before, (before, browser.script(ROW_LAYOUT, row))
+    after = browser.script(ROW_LAYOUT, row)
+    assert after[1] == before[1], (before, after)
+    assert after[0] <= before[0], (before, after)
     order = browser.script(
         "return [...document.querySelectorAll(arguments[0] + ' [data-row-actions] button')].map((b) => b.getAttribute('aria-label'))",
         row,
@@ -7232,7 +7241,7 @@ def runtime_mcp(browser):
 def choose_transcript(browser, mode):
     """Chooses transcript mode `mode` in Settings › Display, then goes back
     to the chat."""
-    browser.click("#sidebar [data-view=settings]")
+    view(browser, "settings")
     browser.click("[data-section=display]")
     browser.wait("the transcript modes", lambda: count(browser, "[data-transcript-mode]") == 2)
     browser.click("[data-transcript-mode=%s]" % mode)
@@ -7258,7 +7267,7 @@ def reduced_transcript(browser):
     row that says what it does while it runs and spins in place of the
     working row, the row opens the work, and another tab's choice applies
     here."""
-    browser.click("#sidebar [data-view=settings]")
+    view(browser, "settings")
     browser.click("[data-section=display]")
     browser.wait("the display section", lambda: "Diagnostics in the transcript" in browser.text())
     browser.click("[data-section=browser]")

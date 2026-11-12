@@ -121,7 +121,7 @@ const ROW_ACTIONS: &str = "absolute inset-y-0 right-0 items-center gap-0.5 round
 /// One of them: at rest in the row's hover colour so it blends in (the
 /// open row's hover colour is the same), one palette step darker on hover
 /// (lighter in dark), and further still when pressed. 44 px square.
-const ROW_ACTION: &str = "inline-flex min-h-11 min-w-11 items-center justify-center rounded-md bg-sunken text-muted hover:bg-press hover:text-fg active:bg-press lg:min-h-8 lg:min-w-8";
+const ROW_ACTION: &str = "inline-flex min-h-11 min-w-11 items-center justify-center rounded-md bg-sunken text-muted hover:bg-press hover:text-fg active:bg-press";
 /// A button of the row's actions a long press laid out, two to a line:
 /// its icon, then its name, on two lines where a narrow phone needs them.
 const REVEALED: &str = "flex min-h-11 min-w-0 items-center gap-2 rounded-lg bg-raised px-3 py-1.5 text-left text-sm shadow-[0_0_0_1px_var(--color-line-2)] hover:bg-sunken active:bg-press";
@@ -1504,8 +1504,7 @@ fn session_row(
                 // While its buttons show, the title ends before them
                 // (docs/site/specs/web-polish.md, B7).
                 class=move || format!(
-                    "{ROW} no-callout select-none lg:min-h-9 lg:py-1.5 {} {} group-hover:bg-hover group-has-focus-visible:bg-hover",
-                    if shown() { "pr-36 lg:pr-28" } else { "pr-3" },
+                    "{ROW} no-callout select-none pr-3 lg:min-h-9 lg:py-1.5 {} group-hover:bg-hover group-has-focus-visible:bg-hover",
                     if current() || (picking() && picked()) { "bg-sel" } else { "" },
                 )
                 aria-current=move || current().then_some("true")
@@ -1573,7 +1572,10 @@ fn session_row(
                     }
                 }
             >
-                <span class="flex w-full items-center gap-2">
+                // While its buttons show, the title ends before them; the
+                // badges' line keeps its width, so they do not refit on
+                // hover.
+                <span class=move || format!("flex w-full items-center gap-2 {}", if shown() { "pr-32" } else { "" })>
                     // In select mode, whether the row is selected.
                     <Show when=picking>
                         <span class="inline-flex shrink-0 text-accent" data-pick=move || picked().to_string()>

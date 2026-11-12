@@ -391,7 +391,7 @@ Each phase is looked at in light and dark at desktop and phone sizes
   keeps its second line. **Hover keeps Rename and Delete beside the ⋮**
   rather than folding them into one ⋯: the time gives way to them and the
   title ends before them, which is what B7 asked, and both stay one click
-  away; on a desktop they are 32 px. The state's dot takes the status
+  away, at a finger's 44 px everywhere, as the browser scenarios require. The state's dot takes the status
   icon's and the unread dot's place, in a slot every row keeps so titles
   line up; failed and held-by-failing sessions are red, held ones amber.
   The project crumb opens the sidebar at the project's section. Tool
