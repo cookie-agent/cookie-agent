@@ -26,9 +26,11 @@ const FOOT_BUTTON: &str = "inline-flex h-11 w-11 shrink-0 items-center justify-c
 
 /// A view's entry on a phone, where the views are a grid of tiles so the
 /// sessions keep the room.
-/// A view's entry on a phone: a pill in one row that scrolls sideways, so
-/// the sessions keep the room (docs/site/specs/web-polish.md, P7).
-const NAV_TILE: &str = "group inline-flex h-11 shrink-0 items-center gap-1.5 rounded-full bg-surface px-3.5 text-[0.8125rem] text-fg-2 shadow-[inset_0_0_0_1px_var(--color-line-2)] transition-colors hover:bg-hover active:bg-press aria-[current=page]:bg-sel aria-[current=page]:text-fg aria-[current=page]:shadow-[inset_0_0_0_1px_var(--color-accent)]";
+/// A view's entry on a phone, where the views are a grid of tiles so the
+/// sessions keep the room. (A row that scrolls sideways, as P7 of
+/// docs/site/specs/web-polish.md had it, cuts targets off at the edge,
+/// which the phone audit refuses.)
+const NAV_TILE: &str = "group flex h-14 min-w-0 flex-col items-center justify-center gap-1 rounded-xl text-[0.6875rem] text-fg-2 transition-colors hover:bg-hover active:bg-press aria-[current=page]:bg-sel aria-[current=page]:text-fg";
 
 /// The views the sidebar lists under *Workspace*: every view but Chat,
 /// which is the session list itself, and Settings, at the foot.
@@ -125,7 +127,7 @@ pub fn Sidebar(
                 </button>
                 // Two columns on a desktop, so the sessions keep the room
                 // (docs/site/specs/web-polish.md, P1); a phone's tiles.
-                <div class=move || if workspace.narrow.get() { "-mx-2 mt-2 flex gap-1.5 overflow-x-auto px-2 pb-1 [scrollbar-width:none]" } else { "mt-1.5 grid grid-cols-2 gap-x-1 gap-y-px" }>{nav}</div>
+                <div class=move || if workspace.narrow.get() { "mt-2 grid grid-cols-4 gap-1" } else { "mt-1.5 grid grid-cols-2 gap-x-1 gap-y-px" }>{nav}</div>
             </nav>
             <SessionList workspace=workspace />
             <div class="flex shrink-0 items-center gap-1 border-t border-line px-2 py-1.5">

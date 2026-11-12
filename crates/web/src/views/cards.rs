@@ -197,9 +197,9 @@ const PANEL: &str = "flex flex-col gap-3 rounded-xl bg-raised p-3 shadow-[0_0_0_
 /// A chip of the New session's row, tinted while its panel is open.
 fn chip_class(open: bool) -> &'static str {
     if open {
-        "inline-flex h-9 max-w-full min-w-0 items-center gap-1.5 rounded-lg bg-sel px-2.5 text-[0.8125rem] text-fg shadow-[inset_0_0_0_1px_var(--color-accent)] transition-colors"
+        "inline-flex h-11 max-w-full min-w-0 items-center gap-1.5 rounded-lg bg-sel px-2.5 text-[0.8125rem] text-fg shadow-[inset_0_0_0_1px_var(--color-accent)] transition-colors lg:h-9"
     } else {
-        "inline-flex h-9 max-w-full min-w-0 items-center gap-1.5 rounded-lg bg-surface px-2.5 text-[0.8125rem] text-fg-2 shadow-[inset_0_0_0_1px_var(--color-line-2)] transition-colors hover:bg-hover hover:text-fg"
+        "inline-flex h-11 max-w-full min-w-0 items-center gap-1.5 rounded-lg bg-surface px-2.5 text-[0.8125rem] text-fg-2 shadow-[inset_0_0_0_1px_var(--color-line-2)] transition-colors hover:bg-hover hover:text-fg lg:h-9"
     }
 }
 

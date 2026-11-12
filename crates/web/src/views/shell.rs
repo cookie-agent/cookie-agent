@@ -259,7 +259,8 @@ fn settings_page(workspace: Workspace, connection: Connection) -> impl IntoView 
                 </Show>
                 {entries}
                 <div class="mt-auto hidden items-center gap-2 border-t border-line px-1 pt-2 lg:flex">
-                    <crate::app::ConnectionStatus connection=connection compact=true primary=true />
+                    // Not the primary one: the app sidebar's keeps its IDs.
+                    <crate::app::ConnectionStatus connection=connection compact=true primary=false />
                     <span class="text-xs text-muted">{concat!("cookie ", env!("CARGO_PKG_VERSION"))}</span>
                 </div>
             </nav>

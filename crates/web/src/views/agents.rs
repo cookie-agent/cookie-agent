@@ -352,7 +352,7 @@ fn agent_panel(workspace: Workspace) -> impl IntoView {
 }
 
 /// A row's ⋯: quiet until the row is hovered or the menu is open.
-const ROW_MENU_BUTTON: &str = "inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-muted opacity-60 transition hover:bg-sunken hover:text-fg hover:opacity-100 group-hover:opacity-100 aria-expanded:opacity-100";
+const ROW_MENU_BUTTON: &str = "inline-flex h-11 w-11 lg:h-8 lg:w-8 shrink-0 items-center justify-center rounded-md text-muted opacity-60 transition hover:bg-sunken hover:text-fg hover:opacity-100 group-hover:opacity-100 aria-expanded:opacity-100";
 
 /// A panel row's action: small, beside the others.
 const PANEL_BUTTON: &str = "inline-flex min-h-11 items-center rounded-lg px-2 text-xs hover:bg-sunken active:bg-press bg-raised shadow-[0_0_0_1px_var(--color-line-2)]";
@@ -540,9 +540,9 @@ fn agent_detail(workspace: Workspace) -> impl IntoView {
 /// A segment of the editor's Form | File switch.
 fn seg_class(on: bool) -> &'static str {
     if on {
-        "rounded-md bg-raised px-2.5 py-1 font-medium text-fg shadow-[0_1px_2px_rgb(0_0_0/0.08)]"
+        "inline-flex min-h-11 items-center rounded-md bg-raised px-3 font-medium text-fg shadow-[0_1px_2px_rgb(0_0_0/0.08)] lg:min-h-0 lg:px-2.5 lg:py-1"
     } else {
-        "rounded-md px-2.5 py-1 text-muted hover:text-fg"
+        "inline-flex min-h-11 items-center rounded-md px-3 text-muted hover:text-fg lg:min-h-0 lg:px-2.5 lg:py-1"
     }
 }
 

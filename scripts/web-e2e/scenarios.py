@@ -2715,6 +2715,11 @@ def view(browser, name):
             " || document.querySelector('#sidebar [data-new-session]')).click()"
         )
     else:
+        # Settings has the sidebar's place on a desktop
+        # (docs/site/specs/web-polish.md, P6): back out of it first.
+        if shown(browser, "#page [data-settings-back]"):
+            browser.click("#page [data-settings-back]")
+            browser.wait("the sidebar", lambda: shown(browser, "#sidebar"))
         if not shown(browser, "#sidebar [data-view=%s]" % name):
             browser.click("[data-sidebar-toggle]")
         browser.click("#sidebar [data-view=%s]" % name)
@@ -4572,7 +4577,13 @@ def desktop_layout(browser):
             "return document.querySelector('#sidebar [data-view][aria-current=page]').dataset.view"
         )
         assert current == name, (current, name)
-        assert shown(browser, "#sidebar"), "the sidebar left beside %s" % name
+        if name == "settings":
+            # Settings takes the sidebar's place on a desktop, with Back
+            # to the sessions (docs/site/specs/web-polish.md, P6).
+            assert not shown(browser, "#sidebar"), "the sidebar beside Settings"
+            assert shown(browser, "#page [data-settings-back]"), "no way back from Settings"
+        else:
+            assert shown(browser, "#sidebar"), "the sidebar left beside %s" % name
         assert not shown(browser, "#composer"), "the composer outside Chat"
     browser.script("history.back()")
     browser.wait("Back to the conversation", lambda: page_view(browser) == "chat" and shown(browser, "#composer"))
@@ -5501,7 +5512,11 @@ def restart_daemon(browser):
     print("on a phone the confirmation fits and its buttons are 44 px tall")
 
     # The connection panel (the sidebar's green dot) offers the same restart:
-    # the panel closes and the confirmation opens.
+    # the panel closes and the confirmation opens. Settings has the sidebar's
+    # place on a desktop (docs/site/specs/web-polish.md, P6): back to it.
+    if shown(browser, "#page [data-settings-back]"):
+        browser.click("#page [data-settings-back]")
+    browser.wait("the sidebar", lambda: shown(browser, "#connection"))
     browser.click("#connection")
     browser.wait("the connection panel", lambda: shown(browser, "#connection-details"))
     assert browser.text("#connection-restart") == "Restart daemon", browser.text("#connection-restart")
@@ -7470,9 +7485,7 @@ def guest_link(browser):
             guest.shot("guest-link-tab-" + tab.lower())
             assert "cannot use" not in guest.text("body"), (tab, guest.text("body"))
         # The goal is a guest's to set.
-        guest.script(
-            "[...document.querySelectorAll('button')].find(b => b.textContent.trim().startsWith('Goal')).click()"
-        )
+        guest.script("document.querySelector('[data-session-tab=\"goal\"]').click()")
         guest.wait("the goal's field", lambda: count(guest, "#goal-input") == 1)
         guest.type("#goal-input", "the guest's goal")
         guest.click("#goal-set")

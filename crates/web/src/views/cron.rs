@@ -225,7 +225,7 @@ fn job_row(
             <button
                 type="button"
                 role="switch"
-                class="absolute top-2.5 right-2.5 z-[1] inline-flex h-7 w-11 items-center justify-center rounded-full"
+                class="absolute top-1 right-1 z-[1] inline-flex h-11 w-11 items-center justify-center rounded-full lg:top-2.5 lg:right-2.5 lg:h-7"
                 aria-checked=enabled.to_string()
                 aria-label=if enabled { "Turn the schedule off" } else { "Turn the schedule on" }
                 title=if enabled { "On: click to pause it" } else { "Off: click to turn it on" }

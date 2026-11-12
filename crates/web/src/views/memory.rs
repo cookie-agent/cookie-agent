@@ -188,7 +188,7 @@ pub fn memory_sheet(workspace: Workspace) -> impl IntoView {
                     <input
                         type="search"
                         id="memory-search"
-                        class="h-9 w-full rounded-lg bg-sunken pr-3 pl-8 text-[0.8125rem] text-fg placeholder:text-faint focus:shadow-[inset_0_0_0_1px_var(--color-accent),0_0_0_3px_var(--color-accent-soft)] focus:outline-none"
+                        class="h-11 w-full rounded-lg bg-sunken pr-3 pl-8 lg:h-9 text-[0.8125rem] text-fg placeholder:text-faint focus:shadow-[inset_0_0_0_1px_var(--color-accent),0_0_0_3px_var(--color-accent-soft)] focus:outline-none"
                         placeholder="Search memory"
                         aria-label="Search memory"
                         prop:value=move || query.get()
@@ -203,9 +203,9 @@ pub fn memory_sheet(workspace: Workspace) -> impl IntoView {
                                 type="button"
                                 role="radio"
                                 class=move || if layer.get() == value {
-                                    "rounded-md bg-raised px-2.5 py-1.5 font-medium text-fg shadow-[0_1px_2px_rgb(0_0_0/0.08)]"
+                                    "inline-flex min-h-11 min-w-11 items-center justify-center rounded-md bg-raised px-2.5 font-medium text-fg shadow-[0_1px_2px_rgb(0_0_0/0.08)] lg:min-h-0 lg:min-w-0 lg:py-1.5"
                                 } else {
-                                    "rounded-md px-2.5 py-1.5 text-muted hover:text-fg"
+                                    "inline-flex min-h-11 min-w-11 items-center justify-center rounded-md px-2.5 text-muted hover:text-fg lg:min-h-0 lg:min-w-0 lg:py-1.5"
                                 }
                                 aria-checked=move || (layer.get() == value).to_string()
                                 data-memory-layer=value.unwrap_or("all")

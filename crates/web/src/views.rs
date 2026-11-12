@@ -631,7 +631,7 @@ fn SessionTools(workspace: Workspace) -> impl IntoView {
             <span class="session-tool flex min-w-0 flex-1 pr-1 pl-1.5" data-tool="summary">
                 <button
                     type="button"
-                    class="inline-flex h-5 min-w-0 items-center rounded-md bg-sunken px-1.5 text-[0.6875rem] whitespace-nowrap text-fg-2 transition-colors hover:bg-hover"
+                    class="hit-area relative inline-flex h-5 min-w-0 items-center rounded-md bg-sunken px-1.5 text-[0.6875rem] whitespace-nowrap text-fg-2 transition-colors hover:bg-hover"
                     data-filter-summary
                     title=summary
                     inert=tool_inert
