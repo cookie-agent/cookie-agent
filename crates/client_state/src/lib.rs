@@ -21,6 +21,7 @@ pub mod config_form;
 pub mod cron;
 pub mod cut_points;
 pub mod daemon_status;
+pub mod effort;
 pub mod elicitation;
 pub mod exposure;
 pub mod format;

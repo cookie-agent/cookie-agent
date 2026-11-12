@@ -46,6 +46,7 @@ mod cards;
 mod config_form;
 mod cron;
 mod depth;
+mod effort;
 mod install;
 mod live;
 mod loader;
@@ -131,6 +132,9 @@ const AUTO_TITLE: &str = "inline-flex min-h-9 items-center gap-1.5 rounded-md px
 /// A row of a list: two lines, the second a note.
 const ROW: &str = "flex min-h-11 w-full shrink-0 flex-col items-start gap-0.5 rounded-lg px-3 py-2 text-left transition-colors hover:bg-hover active:bg-press";
 const NOTE: &str = "text-xs text-muted";
+/// An item of a menu: an icon, a name, and what is live behind it at the
+/// end; a finger's height below desktop widths.
+const MENU_ROW: &str = "flex min-h-11 w-full shrink-0 items-center gap-2.5 rounded-lg px-2.5 text-left text-[0.8125rem] transition-colors hover:bg-hover active:bg-press lg:min-h-9";
 /// A message about something that went wrong.
 const ERROR: &str =
     "rounded-lg bg-bad-soft px-3 py-2 text-[0.8125rem] whitespace-pre-wrap break-words text-bad";
@@ -3969,12 +3973,30 @@ fn ComposerChips(workspace: Workspace, composing: RwSignal<bool>) -> impl IntoVi
                 .acp_model_label()
                 .unwrap_or_else(|| "agent's model".into());
         }
-        let draft = workspace.draft.get();
-        workspace.with_runtime(|runtime| {
-            draft
-                .map(|draft| runtime.model_names().selection_label(&draft.model))
-                .unwrap_or_else(|| "model".into())
-        })
+        let Some(draft) = workspace.draft.get() else {
+            return "model".into();
+        };
+        // The model's and its level's display names (D2): the variant, else
+        // the model's default.
+        let level = workspace
+            .models()
+            .into_iter()
+            .find(|model| model.key == draft.model.model)
+            .and_then(|model| {
+                let id = draft
+                    .model
+                    .variant
+                    .clone()
+                    .or_else(|| model.default_variant.clone())?;
+                model
+                    .variants
+                    .into_iter()
+                    .find(|variant| variant.id == id)
+                    .map(|variant| variant.display_name)
+            });
+        let name =
+            workspace.with_runtime(|runtime| runtime.model_names().short_label(&draft.model.model));
+        cookie_agent_client_state::effort::chip_label(&name, level.as_deref())
     };
     let mode = move || workspace.permission_mode();
     // An ACP agent's own mode is its session's permission mode.
@@ -4160,14 +4182,39 @@ const fn chip_of(panel: Panel) -> Option<&'static str> {
 /// The session panel's tabs (docs/site/specs/quiet-ink.md, D5): the sheets
 /// about the open session, each opened through its command as the
 /// Session commands sheet opens it, with what it reads.
-const SESSION_TABS: [(Panel, Command, &str); 7] = [
-    (Panel::Usage, Command::Usage, "Usage"),
-    (Panel::Permissions, Command::Permissions, "Permissions"),
-    (Panel::Runtimes, Command::Runtime, "Runtimes"),
-    (Panel::Skills, Command::Skills, "Skills"),
-    (Panel::Goal, Command::Goal, "Goal"),
-    (Panel::Background, Command::Background, "Background"),
-    (Panel::Events, Command::Events, "Events"),
+const SESSION_TABS: [(Panel, Command, &str, icons::Icon); 7] = [
+    (Panel::Usage, Command::Usage, "Usage", icondata::LuCoins),
+    (
+        Panel::Permissions,
+        Command::Permissions,
+        "Permissions",
+        icondata::LuList,
+    ),
+    (
+        Panel::Runtimes,
+        Command::Runtime,
+        "Runtimes",
+        icondata::LuServer,
+    ),
+    (
+        Panel::Skills,
+        Command::Skills,
+        "Skills",
+        icondata::LuWandSparkles,
+    ),
+    (Panel::Goal, Command::Goal, "Goal", icondata::LuTarget),
+    (
+        Panel::Background,
+        Command::Background,
+        "Background",
+        icondata::LuHourglass,
+    ),
+    (
+        Panel::Events,
+        Command::Events,
+        "Events",
+        icondata::LuListFilter,
+    ),
 ];
 
 /// The session panel's tab strip, each tab with what is live in it.
@@ -4186,7 +4233,7 @@ fn session_tabs(workspace: Workspace) -> impl IntoView {
     let background = Memo::new(move |_| workspace.background_calls().len());
     let tabs = SESSION_TABS
         .into_iter()
-        .map(|(panel, command, label)| {
+        .map(|(panel, command, label, icon)| {
             let current = move || workspace.panel.get() == Some(panel);
             let count = move || match panel {
                 Panel::Goal => goal
@@ -4219,17 +4266,24 @@ fn session_tabs(workspace: Workspace) -> impl IntoView {
                 _ => None,
             };
             view! {
+                // An icon each, the label on the current tab only, so the
+                // seven fit on one line (docs/site/specs/web-polish.md, B10).
                 <button
                     type="button"
                     role="tab"
-                    class="relative inline-flex h-11 shrink-0 items-center gap-1.5 px-2 text-[0.8125rem] text-muted transition-colors hover:text-fg aria-selected:font-semibold aria-selected:text-fg lg:h-9"
+                    class="relative inline-flex h-11 min-w-11 shrink-0 items-center justify-center gap-1.5 px-2 text-[0.8125rem] text-muted transition-colors hover:text-fg aria-selected:font-semibold aria-selected:text-fg lg:h-9 lg:min-w-9"
                     aria-selected=move || current().to_string()
+                    aria-label=label
+                    title=label
                     data-session-tab=label.to_lowercase()
                     on:click=move |_| workspace.run_command(command)
                 >
-                    {label}
+                    <Glyph icon=icon class="text-sm" />
+                    <Show when=current>
+                        <span aria-hidden="true">{label}</span>
+                    </Show>
                     {move || count().map(|count| view! {
-                        <span class="text-xs font-normal text-muted tabular-nums">{count}</span>
+                        <span class="rounded-full bg-sunken px-1.5 text-[0.6875rem] leading-4 font-normal text-muted tabular-nums">{count}</span>
                     })}
                     <span
                         class="absolute inset-x-2 -bottom-px h-0.5 rounded-full bg-accent transition-opacity"
@@ -4241,7 +4295,7 @@ fn session_tabs(workspace: Workspace) -> impl IntoView {
         })
         .collect_view();
     view! {
-        <div role="tablist" aria-label="Session" class="flex flex-wrap px-2" data-session-tabs>
+        <div role="tablist" aria-label="Session" class="flex overflow-x-auto px-2 [scrollbar-width:none]" data-session-tabs>
             {tabs}
         </div>
     }
@@ -4285,7 +4339,7 @@ fn Sheet(workspace: Workspace) -> impl IntoView {
         workspace
             .panel
             .get()
-            .is_some_and(|panel| SESSION_TABS.iter().any(|(tab, _, _)| *tab == panel))
+            .is_some_and(|panel| SESSION_TABS.iter().any(|(tab, _, _, _)| *tab == panel))
     };
     // The project editor fills a phone's screen.
     let tall = move || workspace.panel.get() == Some(Panel::Project);
@@ -4333,6 +4387,31 @@ fn Sheet(workspace: Workspace) -> impl IntoView {
                     (icon.top - 24.0).max(160.0),
                 )
             }));
+            return;
+        }
+        // The ⋮ menu opens under the ⋮, at the window's right
+        // (docs/site/specs/web-polish.md, P4).
+        if workspace.panel.get() == Some(Panel::Commands) && !workspace.narrow.get() {
+            let at = document()
+                .query_selector("main button[aria-label=Commands]")
+                .ok()
+                .flatten()
+                .map(|button| {
+                    let frame = button.get_bounding_client_rect();
+                    let (width, height) = window()
+                        .inner_width()
+                        .ok()
+                        .zip(window().inner_height().ok())
+                        .and_then(|(width, height)| width.as_f64().zip(height.as_f64()))
+                        .unwrap_or((0.0, 0.0));
+                    format!(
+                        "right: {:.0}px; top: {:.0}px; max-height: {:.0}px",
+                        (width - frame.right()).max(12.0),
+                        frame.bottom() + 6.0,
+                        (height - frame.bottom() - 24.0).max(200.0),
+                    )
+                });
+            anchor.set(at);
             return;
         }
         let at = workspace
@@ -4528,23 +4607,6 @@ fn choice_line(label: String, current: bool, class: &'static str) -> impl IntoVi
     }
 }
 
-/// The ID an agent document's `models` entry writes for a choice named
-/// `name` (a model's full key, a variant's ID, an ACP agent's option
-/// value), muted and truncated, unless the name is that ID; `class` places
-/// it (`DOC_ID_ROW` under a row's name, `DOC_ID_CHIP` in a chip).
-fn document_id(name: &str, id: &str, class: &'static str) -> Option<impl IntoView + use<>> {
-    cookie_agent_client_state::document_id(name, id).map(|id| {
-        let id = id.to_owned();
-        view! { <span class=class data-doc-id title=id.clone()>{id.clone()}</span> }
-    })
-}
-
-/// A row's document ID: one muted line under its name, cut with an
-/// ellipsis where the sheet is narrow.
-const DOC_ID_ROW: &str = "block w-full truncate font-mono text-xs text-muted";
-/// A chip's document ID, beside its name.
-const DOC_ID_CHIP: &str = "min-w-0 max-w-[10rem] truncate font-mono text-xs text-muted";
-
 /// The agents to start the session with, built again as they or their
 /// runtimes change.
 fn agents_sheet(workspace: Workspace) -> impl IntoView {
@@ -4620,7 +4682,7 @@ fn agents_sheet_rows(workspace: Workspace) -> impl IntoView {
                         }
                     }
                 >
-                    {choice_line(agent.id.to_string(), chosen, "font-mono text-sm font-bold")}
+                    {choice_line(agent.id.to_string(), chosen, "text-sm font-semibold")}
                     {note.map(|note| view! { <span class=format!("font-mono {NOTE}") data-agent-runtime>{note}</span> })}
                     <span class=NOTE>{agent.description.clone()}</span>
                 </button>
@@ -4702,7 +4764,7 @@ fn agent_runtime_options(
             class:bg-sel=chosen
             data-agent=agent.id.to_string()
         >
-            {choice_line(agent.id.to_string(), chosen, "font-mono text-sm font-bold")}
+            {choice_line(agent.id.to_string(), chosen, "text-sm font-semibold")}
             <span class=NOTE>{agent.description.clone()}</span>
             <div class="flex flex-wrap gap-2 pt-1">{options}</div>
         </div>
@@ -4845,43 +4907,36 @@ fn acp_models_sheet(workspace: Workspace) -> impl IntoView {
                                 type="button"
                                 class=ROW
                                 class:bg-sel=chosen
+                                title=value.value.clone()
                                 data-acp-model=value.value.clone()
                                 on:click=choose(&option, value)
                             >
-                                {choice_line(value.name.clone(), chosen, "text-sm font-bold")}
-                                {document_id(&value.name, &value.value, DOC_ID_ROW)}
+                                {choice_line(value.name.clone(), chosen, "text-sm font-semibold")}
                                 {value.description.clone().map(|description| view! { <span class=NOTE>{description}</span> })}
                             </button>
                         }
                     })
                     .collect_view()
             });
+            // The agent's effort as the effort control, in its order
+            // (docs/site/specs/web-polish.md, section 6); a level stays
+            // chosen without closing the menu.
             let efforts = effort.map(|option| {
-                let values = option
-                    .values
-                    .iter()
-                    .map(|value| {
-                        let chosen = value.value == option.current_value;
-                        view! {
-                            <button
-                                type="button"
-                                class=BUTTON
-                                class:bg-sel=chosen
-                                aria-pressed=chosen.to_string()
-                                data-acp-effort=value.value.clone()
-                                title=value.description.clone().unwrap_or_default()
-                                on:click=choose(&option, value)
-                            >
-                                <span class="min-w-0 truncate">{value.name.clone()}</span>
-                                {document_id(&value.name, &value.value, DOC_ID_CHIP)}
-                            </button>
-                        }
-                    })
-                    .collect_view();
+                let levels = cookie_agent_client_state::effort::acp(&option);
+                let current = Some(option.current_value.clone());
+                let on_choose = Callback::new(move |id: String| {
+                    let Some(value) = option.values.iter().find(|value| value.value == id) else {
+                        return;
+                    };
+                    workspace.choose_agent_option(
+                        option.id.clone(),
+                        value.value.clone(),
+                        format!("{}: {}", option.name, value.name),
+                    );
+                });
                 view! {
-                    <div class="flex flex-col gap-1 border-b border-line pb-2">
-                        <span class="px-3 text-sm font-bold">{option.name.clone()}</span>
-                        <div class="flex flex-wrap gap-2 px-3">{values}</div>
+                    <div class="px-1 pt-2 pb-1">
+                        <effort::EffortControl levels current on_choose large=workspace.narrow.get_untracked() />
                     </div>
                 }
             });
@@ -4907,7 +4962,7 @@ fn acp_models_sheet(workspace: Workspace) -> impl IntoView {
                 .into_any();
             }
             view! {
-                <div class="flex flex-col gap-1 border-b border-line pb-2">{models}</div>
+                <div class="flex flex-col gap-0.5 border-b border-line pb-2">{models}</div>
                 {efforts}
                 <button
                     type="button"
@@ -4945,62 +5000,76 @@ fn models_sheet_rows(workspace: Workspace) -> impl IntoView {
         )
         .into_any();
     }
-    models
-        .into_iter()
+    // The level the current selection runs: its variant, else its model's
+    // default.
+    let current_level = current.as_ref().and_then(|current| {
+        current
+            .variant
+            .as_ref()
+            .map(ToString::to_string)
+            .or_else(|| {
+                models
+                    .iter()
+                    .find(|model| model.key == current.model)
+                    .and_then(|model| model.default_variant.as_ref().map(ToString::to_string))
+            })
+    });
+    let rows = models
+        .iter()
         .map(|model| {
             let key = model.key.clone();
-            let base = ModelSelection {
-                model: key.clone(),
-                variant: model.default_variant.clone(),
-            };
-            let variants = model
-                .variants
-                .iter()
-                .map(|variant| {
-                    let selection = ModelSelection {
-                        model: key.clone(),
-                        variant: Some(variant.id.clone()),
-                    };
-                    let chosen = current.as_ref() == Some(&selection);
-                    view! {
-                        <button
-                            type="button"
-                            class=BUTTON
-                            class:bg-sel=chosen
-                            aria-pressed=chosen.to_string()
-                            data-variant=variant.id.to_string()
-                            on:click=move |_| {
-                                workspace.pick_model(selection.clone());
-                                workspace.panel.set(None);
-                            }
-                        >
-                            <span class="min-w-0 truncate">{variant.display_name.clone()}</span>
-                            {document_id(&variant.display_name, variant.id.as_str(), DOC_ID_CHIP)}
-                        </button>
-                    }
-                })
-                .collect_view();
             let chosen = current.as_ref().is_some_and(|current| current.model == key);
+            // Another model keeps the level when it offers it, else takes
+            // its own default (docs/site/specs/web-polish.md, section 6).
+            let selection = ModelSelection {
+                model: key.clone(),
+                variant: cookie_agent_client_state::effort::native(model)
+                    .carried(current_level.as_deref())
+                    .and_then(|id| cookie_agent_protocol::VariantId::new(id).ok()),
+            };
             view! {
-                <div class="flex flex-col gap-1 border-b border-line pb-2">
-                    <button
-                        type="button"
-                        class=ROW
-                        class:bg-sel=chosen
-                        on:click=move |_| {
-                            workspace.pick_model(base.clone());
-                            workspace.panel.set(None);
-                        }
-                    >
-                        {choice_line(model.display_name.to_string(), chosen, "text-sm font-bold")}
-                        {document_id(model.display_name.as_str(), &key.to_string(), DOC_ID_ROW)}
-                    </button>
-                    <div class="flex flex-wrap gap-2 px-3">{variants}</div>
-                </div>
+                <button
+                    type="button"
+                    class=ROW
+                    class:bg-sel=chosen
+                    title=key.to_string()
+                    data-model=key.to_string()
+                    on:click=move |_| {
+                        workspace.pick_model(selection.clone());
+                        workspace.panel.set(None);
+                    }
+                >
+                    {choice_line(model.display_name.to_string(), chosen, "text-sm font-semibold")}
+                </button>
             }
         })
-        .collect_view()
-        .into_any()
+        .collect_view();
+    // The current model's levels, at the foot.
+    let foot = current.and_then(|current| {
+        let model = models.iter().find(|model| model.key == current.model)?;
+        let levels = cookie_agent_client_state::effort::native(model);
+        if levels.form() == cookie_agent_client_state::effort::Form::Hidden {
+            return None;
+        }
+        let on_choose = Callback::new(move |id: String| {
+            if let Ok(variant) = cookie_agent_protocol::VariantId::new(id) {
+                workspace.pick_model(ModelSelection {
+                    model: current.model.clone(),
+                    variant: Some(variant),
+                });
+            }
+        });
+        Some(view! {
+            <div class="mt-1 border-t border-line px-1 pt-3 pb-1">
+                <effort::EffortControl levels current=current_level.clone() on_choose large=workspace.narrow.get_untracked() />
+            </div>
+        })
+    });
+    view! {
+        <div class="flex flex-col gap-0.5">{rows}</div>
+        {foot}
+    }
+    .into_any()
 }
 
 /// The presets to start the session with, built again as they change.
@@ -5314,13 +5383,38 @@ fn usage_sheet(workspace: Workspace) -> impl IntoView {
             let context = workspace
                 .viewed
                 .with_untracked(|viewed| viewed.context_tokens);
+            // Three tiles lead: the context, the cost, and the cache hits
+            // (docs/site/specs/web-polish.md, P4).
+            let (cost, requests, hit) = match &usage.session {
+                Ok(rollup) => (
+                    rollup
+                        .estimated_cost_usd
+                        .map_or_else(|| "unpriced".to_owned(), |cost| format!("${cost:.2}")),
+                    format!("{} requests", format_count(rollup.request_count)),
+                    CacheHit::of(rollup).label(),
+                ),
+                Err(_) => ("—".to_owned(), String::new(), "—".to_owned()),
+            };
+            let tile = |id: &'static str, name: &'static str, figure: String, note: String| {
+                view! {
+                    <div class="flex min-w-0 flex-col rounded-xl bg-sunken px-3 py-2" id=id>
+                        <span class="text-[0.6875rem] text-muted">{name}</span>
+                        <span class="truncate text-lg leading-6 font-semibold tabular-nums" data-figure>{figure}</span>
+                        <span class="truncate text-[0.6875rem] text-faint">{note}</span>
+                    </div>
+                }
+            };
             view! {
-                {context.map(|tokens| view! {
-                    <p class="flex items-center gap-2 text-sm" id="usage-context">
-                        <Glyph icon=icondata::LuGauge class="text-accent" />
-                        {format!("Context: {} tokens in the last request", format_count(tokens))}
-                    </p>
-                })}
+                <div class="grid grid-cols-3 gap-2" data-usage-tiles>
+                    {tile(
+                        "usage-context",
+                        "Context",
+                        context.map_or_else(|| "—".to_owned(), format_count),
+                        "tokens, last request".to_owned(),
+                    )}
+                    {tile("usage-cost", "Cost", cost, requests)}
+                    {tile("usage-cache", "Cache hits", hit, "of input tokens".to_owned())}
+                </div>
                 {cache_card(workspace)}
                 <h3 class="text-sm font-bold">"This session"</h3>
                 {session}
@@ -5503,39 +5597,84 @@ fn commands_sheet(workspace: Workspace) -> impl IntoView {
             .collect::<Vec<_>>()
     });
     let commands = Memo::new(move |_| workspace.agent_commands());
+    // What is live behind a panel entry, at its end: the cost, the goal's
+    // progress, the calls in the background.
+    let live = move |command: Command| -> Option<String> {
+        match command {
+            Command::Usage => workspace.selected.get().and_then(|session_id| {
+                workspace
+                    .costs
+                    .with(|costs| costs.get(&session_id).copied())
+                    .map(cost_label)
+            }),
+            Command::Goal => workspace
+                .goal()
+                .filter(|goal| cookie_agent_client_state::rows::goal_bar_shows(goal.status))
+                .filter(|goal| !goal.items.is_empty())
+                .map(|goal| {
+                    format!(
+                        "{}/{}",
+                        goal.items.iter().filter(|item| item.finished).count(),
+                        goal.items.len()
+                    )
+                }),
+            Command::Background => Some(workspace.background_calls().len())
+                .filter(|count| *count > 0)
+                .map(|count| count.to_string()),
+            _ => None,
+        }
+    };
+    let row = move |entry: &'static crate::commands::MenuEntry| {
+        let command = entry.command;
+        view! {
+            <button
+                type="button"
+                class=MENU_ROW
+                title=entry.description
+                data-command=entry.id
+                on:click=move |_| {
+                    workspace.panel.set(None);
+                    workspace.run_command(command);
+                }
+            >
+                <Glyph icon=entry.icon class="w-4 shrink-0 justify-center text-muted" />
+                <span class="min-w-0 flex-1 truncate">{entry.label}</span>
+                {move || live(command).map(|value| view! { <span class="shrink-0 text-xs text-muted tabular-nums">{value}</span> })}
+            </button>
+        }
+    };
+    // The session's actions, then what opens in the session panel
+    // (docs/site/specs/web-polish.md, P4).
     let own = move || {
         let query = query();
         let replaced = replaced.get();
-        MENU.iter()
+        let offered: Vec<&'static crate::commands::MenuEntry> = MENU
+            .iter()
             .filter(|entry| crate::commands::offered(entry.command, has_crons))
             .filter(|entry| {
                 !workspace.is_guest() || crate::commands::offered_to_guest(entry.command)
             })
             .filter(|entry| !replaced.contains(&entry.id))
             .filter(|entry| matches(&query, [entry.label, entry.description]))
-            .map(|entry| {
-                let command = entry.command;
-                view! {
-                    <button
-                        type="button"
-                        class=format!("{ROW} min-h-12")
-                        data-command=entry.id
-                        on:click=move |_| {
-                            workspace.panel.set(None);
-                            workspace.run_command(command);
-                        }
-                    >
-                        <span class="flex w-full items-center gap-3">
-                            <Glyph icon=entry.icon class="w-5 justify-center text-accent" />
-                            <span class="flex min-w-0 flex-1 flex-col">
-                                <span class="text-sm font-bold">{entry.label}</span>
-                                <span class=NOTE>{entry.description}</span>
-                            </span>
-                        </span>
-                    </button>
-                }
-            })
-            .collect_view()
+            .collect();
+        let in_panel = |entry: &&&crate::commands::MenuEntry| {
+            SESSION_TABS
+                .iter()
+                .any(|(_, command, _, _)| *command == entry.command)
+        };
+        let actions = offered
+            .iter()
+            .filter(|entry| !in_panel(entry))
+            .map(|entry| row(entry))
+            .collect_view();
+        let panel: Vec<_> = offered.iter().filter(|entry| in_panel(entry)).collect();
+        view! {
+            <div class="flex flex-col">{actions}</div>
+            {(!panel.is_empty()).then(|| view! {
+                <h3 class="mt-1 border-t border-line px-2.5 pt-2 pb-0.5 text-xs font-semibold text-muted">"Open in the session panel"</h3>
+                <div class="flex flex-col">{panel.into_iter().map(|entry| row(entry)).collect_view()}</div>
+            })}
+        }
     };
     let agent = move || {
         let query = query();
@@ -5585,7 +5724,7 @@ fn commands_sheet(workspace: Workspace) -> impl IntoView {
                 })
                 .collect_view();
             view! {
-                <h3 class="mt-2 px-1 text-sm font-bold">"The agent's commands"</h3>
+                <h3 class="mt-1 border-t border-line px-2.5 pt-2 pb-0.5 text-xs font-semibold text-muted">"The agent's commands"</h3>
                 <div id="agent-commands" class="flex flex-col gap-2">{rows}</div>
             }
         })
@@ -5694,7 +5833,7 @@ fn modes_sheet_rows(workspace: Workspace) -> impl IntoView {
                         <span class="flex w-full items-center gap-3">
                             <Glyph icon=icons::permission_mode(choice.mode).0 class="w-5 justify-center text-accent" />
                             <span class="flex min-w-0 flex-1 flex-col">
-                                {move || choice_line(choice.name.to_owned(), chosen(), "font-mono text-sm font-bold")}
+                                {move || choice_line(choice.name.to_owned(), chosen(), "text-sm font-semibold")}
                                 <span class=NOTE>{choice.description}</span>
                             </span>
                         </span>
@@ -5741,7 +5880,7 @@ fn agent_modes_sheet(
                     }
                 >
                     <span class="flex min-w-0 flex-1 flex-col">
-                        {choice_line(value.name.clone(), chosen, "font-mono text-sm font-bold")}
+                        {choice_line(value.name.clone(), chosen, "text-sm font-semibold")}
                         {value.description.clone().map(|description| view! { <span class=NOTE>{description}</span> })}
                     </span>
                 </button>

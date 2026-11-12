@@ -215,9 +215,15 @@ impl Workspace {
     }
 
     /// The model chip's label for an ACP agent: its model option's value
-    /// and its effort option's, as cookie labels a model and its variant.
+    /// and its effort option's, as the chip labels a model and its variant
+    /// (`docs/site/specs/web-polish.md`, D2).
     pub fn acp_model_label(self) -> Option<String> {
-        cookie_agent_client_state::acp::model_label(&self.acp_options())
+        let (model, effort) =
+            cookie_agent_client_state::acp::model_and_effort(&self.acp_options())?;
+        Some(cookie_agent_client_state::effort::chip_label(
+            &model,
+            effort.as_deref(),
+        ))
     }
 
     /// Chooses `value` for the agent's option `option_id`: a new session's

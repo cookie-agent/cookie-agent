@@ -363,3 +363,19 @@ Each phase is looked at in light and dark at desktop and phone sizes
   tooltip the last event's. B9: the row is 56 px whether it waits or reads
   (it was 144 px), so a page arriving still moves nothing. The showcase's
   long-press step clicks the flat Rename of `b1ff06691`.
+- **Phase 2 (2026-11-12).** `client_state::effort` holds the levels
+  (`native`, `acp`), the form (`Levels::form`), the carried level
+  (`Levels::carried`), short names, and the chip's label; the web's
+  `EffortControl` (`views/effort.rs`) draws it. A drag moves the pill and
+  chooses where it is let go, so dragging sends one change, not one per
+  segment; a click or a key chooses at once. Choosing a model closes its
+  menu as before; choosing a level leaves it open, and Escape closes it.
+  The native menu no longer lists each model's variants under it: the pill
+  at the foot is the current model's. The IDs an agent document writes
+  moved from a muted line under each name into its tooltip, in the native
+  and ACP menus alike. A reply's header keeps "Opus 5.5 • High"
+  (`ModelDisplayNames::selection_label`, shared with the TUI); only the chip
+  changed. The ⋮ menu anchors under the ⋮ on a desktop and stays a bottom
+  sheet on a phone; its entries are one line each, their descriptions in
+  tooltips. The Usage tab's tiles show the context's tokens rather than a
+  share of the window, which the tab does not know.

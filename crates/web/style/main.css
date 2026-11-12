@@ -1025,3 +1025,119 @@ body {
     animation: none;
   }
 }
+
+/* The effort control (docs/site/specs/web-polish.md, section 6): a sliding
+   pill whose colour warms from the accent toward the hot colour as the
+   level rises (`--effort-heat`, 0 to 1, set from the level), mixed in
+   OKLCH so the middle stays vivid. */
+.effort {
+  --effort-color: color-mix(
+    in oklch,
+    var(--color-accent) calc(100% - var(--effort-heat, 0) * 100%),
+    var(--color-hot)
+  );
+}
+.effort-value {
+  color: var(--effort-color);
+  transition: color 200ms;
+}
+.effort-rail {
+  position: relative;
+  display: flex;
+  padding: 3px;
+  border-radius: 10px;
+  background: var(--color-sunken);
+  cursor: pointer;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.effort-rail:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+.effort-segment {
+  position: relative;
+  z-index: 1;
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  padding: 0.3125rem 0.25rem;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.8125rem;
+  color: var(--color-muted);
+  transition: color 200ms;
+}
+.effort-rail:hover .effort-segment:not(.effort-segment-on) {
+  color: var(--color-fg-2);
+}
+.effort-segment-on {
+  color: var(--color-on-accent);
+  font-weight: 600;
+}
+.effort-knob {
+  position: absolute;
+  top: 3px;
+  bottom: 3px;
+  left: calc(3px + (100% - 6px) / var(--effort-count) * var(--effort-at));
+  width: calc((100% - 6px) / var(--effort-count));
+  border-radius: 8px;
+  background: linear-gradient(135deg, var(--color-accent), var(--effort-color));
+  box-shadow: 0 2px 8px -2px color-mix(in srgb, var(--effort-color) 70%, transparent);
+  transition:
+    left 300ms cubic-bezier(0.3, 1.5, 0.5, 1),
+    background 300ms;
+}
+.effort-rail-large {
+  padding: 4px;
+  border-radius: 12px;
+}
+.effort-rail-large .effort-segment {
+  padding: 0.75rem 0.25rem;
+  font-size: 0.875rem;
+}
+.effort-rail-large .effort-knob {
+  top: 4px;
+  bottom: 4px;
+  left: calc(4px + (100% - 8px) / var(--effort-count) * var(--effort-at));
+  width: calc((100% - 8px) / var(--effort-count));
+  border-radius: 9px;
+}
+.effort-switch {
+  position: relative;
+  flex: none;
+  width: 30px;
+  height: 18px;
+  border-radius: 9px;
+  background: var(--color-line-2);
+  transition: background 200ms;
+}
+.effort-switch::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.2);
+  transition: left 200ms cubic-bezier(0.3, 1.5, 0.5, 1);
+}
+.effort-switch-on {
+  background: var(--color-accent);
+}
+.effort-switch-on::after {
+  left: 14px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .effort-value,
+  .effort-segment,
+  .effort-knob,
+  .effort-switch,
+  .effort-switch::after {
+    transition: none;
+  }
+}

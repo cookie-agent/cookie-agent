@@ -2687,8 +2687,8 @@ def cache_hit_rate(browser):
         ) == detail, "the rate's tooltip is not its figures"
         # The context line groups thousands like the figures below it; the
         # scripted prompts are 1,000 tokens, so a bare 1000 is the bug.
-        context = browser.text("#sheet #usage-context")
-        assert re.fullmatch(r"Context: \d{1,3}(,\d{3})* tokens in the last request", context), context
+        context = browser.text("#sheet #usage-context [data-figure]")
+        assert re.fullmatch(r"\d{1,3}(,\d{3})*", context), context
         assert "1000" not in context, context
         # Both the session and its tree break their figures down by model,
         # as the TUI's usage panel does.
@@ -4568,12 +4568,18 @@ def desktop_layout(browser):
         " [b.dataset.command, b.innerText, b.querySelector('svg') !== null])"
     )
     names = [entry[0] for entry in entries]
+    # The session's actions, then what opens in the session panel
+    # (docs/site/specs/web-polish.md, P4).
     assert names == [
-        "rename", "compact", "goal", "share", "schedule", "skills", "background", "runtime", "permissions", "usage",
-        "events", "preset",
+        "rename", "compact", "share", "schedule", "preset", "goal", "skills", "background", "runtime", "permissions",
+        "usage", "events",
     ], names
     for name, text, icon in entries:
-        assert icon and "/" not in text and "\n" in text, (name, text, icon)
+        assert icon and "/" not in text, (name, text, icon)
+    # Each entry says what it does in its tooltip.
+    assert all(browser.script(
+        "return [...document.querySelectorAll('#sheet [data-command]')].map((b) => b.title !== '')"
+    )), "an entry has no description"
     browser.shot("session-menu")
     close_sheet(browser)
     click_row(browser, "aside nav[aria-label=Sessions] [data-session]")
@@ -4827,10 +4833,10 @@ def phone_layout():
         # A picker rises from the bottom.
         phone.click("#model-chip")
         phone.wait("the model sheet", lambda: "Scripted Model" in phone.text("#sheet"))
-        # The model's full key, as an agent document writes it, muted under
-        # its name, and within the sheet.
+        # The model's full key, as an agent document writes it, in its
+        # row's tooltip (docs/site/specs/web-polish.md, P4).
         assert "custom.local/test" in phone.script(
-            "return [...document.querySelectorAll('#sheet [data-doc-id]')].map((e) => e.textContent)"
+            "return [...document.querySelectorAll('#sheet [data-model]')].map((e) => e.title)"
         )
         assert phone.script(
             "const sheet = document.querySelector('#sheet'); return sheet.scrollWidth <= sheet.clientWidth + 1"
@@ -6808,18 +6814,18 @@ def acp_agents(browser):
 
     # The model chip shows the agent's model and effort options as the
     # model and variant, and its sheet picks them.
-    browser.wait("the agent's model", lambda: "Small • Low" in browser.text("#model-chip"), timeout=40)
+    browser.wait("the agent's model", lambda: "Small · Low" in browser.text("#model-chip"), timeout=40)
     browser.click("#model-chip")
     large = '#sheet [data-acp-model="large"]'
     browser.wait("the agent's models", lambda: count(browser, large) == 1)
-    assert count(browser, '#sheet [data-acp-effort="high"]') == 1
-    # Beside each name, the ID an agent document's `models` writes.
-    assert browser.text(large + " [data-doc-id]") == "large", browser.text(large)
-    assert browser.text('#sheet [data-acp-effort="high"] [data-doc-id]') == "high", browser.text("#sheet")
+    # The effort is the effort pill (docs/site/specs/web-polish.md, section 6).
+    assert count(browser, '#sheet [data-effort-pill] [data-effort-level="high"]') == 1
+    # In each name's tooltip, the ID an agent document's `models` writes.
+    assert browser.script("return document.querySelector(arguments[0]).title", large) == "large"
     settle(browser)
     browser.shot("acp-agent-models")
     browser.click(large)
-    browser.wait("the changed model", lambda: "Large • Low" in browser.text("#model-chip"), timeout=40)
+    browser.wait("the changed model", lambda: "Large · Low" in browser.text("#model-chip"), timeout=40)
     browser.click("#model-chip")
     browser.wait("the agent's models", lambda: count(browser, "#agent-options-more") == 1)
     browser.click("#agent-options-more")
@@ -6882,21 +6888,25 @@ def acp_agents(browser):
     browser.click("#agent-chip")
     browser.wait("the runtime agents", lambda: count(browser, fixture) == 1, timeout=40)
     browser.click(fixture)
-    browser.wait("the draft's agent model", lambda: "Small • Low" in browser.text("#model-chip"), timeout=40)
+    browser.wait("the draft's agent model", lambda: "Small · Low" in browser.text("#model-chip"), timeout=40)
     browser.click("#model-chip")
     browser.wait("the draft's models", lambda: count(browser, large) == 1)
     browser.click(large)
-    browser.wait("the draft's model", lambda: "Large • Low" in browser.text("#model-chip"))
+    browser.wait("the draft's model", lambda: "Large · Low" in browser.text("#model-chip"))
     browser.click("#model-chip")
-    high = '#sheet [data-acp-effort="high"]'
+    high = '#sheet [data-effort-pill] [data-effort-level="high"]'
     browser.wait("the draft's efforts", lambda: count(browser, high) == 1)
     browser.click(high)
-    browser.wait("the draft's effort", lambda: "Large • High" in browser.text("#model-chip"))
+    browser.wait("the draft's effort", lambda: "Large · High" in browser.text("#model-chip"))
+    # A level stays chosen without closing the menu; Escape closes it.
+    assert count(browser, "#sheet") == 1, "choosing a level closed the menu"
+    browser.type("#model-chip", ESCAPE)
+    browser.wait("the closed menu", lambda: count(browser, "#sheet") == 0)
     send(browser, "say drafted")
     browser.wait("the drafted session's turn", lambda: "drafted" in browser.text("#transcript"), timeout=60)
     browser.wait(
         "the agent's own options",
-        lambda: "Large • High" in browser.text("#model-chip"),
+        lambda: "Large · High" in browser.text("#model-chip"),
         timeout=40,
     )
     print("a draft picks the agent's model and effort before its session exists")
