@@ -1274,6 +1274,7 @@ impl App {
             Modal::Onboarding => self.handle_onboarding_key(key),
             Modal::Memory => self.handle_memory_key(key),
             Modal::Cron => self.handle_cron_key(key).await,
+            Modal::Webhooks => self.handle_webhook_key(key).await,
             Modal::Projects => self.handle_project_picker(key).await,
             Modal::Sessions => self.handle_session_picker(key).await,
             Modal::Presets | Modal::AgentOptions => self.handle_selection_picker(key).await,
@@ -1810,6 +1811,7 @@ impl App {
                     | Modal::Config
                     | Modal::Memory
                     | Modal::Cron
+                    | Modal::Webhooks
                     | Modal::None => 0,
                 };
                 move_picker_selection(&mut self.picker_state, len, up);

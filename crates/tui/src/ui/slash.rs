@@ -52,6 +52,8 @@ pub(crate) enum SlashCommand {
     Memory,
     Cron,
     CronNew,
+    Webhooks,
+    WebhooksNew,
     Permissions,
     Usage,
     /// `/about`: versions, cookie's license, and the third-party notices.
@@ -259,6 +261,20 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         aliases: &[],
         description: "schedule a prompt in this session",
         action: PaletteAction::Run(SlashCommand::CronNew),
+        writes_session: true,
+    },
+    CommandSpec {
+        name: "webhooks",
+        aliases: &["webhook", "hooks"],
+        description: "list, create, edit, test, and delete the daemon's webhooks",
+        action: PaletteAction::Run(SlashCommand::Webhooks),
+        writes_session: false,
+    },
+    CommandSpec {
+        name: "webhooks new",
+        aliases: &[],
+        description: "make a webhook that delivers into this session",
+        action: PaletteAction::Run(SlashCommand::WebhooksNew),
         writes_session: true,
     },
     CommandSpec {
@@ -706,9 +722,11 @@ mod tests {
     #[test]
     fn search_ranks_exact_then_prefix_then_substring() {
         assert_eq!(names("").len(), COMMANDS.len());
-        // The exact name first; `/cron new` only contains it.
-        assert_eq!(names("new"), ["new", "cron new"]);
+        // The exact name first; `/cron new` and `/webhooks new` only
+        // contain it.
+        assert_eq!(names("new"), ["new", "cron new", "webhooks new"]);
         assert_eq!(names("cron"), ["cron", "cron new"]);
+        assert_eq!(names("webhooks"), ["webhooks", "webhooks new"]);
         assert_eq!(names("model"), ["model"]);
         // The exact name outranks the panel modes it merely prefixes.
         assert_eq!(

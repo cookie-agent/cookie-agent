@@ -54,3 +54,4 @@ mod thinking;
 mod tool_headers;
 mod tool_rows;
 mod user_menu;
+mod webhook_panel;

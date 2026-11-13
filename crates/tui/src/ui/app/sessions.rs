@@ -525,6 +525,7 @@ impl App {
             | Modal::Onboarding
             | Modal::Memory
             | Modal::Cron
+            | Modal::Webhooks
             | Modal::None => 0,
         }
     }

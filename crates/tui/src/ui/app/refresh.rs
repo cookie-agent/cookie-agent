@@ -808,6 +808,16 @@ impl App {
                 self.install_cron_save(*request, *result);
             }
             RpcUpdate::CronChanged { result } => self.install_cron_change(result),
+            RpcUpdate::WebhooksListed { result } => self.install_webhook_listing(result),
+            RpcUpdate::WebhookSaved { request, result } => {
+                self.install_webhook_save(*request, *result);
+            }
+            RpcUpdate::WebhookChanged { result } => self.install_webhook_change(result),
+            RpcUpdate::WebhookEventRead {
+                webhook,
+                index,
+                result,
+            } => self.install_webhook_event(webhook, index, *result),
             RpcUpdate::MachinesRefreshed { read, result } => {
                 self.install_machine_listing(read, result);
             }
@@ -1267,6 +1277,7 @@ impl App {
                 | ClientDelivery::MachinesChanged(_)
                 | ClientDelivery::MemoryChanged(_)
                 | ClientDelivery::CronsChanged(_)
+                | ClientDelivery::WebhooksChanged(_)
                 | ClientDelivery::PluginsChanged(_)
                 | ClientDelivery::ProjectsChanged(_)
         ) && self.modal == Modal::None;
@@ -1319,6 +1330,9 @@ impl App {
         }
         if matches!(delivery, ClientDelivery::CronsChanged(_)) {
             self.poll_crons();
+        }
+        if matches!(delivery, ClientDelivery::WebhooksChanged(_)) {
+            self.poll_webhooks();
         }
         if let ClientDelivery::OnboardingChanged(status) = &delivery {
             self.note_onboarding_changed((**status).clone());

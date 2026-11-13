@@ -351,6 +351,7 @@ impl App {
             Modal::Onboarding => self.render_onboarding_panel(frame),
             Modal::Memory => self.render_memory_panel(frame),
             Modal::Cron => self.render_cron_panel(frame),
+            Modal::Webhooks => self.render_webhook_panel(frame),
             Modal::Projects => self.render_project_picker(frame),
             Modal::Sessions => {
                 let area = centered(frame.area(), 72, 60);
@@ -1113,6 +1114,10 @@ impl App {
             }
             PaletteAction::Run(SlashCommand::CronNew) => {
                 self.daemon_has_crons() && self.viewed_session().is_some()
+            }
+            PaletteAction::Run(SlashCommand::Webhooks) => self.daemon_has_webhooks(),
+            PaletteAction::Run(SlashCommand::WebhooksNew) => {
+                self.daemon_has_webhooks() && self.viewed_session().is_some()
             }
             _ => true,
         }

@@ -14,6 +14,7 @@ use crate::state::ToolStatus;
 use crate::theme::{ColorLevel, Theme, ThemeKind};
 use crate::ui::app::cron_panel::sample_crons;
 use crate::ui::app::memory_panel::sample_memory;
+use crate::ui::app::webhook_panel::sample_webhooks;
 use crate::ui::app::*;
 use crate::ui::management::{RuntimeView, sample_machines, sample_permissions};
 use crate::ui::transcript::BlockId;
@@ -50,6 +51,10 @@ fn kind(target: PointerTarget) -> &'static str {
         PointerTarget::CronRow(_) => "cron row",
         PointerTarget::CronAction(_) => "cron action",
         PointerTarget::CronSession(_) => "cron session",
+        PointerTarget::WebhookRow(_) => "webhook row",
+        PointerTarget::WebhookAction(_) => "webhook action",
+        PointerTarget::WebhookSession(_) => "webhook session",
+        PointerTarget::WebhookEvent(_) => "webhook event",
         PointerTarget::OnboardingNotice(_) => "onboarding notice",
         PointerTarget::OnboardingTab(_) => "onboarding tab",
         PointerTarget::OnboardingAction(_) => "onboarding action",
@@ -523,6 +528,19 @@ async fn every_clickable_element_hovers_visibly() {
     app.cron_panel = Default::default();
     app.modal = Modal::None;
 
+    // The webhooks panel, set up as on a daemon that keeps webhooks: the
+    // first webhook delivers into a session and has an event.
+    app.modal = Modal::Webhooks;
+    app.webhook_panel.listing = Some(Ok(sample_webhooks()));
+    app.webhook_panel.selection.select(Some(0));
+    seen.extend(sweep(&mut app, "webhooks panel"));
+    app.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE))
+        .await;
+    assert!(app.webhook_panel.confirm.is_some());
+    seen.extend(sweep(&mut app, "webhook delete confirmation"));
+    app.webhook_panel = Default::default();
+    app.modal = Modal::None;
+
     // A daemon that is not set up: the notice, which takes the background
     // bar's row while no call runs in the background, then the panel's
     // steps.
@@ -610,6 +628,10 @@ async fn every_clickable_element_hovers_visibly() {
         "cron row",
         "cron action",
         "cron session",
+        "webhook row",
+        "webhook action",
+        "webhook session",
+        "webhook event",
         "onboarding notice",
         "onboarding tab",
         "onboarding action",

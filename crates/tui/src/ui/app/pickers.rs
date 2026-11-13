@@ -1287,7 +1287,8 @@ impl App {
             | Modal::Config
             | Modal::Onboarding
             | Modal::Memory
-            | Modal::Cron => {}
+            | Modal::Cron
+            | Modal::Webhooks => {}
             Modal::Projects => self.choose_project_entry(index),
             Modal::AgentOptions => self.choose_agent_option(index),
             Modal::None => {}

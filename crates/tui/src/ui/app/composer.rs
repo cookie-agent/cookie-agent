@@ -1240,6 +1240,8 @@ impl App {
             SlashCommand::Memory => self.open_memory_panel(),
             SlashCommand::Cron => self.open_cron_panel(),
             SlashCommand::CronNew => self.schedule_in_session(),
+            SlashCommand::Webhooks => self.open_webhook_panel(),
+            SlashCommand::WebhooksNew => self.webhook_for_session(),
             SlashCommand::Project => self.open_project_picker(),
             SlashCommand::Runtime => {
                 if self.new_session_draft.is_some() {

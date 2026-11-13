@@ -23,6 +23,7 @@ mod machines;
 pub(in crate::ui) mod memory_panel;
 pub(in crate::ui) mod onboarding;
 mod pickers;
+pub(in crate::ui) mod webhook_panel;
 pub(in crate::ui) use pickers::layer_label;
 mod plugins;
 mod pointer;
@@ -195,6 +196,8 @@ pub(super) enum Modal {
     Memory,
     /// `/cron`: the daemon's cron jobs.
     Cron,
+    /// `/webhooks`: the daemon's webhooks.
+    Webhooks,
     /// `/project` or the bottom bar's project: the project picker.
     Projects,
     /// `/options`: the session's ACP agent options, then the values of
@@ -574,6 +577,13 @@ pub(super) enum PointerTarget {
     /// A `/cron` job detail naming a session: its target or the session
     /// that created it, which a click shows.
     CronSession(SessionId),
+    /// A `/webhooks` panel row (selects it), an action it offers, a
+    /// detail naming a session, and an event of the selected webhook's
+    /// history (opens its request).
+    WebhookRow(usize),
+    WebhookAction(webhook_panel::WebhookAction),
+    WebhookSession(SessionId),
+    WebhookEvent(usize),
     /// A button of the onboarding notice.
     OnboardingNotice(onboarding::OnboardingAction),
     /// An onboarding panel step tab, and an action the panel offers.
@@ -685,6 +695,8 @@ pub(super) struct UiHitMap {
     pub(super) memory: memory_panel::MemoryHits,
     /// The `/cron` panel's rows and actions.
     pub(super) cron: cron_panel::CronHits,
+    /// The `/webhooks` panel's rows, actions, links, and events.
+    pub(super) webhooks: webhook_panel::WebhookHits,
     /// The onboarding notice's buttons and the panel's tabs, kit rows, and
     /// actions.
     pub(super) onboarding: onboarding::OnboardingHits,
@@ -744,6 +756,7 @@ impl UiHitMap {
         self.runtimes = crate::ui::management::RuntimeHits::default();
         self.memory = memory_panel::MemoryHits::default();
         self.cron = cron_panel::CronHits::default();
+        self.webhooks = webhook_panel::WebhookHits::default();
         self.onboarding = onboarding::OnboardingHits::default();
         self.title_segments.clear();
         self.queue_entries.clear();
@@ -1012,6 +1025,9 @@ pub struct App {
     pub(in crate::ui) onboarding: onboarding::OnboardingState,
     /// A cron job form the event loop opens in the editor next.
     pub(super) pending_cron_editor: Option<cron_panel::CronEditRequest>,
+    pub(super) webhook_panel: webhook_panel::WebhookPanelState,
+    /// A webhook form the event loop opens in the editor next.
+    pub(super) pending_webhook_editor: Option<webhook_panel::WebhookEditRequest>,
     /// Ctrl+Z asked the event loop to suspend the TUI (Unix job control).
     pub(super) pending_suspend: bool,
     pub(super) goal_focus: Option<GoalBarAction>,
@@ -1421,6 +1437,26 @@ pub(in crate::ui) enum RpcUpdate {
     /// to tell the user either way.
     CronChanged {
         result: Result<String, String>,
+    },
+    WebhooksListed {
+        result: Result<cookie_agent_protocol::WebhooksListResult, String>,
+    },
+    /// A webhook form was created or saved (with the secret a create
+    /// made), or why the daemon refused it.
+    WebhookSaved {
+        request: Box<webhook_panel::WebhookEditRequest>,
+        result: Box<Result<(cookie_agent_protocol::Webhook, Option<String>), String>>,
+    },
+    /// A change of one webhook finished: the status line, and a secret
+    /// (with the webhook's title) to show when it made or read one.
+    WebhookChanged {
+        result: Result<(String, Option<(String, String)>), String>,
+    },
+    /// `webhooks.event` answered for the event at `index` of `webhook`.
+    WebhookEventRead {
+        webhook: cookie_agent_protocol::WebhookId,
+        index: usize,
+        result: Box<Result<cookie_agent_protocol::WebhookEventResult, String>>,
     },
     /// `config.apply` answered for `path`; `edit` is the edit it carried.
     ConfigApplied {
@@ -1845,6 +1881,8 @@ impl App {
             cron_panel: cron_panel::CronPanelState::default(),
             onboarding: onboarding::OnboardingState::default(),
             pending_cron_editor: None,
+            webhook_panel: webhook_panel::WebhookPanelState::default(),
+            pending_webhook_editor: None,
             pending_suspend: false,
             goal_focus: None,
             picker_state: ListState::default().with_selected(Some(0)),
@@ -2424,17 +2462,19 @@ async fn event_loop(
         if let Some(reconnected) = app.deliveries.take() {
             deliveries = reconnected;
         }
-        // `/config`, `/memory`, and `/cron` edit a document in an external editor: the
+        // `/config`, `/memory`, `/cron`, and `/webhooks` edit a document in an external editor: the
         // terminal and its input belong to the editor until it exits.
         let editing = match (
             app.pending_editor.take(),
             app.pending_memory_editor.take(),
             app.pending_cron_editor.take(),
+            app.pending_webhook_editor.take(),
         ) {
-            (Some(request), _, _) => Some(EditorJob::Config(request)),
-            (None, Some(request), _) => Some(EditorJob::Memory(request)),
-            (None, None, Some(request)) => Some(EditorJob::Cron(Box::new(request))),
-            (None, None, None) => None,
+            (Some(request), _, _, _) => Some(EditorJob::Config(request)),
+            (None, Some(request), _, _) => Some(EditorJob::Memory(request)),
+            (None, None, Some(request), _) => Some(EditorJob::Cron(Box::new(request))),
+            (None, None, None, Some(request)) => Some(EditorJob::Webhook(Box::new(request))),
+            (None, None, None, None) => None,
         };
         if let Some(job) = editing {
             drop(events);
@@ -2449,6 +2489,9 @@ async fn event_loop(
                 EditorJob::Cron(request) => {
                     edit_blocking(|| config_panel::run_editor("cron-job.md", &request.text))
                 }
+                EditorJob::Webhook(request) => {
+                    edit_blocking(|| config_panel::run_editor("webhook.md", &request.text))
+                }
             };
             let resumed = resume_terminal().context("resume the terminal");
             // Clear before the event stream reads stdin again, so it cannot
@@ -2461,6 +2504,7 @@ async fn event_loop(
                 EditorJob::Config(request) => app.finish_config_edit(request, edited),
                 EditorJob::Memory(request) => app.finish_memory_edit(request, edited),
                 EditorJob::Cron(request) => app.finish_cron_edit(*request, edited),
+                EditorJob::Webhook(request) => app.finish_webhook_edit(*request, edited),
             }
             render.mark_immediate();
         }
@@ -2639,6 +2683,7 @@ enum EditorJob {
     Config(config_panel::EditorRequest),
     Memory(memory_panel::MemoryEditRequest),
     Cron(Box<cron_panel::CronEditRequest>),
+    Webhook(Box<webhook_panel::WebhookEditRequest>),
 }
 
 /// Runs the editor, letting the runtime's other work go on meanwhile when it

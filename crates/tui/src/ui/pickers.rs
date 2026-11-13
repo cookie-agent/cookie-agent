@@ -226,10 +226,13 @@ pub(crate) fn session_search_rows<'a>(
                     )
                 })
                 .unwrap_or_default();
-        // A session a cron job started leads with a clock, a pinned one
+        // A session a cron job started leads with a clock (one a webhook
+        // started with a bolt), a pinned one
         // with a pin before it, and an unread one with a dot before that.
         let cron = if session.cron.is_some() {
             format!("{} ", crate::ui::app::cron_panel::CRON_RUN_MARK)
+        } else if session.webhook.is_some() {
+            format!("{} ", crate::ui::app::webhook_panel::WEBHOOK_RUN_MARK)
         } else {
             String::new()
         };

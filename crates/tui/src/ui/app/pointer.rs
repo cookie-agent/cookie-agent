@@ -250,6 +250,23 @@ impl App {
                     .find(|(rect, _)| over(*rect))
                     .map(|(_, index)| PointerTarget::CronRow(*index));
             }
+            Modal::Webhooks => {
+                let hooks = &hits.webhooks;
+                if let Some((_, action)) = hooks.actions.iter().find(|(rect, _)| over(*rect)) {
+                    return Some(PointerTarget::WebhookAction(*action));
+                }
+                if let Some((_, session)) = hooks.sessions.iter().find(|(rect, _)| over(*rect)) {
+                    return Some(PointerTarget::WebhookSession(*session));
+                }
+                if let Some((_, index)) = hooks.events.iter().find(|(rect, _)| over(*rect)) {
+                    return Some(PointerTarget::WebhookEvent(*index));
+                }
+                return hooks
+                    .rows
+                    .iter()
+                    .find(|(rect, _)| over(*rect))
+                    .map(|(_, index)| PointerTarget::WebhookRow(*index));
+            }
             Modal::Memory => {
                 let memory = &hits.memory;
                 if let Some((_, action)) = memory.actions.iter().find(|(rect, _)| over(*rect)) {
@@ -438,6 +455,10 @@ impl App {
             PointerTarget::CronRow(index) => self.cron_panel.selection.select(Some(index)),
             PointerTarget::CronAction(action) => self.activate_cron_action(action),
             PointerTarget::CronSession(session) => self.open_cron_session(session).await,
+            PointerTarget::WebhookRow(index) => self.webhook_panel.selection.select(Some(index)),
+            PointerTarget::WebhookAction(action) => self.activate_webhook_action(action),
+            PointerTarget::WebhookSession(session) => self.open_webhook_session(session).await,
+            PointerTarget::WebhookEvent(index) => self.open_webhook_event(index),
             PointerTarget::OnboardingNotice(action) | PointerTarget::OnboardingAction(action) => {
                 self.activate_onboarding_action(action);
             }
@@ -803,6 +824,30 @@ impl App {
             PointerTarget::CronAction(action) => (
                 one(hits
                     .cron
+                    .actions
+                    .iter()
+                    .find(|(_, candidate)| *candidate == action)
+                    .map(|(rect, _)| *rect)),
+                fill_style,
+            ),
+            PointerTarget::WebhookRow(index) => {
+                (one(indexed_rect(&hits.webhooks.rows, index)), text_style)
+            }
+            PointerTarget::WebhookEvent(index) => {
+                (one(indexed_rect(&hits.webhooks.events, index)), text_style)
+            }
+            PointerTarget::WebhookSession(session) => (
+                one(hits
+                    .webhooks
+                    .sessions
+                    .iter()
+                    .find(|(_, candidate)| *candidate == session)
+                    .map(|(rect, _)| *rect)),
+                text_style,
+            ),
+            PointerTarget::WebhookAction(action) => (
+                one(hits
+                    .webhooks
                     .actions
                     .iter()
                     .find(|(_, candidate)| *candidate == action)
