@@ -79,7 +79,7 @@ pub use projects::{EditorFields, ProjectEditor};
 pub use provider_sign_in::{PASTE_BACK_STEPS, ProviderSignIn, page_on_loopback};
 pub use selection::{PickState, Picked};
 pub use shares::ShareDialog;
-pub use webhook::{WebhookEventOpen, WebhookForm, WebhookRevealed};
+pub use webhook::{WebhookEventOpen, WebhookForm, WebhookRevealed, WebhookTab};
 
 /// How long usage events settle before the status bar's cost is read again.
 const COST_DEBOUNCE: Duration = Duration::from_millis(250);
@@ -445,8 +445,11 @@ pub struct Workspace {
     pub has_webhooks: RwSignal<bool>,
     /// `webhooks.list`: read on connect and on every `webhooks.changed`.
     pub webhooks: RwSignal<Option<Result<cookie_agent_protocol::WebhooksListResult, String>>>,
-    /// The webhook the Webhooks view shows the details of.
+    /// The webhook the Webhooks view shows on its page
+    /// (docs/site/specs/webhooks-view.md, H2).
     pub webhook_selected: RwSignal<Option<cookie_agent_protocol::WebhookId>>,
+    /// The open webhook's tab.
+    pub webhook_tab: RwSignal<WebhookTab>,
     /// The webhook form, while it is open.
     pub webhook_form: RwSignal<Option<WebhookForm>>,
     /// Why the form was not sent, or a webhook action failed.
@@ -775,6 +778,7 @@ impl Workspace {
             has_webhooks: RwSignal::new(false),
             webhooks: RwSignal::new(None),
             webhook_selected: RwSignal::new(None),
+            webhook_tab: RwSignal::new(WebhookTab::Setup),
             webhook_form: RwSignal::new(None),
             webhook_error: RwSignal::new(None),
             webhook_revealed: RwSignal::new(None),

@@ -189,6 +189,9 @@ pub enum Layer {
     View,
     /// A phone's Settings section, opened from the section list.
     Section,
+    /// An item open on a page of its own under its view's list, where its
+    /// editor opens over it: an open webhook.
+    Item,
     /// A document, memory, or cron job open in its editor.
     Editor,
     /// The sidebar shown as the page below desktop widths, in place of
@@ -473,7 +476,7 @@ mod tests {
 
     #[test]
     fn back_closes_the_innermost_layer_and_returns_to_the_conversation() {
-        use Layer::{Editor, Panel, Section, Sidebar, View as Away};
+        use Layer::{Editor, Item, Panel, Section, Sidebar, View as Away};
         // A sheet over a view's open item: Back closes the sheet, then the
         // item, then leaves the view for the conversation.
         let open = [Away, Editor, Panel];
@@ -484,9 +487,19 @@ mod tests {
         // Choosing another view from the sidebar shown as the page keeps
         // one entry for being away from the conversation.
         assert_eq!(reconcile(&[Away, Sidebar], &[Away]), HistoryStep::Back(1));
+        // An item's editor over its page: Back closes the editor, then the
+        // page.
+        assert_eq!(
+            reconcile(&[Away, Item], &[Away, Item, Editor]),
+            HistoryStep::Push(vec![Editor])
+        );
+        assert_eq!(
+            reconcile(&[Away, Item, Editor], &[Away, Item]),
+            HistoryStep::Back(1)
+        );
         // Choosing an item of a page list opens a detail Back closes, back
         // to the list.
-        for detail in [Section, Editor] {
+        for detail in [Section, Item, Editor] {
             assert_eq!(
                 reconcile(&[Away], &[Away, detail]),
                 HistoryStep::Push(vec![detail])

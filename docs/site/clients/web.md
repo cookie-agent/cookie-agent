@@ -1151,7 +1151,12 @@ changes (`crons.changed`), from any client or agent.
     thread the next fire goes to, and a **Thread prompt**, sent as your
     message when a thread's session starts and again after each
     compaction. A job with a thread key also has a **Delivery**, for the
-    fires that go into a thread's session.
+    fires that go into a thread's session;
+  - a new-session job's **Session title**, what its sessions are called
+    in place of the job's name (the thread key or the time still follows
+    it), and **Let the model name each session after its first turn**,
+    which leaves them to the [automatic title](../engine/session_title.md)
+    instead.
 
   The daemon checks the job when it is saved and says what it refused
   under the form.
@@ -1164,43 +1169,82 @@ changes (`crons.changed`), from any client or agent.
 webhook**. The view reads `webhooks.list` again whenever a webhook changes
 (`webhooks.changed`), from any client or agent.
 
-- **The list.** Each webhook shows its name (or `Webhook <id>`), its state
-  (`enabled`, `failed 3 times in a row`, `disabled by you`), a switch to
-  turn it on or off, its target (the session's title, `subagent <title>`,
-  or `new session · <agent>`, with its project and thread key), its check
-  (`URL only`, `GitHub signature`, …), and the requests it has had
-  (`12 accepted · 3 filtered`). A banner says when receiving is off
-  (`[webhooks] enabled = false`).
-- **A webhook.** Click a webhook for its **URL** with a copy button (built
-  on the daemon's [`[public] url`](../engine/public.md), else the address
-  the page reached the daemon at, with a note when that address works only
-  where the page can be reached), its details (target, check, delivery, a
-  new-session webhook's agent, model, project, thread key, and threads,
-  filter, headers, limits, failures, who made it; the target is a link to
-  its transcript), its thread prompt and prompt, and its events, newest
-  first: when, what the event did (`delivered · completed`, `waiting`,
-  `failed: …`, `test · …`), its thread, and **Open session**. Click an
-  event for its request: method, headers, and body. Its actions are
-  **Edit**, **Disable** or **Enable**, **Send a test event** (which skips
-  the check, the filter, and the limits), **New URL** and, with a check,
-  **New secret** and **Show secret**, and **Delete**; a new URL or secret
-  and deleting ask first. A right-click on a row offers the same.
-- **Shown once.** Adding a webhook shows its URL, and its secret when it
-  has a check; a new URL or secret is shown the same way, with copy
-  buttons, until you close it.
+- **The list.** Each webhook is a row: an icon for its check (GitHub,
+  Standard Webhooks, a bearer token, or none), its name (or
+  `Webhook <id>`), a tag only for what its switch cannot say (`no check`,
+  `off after 5 failures`), where its events go in words (`→ Deploy watch ·
+  queued after the current turn`, the session a link to its transcript, or
+  `→ new sessions · primary · one per issue.number`), and how it is doing:
+  a dot (green: its last event was delivered; amber: a request was refused
+  since; red: its last event failed, or failures turned it off; grey: no
+  events yet), its last event, test events included, and when, and its
+  last refused request with what that means for its check (`the signature
+  didn't match the secret`). Then its switch and a ⋯ with **Edit**, **Send
+  a test event**, **New URL…**, **New secret…** (with a check), and
+  **Delete…**; a right-click offers the same. An amber note above the list
+  says when the URLs work only where the page can be reached, with a link
+  to set [`[public] url`](../engine/public.md); a banner says when
+  receiving is off (`[webhooks] enabled = false`).
+- **A webhook's page.** Click a row to open the webhook on a page of its
+  own; Back returns to the list. Its head shows its check and target under
+  its name, its switch, and its ⋯; under it, **Send a test event** and
+  **Copy URL**. New URL, New secret, and Delete ask there first. Three
+  tabs:
+  - **Setup**: the **URL** and the **Secret** (masked; **Show**, **Hide**,
+    and **Copy**), what to do at the sender for the check's preset (for
+    GitHub: Settings › Webhooks › Add webhook, the content type, the
+    events), and **What happens**: where each event goes, what a new
+    session is told first, what its sessions are called, and what comes
+    with every event.
+  - **Events**: counters for the requests delivered, rejected, filtered,
+    and rate-limited (and duplicates and a full backlog once there are
+    any), each with its status, its last time, and what it means; refused
+    and filtered requests are counted, not kept. Then each event, newest
+    first: a dot, what it did (`Delivered · completed`, `Waiting`,
+    `Failed: …`), a **test** tag, its time and thread, and its session as
+    a link. Click an event for its request: the method and path, the
+    headers as a table, and the body, pretty-printed when it is JSON, with
+    a copy button. Sending a test event opens this tab.
+  - **Rules & limits**: the target, check, delivery, a new-session
+    webhook's agent, model, project, thread key, and session title, the
+    filter, headers, limits, failures, and who made it, then the prompt
+    sent when a session starts and with every event, and **Edit**.
+- **Ready.** A new webhook's page opens on a card with its URL and, with a
+  check, its secret, each with a copy button, what to do at the sender,
+  and **Send a test event**; it stays until **Done** or you leave the
+  page. **Show** brings the secret back later.
 - **The form.** **New webhook** in the view, or **Add a webhook** in the ⋮
-  menu (for the open session), opens it: **Name**; **Target**, when
-  adding: the open session (or subagent), or **New sessions**, with their
-  **Agent**, **Model**, **Permission mode**, **Sessions at once**,
-  **Thread key** (`json:/issue/number` or `header:X-Thread`), and **Thread
-  prompt**; the **Prompt** sent with every event; **Delivery** for a
-  session, or for a new-session webhook with a thread key; the **Check**
-  (`github`, `standard`, `bearer`, or `hmac_sha256 header=…`) and its
-  **Secret** (blank to have the daemon make one); the **Filter**, one
-  condition per line; the **Headers shown** to the model; **Events per
-  hour**; and **Failures before off**. A blank limit takes the daemon's
-  default. The daemon checks the form when it is saved and says what it
-  refused under it.
+  menu (for the open session), opens it. A new webhook **Starts from**
+  **GitHub** (its signature, `issues` and `issue_comment` events, one
+  session per issue, the title `Issues`), **Standard Webhooks** (Svix and
+  other senders that sign that way), **Bearer token**, or **Anything** (no
+  check); a preset only fills fields, which stay editable. Then:
+  1. **Name and target**: the **Name**; **Deliver into** the open session
+     (or subagent) or **New sessions**, with their **Agent, model, mode**,
+     **One session per** a JSON field, a header, or each event, and the
+     **Session title**: what the sessions are called in place of the
+     webhook's name, the thread key or the time still following it, with a
+     line showing how they read, and **Let the model name it after its
+     first turn**, which leaves them to the
+     [automatic title](../engine/session_title.md) instead. Nothing in a title
+     is read from requests.
+  2. **What the agent is told**: **When a session starts** (the thread
+     prompt) and **With every event** (the prompt).
+  3. **Who may send it**: the **Check** (none, GitHub signature, Standard
+     Webhooks, bearer token, or custom HMAC-SHA256 with its header,
+     encoding, and prefix) and its **Secret**, which cookie makes unless
+     you choose **Use my own…**.
+  4. **Which requests count**: conditions, each a header or JSON field,
+     its name, and its values as chips (type one and press Enter); every
+     condition must match. **Edit as text** shows them as the lines
+     `cookie webhook --filter` takes.
+  5. **Advanced**, folded: **Delivery** for a session, or for a
+     new-session webhook with a thread key; the **Headers the agent sees**;
+     **Events per hour**; **Sessions at once**; and **Failures before
+     off**. A blank limit takes the daemon's default.
+
+  The daemon checks the form when it is saved and says what it refused
+  under it.
 - **In the session list,** a session a webhook started shows the webhook's
   mark before its title; a click opens its webhook. In a transcript, a
   [thread prompt](../sessions/webhooks.md) shows `from webhook <name>` (or

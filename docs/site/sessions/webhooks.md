@@ -121,6 +121,22 @@ Cron jobs have threads too, keyed by the time of the fire: see
 Instructions that must hold in every request whatever happens belong in the
 agent's own document: its system prompt is never compacted.
 
+### Session titles
+
+A session a webhook starts is titled `<webhook name> · <thread key>`, or
+`<webhook name> · <time it arrived>` without one, and the automatic title
+never replaces it.
+
+- **`--title`** names the sessions instead of the webhook's name, as plain
+  text of at most 96 characters without control characters: with
+  `--title "Shop issues"`, issue 42's session is `Shop issues · 42`. Nothing
+  in it is read from requests; you or the agent give it when the webhook is
+  created or edited.
+- **`--title-auto`** leaves each session untitled, as a session you start
+  is, so the [automatic title](../engine/session_title.md) names it after
+  its first turn. With `[session_title] generate_on_first_turn` off, it does
+  nothing, and the title above is set as usual.
+
 ### What the agent sees
 
 ```text
@@ -274,10 +290,12 @@ a remote daemon.
 ### Terminal UI and web
 
 The [web client](../clients/web.md#webhooks) has a **Webhooks** view in
-its sidebar: each webhook's URL to copy, its details and events (each
-opening to its request), and its actions, including test events and a new
-URL or secret; the session ⋮ menu's **Add a webhook** adds one for the open
-session. The [terminal UI](../clients/tui.md#webhooks) has a `/webhooks`
+its sidebar: each webhook as a row saying where its events go and how it is
+doing, and opened, a page with its setup (the URL, the secret, and what to
+do at the sender), its events (each opening to its request), and its rules;
+a form that starts from GitHub, Standard Webhooks, a bearer token, or
+anything; and the session ⋮ menu's **Add a webhook**, which adds one for the
+open session. The [terminal UI](../clients/tui.md#webhooks) has a `/webhooks`
 panel.
 
 ### Deleting

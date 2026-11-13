@@ -161,7 +161,10 @@ impl Workspace {
                 self.memory_edit.with(Option::is_none) && self.memory_pending.with(Option::is_none)
             }
             View::Cron => self.cron_form.with(Option::is_none),
-            View::Webhooks => self.webhook_form.with(Option::is_none),
+            View::Webhooks => {
+                self.webhook_form.with(Option::is_none)
+                    && self.webhook_selected.with(Option::is_none)
+            }
             View::Assets => self.asset_page.with(Option::is_none),
             View::Skills | View::Mcp | View::Machines | View::Sharing => true,
         }
@@ -176,6 +179,9 @@ impl Workspace {
         }
         if view == View::Settings && self.narrow.get() && self.settings_section.get().is_some() {
             layers.push(Layer::Section);
+        }
+        if view == View::Webhooks && self.webhook_selected.with(Option::is_some) {
+            layers.push(Layer::Item);
         }
         let editing = match view {
             View::Agents => self.config_edit.with(Option::is_some),
@@ -264,6 +270,11 @@ impl Workspace {
             Layer::Panel => self.close_panel(),
             Layer::Sidebar => self.sidebar_open.set(false),
             Layer::Section => self.settings_section.set(None),
+            Layer::Item => {
+                self.webhook_selected.set(None);
+                self.webhook_event.set(None);
+                self.webhook_revealed.set(None);
+            }
             Layer::Editor => {
                 self.config_edit.set(None);
                 self.config_error.set(None);

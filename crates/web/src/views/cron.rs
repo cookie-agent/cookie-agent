@@ -454,6 +454,8 @@ fn cron_form(workspace: Workspace, form: CronForm) -> impl IntoView {
     let mode = RwSignal::new(draft.permission_mode);
     let thread_key = RwSignal::new(draft.thread_key.clone());
     let thread_prompt = RwSignal::new(draft.thread_prompt.clone());
+    let title = RwSignal::new(draft.title.clone());
+    let title_auto = RwSignal::new(draft.title_auto);
     let creating = editing.is_none();
     // A new-session job with a thread key: its later fires take a delivery.
     let threaded = move || new.get() && !thread_key.with(|key| key.trim().is_empty());
@@ -520,6 +522,12 @@ fn cron_form(workspace: Workspace, form: CronForm) -> impl IntoView {
                 agent: agent.get_untracked(),
                 thread_key: thread_key.get_untracked(),
                 thread_prompt: thread_prompt.get_untracked(),
+                title: if new.get_untracked() {
+                    title.get_untracked()
+                } else {
+                    String::new()
+                },
+                title_auto: new.get_untracked() && title_auto.get_untracked(),
                 ..draft.clone()
             };
             if creating {
@@ -738,6 +746,32 @@ fn cron_form(workspace: Workspace, form: CronForm) -> impl IntoView {
                         on:input=move |event| thread_prompt.set(event_target_value(&event))
                     ></textarea>
                 </label>
+                // What the sessions are called (docs/site/specs/webhooks-view.md
+                // section 6).
+                <label class=LABEL>
+                    <span class="font-bold">"Session title"</span>
+                    <input
+                        type="text"
+                        id="cron-title"
+                        class=FIELD
+                        maxlength="96"
+                        placeholder="the job's name when empty; the thread key or the time follows it"
+                        class:opacity-60=move || title_auto.get()
+                        prop:value=move || title.get()
+                        on:input=move |event| title.set(event_target_value(&event))
+                    />
+                </label>
+                <button
+                    type="button"
+                    role="switch"
+                    id="cron-title-auto"
+                    class="inline-flex min-h-11 w-fit items-center gap-2 rounded-lg pr-2 text-[0.8125rem] text-fg-2 hover:text-fg lg:min-h-8"
+                    aria-checked=move || title_auto.get().to_string()
+                    on:click=move |_| title_auto.update(|auto| *auto = !*auto)
+                >
+                    <span class="effort-switch" class:effort-switch-on=move || title_auto.get() aria-hidden="true"></span>
+                    "Let the model name each session after its first turn"
+                </button>
             </Show>
             {move || workspace.cron_error.get().map(|error| view! { <p class=ERROR id="cron-error">{error}</p> })}
             <div class=EDITOR_ACTIONS>

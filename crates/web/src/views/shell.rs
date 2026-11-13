@@ -102,7 +102,7 @@ pub fn PageView(workspace: Workspace, connection: Connection) -> impl IntoView {
         let depth = workspace
             .open_layers()
             .iter()
-            .filter(|layer| matches!(layer, Layer::Section | Layer::Editor))
+            .filter(|layer| matches!(layer, Layer::Section | Layer::Item | Layer::Editor))
             .count();
         depth > usize::from(workspace.narrow.get())
     };

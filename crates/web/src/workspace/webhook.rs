@@ -39,6 +39,19 @@ pub struct WebhookRevealed {
     pub secret: Option<String>,
     /// Whether the URL is new (a create, or a rotated URL).
     pub new_url: bool,
+    /// Whether the webhook was just made: its page opens on the ready card
+    /// (docs/site/specs/webhooks-view.md, H5).
+    pub created: bool,
+}
+
+/// An open webhook's tabs (docs/site/specs/webhooks-view.md, H2).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WebhookTab {
+    /// The URL, the secret, the sender's steps, and what happens.
+    Setup,
+    Events,
+    /// The filter, headers, delivery, limits, and titles.
+    Rules,
 }
 
 /// An event open in the view: which, and its request once read.
@@ -70,18 +83,43 @@ impl Workspace {
         });
     }
 
-    /// Opening the view: the list, with no form open.
+    /// Opening the view: the list, with no webhook or form open.
     pub(super) fn open_webhooks(self) {
         self.webhook_form.set(None);
+        self.webhook_selected.set(None);
+        self.webhook_revealed.set(None);
         self.webhook_error.set(None);
         self.webhook_event.set(None);
         self.poll_webhooks();
     }
 
-    /// Opens the view at webhook `id`: a webhook session's mark.
+    /// Opens the view at webhook `id`'s page: a webhook session's mark.
     pub fn open_webhook(self, id: WebhookId) {
-        self.open_view(View::Webhooks, None);
+        if self.view.get_untracked() != View::Webhooks {
+            self.open_view(View::Webhooks, None);
+        }
+        self.show_webhook(id);
+    }
+
+    /// Shows webhook `id`'s page, on its first tab.
+    pub fn show_webhook(self, id: WebhookId) {
+        self.webhook_event.set(None);
+        if self
+            .webhook_revealed
+            .with_untracked(|shown| shown.as_ref().is_some_and(|shown| shown.webhook != id))
+        {
+            self.webhook_revealed.set(None);
+        }
+        self.webhook_tab.set(WebhookTab::Setup);
         self.webhook_selected.set(Some(id));
+    }
+
+    /// The webhook whose page is open, while it is listed.
+    pub fn shown_webhook(self) -> Option<Webhook> {
+        let id = self.webhook_selected.get()?;
+        self.webhook_list()
+            .into_iter()
+            .find(|webhook| webhook.id == id)
     }
 
     /// The webhooks listed, if they are.
@@ -258,13 +296,14 @@ impl Workspace {
                 Ok(result) => {
                     let title = webhook_title(&result.webhook);
                     self.status.set(format!("{verb} {title}."));
-                    self.webhook_selected.set(Some(result.webhook.id.clone()));
+                    self.show_webhook(result.webhook.id.clone());
                     if created || result.secret.is_some() {
                         self.webhook_revealed.set(Some(WebhookRevealed {
                             webhook: result.webhook.id.clone(),
                             title,
                             secret: result.secret,
                             new_url: created,
+                            created,
                         }));
                     }
                     self.webhook_form.set(None);
@@ -319,6 +358,10 @@ impl Workspace {
                         webhook_title(&result.webhook)
                     ));
                     self.webhook_error.set(None);
+                    // Its page shows the event come in.
+                    if self.webhook_selected.get_untracked() == Some(result.webhook.id.clone()) {
+                        self.webhook_tab.set(WebhookTab::Events);
+                    }
                     self.poll_webhooks();
                 }
                 Err(error) => self
@@ -346,6 +389,7 @@ impl Workspace {
                         title,
                         secret: result.secret,
                         new_url: what == WebhookRotate::Url,
+                        created: false,
                     }));
                     self.webhook_error.set(None);
                     self.poll_webhooks();
@@ -372,6 +416,7 @@ impl Workspace {
                             title,
                             secret: Some(secret),
                             new_url: false,
+                            created: false,
                         })),
                         None => self.status.set(format!("{title} has no secret.")),
                     }
@@ -380,6 +425,43 @@ impl Workspace {
                     .webhook_error
                     .set(Some(crate::errors::describe(&error))),
             }
+        });
+    }
+
+    /// Copies webhook `id`'s secret: the one shown, else read from the
+    /// daemon.
+    pub fn copy_webhook_secret(self, id: WebhookId) {
+        let shown = self.webhook_revealed.with_untracked(|shown| {
+            shown
+                .as_ref()
+                .filter(|shown| shown.webhook == id)
+                .and_then(|shown| shown.secret.clone())
+        });
+        let Some(client) = self.client() else {
+            return;
+        };
+        spawn_local(async move {
+            let secret = match shown {
+                Some(secret) => Some(secret),
+                None => match client.webhook_secret(id).await {
+                    Ok(result) => result.secret,
+                    Err(error) => {
+                        self.webhook_error
+                            .set(Some(crate::errors::describe(&error)));
+                        return;
+                    }
+                },
+            };
+            let Some(secret) = secret else {
+                self.status.set("This webhook has no secret.".to_owned());
+                return;
+            };
+            let done = crate::browser::copy_text(&secret).await;
+            self.status.set(if done {
+                "Secret copied.".to_owned()
+            } else {
+                "This browser does not let the page copy; use Show and select it.".to_owned()
+            });
         });
     }
 

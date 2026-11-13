@@ -66,6 +66,7 @@ pub mod unread;
 pub mod uploads;
 pub mod usage;
 pub mod webhook;
+pub mod webhook_view;
 
 pub use reduce::approval_state_from_record;
 use reduce::*;

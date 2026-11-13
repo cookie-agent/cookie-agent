@@ -66,6 +66,7 @@ mod shell;
 mod sidebar;
 mod skills;
 mod tool_groups;
+mod webhook_form;
 mod webhooks;
 
 pub(crate) use assets::AssetDialogs;

@@ -1,7 +1,8 @@
 # The Webhooks view, polished, and titles for the sessions webhooks start
 
-Status: **approved** (2026-11-13), being implemented in the phases of
-[section 9](#9-phases). The user's decisions are in
+Status: **implemented** (2026-11-13) in the phases of
+[section 9](#9-phases); [section 10](#10-implementation-notes) says where it
+differs from the draft. The user's decisions are in
 [section 2](#2-decisions); [section 3](#3-questions) lists the questions
 the draft raised, each answered as it assumed. The
 [preview](webhooks-view/preview.html) shows every change to the view
@@ -38,8 +39,9 @@ public listener.
 
 - **D1, every proposal of the preview** (W1–W5, H1–H6), an open webhook
   included as a page of its own (H2).
-- **D2, presets are the web client's.** GitHub, Stripe, Bearer token, and
-  Anything fill the form's fields; neither the protocol, the daemon, nor
+- **D2, presets are the web client's.** GitHub, Standard Webhooks (in
+  place of the draft's Stripe, [section 10](#10-implementation-notes)),
+  Bearer token, and Anything fill the form's fields; neither the protocol, the daemon, nor
   `cookie webhook` learns them.
 - **D3, a title field, set when the webhook is made.** The user, in every
   client, and an agent, through `webhook_create` and `webhook_update`, give
@@ -106,8 +108,8 @@ The user took every assumed answer on 2026-11-13.
   its request reads as the method and path, the headers as a table, and
   the body as pretty-printed JSON (as received when it is not JSON; its
   size when binary), with Copy.
-- **H4, the form.** **Start from** GitHub, Stripe, Bearer token, or
-  Anything (D2), which fill the check, filter, thread key, headers shown,
+- **H4, the form.** **Start from** GitHub, Standard Webhooks, Bearer
+  token, or Anything (D2), which fill the check, filter, thread key, headers shown,
   and title. Four steps, then Advanced:
   1. **Name and target**: name; *a session* or *new sessions*; agent,
      model, and mode chips; **one session per**: a JSON field, a header,
@@ -165,8 +167,8 @@ automatic title never replaces it.
 - **Cron (Q3).** A new-session cron job's template takes the same `title`
   and `title_auto`, with the job's label giving way to it as the webhook's
   name does.
-- **Presets** suggest a title the user edits: GitHub `Issues`, Stripe
-  `Payments`; the others none.
+- **Presets** suggest a title the user edits: GitHub `Issues`; the others
+  none.
 
 ## 7. What does not change
 
@@ -197,3 +199,26 @@ titles once created (a rename by the user still wins).
    web form; cron's.
 5. **Phone and docs**: H6; the webhooks guide, the web and TUI client
    pages, and the configuration and tool references.
+
+## 10. Implementation notes
+
+- **Standard Webhooks, not Stripe.** The draft's Stripe preset filled the
+  Standard Webhooks check, but Stripe signs with its own `Stripe-Signature`
+  scheme, which [the webhooks spec](webhooks.md#1-goal-and-scope) leaves
+  out, so every Stripe request would have been refused. The preset is
+  Standard Webhooks (Svix and the senders that sign as it does) and
+  suggests no title.
+- **Where the logic lives.** What the view reads from a webhook (its
+  target in words, tags, health line, counters, what happens, the presets,
+  "one session per", and the filter as conditions) is
+  `cookie_agent_client_state::webhook_view`, unit-tested; the view is
+  `crates/web/src/views/webhooks.rs` and the form `webhook_form.rs`.
+- **The page and Back.** An open webhook is a layer of its own
+  (`Layer::Item`) under the form, so browser Back closes the form, then
+  the page.
+- **Titles.** A template's `title` replaces the owner's label in the
+  session's first title (`run_session_title` in
+  `crates/engine/src/runtime/sessions.rs`); with `title_auto` and
+  generated titles on, the session is created without one. The web cron
+  form gained the same two fields as the webhook form.
+

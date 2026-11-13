@@ -722,6 +722,10 @@ Check for outdated dependencies and open a summary.
   creates and again after each compaction, goes after a `--- thread prompt`
   line below the prompt. **Details** says which thread the next fire goes
   to.
+- `title` (new-session targets) is what the sessions are called in place of
+  the job's name, the thread key or the time still following it; empty for
+  the name. `title_auto: yes` leaves each session to the
+  [automatic title](../engine/session_title.md) instead.
 
 A new-session job's template starts from the session on screen: its agent
 and preset (the agent you picked for its next run), its project, and the
@@ -789,6 +793,8 @@ agent: builder
 model:
 permission_mode:
 thread_key: json:/issue/number
+title: Shop issues
+title_auto: no
 check: github
 secret:
 filter: header:X-GitHub-Event=issues,issue_comment
@@ -810,6 +816,10 @@ You look after one GitHub issue. Keep its labels right.
 - `filter` may repeat; every line must match an event.
 - `thread_key` is `json:/pointer` or `header:Name`: events with the same key
   share a session, and later ones go into it with `delivery`.
+- `title` is what the sessions are called, at most 96 characters, followed
+  by ` · ` and the thread key or the arrival time (`Shop issues · 42`);
+  empty for the webhook's name. `title_auto: yes` lets the model name each
+  session after its first turn instead.
 - Limits left empty take the daemon's defaults; 0 or less means no limit.
 
 A new-session webhook's template starts from the session on screen, as a

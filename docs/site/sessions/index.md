@@ -140,7 +140,11 @@ Root sessions may generate a title from their opening user messages according to
 the [Session Title](../engine/session_title.md) configuration. A delegated session is titled immediately
 from the `delegate_subagent` description instead. The description is bounded by
 `session_title.max_chars`, and the delegated child does not run the title
-internal agent.
+internal agent. A session a cron job or webhook starts is titled at once,
+from its owner's title or name and the thread key or time, unless its
+template asks for the automatic title (`title_auto`):
+see [webhooks](webhooks.md#session-titles) and
+[scheduling](scheduling.md#session-titles).
 
 ## Revert
 

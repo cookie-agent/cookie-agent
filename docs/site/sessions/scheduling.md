@@ -170,6 +170,16 @@ cookie does not see the agent's own compactions. Clients mark the message as
 coming from the job. Instructions that must hold in every request belong in
 the agent's own document instead.
 
+### Session titles
+
+A new-session job's sessions are titled `<name> · <key>`, or
+`<name> · <time of the fire>` without a thread key. Its **title**
+(`cookie cron create --title`, at most 96 characters of plain text) takes
+the name's place: `--title "Standup"` gives `Standup · 2026-11-13`.
+**`--title-auto`** leaves each session untitled instead, for the
+[automatic title](../engine/session_title.md) to name after its first turn;
+it does nothing while `[session_title] generate_on_first_turn` is off.
+
 ## Firing
 
 ### Skips and missed fires

@@ -3733,11 +3733,23 @@ def webhook_row(name):
     return '#page [data-webhook][data-title="%s"]' % name
 
 
+def choose(browser, selector, value):
+    """Picks `value` in the select `selector`, as a person would."""
+    browser.script(
+        "const e = document.querySelector(arguments[0]); e.value = arguments[1];"
+        "e.dispatchEvent(new Event('change'))",
+        selector,
+        value,
+    )
+
+
 def webhooks(browser):
-    """Webhooks: the ⋮ menu's "Add a webhook" opens the form for the open
-    session; adding one shows its URL once; a test event is delivered into
-    the session and its request opens from the history; a GitHub check's
-    secret is shown once; deleting asks first."""
+    """Webhooks (docs/site/specs/webhooks-view.md): the ⋮ menu's "Add a
+    webhook" opens the form for the open session; a new webhook's page opens
+    on its ready card; a test event shows on the Events tab and its request
+    opens; a check's secret is shown once, then hidden and shown on request;
+    the list's row says how the webhook is doing; deleting from the row's ⋯
+    asks first; a GitHub preset fills a new-session webhook with its title."""
     browser.resize(1280, 900)
     new_session(browser)
     send(browser, "a session for a webhook")
@@ -3755,48 +3767,85 @@ def webhooks(browser):
     set_text(browser, "#webhook-prompt", "Note what arrived.")
     browser.shot("webhook-form")
     browser.click("#webhook-save")
-    hook = webhook_row("E2E hook")
-    browser.wait("the webhook", lambda: count(browser, "#webhook-form") == 0 and count(browser, hook) == 1)
-    browser.wait("its URL, shown once", lambda: "/hooks/" in browser.text("#webhook-revealed-url"))
-    assert count(browser, "#webhook-revealed-secret") == 0, "a URL-only webhook has no secret"
-    text = browser.text(hook)
-    for part in (session_title, "enabled", "URL only", "no requests yet"):
-        assert part in text, (part, text)
-    browser.wait("its details", lambda: count(browser, hook + " [data-webhook-details]") == 1)
-    assert "/hooks/" in browser.text(hook + " #webhook-url")
-    browser.shot("webhooks-view")
-    browser.click("#webhook-revealed-close")
-    print("webhooks: the ⋮ menu adds a webhook for the open session and shows its URL")
+    browser.wait("its page, on the ready card", lambda: count(browser, "#webhook-ready") == 1)
+    assert browser.text("#webhook-page-title").strip() == "E2E hook"
+    assert "/hooks/" in browser.text("#webhook-ready-url")
+    assert count(browser, "#webhook-ready-secret") == 0, "a URL-only webhook has no secret"
+    assert session_title in browser.text("[data-webhook-subtitle]")
+    browser.shot("webhook-ready")
+    browser.click("#webhook-ready-done")
+    browser.wait("the card gone", lambda: count(browser, "#webhook-ready") == 0)
+    assert "/hooks/" in browser.text("#webhook-url")
+    print("webhooks: the ⋮ menu adds a webhook for the open session; its page opens ready")
 
-    # A test event goes into the session; its request opens from the history.
-    browser.click(hook + " [data-webhook-action=test]")
-    browser.wait("the test event", lambda: "test · delivered" in browser.text(hook + " [data-webhook-history]"), timeout=40)
-    event = hook + " [data-webhook-event] button[aria-expanded]"
-    browser.click(event)
-    browser.wait("its request", lambda: '"test"' in browser.text(hook + " [data-webhook-body]"))
-    browser.shot("webhook-event")
-    assert count(browser, hook + " [data-webhook-event-session]") == 1
-    print("webhooks: a test event is delivered, and its request opens")
+    # A test event shows on the Events tab; its request opens.
+    browser.click("[data-webhook-action=test]")
+    browser.wait("the Events tab", lambda: browser.script(
+        "return document.querySelector('[data-webhook-tab=Events]').getAttribute('aria-selected')"
+    ) == "true")
+    browser.wait("the test event", lambda: "Delivered" in browser.text("[data-webhook-history]"), timeout=40)
+    assert count(browser, "[data-webhook-history] [data-webhook-test]") == 1
+    browser.click("[data-webhook-event] button[aria-expanded]")
+    browser.wait("its request", lambda: '"test"' in browser.text("[data-webhook-body]"))
+    assert count(browser, "[data-webhook-event-session]") == 1
+    browser.shot("webhook-events")
+    print("webhooks: a test event shows on its page, and its request opens")
 
-    # A GitHub check: its secret is shown once, then on request.
-    browser.click(hook + " [data-webhook-action=edit]")
+    # A GitHub check: its secret shows once after the save, then hides and
+    # shows on request.
+    browser.click("[data-webhook-tab='Rules & limits']")
+    browser.click("[data-webhook-action=edit]")
     browser.wait("the edit form", lambda: count(browser, "#webhook-form") == 1)
-    set_text(browser, "#webhook-verify", "github")
+    choose(browser, "#webhook-verify", "github")
     browser.click("#webhook-save")
-    browser.wait("the new secret", lambda: len(browser.text("#webhook-revealed-secret").strip()) >= 32)
-    browser.wait("the check", lambda: "GitHub signature" in browser.text(hook))
-    browser.click("#webhook-revealed-close")
-    browser.click(hook + " [data-webhook-action=reveal]")
-    browser.wait("the secret again", lambda: len(browser.text("#webhook-revealed-secret").strip()) >= 32)
-    browser.click("#webhook-revealed-close")
+    browser.wait("the page again", lambda: count(browser, "#webhook-page") == 1)
+    browser.click("[data-webhook-tab=Setup]")
+    shown = lambda: browser.text("#webhook-secret").strip()
+    browser.wait("the new secret", lambda: len(shown()) >= 32 and "•" not in shown())
+    assert "GitHub signature" in browser.text("[data-webhook-subtitle]")
+    browser.click("[data-webhook-action=hide]")
+    browser.wait("the secret hidden", lambda: "•" in shown())
+    browser.click("[data-webhook-action=reveal]")
+    browser.wait("the secret again", lambda: len(shown()) >= 32 and "•" not in shown())
     print("webhooks: a check's secret is shown once, and again on request")
 
-    # Deleting asks, then the row goes.
-    browser.click(hook + " [data-webhook-action=delete]")
-    browser.wait("the confirmation", lambda: count(browser, hook + " [data-webhook-confirm]") == 1)
+    # Back: the list's row says where events go and how it is doing.
+    browser.click("[data-page-back]")
+    hook = webhook_row("E2E hook")
+    browser.wait("the list", lambda: count(browser, hook) == 1)
+    text = browser.text(hook)
+    for part in (session_title, "Last event", "test"):
+        assert part in text, (part, text)
+    assert count(browser, hook + " [data-webhook-tag]") == 0, "a checked, enabled webhook has no tag"
+    browser.shot("webhooks-view")
+    print("webhooks: Back returns to the list, whose row says how the webhook is doing")
+
+    # Deleting from the row's ⋯ asks on its page first.
+    browser.click(hook + " [data-row-menu]")
+    browser.click("[data-row-menu-list] [data-menu-item='delete']")
+    browser.wait("the confirmation", lambda: count(browser, "[data-webhook-confirm]") == 1)
     browser.click("#webhook-confirm")
-    browser.wait("the row gone", lambda: count(browser, hook) == 0)
+    browser.wait("the list without it", lambda: count(browser, "#webhook-page") == 0 and count(browser, hook) == 0)
     print("webhooks: deleting asks first")
+
+    # A GitHub preset: new sessions, a check, a filter, a thread key, and a
+    # title for the sessions.
+    browser.click("#webhook-new")
+    browser.wait("the form", lambda: count(browser, "#webhook-form") == 1)
+    browser.click("#webhook-preset-github")
+    browser.wait("the preset's fields", lambda: browser.script(
+        "return document.querySelector('#webhook-title').value"
+    ) == "Issues")
+    assert count(browser, "[data-webhook-conditions] [data-condition-value]") == 2
+    set_text(browser, "#webhook-name", "Shop issues")
+    set_text(browser, "#webhook-title", "Shop")
+    browser.click("#webhook-save")
+    browser.wait("its ready card, with a secret", lambda: count(browser, "#webhook-ready-secret") == 1)
+    browser.click("#webhook-ready-done")
+    browser.click("[data-webhook-tab='Rules & limits']")
+    assert "Shop · " in browser.text("[data-webhook-detail='session title']")
+    assert "issue" in browser.text("[data-webhook-detail='thread key']")
+    print("webhooks: a GitHub preset fills a new-session webhook, its sessions titled")
 
 
 def deleting(browser):

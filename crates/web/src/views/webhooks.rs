@@ -1,48 +1,56 @@
-//! The Webhooks view (client protocol 1.96.0): every webhook with its
-//! title, state, target, check, and its requests so far; the selected
-//! webhook's URL to copy, details, actions (edit, enable or disable, send
-//! a test event, rotate the URL or secret, reveal the secret, delete), and
-//! its events, each opening to its request; a secret or URL the daemon
-//! returned once; and the webhook form, which the ⋮ menu's "Add a webhook"
-//! opens for the open session.
+//! The Webhooks view (client protocol 1.97.0,
+//! `docs/site/specs/webhooks-view.md`): every webhook as a row with its
+//! target in words and how it is doing (H1); an open webhook as a page of
+//! its own (H2), with its setup, its events (H3), and its rules, and the
+//! ready card a new one opens on (H5); the form is
+//! [`super::webhook_form`].
 
 use cookie_agent_client_state::{
-    cron::delivery_label,
-    session_actions::permission_mode_label,
+    format::relative_time,
+    memory::exact_time,
     webhook::{
-        OutcomeKind, WebhookDraft, WebhookDraftTarget, check_label, counts_summary, detail_lines,
-        event_outcome, event_time, events_newest_first, last_outcome, state_label, target_label,
-        webhook_title,
+        OutcomeKind, check_label, detail_lines, event_outcome, event_time, events_newest_first,
+        outcome_kind, webhook_title,
+    },
+    webhook_view::{
+        Counter, Health, Preset, Tone, counters, health, preset_of, row_tags, target_words,
+        what_happens,
     },
 };
 use cookie_agent_protocol::{
-    PermissionMode, ProducerDeliveryMode, SessionWebhook, Webhook, WebhookEvent, WebhookId,
-    WebhookRotate,
+    SessionId, SessionWebhook, Webhook, WebhookEvent, WebhookId, WebhookRotate, WebhookTarget,
+    WebhookVerify,
 };
+use jiff::Timestamp;
 use leptos::prelude::*;
 
 use super::{
-    BUTTON, ERROR, NOTE, PRIMARY, ROW,
-    cron::{LABEL, LINK, SELECT},
-    empty_state, loading,
-    manage::{CONFIRM, EDITOR_ACTIONS, EDITOR_PAGE, FIELD, STATE},
+    BUTTON, ERROR, ICON_BUTTON, NOTE, PRIMARY, WARNING, empty_state, loading,
+    manage::CONFIRM,
+    row_menu::{MenuItem, context_menu, row_menu, wants_context_menu},
 };
 use crate::{
-    cron::{model_pins, session_name, zone_at},
+    cron::{session_name, zone_at},
     icons::Glyph,
-    modes::MODES,
+    layout::{SettingsSection, View},
     webhook::mark_title,
-    workspace::{WebhookForm, Workspace},
+    workspace::{WebhookTab, Workspace},
 };
-
-/// A text area, as the form's long fields.
-const AREA: &str = "min-h-[6rem] w-full resize-y rounded-lg bg-surface p-2 text-sm hover:shadow-[inset_0_0_0_1px_var(--color-faint)] focus:shadow-[inset_0_0_0_1px_var(--color-accent),0_0_0_3px_var(--color-accent-soft)] focus:outline-none shadow-[inset_0_0_0_1px_var(--color-line-2)]";
 
 /// A code block: a URL, a secret, a request's body.
 const CODE: &str =
-    "min-w-0 flex-1 rounded-md bg-sunken px-3 py-2 font-mono text-xs break-all whitespace-pre-wrap";
+    "min-w-0 flex-1 rounded-lg bg-sunken px-3 py-2 font-mono text-xs break-all whitespace-pre-wrap";
 
-/// What a confirmation under a webhook's actions asks.
+/// A small tag after a name.
+const TAG: &str = "inline-flex h-5 shrink-0 items-center rounded-md bg-sunken px-1.5 text-[0.6875rem] font-semibold text-muted";
+
+/// A group's heading on a webhook's page.
+const GROUP: &str = "pt-3 text-xs font-semibold tracking-wide text-muted uppercase";
+
+/// The ⋯ of a row, kept clear of the row's open button under it.
+const MORE: &str = "relative z-[1] inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-lg text-muted transition-colors hover:bg-hover hover:text-fg active:bg-press lg:min-h-9 lg:min-w-9";
+
+/// What a confirmation on a webhook's page asks.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Confirm {
     Delete,
@@ -52,17 +60,29 @@ enum Confirm {
 
 pub fn webhooks_page(workspace: Workspace) -> impl IntoView {
     let confirm = RwSignal::new(None::<(WebhookId, Confirm)>);
+    let menu = RwSignal::new(None::<WebhookId>);
+    let context = RwSignal::new(None::<(WebhookId, f64, f64)>);
     // The form renders once per opening: its fields keep what is typed.
     let form = Memo::new(move |_| workspace.webhook_form.get());
     move || {
         if let Some(form) = form.get() {
-            return webhook_form(workspace, form).into_any();
+            return super::webhook_form::webhook_form(workspace, form).into_any();
         }
         let listing = match workspace.webhooks.get() {
             None => return loading("Reading webhooks…").into_any(),
             Some(Err(error)) => return view! { <p class=ERROR>{error}</p> }.into_any(),
             Some(Ok(listing)) => listing,
         };
+        let receiving = listing.receiving;
+        if let Some(webhook) = workspace.webhook_selected.get().and_then(|id| {
+            listing
+                .webhooks
+                .iter()
+                .find(|webhook| webhook.id == id)
+                .cloned()
+        }) {
+            return webhook_page(workspace, webhook, receiving, confirm, menu).into_any();
+        }
         let rows = if listing.webhooks.is_empty() {
             empty_state(
                 icondata::LuWebhook,
@@ -70,12 +90,16 @@ pub fn webhooks_page(workspace: Workspace) -> impl IntoView {
             )
             .into_any()
         } else {
-            listing
-                .webhooks
-                .into_iter()
-                .map(|webhook| webhook_row(workspace, webhook, confirm))
-                .collect_view()
-                .into_any()
+            view! {
+                <div class="flex flex-col gap-2" data-webhook-list>
+                    {listing
+                        .webhooks
+                        .into_iter()
+                        .map(|webhook| webhook_row(workspace, webhook, confirm, menu, context))
+                        .collect_view()}
+                </div>
+            }
+            .into_any()
         };
         view! {
             {super::view_header(
@@ -88,47 +112,554 @@ pub fn webhooks_page(workspace: Workspace) -> impl IntoView {
                     </button>
                 },
             )}
-            {(!listing.receiving).then(|| view! {
-                <p class=ERROR id="webhooks-receiving-off">
-                    "Receiving is off ([webhooks] enabled = false): every URL answers 404, and the webhooks stay."
-                </p>
-            })}
-            {move || workspace.webhook_error.get().map(|error| view! { <p class=ERROR id="webhook-error">{error}</p> })}
-            {move || workspace.webhook_revealed.get().map(|revealed| revealed_note(workspace, revealed))}
+            {notices(workspace, receiving)}
             {rows}
         }
         .into_any()
     }
 }
 
-/// A secret or URL the daemon returned once: shown with a copy button
-/// until dismissed.
-fn revealed_note(
-    workspace: Workspace,
-    revealed: crate::workspace::WebhookRevealed,
-) -> impl IntoView {
-    let url = revealed.new_url.then(|| {
+/// What the list and a page say above themselves: receiving off, the
+/// local-URL callout (W5), and the last error.
+fn notices(workspace: Workspace, receiving: bool) -> impl IntoView {
+    let private = workspace.webhook_urls_private();
+    view! {
+        {(!receiving).then(|| view! {
+            <p class=ERROR id="webhooks-receiving-off">
+                "Receiving is off ([webhooks] enabled = false): every URL answers 404, and the webhooks stay."
+            </p>
+        })}
+        {private.then(|| view! {
+            <div class=WARNING role="note" id="webhooks-private">
+                <Glyph icon=icondata::LuTriangleAlert class="mt-0.5 shrink-0 text-warn" />
+                <p class="min-w-0">
+                    <b>"These URLs work only where this page can be reached. "</b>
+                    "Services on the internet cannot send to them until "
+                    <button
+                        type="button"
+                        class="hit-area font-semibold text-accent underline-offset-2 hover:underline"
+                        id="webhooks-public-url"
+                        on:click=move |_| workspace.open_view(View::Settings, Some(SettingsSection::Configuration))
+                    >
+                        "[public] url"
+                    </button>
+                    " is set to the address a tunnel or Funnel gives the public port."
+                </p>
+            </div>
+        })}
+        {move || workspace.webhook_error.get().map(|error| view! { <p class=ERROR id="webhook-error">{error}</p> })}
+    }
+}
+
+/// The icon of the preset a webhook's check matches.
+fn preset_icon(preset: Preset) -> icondata::Icon {
+    match preset {
+        Preset::Github => icondata::LuGithub,
+        Preset::Standard => icondata::LuShieldCheck,
+        Preset::Bearer => icondata::LuKeyRound,
+        Preset::Anything => icondata::LuBraces,
+    }
+}
+
+/// The icon a webhook is drawn with.
+fn webhook_icon(verify: Option<&WebhookVerify>) -> icondata::Icon {
+    preset_icon(preset_of(verify))
+}
+
+/// A session's name, as the client knows it.
+fn name_of(workspace: Workspace) -> impl Fn(SessionId) -> Option<String> + Copy {
+    move |session| {
         workspace
-            .webhook_list()
-            .into_iter()
-            .find(|webhook| webhook.id == revealed.webhook)
-            .map(|webhook| workspace.webhook_url(&webhook))
-    });
-    let heading = if revealed.secret.is_some() {
-        format!(
-            "{}: copy its secret now; it is shown here until you close this.",
-            revealed.title
-        )
+            .sessions
+            .with_untracked(|sessions| session_name(sessions, session))
+    }
+}
+
+/// A button that opens session `session`, named `name`.
+fn session_link(workspace: Workspace, session: SessionId, name: String) -> impl IntoView {
+    view! {
+        <button
+            type="button"
+            class="hit-area relative z-[1] inline font-medium text-accent underline-offset-2 hover:underline"
+            data-webhook-session=session.to_string()
+            title="Open this session"
+            on:click=move |event: leptos::ev::MouseEvent| {
+                event.stop_propagation();
+                workspace.open_view(View::Chat, None);
+                workspace.open_session(session);
+            }
+        >
+            {name}
+        </button>
+    }
+}
+
+/// Where a webhook's events go, in words, the session linked (H1).
+fn target_line(workspace: Workspace, webhook: &Webhook) -> impl IntoView + use<> {
+    let words = workspace
+        .projects
+        .with_untracked(|projects| target_words(webhook, projects, name_of(workspace)));
+    view! {
+        // Inline text, so a phone wraps it as a sentence; one line, cut
+        // short, in a wide window.
+        <span class="block min-w-0 text-[0.8125rem] text-fg-2 sm:truncate" data-webhook-target>
+            <span class="text-muted" aria-hidden="true">"→ "</span>
+            {words.session.map(|(session, name)| view! {
+                {session_link(workspace, session, name)}
+                <span class="text-muted">" · "</span>
+            })}
+            {words.rest}
+        </span>
+    }
+}
+
+/// The dot of a tone.
+fn dot(tone: Tone) -> &'static str {
+    match tone {
+        Tone::Good => "bg-ok",
+        Tone::Warn => "bg-warn",
+        Tone::Bad => "bg-bad",
+        Tone::Quiet => "bg-faint",
+    }
+}
+
+/// A row's health line: the dot, the last event and when, and the last
+/// refusal with its reason (H1, W2, W3).
+fn health_line(health: Health, now: Timestamp) -> impl IntoView {
+    let Health {
+        tone,
+        last_event,
+        refusal,
+    } = health;
+    let tone_class = if tone == Tone::Bad {
+        "text-bad"
     } else {
-        format!("{}: its URL.", revealed.title)
+        "text-muted"
     };
     view! {
-        <div class="flex flex-col gap-2 rounded-xl bg-raised p-3 shadow-[0_0_0_1px_var(--color-accent),0_0_0_4px_var(--color-accent-soft)]" role="status" id="webhook-revealed">
-            <p class="text-sm font-bold">{heading}</p>
-            {url.flatten().map(|url| copy_line(workspace, "URL", url, "webhook-revealed-url"))}
-            {revealed.secret.map(|secret| copy_line(workspace, "Secret", secret, "webhook-revealed-secret"))}
-            <div>
-                <button type="button" class=BUTTON id="webhook-revealed-close" on:click=move |_| workspace.webhook_revealed.set(None)>
+        <span class="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-0.5 text-xs" data-webhook-health data-tone=format!("{tone:?}").to_lowercase()>
+            <span class=format!("inline-flex min-w-0 items-center gap-1.5 {tone_class}")>
+                <span class=format!("h-2 w-2 shrink-0 rounded-full {}", dot(tone)) aria-hidden="true"></span>
+                {match &last_event {
+                    Some((at, outcome)) => view! {
+                        <span data-webhook-last title=exact_time(*at)>
+                            {format!("Last event {} · {outcome}", relative_time(now, *at))}
+                        </span>
+                    }
+                    .into_any(),
+                    None => view! { <span data-webhook-last>"No events yet"</span> }.into_any(),
+                }}
+            </span>
+            {refusal.map(|refusal| view! {
+                <span class="min-w-0 text-warn" data-webhook-refusal title=exact_time(refusal.at)>
+                    {format!(
+                        "{} {} {}: {}",
+                        refusal.count,
+                        refusal.what,
+                        relative_time(now, refusal.at),
+                        refusal.reason
+                    )}
+                </span>
+            })}
+        </span>
+    }
+}
+
+/// A webhook's on/off switch.
+fn switch(workspace: Workspace, webhook: &Webhook) -> impl IntoView + use<> {
+    let (id, enabled) = (webhook.id.clone(), webhook.enabled);
+    view! {
+        <button
+            type="button"
+            role="switch"
+            class="relative z-[1] inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-full lg:min-h-9"
+            aria-checked=enabled.to_string()
+            aria-label=if enabled { "Turn the webhook off" } else { "Turn the webhook on" }
+            title=if enabled { "On: click to turn it off" } else { "Off: click to turn it on" }
+            data-webhook-switch
+            on:click=move |event: leptos::ev::MouseEvent| {
+                event.stop_propagation();
+                workspace.set_webhook_enabled(id.clone(), !enabled);
+            }
+        >
+            <span class="effort-switch" class:effort-switch-on=enabled aria-hidden="true"></span>
+        </button>
+    }
+}
+
+/// A webhook's actions, for its ⋯ and a right-click: Edit, a test event,
+/// New URL, New secret (with a check), and Delete; the last three ask on
+/// its page first.
+fn menu_items(
+    workspace: Workspace,
+    webhook: &Webhook,
+    confirm: RwSignal<Option<(WebhookId, Confirm)>>,
+) -> impl Fn() -> Vec<MenuItem> + Send + Sync + Clone + 'static + use<> {
+    let webhook = webhook.clone();
+    move || {
+        let ask = |what: Confirm| {
+            let id = webhook.id.clone();
+            Callback::new(move |()| {
+                // The confirmation is on the webhook's page.
+                if workspace.webhook_selected.get_untracked() != Some(id.clone()) {
+                    workspace.show_webhook(id.clone());
+                }
+                confirm.set(Some((id.clone(), what)));
+            })
+        };
+        let (edited, tested) = (webhook.clone(), webhook.id.clone());
+        let mut items = vec![
+            MenuItem {
+                id: "edit",
+                label: "Edit",
+                icon: icondata::LuPencil,
+                act: Callback::new(move |()| workspace.edit_webhook(edited.clone())),
+                danger: false,
+            },
+            MenuItem {
+                id: "test",
+                label: "Send a test event",
+                icon: icondata::LuSend,
+                act: Callback::new(move |()| workspace.test_webhook(tested.clone())),
+                danger: false,
+            },
+            MenuItem {
+                id: "rotate-url",
+                label: "New URL…",
+                icon: icondata::LuRefreshCw,
+                act: ask(Confirm::RotateUrl),
+                danger: false,
+            },
+        ];
+        if webhook.verify.is_some() {
+            items.push(MenuItem {
+                id: "rotate-secret",
+                label: "New secret…",
+                icon: icondata::LuKeyRound,
+                act: ask(Confirm::RotateSecret),
+                danger: false,
+            });
+        }
+        items.push(MenuItem {
+            id: "delete",
+            label: "Delete…",
+            icon: icondata::LuTrash2,
+            act: ask(Confirm::Delete),
+            danger: true,
+        });
+        items
+    }
+}
+
+/// A webhook's row (H1): a press opens its page.
+fn webhook_row(
+    workspace: Workspace,
+    webhook: Webhook,
+    confirm: RwSignal<Option<(WebhookId, Confirm)>>,
+    menu: RwSignal<Option<WebhookId>>,
+    context: RwSignal<Option<(WebhookId, f64, f64)>>,
+) -> impl IntoView {
+    let now = Timestamp::now();
+    let id = webhook.id.clone();
+    let title = webhook_title(&webhook);
+    let enabled = webhook.enabled;
+    let tags = row_tags(&webhook);
+    let items = menu_items(workspace, &webhook, confirm);
+    let open = {
+        let id = id.clone();
+        move |_| workspace.show_webhook(id.clone())
+    };
+    let opened_context = {
+        let id = id.clone();
+        move |event: leptos::ev::MouseEvent| {
+            if !crate::browser::from_touch(&event) && wants_context_menu(&event) {
+                event.prevent_default();
+                context.set(Some((
+                    id.clone(),
+                    f64::from(event.client_x()),
+                    f64::from(event.client_y()),
+                )));
+            }
+        }
+    };
+    view! {
+        {context_menu(context, id.clone(), title.clone(), items.clone())}
+        <div
+            class="webhook relative flex items-start gap-3 rounded-xl bg-raised py-2 pr-1 pl-3 shadow-[0_0_0_1px_var(--color-line),0_1px_2px_rgb(0_0_0/0.03)] transition-colors hover:bg-hover"
+            class:opacity-70=!enabled
+            on:contextmenu=opened_context
+            data-webhook=id.to_string()
+            data-title=title.clone()
+            data-enabled=enabled.to_string()
+        >
+            <button
+                type="button"
+                class="absolute inset-0 rounded-xl"
+                aria-label=format!("Open {title}")
+                data-webhook-open
+                on:click=open
+            ></button>
+            <span class="mt-1.5 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-sunken text-fg-2">
+                <Glyph icon=webhook_icon(webhook.verify.as_ref()) />
+            </span>
+            <span class="flex min-w-0 flex-1 flex-col gap-0.5 py-1">
+                <span class="flex min-w-0 items-center gap-2">
+                    <span class="min-w-0 truncate text-sm font-semibold" data-webhook-title>{title.clone()}</span>
+                    {tags.into_iter().map(|tag| view! { <span class=TAG data-webhook-tag>{tag}</span> }).collect_view()}
+                </span>
+                {target_line(workspace, &webhook)}
+                {health_line(health(&webhook), now)}
+            </span>
+            {switch(workspace, &webhook)}
+            {row_menu(menu, id.clone(), id.to_string(), title.clone(), MORE, items)}
+        </div>
+    }
+}
+
+/// An open webhook (H2): its head, its actions, a ready card when it is
+/// new (H5), and its three tabs.
+fn webhook_page(
+    workspace: Workspace,
+    webhook: Webhook,
+    receiving: bool,
+    confirm: RwSignal<Option<(WebhookId, Confirm)>>,
+    menu: RwSignal<Option<WebhookId>>,
+) -> impl IntoView {
+    let title = webhook_title(&webhook);
+    let url = workspace.webhook_url(&webhook);
+    let subtitle = {
+        let words = workspace
+            .projects
+            .with_untracked(|projects| target_words(&webhook, projects, name_of(workspace)));
+        let target = match words.session {
+            Some((_, name)) => format!("into {name}"),
+            None => words.rest,
+        };
+        format!("{} · {target}", check_label(webhook.verify.as_ref()))
+    };
+    let items = menu_items(workspace, &webhook, confirm);
+    let created = {
+        let id = webhook.id.clone();
+        move || {
+            workspace.webhook_revealed.with(|shown| {
+                shown
+                    .as_ref()
+                    .is_some_and(|shown| shown.webhook == id && shown.created)
+            })
+        }
+    };
+    let ready = {
+        let (webhook, url) = (webhook.clone(), url.clone());
+        move || created().then(|| ready_card(workspace, &webhook, url.clone()))
+    };
+    let tested = webhook.id.clone();
+    let copied_url = url.clone();
+    let events = webhook.history.len();
+    let tab = workspace.webhook_tab;
+    let tab_button = move |which: WebhookTab, label: &'static str, count: Option<usize>| {
+        view! {
+            <button
+                type="button"
+                role="tab"
+                class="inline-flex min-h-11 shrink-0 items-center gap-1.5 border-b-2 px-2 text-[0.8125rem] whitespace-nowrap transition-colors aria-selected:border-accent aria-selected:font-semibold aria-selected:text-fg border-transparent text-muted hover:text-fg lg:min-h-9"
+                aria-selected=move || (tab.get() == which).to_string()
+                data-webhook-tab=label
+                on:click=move |_| tab.set(which)
+            >
+                {label}
+                {count.filter(|count| *count > 0).map(|count| view! {
+                    <span class="rounded-md bg-sunken px-1 text-[0.6875rem] font-semibold text-muted">{count}</span>
+                })}
+            </button>
+        }
+    };
+    let body = {
+        let webhook = webhook.clone();
+        let url = url.clone();
+        move || match tab.get() {
+            WebhookTab::Setup => setup_tab(workspace, webhook.clone(), url.clone()).into_any(),
+            WebhookTab::Events => events_tab(workspace, &webhook).into_any(),
+            WebhookTab::Rules => rules_tab(workspace, &webhook, &url).into_any(),
+        }
+    };
+    view! {
+        <div class="flex flex-col gap-3" id="webhook-page" data-webhook-page=webhook.id.to_string()>
+            <div class="flex items-center gap-3">
+                <span class="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-sunken text-fg-2">
+                    <Glyph icon=webhook_icon(webhook.verify.as_ref()) class="text-lg" />
+                </span>
+                <div class="min-w-0 flex-1">
+                    <h2 class="truncate text-xl font-semibold tracking-tight" id="webhook-page-title">{title.clone()}</h2>
+                    <p class="truncate text-[0.8125rem] text-muted" data-webhook-subtitle>{subtitle}</p>
+                </div>
+                {switch(workspace, &webhook)}
+                {row_menu(menu, webhook.id.clone(), webhook.id.to_string(), title.clone(), ICON_BUTTON, items)}
+            </div>
+            // Two big actions, side by side on a phone (H6).
+            <div class="flex gap-2" data-webhook-actions>
+                <button
+                    type="button"
+                    class=format!("{BUTTON} flex-1 sm:flex-none")
+                    data-webhook-action="test"
+                    on:click=move |_| workspace.test_webhook(tested.clone())
+                >
+                    <Glyph icon=icondata::LuSend />
+                    "Send a test event"
+                </button>
+                <button
+                    type="button"
+                    class=format!("{BUTTON} flex-1 sm:flex-none")
+                    data-webhook-action="copy-url"
+                    on:click=move |_| copy(workspace, "URL", copied_url.clone())
+                >
+                    <Glyph icon=icondata::LuCopy />
+                    "Copy URL"
+                </button>
+            </div>
+            {notices(workspace, receiving)}
+            {confirmation(workspace, &webhook, confirm)}
+            {ready}
+            <div class="flex gap-1 overflow-x-auto border-b border-line" role="tablist" aria-label="Webhook">
+                {tab_button(WebhookTab::Setup, "Setup", None)}
+                {tab_button(WebhookTab::Events, "Events", Some(events))}
+                {tab_button(WebhookTab::Rules, "Rules & limits", None)}
+            </div>
+            <div class="flex flex-col gap-2" role="tabpanel">{body}</div>
+        </div>
+    }
+}
+
+/// Copies `text`, saying so in the status line.
+fn copy(workspace: Workspace, what: &'static str, text: String) {
+    leptos::task::spawn_local(async move {
+        let done = crate::browser::copy_text(&text).await;
+        workspace.status.set(if done {
+            format!("{what} copied.")
+        } else {
+            "This browser does not let the page copy; select the text instead.".to_owned()
+        });
+    });
+}
+
+/// A value with a copy button.
+fn copy_line(
+    workspace: Workspace,
+    label: &'static str,
+    value: String,
+    id: &'static str,
+    primary: bool,
+) -> impl IntoView {
+    let copied = value.clone();
+    view! {
+        <div class="flex items-start gap-2">
+            <code class=CODE id=id>{value}</code>
+            <button
+                type="button"
+                class=if primary { PRIMARY } else { BUTTON }
+                title=format!("Copy the {}", label.to_lowercase())
+                data-copy=id
+                on:click=move |_| copy(workspace, label, copied.clone())
+            >
+                <Glyph icon=icondata::LuCopy />
+                "Copy"
+            </button>
+        </div>
+    }
+}
+
+/// The question a menu's New URL, New secret, or Delete asks first.
+fn confirmation(
+    workspace: Workspace,
+    webhook: &Webhook,
+    confirm: RwSignal<Option<(WebhookId, Confirm)>>,
+) -> impl IntoView + use<> {
+    let id = webhook.id.clone();
+    let title = webhook_title(webhook);
+    move || {
+        let what = confirm
+            .get()
+            .filter(|(asked, _)| *asked == id)
+            .map(|(_, what)| what)?;
+        let (id, title) = (id.clone(), title.clone());
+        let question = match what {
+            Confirm::Delete => format!(
+                "Delete {title}? Its URL stops working at once; the sessions it started stay."
+            ),
+            Confirm::RotateUrl => format!(
+                "Give {title} a new URL? The old one stops working at once, so update every sender."
+            ),
+            Confirm::RotateSecret => format!(
+                "Give {title} a new secret? Requests signed with the old one are refused from now on."
+            ),
+        };
+        let verb = match what {
+            Confirm::Delete => "Delete",
+            Confirm::RotateUrl => "New URL",
+            Confirm::RotateSecret => "New secret",
+        };
+        Some(view! {
+            <div class=CONFIRM role="alertdialog" data-webhook-confirm>
+                <p class="text-sm">{question}</p>
+                <div class="flex gap-2">
+                    <button type="button" id="webhook-confirm" class=PRIMARY on:click=move |_| {
+                        confirm.set(None);
+                        match what {
+                            Confirm::Delete => workspace.delete_webhook(id.clone(), title.clone()),
+                            Confirm::RotateUrl => workspace.rotate_webhook(id.clone(), WebhookRotate::Url),
+                            Confirm::RotateSecret => workspace.rotate_webhook(id.clone(), WebhookRotate::Secret),
+                        }
+                    }>
+                        {verb}
+                    </button>
+                    <button type="button" class=BUTTON on:click=move |_| confirm.set(None)>
+                        "Keep it"
+                    </button>
+                </div>
+            </div>
+        })
+    }
+}
+
+/// The card a new webhook's page opens on (H5): its URL and secret to
+/// copy, where they go for its preset, and a test event.
+fn ready_card(workspace: Workspace, webhook: &Webhook, url: String) -> impl IntoView + use<> {
+    let title = webhook_title(webhook);
+    let secret = workspace.webhook_revealed.with_untracked(|shown| {
+        shown
+            .as_ref()
+            .filter(|shown| shown.webhook == webhook.id)
+            .and_then(|shown| shown.secret.clone())
+    });
+    let steps = preset_of(webhook.verify.as_ref()).steps();
+    let tested = webhook.id.clone();
+    view! {
+        <div class="flex flex-col gap-2 rounded-xl bg-raised p-4 shadow-[0_0_0_1px_var(--color-accent),0_0_0_4px_var(--color-accent-soft)]" role="status" id="webhook-ready">
+            <div class="flex items-center gap-2">
+                <span class="inline-flex h-7 w-7 items-center justify-center rounded-full bg-ok-soft text-ok">
+                    <Glyph icon=icondata::LuCheck />
+                </span>
+                <b class="text-base">{format!("{title} is ready")}</b>
+            </div>
+            <p class="text-[0.8125rem] text-muted">
+                {if secret.is_some() {
+                    "Copy both to the sender now. The secret shows here until you leave this page; Setup's Show brings it back."
+                } else {
+                    "Copy the URL to the sender."
+                }}
+            </p>
+            <span class=GROUP>"URL"</span>
+            {copy_line(workspace, "URL", url, "webhook-ready-url", true)}
+            {secret.map(|secret| view! {
+                <span class=GROUP>"Secret"</span>
+                {copy_line(workspace, "Secret", secret, "webhook-ready-secret", true)}
+            })}
+            <p class="rounded-lg bg-sunken px-3 py-2 text-[0.8125rem] leading-relaxed">{steps}</p>
+            <div class="flex gap-2 pt-1">
+                <button type="button" class=BUTTON on:click=move |_| workspace.test_webhook(tested.clone())>
+                    <Glyph icon=icondata::LuSend />
+                    "Send a test event"
+                </button>
+                <button type="button" class=BUTTON id="webhook-ready-done" on:click=move |_| workspace.webhook_revealed.set(None)>
                     "Done"
                 </button>
             </div>
@@ -136,462 +667,249 @@ fn revealed_note(
     }
 }
 
-/// A value to copy: its label, the value, and a copy button.
-fn copy_line(
-    workspace: Workspace,
-    label: &'static str,
-    value: String,
-    id: &'static str,
-) -> impl IntoView {
-    let copied = value.clone();
-    view! {
-        <div class="flex flex-col gap-1">
-            <span class="text-xs font-bold text-muted">{label}</span>
-            <div class="flex items-start gap-2">
-                <code class=CODE id=id>{value}</code>
-                <button
-                    type="button"
-                    class=BUTTON
-                    title=format!("Copy the {}", label.to_lowercase())
-                    aria-label=format!("Copy the {}", label.to_lowercase())
-                    data-copy=id
-                    on:click=move |_| {
-                        let text = copied.clone();
-                        leptos::task::spawn_local(async move {
-                            let done = crate::browser::copy_text(&text).await;
-                            workspace.status.set(if done {
-                                format!("{label} copied.")
-                            } else {
-                                "This browser does not let the page copy; select the text instead.".to_owned()
-                            });
-                        });
-                    }
-                >
-                    <Glyph icon=icondata::LuCopy />
-                </button>
-            </div>
-        </div>
-    }
-}
-
-/// A webhook's row: a click shows or hides its details.
-fn webhook_row(
-    workspace: Workspace,
-    webhook: Webhook,
-    confirm: RwSignal<Option<(WebhookId, Confirm)>>,
-) -> impl IntoView {
+/// Setup (H2): the URL, the secret (masked until shown), the sender's
+/// steps for the matching preset, and what happens to an event.
+fn setup_tab(workspace: Workspace, webhook: Webhook, url: String) -> impl IntoView {
     let id = webhook.id.clone();
-    let selected = {
-        let id = id.clone();
-        Memo::new(move |_| {
-            workspace
-                .webhook_selected
-                .with(|selected| selected.as_ref() == Some(&id))
-        })
-    };
     let title = webhook_title(&webhook);
-    let target = workspace.projects.with_untracked(|projects| {
-        target_label(&webhook.target, projects, |session| {
-            workspace
-                .sessions
-                .with_untracked(|sessions| session_name(sessions, session))
-        })
-    });
-    let state = state_label(&webhook);
-    let check = check_label(webhook.verify.as_ref());
-    let requests = counts_summary(&webhook.counts);
-    let failing = last_outcome(&webhook) == Some(OutcomeKind::Failed);
-    let enabled = webhook.enabled;
-    let toggle = {
+    let shown_secret = {
         let id = id.clone();
-        move |_| {
-            workspace.webhook_selected.update(|selected| {
-                *selected = if selected.as_ref() == Some(&id) {
-                    None
-                } else {
-                    Some(id.clone())
-                };
-            });
-        }
-    };
-    let details = {
-        let webhook = webhook.clone();
         move || {
-            selected
-                .get()
-                .then(|| webhook_details(workspace, webhook.clone(), confirm))
+            workspace.webhook_revealed.with(|shown| {
+                shown
+                    .as_ref()
+                    .filter(|shown| shown.webhook == id)
+                    .and_then(|shown| shown.secret.clone())
+            })
         }
     };
-    // A right-click offers the webhook's actions without opening it.
-    let context = RwSignal::new(None);
-    let context_items = {
-        let webhook = webhook.clone();
-        move || {
-            use super::row_menu::MenuItem;
-            let (edited, toggled, tested, asked) = (
-                webhook.clone(),
-                webhook.id.clone(),
-                webhook.id.clone(),
-                webhook.id.clone(),
-            );
-            let enabled = webhook.enabled;
-            vec![
-                MenuItem {
-                    id: "edit",
-                    label: "Edit",
-                    icon: icondata::LuPencil,
-                    act: Callback::new(move |()| workspace.edit_webhook(edited.clone())),
-                    danger: false,
-                },
-                MenuItem {
-                    id: if enabled { "disable" } else { "enable" },
-                    label: if enabled { "Disable" } else { "Enable" },
-                    icon: if enabled {
-                        icondata::LuPause
-                    } else {
-                        icondata::LuPlay
-                    },
-                    act: Callback::new(move |()| {
-                        workspace.set_webhook_enabled(toggled.clone(), !enabled)
-                    }),
-                    danger: false,
-                },
-                MenuItem {
-                    id: "test",
-                    label: "Send a test event",
-                    icon: icondata::LuSend,
-                    act: Callback::new(move |()| workspace.test_webhook(tested.clone())),
-                    danger: false,
-                },
-                MenuItem {
-                    id: "delete",
-                    label: "Delete…",
-                    icon: icondata::LuTrash2,
-                    act: Callback::new(move |()| {
-                        // The confirmation is in the webhook's details.
-                        workspace.webhook_selected.set(Some(asked.clone()));
-                        confirm.set(Some((asked.clone(), Confirm::Delete)));
-                    }),
-                    danger: true,
-                },
-            ]
-        }
-    };
-    view! {
-        {super::row_menu::context_menu(context, (), title.clone(), context_items)}
-        <div
-            on:contextmenu=super::row_menu::on_context(context)
-            class=move || format!(
-                "webhook flex flex-col gap-1 rounded-xl p-1 transition-shadow {}",
-                if selected.get() {
-                    "bg-raised shadow-[0_0_0_1px_var(--color-accent),0_0_0_4px_var(--color-accent-soft)]"
-                } else {
-                    "bg-raised shadow-[0_0_0_1px_var(--color-line),0_1px_2px_rgb(0_0_0/0.03)]"
-                }
-            )
-            data-webhook=id.to_string()
-            data-title=title.clone()
-            data-enabled=enabled.to_string()
-        >
-            <div class="relative">
-            <button
-                type="button"
-                role="switch"
-                class="absolute top-1 right-1 z-[1] inline-flex h-11 w-11 items-center justify-center rounded-full lg:top-2.5 lg:right-2.5 lg:h-7"
-                aria-checked=enabled.to_string()
-                aria-label=if enabled { "Turn the webhook off" } else { "Turn the webhook on" }
-                title=if enabled { "On: click to turn it off" } else { "Off: click to turn it on" }
-                data-webhook-switch
-                on:click={
-                    let id = id.clone();
-                    move |_| workspace.set_webhook_enabled(id.clone(), !enabled)
-                }
-            >
-                <span class="effort-switch" class:effort-switch-on=enabled aria-hidden="true"></span>
-            </button>
-            <button
-                type="button"
-                class=format!("{ROW} pr-16")
-                aria-expanded=move || selected.get().to_string()
-                on:click=toggle
-            >
-                <span class="flex w-full items-center gap-2">
-                    <Glyph
-                        icon=icondata::LuWebhook
-                        class=if enabled { "text-accent" } else { "opacity-50" }
-                    />
-                    <span class="min-w-0 flex-1 truncate text-sm font-bold" data-webhook-title>{title.clone()}</span>
-                    <span class=STATE data-webhook-state>{state}</span>
-                </span>
-                <span class="pl-6 text-[0.8125rem] text-fg-2" data-webhook-target>{target}</span>
-                <span class=format!("flex w-full flex-wrap gap-x-3 pl-6 {NOTE}")>
-                    <span data-webhook-check>{check}</span>
-                    <span data-webhook-requests class:text-bad=failing>{requests}</span>
-                </span>
-            </button>
-            </div>
-            {details}
-        </div>
-    }
-}
-
-/// The selected webhook: its URL, details, actions, and events, newest
-/// first. The target and the session that created it link to their
-/// sessions.
-fn webhook_details(
-    workspace: Workspace,
-    webhook: Webhook,
-    confirm: RwSignal<Option<(WebhookId, Confirm)>>,
-) -> impl IntoView {
-    let zone = zone_at(jiff::Timestamp::now());
-    let url = workspace.webhook_url(&webhook);
-    let private = workspace.webhook_urls_private();
-    let title = |session| {
-        workspace
-            .sessions
-            .with_untracked(|sessions| session_name(sessions, session))
-    };
-    let lines = workspace
-        .projects
-        .with_untracked(|projects| detail_lines(&webhook, &url, &zone, projects, title))
-        .into_iter()
-        // The URL has its own line, with a copy button.
-        .filter(|detail| detail.label != "url")
-        .map(|detail| {
-            let value = match detail.session {
-                Some(session) => view! {
-                    <button
-                        type="button"
-                        class=LINK
-                        data-webhook-session=session.to_string()
-                        title="Open this session"
-                        on:click=move |_| {
-                            workspace.open_view(crate::layout::View::Chat, None);
-                            workspace.open_session(session);
+    let preset = preset_of(webhook.verify.as_ref());
+    let secret = webhook.verify.as_ref().map(|verify| {
+        let what = match verify.kind {
+            cookie_agent_protocol::WebhookVerifyKind::Bearer => "the sender puts it in each request's Authorization header",
+            _ => "the sender signs each request with it",
+        };
+        let (shown, hidden) = (shown_secret.clone(), shown_secret.clone());
+        let (revealed, copied) = ((id.clone(), title.clone()), id.clone());
+        view! {
+            <span class=GROUP>"Secret " <span class="font-normal normal-case tracking-normal">{format!("· {what}")}</span></span>
+            <div class="flex flex-wrap items-start gap-2">
+                <code class=CODE id="webhook-secret">
+                    {move || shown().unwrap_or_else(|| "•".repeat(32))}
+                </code>
+                <div class="flex gap-2">
+                    {move || if hidden().is_some() {
+                        view! {
+                            <button type="button" class=BUTTON data-webhook-action="hide" on:click=move |_| workspace.webhook_revealed.set(None)>
+                                <Glyph icon=icondata::LuEyeOff />
+                                "Hide"
+                            </button>
                         }
-                    >
-                        {detail.value}
+                        .into_any()
+                    } else {
+                        let revealed = revealed.clone();
+                        view! {
+                            <button
+                                type="button"
+                                class=BUTTON
+                                data-webhook-action="reveal"
+                                on:click=move |_| workspace.reveal_webhook_secret(revealed.0.clone(), revealed.1.clone())
+                            >
+                                <Glyph icon=icondata::LuEye />
+                                "Show"
+                            </button>
+                        }
+                        .into_any()
+                    }}
+                    <button type="button" class=BUTTON data-copy="webhook-secret" on:click=move |_| workspace.copy_webhook_secret(copied.clone())>
+                        <Glyph icon=icondata::LuCopy />
+                        "Copy"
                     </button>
-                }
-                .into_any(),
-                None => detail.value.into_any(),
-            };
+                </div>
+            </div>
+        }
+    });
+    let happens = what_happens(&webhook, name_of(workspace))
+        .into_iter()
+        .map(|line| {
             view! {
-                <dt class="text-xs font-bold text-muted">{detail.label}</dt>
-                <dd class="min-w-0 text-sm break-words" data-webhook-detail=detail.label>{value}</dd>
+                <li class="flex flex-col gap-0.5 px-3 py-2">
+                    <span class="text-sm font-medium">{line.heading}</span>
+                    {line.detail.map(|detail| view! {
+                        <span class="text-[0.8125rem] whitespace-pre-wrap break-words text-muted">{detail}</span>
+                    })}
+                </li>
             }
         })
         .collect_view();
-    let prompt = webhook.prompt.clone();
-    let thread_prompt = match &webhook.target {
-        cookie_agent_protocol::WebhookTarget::New(template) => template.thread_prompt.clone(),
-        _ => None,
-    };
-    let history = if webhook.history.is_empty() {
+    view! {
+        <span class=GROUP>"URL"</span>
+        {copy_line(workspace, "URL", url, "webhook-url", false)}
+        {secret}
+        <span class=GROUP>{format!("At the sender · {}", preset.label())}</span>
+        <p class="rounded-lg bg-sunken px-3 py-2 text-[0.8125rem] leading-relaxed" data-webhook-steps>{preset.steps()}</p>
+        <span class=GROUP>"What happens"</span>
+        <ul class="flex flex-col divide-y divide-line rounded-xl bg-raised shadow-[0_0_0_1px_var(--color-line)]" data-webhook-happens>
+            {happens}
+        </ul>
+    }
+}
+
+/// Events (H3): the counters, then each event newest first.
+fn events_tab(workspace: Workspace, webhook: &Webhook) -> impl IntoView + use<> {
+    let now = Timestamp::now();
+    let zone = zone_at(now);
+    let counters = counters(webhook)
+        .into_iter()
+        .map(|counter| counter_tile(counter, now))
+        .collect_view();
+    let events = if webhook.history.is_empty() {
         view! { <p class=NOTE>"No events yet. Send a test event to try it."</p> }.into_any()
     } else {
-        events_newest_first(&webhook)
-            .map(|event| event_line(workspace, webhook.id.clone(), event, &zone))
+        events_newest_first(webhook)
+            .map(|event| event_row(workspace, webhook, event, &zone, now))
             .collect_view()
             .into_any()
     };
-    let title = webhook_title(&webhook);
-    let has_secret = webhook.verify.is_some();
-    let edited = webhook.clone();
-    let (toggled, enabled) = (webhook.id.clone(), webhook.enabled);
-    let tested = webhook.id.clone();
-    let id = webhook.id.clone();
-    let ask = move |what: Confirm| {
-        let id = id.clone();
-        move |_| confirm.set(Some((id.clone(), what)))
-    };
-    let revealed = (webhook.id.clone(), title.clone());
-    let confirming = {
-        let id = webhook.id.clone();
-        move || {
-            confirm
-                .get()
-                .filter(|(asked, _)| *asked == id)
-                .map(|(_, what)| what)
-        }
-    };
-    let confirmed = (webhook.id.clone(), title.clone());
     view! {
-        <div class="flex flex-col gap-3 px-3 pb-2" data-webhook-details>
-            {copy_line(workspace, "URL", url, "webhook-url")}
-            {private.then(|| view! {
-                <p class=NOTE data-webhook-private>
-                    "This URL works only where cookie's page can be reached. Set [public] url to the address a tunnel or Funnel gives the public port, so other services can reach it."
-                </p>
-            })}
-            <dl class="grid grid-cols-[auto_1fr] items-baseline gap-x-3 gap-y-1">{lines}</dl>
-            {thread_prompt.map(|text| view! {
-                <div class="flex flex-col gap-1">
-                    <span class="text-xs font-bold text-muted">"Thread prompt"</span>
-                    <p class="rounded-md bg-sunken px-3 py-2 text-sm whitespace-pre-wrap break-words" data-webhook-thread-prompt>{text}</p>
-                </div>
-            })}
-            {prompt.map(|text| view! {
-                <div class="flex flex-col gap-1">
-                    <span class="text-xs font-bold text-muted">"Prompt"</span>
-                    <p class="rounded-md bg-sunken px-3 py-2 text-sm whitespace-pre-wrap break-words" data-webhook-prompt>{text}</p>
-                </div>
-            })}
-            <div class="flex flex-wrap gap-2" data-webhook-actions>
-                <button type="button" class=BUTTON data-webhook-action="edit" on:click=move |_| workspace.edit_webhook(edited.clone())>
-                    <Glyph icon=icondata::LuPencil />
-                    "Edit"
-                </button>
-                <button
-                    type="button"
-                    class=BUTTON
-                    data-webhook-action=if enabled { "disable" } else { "enable" }
-                    on:click=move |_| workspace.set_webhook_enabled(toggled.clone(), !enabled)
-                >
-                    <Glyph icon=if enabled { icondata::LuPause } else { icondata::LuPlay } />
-                    {if enabled { "Disable" } else { "Enable" }}
-                </button>
-                <button type="button" class=BUTTON data-webhook-action="test" on:click=move |_| workspace.test_webhook(tested.clone())>
-                    <Glyph icon=icondata::LuSend />
-                    "Send a test event"
-                </button>
-                <button type="button" class=BUTTON data-webhook-action="rotate-url" on:click=ask(Confirm::RotateUrl)>
-                    <Glyph icon=icondata::LuRefreshCw />
-                    "New URL"
-                </button>
-                {has_secret.then(|| {
-                    let revealed = revealed.clone();
-                    view! {
-                        <button type="button" class=BUTTON data-webhook-action="rotate-secret" on:click=ask(Confirm::RotateSecret)>
-                            <Glyph icon=icondata::LuKeyRound />
-                            "New secret"
-                        </button>
-                        <button
-                            type="button"
-                            class=BUTTON
-                            data-webhook-action="reveal"
-                            on:click=move |_| workspace.reveal_webhook_secret(revealed.0.clone(), revealed.1.clone())
-                        >
-                            <Glyph icon=icondata::LuEye />
-                            "Show secret"
-                        </button>
-                    }
-                })}
-                <button type="button" class=BUTTON data-webhook-action="delete" on:click=ask(Confirm::Delete)>
-                    <Glyph icon=icondata::LuTrash2 />
-                    "Delete"
-                </button>
-            </div>
-            {move || confirming().map(|what| {
-                let (id, title) = confirmed.clone();
-                let question = match what {
-                    Confirm::Delete => format!("Delete {title}? Its URL stops working at once; the sessions it started stay."),
-                    Confirm::RotateUrl => format!("Give {title} a new URL? The old one stops working at once, so update every sender."),
-                    Confirm::RotateSecret => format!("Give {title} a new secret? Requests signed with the old one are refused from now on."),
-                };
-                let verb = match what {
-                    Confirm::Delete => "Delete",
-                    Confirm::RotateUrl => "New URL",
-                    Confirm::RotateSecret => "New secret",
-                };
-                view! {
-                    <div class=CONFIRM role="alertdialog" data-webhook-confirm>
-                        <p class="text-sm">{question}</p>
-                        <div class="flex gap-2">
-                            <button type="button" id="webhook-confirm" class=PRIMARY on:click=move |_| {
-                                confirm.set(None);
-                                match what {
-                                    Confirm::Delete => workspace.delete_webhook(id.clone(), title.clone()),
-                                    Confirm::RotateUrl => workspace.rotate_webhook(id.clone(), WebhookRotate::Url),
-                                    Confirm::RotateSecret => workspace.rotate_webhook(id.clone(), WebhookRotate::Secret),
-                                }
-                            }>
-                                {verb}
-                            </button>
-                            <button type="button" class=BUTTON on:click=move |_| confirm.set(None)>
-                                "Keep it"
-                            </button>
-                        </div>
-                    </div>
-                }
-            })}
-            <div class="flex flex-col gap-1" data-webhook-history>
-                <span class="text-xs font-bold text-muted">"Events"</span>
-                {history}
-            </div>
+        <div class="grid grid-cols-2 gap-2 sm:grid-cols-4" data-webhook-counters>{counters}</div>
+        <p class=NOTE>"Refused and filtered requests are counted, not kept."</p>
+        <div class="flex flex-col divide-y divide-line rounded-xl bg-raised shadow-[0_0_0_1px_var(--color-line)]" data-webhook-history>
+            {events}
         </div>
     }
 }
 
-/// One event: when, what it did, its thread, and the session it went to;
-/// a press opens its request.
-fn event_line(
+/// One counter: what, how many, when last, and what it means.
+fn counter_tile(counter: Counter, now: Timestamp) -> impl IntoView {
+    let Counter {
+        what,
+        status,
+        count,
+        last,
+        meaning,
+        warn,
+    } = counter;
+    let reading = match last {
+        Some(at) if count > 0 => format!("{} · {meaning}", relative_time(now, at)),
+        _ => meaning.clone(),
+    };
+    view! {
+        <div
+            class=if warn { "flex flex-col gap-0.5 rounded-xl bg-warn-soft px-3 py-2" } else { "flex flex-col gap-0.5 rounded-xl bg-sunken px-3 py-2" }
+            data-webhook-counter=what
+            title=meaning
+        >
+            <span class=if warn { "text-[0.6875rem] font-semibold text-warn" } else { "text-[0.6875rem] font-semibold text-muted" }>
+                {format!("{what} · {status}")}
+            </span>
+            <b class="text-lg leading-tight tabular-nums">{count}</b>
+            <span class="text-[0.6875rem] text-muted">{reading}</span>
+        </div>
+    }
+}
+
+/// An event's row (H3): a dot, the outcome in words, a test tag, the time,
+/// and its session; a press opens its request.
+fn event_row(
     workspace: Workspace,
-    webhook: WebhookId,
+    webhook: &Webhook,
     event: &WebhookEvent,
     zone: &jiff::tz::TimeZone,
-) -> impl IntoView {
-    let when = event_time(event, zone);
-    let outcome = event_outcome(event);
-    let failed = matches!(
-        cookie_agent_client_state::webhook::outcome_kind(event),
-        OutcomeKind::Failed
-    );
-    let thread = event.thread_key.clone();
-    let session = event.session_id;
+    now: Timestamp,
+) -> impl IntoView + use<> {
+    let kind = outcome_kind(event);
+    let tone = match kind {
+        OutcomeKind::Failed => Tone::Bad,
+        OutcomeKind::Pending | OutcomeKind::Waiting => Tone::Warn,
+        OutcomeKind::Unknown | OutcomeKind::Ended => Tone::Quiet,
+        OutcomeKind::Delivered | OutcomeKind::Completed => Tone::Good,
+    };
+    let outcome = {
+        let outcome = event_outcome(event);
+        let outcome = outcome
+            .strip_prefix("test · ")
+            .unwrap_or(&outcome)
+            .to_owned();
+        let mut chars = outcome.chars();
+        chars
+            .next()
+            .map(|first| first.to_uppercase().chain(chars).collect::<String>())
+            .unwrap_or_default()
+    };
+    let mut when = vec![
+        event_time(event, zone),
+        relative_time(now, event.received_at),
+    ];
+    if let Some(key) = &event.thread_key {
+        when.push(format!("thread {key}"));
+    }
     let id = event.id.clone();
+    let hook = webhook.id.clone();
+    let path = webhook.path.clone();
     let open = {
-        let (webhook, id) = (webhook.clone(), id.clone());
+        let (hook, id) = (hook.clone(), id.clone());
         Memo::new(move |_| {
             workspace.webhook_event.with(|open| {
                 open.as_ref()
-                    .is_some_and(|open| open.webhook == webhook && open.event == id)
+                    .is_some_and(|open| open.webhook == hook && open.event == id)
             })
         })
     };
     let toggle = {
-        let (webhook, id) = (webhook.clone(), id.clone());
-        move |_| workspace.toggle_webhook_event(webhook.clone(), id.clone())
+        let (hook, id) = (hook.clone(), id.clone());
+        move |_| workspace.toggle_webhook_event(hook.clone(), id.clone())
     };
+    let session = event.session_id.map(|session| {
+        let name = name_of(workspace)(session).unwrap_or_else(|| "its session".to_owned());
+        view! {
+            <button
+                type="button"
+                class="inline-flex min-h-11 max-w-[40%] shrink-0 items-center gap-1.5 rounded-lg px-2 text-[0.8125rem] text-accent hover:bg-hover lg:min-h-9"
+                data-webhook-event-session=session.to_string()
+                title="Open the session"
+                on:click=move |_| {
+                    workspace.open_view(View::Chat, None);
+                    workspace.open_session(session);
+                }
+            >
+                <Glyph icon=icondata::LuExternalLink class="shrink-0" />
+                <span class="truncate">{name}</span>
+            </button>
+        }
+    });
     view! {
         <div class="flex flex-col" data-webhook-event=id.clone()>
-            <div class="flex min-h-11 flex-wrap items-center gap-x-3 text-sm">
+            <div class="flex items-center gap-1 pr-1">
                 <button
                     type="button"
-                    class="inline-flex min-h-11 min-w-0 flex-1 items-center gap-3 rounded-lg px-1 text-left hover:bg-hover"
+                    class="flex min-h-14 min-w-0 flex-1 items-center gap-3 rounded-lg px-3 text-left hover:bg-hover"
                     aria-expanded=move || open.get().to_string()
-                    title="Show the request"
+                    title=format!("{} · show the request", exact_time(event.received_at))
                     on:click=toggle
                 >
-                    <span class="inline-flex transition-transform" class:rotate-90=move || open.get()>
+                    <span class="inline-flex shrink-0 text-muted transition-transform" class:rotate-90=move || open.get()>
                         <Glyph icon=icondata::LuChevronRight />
                     </span>
-                    <span class="font-mono text-xs">{when}</span>
-                    <span class="min-w-0 flex-1 break-words" class:text-bad=failed data-webhook-event-outcome>{outcome}</span>
-                    {thread.map(|key| view! { <span class=NOTE>{format!("thread {key}")}</span> })}
+                    <span class=format!("h-2 w-2 shrink-0 rounded-full {}", dot(tone)) aria-hidden="true"></span>
+                    <span class="flex min-w-0 flex-1 flex-col">
+                        <span class="flex min-w-0 items-center gap-2 text-sm font-medium" class:text-bad=tone == Tone::Bad>
+                            <span class="min-w-0 break-words" data-webhook-event-outcome>{outcome}</span>
+                            {event.test.then(|| view! { <span class="inline-flex h-5 shrink-0 items-center rounded-md bg-accent-soft px-1.5 text-[0.6875rem] font-semibold text-accent" data-webhook-test>"test"</span> })}
+                        </span>
+                        <span class="truncate text-xs text-muted">{when.join(" · ")}</span>
+                    </span>
                 </button>
-                {session.map(|session| view! {
-                    <button
-                        type="button"
-                        class=BUTTON
-                        data-webhook-event-session=session.to_string()
-                        on:click=move |_| {
-                            workspace.open_view(crate::layout::View::Chat, None);
-                            workspace.open_session(session);
-                        }
-                    >
-                        <Glyph icon=icondata::LuExternalLink />
-                        "Open session"
-                    </button>
-                })}
+                {session}
             </div>
-            {move || open.get().then(|| event_request(workspace))}
+            {move || open.get().then(|| event_request(workspace, path.clone()))}
         </div>
     }
 }
 
-/// The open event's request: its method, headers, and body.
-fn event_request(workspace: Workspace) -> impl IntoView {
+/// The open event's request: the method and path, the headers as a table,
+/// and the body, pretty-printed when it is JSON.
+fn event_request(workspace: Workspace, path: String) -> impl IntoView {
     move || {
         let request = workspace
             .webhook_event
@@ -603,18 +921,41 @@ fn event_request(workspace: Workspace) -> impl IntoView {
                 let headers = request
                     .headers
                     .iter()
-                    .map(|header| format!("{}: {}", header.name, header.value))
-                    .collect::<Vec<_>>()
-                    .join("\n");
+                    .map(|header| {
+                        view! {
+                            <tr>
+                                <td class="w-40 py-0.5 pr-3 align-top text-muted">{header.name.clone()}</td>
+                                <td class="py-0.5 font-mono break-all">{header.value.clone()}</td>
+                            </tr>
+                        }
+                    })
+                    .collect_view();
                 let body = match (request.body_text, request.body_base64) {
-                    (Some(text), _) => text,
+                    (Some(text), _) => serde_json::from_str::<serde_json::Value>(&text)
+                        .ok()
+                        .and_then(|value| serde_json::to_string_pretty(&value).ok())
+                        .unwrap_or(text),
                     (None, Some(_)) => format!("({} bytes of binary content)", request.event.bytes),
                     (None, None) => "(no body)".to_owned(),
                 };
+                let copied = body.clone();
                 view! {
-                    <div class="flex flex-col gap-2 py-2 pl-7" data-webhook-request>
-                        <code class=CODE>{format!("{}\n{headers}", request.method)}</code>
-                        <code class=format!("{CODE} max-h-80 overflow-y-auto") data-webhook-body>{body}</code>
+                    <div class="flex flex-col gap-2 border-t border-line py-3 pr-3 pl-12" data-webhook-request>
+                        <div class="flex items-center gap-2">
+                            <span class="rounded-md bg-accent-soft px-1.5 py-0.5 font-mono text-[0.6875rem] font-semibold text-accent">{request.method}</span>
+                            <span class="min-w-0 flex-1 truncate font-mono text-xs text-muted">{path.clone()}</span>
+                            <button
+                                type="button"
+                                class=ICON_BUTTON
+                                title="Copy the body"
+                                aria-label="Copy the body"
+                                on:click=move |_| copy(workspace, "Body", copied.clone())
+                            >
+                                <Glyph icon=icondata::LuCopy />
+                            </button>
+                        </div>
+                        <table class="w-full text-xs" data-webhook-headers><tbody>{headers}</tbody></table>
+                        <pre class="max-h-96 overflow-auto rounded-lg bg-sunken px-3 py-2 font-mono text-xs leading-relaxed whitespace-pre-wrap break-words" data-webhook-body>{body}</pre>
                     </div>
                 }
                 .into_any()
@@ -623,293 +964,48 @@ fn event_request(workspace: Workspace) -> impl IntoView {
     }
 }
 
-/// The webhook form: a new webhook, or an edit of one.
-#[allow(clippy::too_many_lines, reason = "one form, field by field")]
-fn webhook_form(workspace: Workspace, form: WebhookForm) -> impl IntoView {
-    let WebhookForm {
-        editing,
-        draft,
-        session,
-        template,
-    } = form;
-    let name = RwSignal::new(draft.name.clone());
-    let prompt = RwSignal::new(draft.prompt.clone());
-    let thread_key = RwSignal::new(draft.thread_key.clone());
-    let thread_prompt = RwSignal::new(draft.thread_prompt.clone());
-    let delivery = RwSignal::new(draft.delivery);
-    let verify = RwSignal::new(draft.verify.clone());
-    let secret = RwSignal::new(String::new());
-    let filter = RwSignal::new(draft.filter.clone());
-    let headers = RwSignal::new(draft.headers.clone());
-    let max_per_hour = RwSignal::new(draft.max_per_hour.clone());
-    let max_concurrent = RwSignal::new(draft.max_concurrent.clone());
-    let max_failures = RwSignal::new(draft.max_consecutive_failures.clone());
-    let new = RwSignal::new(draft.target.is_new());
-    let agent = RwSignal::new(if draft.agent.is_empty() {
-        template.agent.to_string()
-    } else {
-        draft.agent.clone()
-    });
-    let model = RwSignal::new(draft.model.clone());
-    let mode = RwSignal::new(draft.permission_mode);
-    let creating = editing.is_none();
-    let threaded = move || new.get() && !thread_key.with(|key| key.trim().is_empty());
-    let target_note = editing.as_ref().map(|webhook| {
-        workspace.projects.with_untracked(|projects| {
-            target_label(&webhook.target, projects, |id| {
-                workspace
-                    .sessions
-                    .with_untracked(|sessions| session_name(sessions, id))
-            })
-        })
-    });
-    let this_session = session.map(|(id, subagent)| {
-        let kind = if subagent {
-            "this subagent"
-        } else {
-            "this session"
-        };
-        workspace
-            .sessions
-            .with_untracked(|sessions| session_name(sessions, id))
-            .map_or_else(|| kind.to_owned(), |name| format!("{kind}: {name}"))
-    });
-    let agents = {
-        let mut agents: Vec<String> = untrack(|| workspace.selectable_agents())
-            .into_iter()
-            .map(|agent| agent.id.to_string())
-            .collect();
-        if !agents.contains(&agent.get_untracked()) {
-            agents.insert(0, agent.get_untracked());
-        }
-        agents
-    };
-    let pins = {
-        let mut pins = model_pins(&untrack(|| workspace.models()));
-        let current = model.get_untracked();
-        if !current.is_empty() && !pins.contains(&current) {
-            pins.insert(0, current);
-        }
-        pins
-    };
-    let build = {
-        let draft = draft.clone();
-        let template = template.clone();
-        move || {
-            let mut draft = WebhookDraft {
-                name: name.get_untracked(),
-                prompt: prompt.get_untracked(),
-                thread_key: thread_key.get_untracked(),
-                thread_prompt: thread_prompt.get_untracked(),
-                delivery: delivery.get_untracked(),
-                verify: verify.get_untracked(),
-                secret: secret.get_untracked(),
-                filter: filter.get_untracked(),
-                headers: headers.get_untracked(),
-                max_per_hour: max_per_hour.get_untracked(),
-                max_concurrent: max_concurrent.get_untracked(),
-                max_consecutive_failures: max_failures.get_untracked(),
-                permission_mode: mode.get_untracked(),
-                model: model.get_untracked(),
-                agent: agent.get_untracked(),
-                ..draft.clone()
+/// Rules & limits: the webhook's details as clients list them, its
+/// prompts, and when it was made.
+fn rules_tab(workspace: Workspace, webhook: &Webhook, url: &str) -> impl IntoView + use<> {
+    let zone = zone_at(Timestamp::now());
+    let lines = workspace
+        .projects
+        .with_untracked(|projects| detail_lines(webhook, url, &zone, projects, name_of(workspace)))
+        .into_iter()
+        // The URL, the counts, and the switch have their own places.
+        .filter(|detail| !matches!(detail.label, "url" | "requests" | "state" | "thread prompt"))
+        .map(|detail| {
+            let value = match detail.session {
+                Some(session) => session_link(workspace, session, detail.value).into_any(),
+                None => detail.value.into_any(),
             };
-            if creating {
-                draft.target = match (new.get_untracked(), session) {
-                    (false, Some((session, subagent))) => {
-                        WebhookDraftTarget::Session { session, subagent }
-                    }
-                    _ => WebhookDraftTarget::New {
-                        template: template.clone(),
-                    },
-                };
+            view! {
+                <dt class="text-xs font-semibold text-muted">{detail.label}</dt>
+                <dd class="min-w-0 text-sm break-words" data-webhook-detail=detail.label>{value}</dd>
             }
-            draft
-        }
+        })
+        .collect_view();
+    let thread_prompt = match &webhook.target {
+        WebhookTarget::New(template) => template.thread_prompt.clone(),
+        _ => None,
     };
-    let heading = match &editing {
-        Some(webhook) => format!("Edit {}", webhook_title(webhook)),
-        None => "Add a webhook".to_owned(),
-    };
-    let text_field = move |id: &'static str,
-                           label: &'static str,
-                           value: RwSignal<String>,
-                           placeholder: &'static str| {
-        view! {
-            <label class=LABEL>
-                <span class="font-bold">{label}</span>
-                <input
-                    type="text"
-                    id=id
-                    class=FIELD
-                    placeholder=placeholder
-                    prop:value=move || value.get()
-                    on:input=move |event| value.set(event_target_value(&event))
-                />
-            </label>
-        }
-    };
+    let prompt = webhook.prompt.clone();
+    let edited = webhook.clone();
     view! {
-        <div class=EDITOR_PAGE id="webhook-form">
-            <h2 class="text-sm font-bold">{heading}</h2>
-            {text_field("webhook-name", "Name", name, "optional; lists show its ID without one")}
-            {match target_note {
-                Some(target) => view! {
-                    <p class="text-sm" id="webhook-target">{format!("Target: {target}")}</p>
-                }
-                .into_any(),
-                None => view! {
-                    <div class="flex flex-col gap-1" role="radiogroup" aria-label="Target">
-                        <span class="text-sm font-bold">"Target"</span>
-                        <div class="flex flex-wrap gap-2">
-                            {this_session.clone().map(|label| view! {
-                                <button
-                                    type="button"
-                                    id="webhook-target-session"
-                                    role="radio"
-                                    class=move || format!("{BUTTON} {}", if new.get() { "" } else { "bg-sunken" })
-                                    aria-checked=move || (!new.get()).to_string()
-                                    on:click=move |_| new.set(false)
-                                >
-                                    {label}
-                                </button>
-                            })}
-                            <button
-                                type="button"
-                                id="webhook-target-new"
-                                role="radio"
-                                class=move || format!("{BUTTON} {}", if new.get() { "bg-sunken" } else { "" })
-                                aria-checked=move || new.get().to_string()
-                                on:click=move |_| new.set(true)
-                            >
-                                "New sessions"
-                            </button>
-                        </div>
-                    </div>
-                }
-                .into_any(),
-            }}
-            <Show when=move || new.get()>
-                <div class="grid gap-2 sm:grid-cols-2">
-                    <label class=LABEL>
-                        <span class="font-bold">"Agent"</span>
-                        <select id="webhook-agent" class=SELECT on:change=move |event| agent.set(event_target_value(&event))>
-                            {agents.clone().into_iter().map(|id| {
-                                let (chosen, value) = (id.clone(), id.clone());
-                                view! { <option value=value selected=move || agent.get() == chosen>{id}</option> }
-                            }).collect_view()}
-                        </select>
-                    </label>
-                    <label class=LABEL>
-                        <span class="font-bold">"Model"</span>
-                        <select id="webhook-model" class=SELECT on:change=move |event| model.set(event_target_value(&event))>
-                            <option value="" selected=move || model.with(String::is_empty)>"the agent's own models"</option>
-                            {pins.clone().into_iter().map(|pin| {
-                                let (chosen, value) = (pin.clone(), pin.clone());
-                                view! { <option value=value selected=move || model.get() == chosen>{pin}</option> }
-                            }).collect_view()}
-                        </select>
-                    </label>
-                    <label class=LABEL>
-                        <span class="font-bold">"Permission mode"</span>
-                        <select
-                            id="webhook-mode"
-                            class=SELECT
-                            on:change=move |event| {
-                                let value = event_target_value(&event);
-                                mode.set(MODES.iter().map(|choice| choice.mode).find(|choice| permission_mode_label(*choice) == value));
-                            }
-                        >
-                            <option value="" selected=move || mode.get().is_none()>
-                                {format!("{} (the default)", permission_mode_label(PermissionMode::AutoApproveN))}
-                            </option>
-                            {MODES.iter().map(|choice| {
-                                let value = choice.mode;
-                                view! {
-                                    <option value=permission_mode_label(value) selected=move || mode.get() == Some(value)>
-                                        {format!("{} — {}", permission_mode_label(value), choice.description)}
-                                    </option>
-                                }
-                            }).collect_view()}
-                        </select>
-                    </label>
-                    {text_field("webhook-max-concurrent", "Sessions at once", max_concurrent, "1; 0 or less for no limit")}
-                </div>
-                {text_field("webhook-thread-key", "Thread key", thread_key, "json:/issue/number  or  header:X-Thread")}
-                <p class=NOTE>"Events with the same key go into one session, which the first of them starts. Without a key, each event starts its own session."</p>
-                <label class=LABEL>
-                    <span class="font-bold">"Thread prompt"</span>
-                    <textarea
-                        id="webhook-thread-prompt"
-                        class=AREA
-                        placeholder="optional; sent as your message when a session starts, and again after each compaction"
-                        prop:value=move || thread_prompt.get()
-                        on:input=move |event| thread_prompt.set(event_target_value(&event))
-                    ></textarea>
-                </label>
-            </Show>
-            <label class=LABEL>
-                <span class="font-bold">"Prompt"</span>
-                <textarea
-                    id="webhook-prompt"
-                    class=AREA
-                    placeholder="optional; sent with every event, inside its webhook_event block"
-                    prop:value=move || prompt.get()
-                    on:input=move |event| prompt.set(event_target_value(&event))
-                ></textarea>
-            </label>
-            <Show when=move || !new.get() || threaded()>
-                <label class=LABEL>
-                    <span class="font-bold">"Delivery"</span>
-                    <select
-                        id="webhook-delivery"
-                        class=SELECT
-                        on:change=move |event| delivery.set(if event_target_value(&event) == "steer" {
-                            ProducerDeliveryMode::Steer
-                        } else {
-                            ProducerDeliveryMode::Queue
-                        })
-                    >
-                        {[ProducerDeliveryMode::Queue, ProducerDeliveryMode::Steer].map(|choice| view! {
-                            <option value=delivery_label(choice) selected=move || delivery.get() == choice>
-                                {match choice {
-                                    ProducerDeliveryMode::Queue => "queue: after the current turn",
-                                    ProducerDeliveryMode::Steer => "steer: into the running turn",
-                                }}
-                            </option>
-                        })}
-                    </select>
-                </label>
-            </Show>
-            <div class="grid gap-2 sm:grid-cols-2">
-                {text_field("webhook-verify", "Check", verify, "github, standard, bearer, or hmac_sha256 header=…")}
-                {text_field("webhook-secret", "Secret", secret, "blank: the daemon makes one, or keeps it")}
-            </div>
-            <p class=NOTE>"Without a check, the URL is the only key. hmac_sha256 also takes encoding=hex|base64 and prefix=…"</p>
-            <label class=LABEL>
-                <span class="font-bold">"Filter"</span>
-                <textarea
-                    id="webhook-filter"
-                    class=format!("{AREA} min-h-[4rem] font-mono")
-                    placeholder="one condition per line, such as header:X-GitHub-Event=issues,pull_request or json:/action=opened"
-                    prop:value=move || filter.get()
-                    on:input=move |event| filter.set(event_target_value(&event))
-                ></textarea>
-            </label>
-            <div class="grid gap-2 sm:grid-cols-3">
-                {text_field("webhook-headers", "Headers shown", headers, "X-GitHub-Event, …")}
-                {text_field("webhook-max-per-hour", "Events per hour", max_per_hour, "the daemon's default")}
-                {text_field("webhook-max-failures", "Failures before off", max_failures, "the daemon's default")}
-            </div>
-            {move || workspace.webhook_error.get().map(|error| view! { <p class=ERROR id="webhook-error">{error}</p> })}
-            <div class=EDITOR_ACTIONS>
-                <button type="button" id="webhook-save" class=PRIMARY on:click=move |_| workspace.save_webhook(build())>
-                    {if creating { "Add" } else { "Save" }}
-                </button>
-                <button type="button" id="webhook-cancel" class=BUTTON on:click=move |_| workspace.close_webhook_form()>
-                    "Cancel"
-                </button>
-            </div>
+        <dl class="grid grid-cols-[auto_1fr] items-baseline gap-x-4 gap-y-1.5 pt-2">{lines}</dl>
+        {thread_prompt.map(|text| view! {
+            <span class=GROUP>"When a session starts"</span>
+            <p class="rounded-lg bg-sunken px-3 py-2 text-sm whitespace-pre-wrap break-words" data-webhook-thread-prompt>{text}</p>
+        })}
+        {prompt.map(|text| view! {
+            <span class=GROUP>"With every event"</span>
+            <p class="rounded-lg bg-sunken px-3 py-2 text-sm whitespace-pre-wrap break-words" data-webhook-prompt>{text}</p>
+        })}
+        <div class="pt-2">
+            <button type="button" class=BUTTON data-webhook-action="edit" on:click=move |_| workspace.edit_webhook(edited.clone())>
+                <Glyph icon=icondata::LuPencil />
+                "Edit"
+            </button>
         </div>
     }
 }
