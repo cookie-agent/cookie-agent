@@ -228,7 +228,7 @@ pub enum WebhookVerifyKind {
     Standard,
     /// `<header>: <prefix><HMAC-SHA256 of the body>` in `encoding`.
     HmacSha256,
-    /// `Authorization: Bearer <token>`.
+    /// A bearer token in the `Authorization` header.
     Bearer,
 }
 

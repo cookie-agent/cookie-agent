@@ -940,7 +940,7 @@
         },
         {
           "const": "bearer",
-          "description": "`Authorization: Bearer <token>`.",
+          "description": "A bearer token in the `Authorization` header.",
           "type": "string"
         }
       ]

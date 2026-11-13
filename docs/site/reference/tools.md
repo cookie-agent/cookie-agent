@@ -3175,7 +3175,7 @@ Only when the session has the `global` runtime attached and no `"*": deny` for `
             },
             {
               "const": "bearer",
-              "description": "`Authorization: Bearer <token>`.",
+              "description": "A bearer token in the `Authorization` header.",
               "type": "string"
             }
           ]
@@ -3528,7 +3528,7 @@ Only when the session has the `global` runtime attached and no `"*": deny` for `
             },
             {
               "const": "bearer",
-              "description": "`Authorization: Bearer <token>`.",
+              "description": "A bearer token in the `Authorization` header.",
               "type": "string"
             }
           ]

@@ -162,7 +162,9 @@ impl Engine {
             };
             let result = match plan {
                 Plan::Wait => {
-                    self.record_webhook_waiting(&webhook, &event).await;
+                    if !self.record_webhook_waiting(&webhook, &event).await {
+                        return;
+                    }
                     continue;
                 }
                 Plan::Into(session, mode) => {
@@ -171,7 +173,11 @@ impl Engine {
                 }
                 Plan::New => self.deliver_new_webhook_session(&webhook, &event).await,
             };
-            self.record_webhook_delivery(&webhook, &event, result).await;
+            // A store that cannot record the outcome leaves the event open;
+            // the next pump tries again rather than this one spinning.
+            if !self.record_webhook_delivery(&webhook, &event, result).await {
+                return;
+            }
         }
     }
 
@@ -275,7 +281,8 @@ impl Engine {
         record.consumed_run.or(record.admission.map(|(run, _)| run))
     }
 
-    async fn record_webhook_waiting(&self, webhook: &StoredWebhook, event: &StoredEvent) {
+    /// Marks a pending `event` as waiting. Whether the store recorded it.
+    async fn record_webhook_waiting(&self, webhook: &StoredWebhook, event: &StoredEvent) -> bool {
         let (id, event) = (webhook.id.clone(), event.id.clone());
         if let Err(error) = self
             .webhooks_blocking(move |_, webhooks| {
@@ -292,18 +299,20 @@ impl Engine {
             .await
         {
             eprintln!("cookie-agent: webhook event: {error}");
+            return false;
         }
+        true
     }
 
     /// Records where `event` went, or why it failed, and counts a failure.
     /// The run it landed in may have ended already; its end is recorded
-    /// now then.
+    /// now then. Whether the store recorded it.
     async fn record_webhook_delivery(
         &self,
         webhook: &StoredWebhook,
         event: &StoredEvent,
         result: Result<Delivery, String>,
-    ) {
+    ) -> bool {
         let limit = self.inner.config.load().runtime.webhooks.failure_limit();
         let history = self.inner.config.load().runtime.webhooks.history;
         let (id, event_id) = (webhook.id.clone(), event.id.clone());
@@ -336,6 +345,7 @@ impl Engine {
             .await
         {
             eprintln!("cookie-agent: webhook event: {error}");
+            return false;
         }
         lock(&self.inner.webhook_state.started_pending)
             .remove(&(webhook.id.clone(), event.id.clone()));
@@ -345,6 +355,7 @@ impl Engine {
         {
             eprintln!("cookie-agent: webhook run outcome: {error}");
         }
+        true
     }
 
     /// Delivers `event` into a new session from the webhook's template, or,
