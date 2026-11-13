@@ -233,6 +233,7 @@ mod threads;
 mod tool_exposure;
 mod transport;
 mod uploads;
+mod webhook;
 
 pub use acp::*;
 pub use agent::*;
@@ -288,6 +289,7 @@ pub use transport::{
     TransportError, in_process_pair,
 };
 pub use uploads::*;
+pub use webhook::*;
 
 // The crate's own tests run natively.
 #[cfg(all(test, not(target_arch = "wasm32")))]

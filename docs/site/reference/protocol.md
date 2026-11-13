@@ -13,7 +13,7 @@ A client must call `handshake` before any other method:
 
 ```json
 { "jsonrpc": "2.0", "id": 1, "method": "handshake", "params": {
-    "protocol_version": "1.95.0",
+    "protocol_version": "1.96.0",
     "client": { "kind": "web", "instance_id": "<uuid>" },
     "token": "<the daemon's token>",
     "features": [] } }
@@ -22,7 +22,7 @@ A client must call `handshake` before any other method:
 The reply:
 
 ```json
-{ "protocol_version": "1.95.0", "engine_version": "0.3.0",
+{ "protocol_version": "1.96.0", "engine_version": "0.3.0",
   "origin": "client:web-<id>", "machine_id": "<opaque>", "features": [],
   "status": { "phase": "ready" } }
 ```
@@ -312,6 +312,14 @@ Idempotent redelivery resolves against the state preceding the original run.
 | `crons.update` | Job `id`, any member of `crons.create` (`null` clears `name`, `permission_mode`, `max_consecutive_failures`) | The `job` afterwards |
 | `crons.delete` | Job `id` | Empty object; the sessions its fires started stay |
 | `crons.run` | Job `id` | The `job` afterwards and the `session_id` the fire went to, absent when it was skipped |
+| `webhooks.list` | Empty object | Every webhook with its state and history, in creation order, whether the daemon is `receiving`, and the `public_base` (see [Webhooks](#webhooks)) |
+| `webhooks.create` | `target`, optional `name`, `prompt`, `delivery`, `verify`, `filter`, `headers`, `max_per_hour`, `max_concurrent`, `permission_mode`, `max_consecutive_failures`, `enabled` | The new `webhook` and its signing `secret`, once |
+| `webhooks.update` | Webhook `id`, any member of `webhooks.create` (`null` clears the optional ones) | The `webhook` afterwards, and the `secret` when the update made one |
+| `webhooks.delete` | Webhook `id` | Empty object; its sessions stay |
+| `webhooks.rotate` | Webhook `id`, `what` (`url` or `secret`) | The `webhook` afterwards, and the new `secret` for `secret` |
+| `webhooks.secret` | Webhook `id` | The `secret`, absent for a webhook without a check |
+| `webhooks.event` | Webhook `id`, `event` | The `event` with its request: `method`, `headers` but the secret ones, and `body_text` or `body_base64` |
+| `webhooks.test` | Webhook `id`, optional `body`, `content_type`, `headers` | The `webhook` afterwards and the test `event`'s ID |
 | `notifications.get` | Empty object | The daemon's VAPID `public_key`, whether it sends pushes (`enabled`), and the `subscriptions` it pushes to (since 1.30.0; see [Push notifications](#push-notifications)) |
 | `notifications.subscribe` | A browser's push subscription: `endpoint`, `p256dh`, `auth`, and a `label` | The `subscription`; the same endpoint keeps its id |
 | `notifications.unsubscribe` | Subscription `id` | Empty object |
@@ -986,6 +994,55 @@ run now and counts toward neither `max_runs` nor the failure count. Each
 change and fire sends `crons.changed` to every connection. An unknown job is
 `cron_not_found`, a refused value `cron_invalid`, and a failure to read or
 write `crons.json` `cron_store_failed`.
+
+### Webhooks
+
+Since 1.96.0 the daemon serves webhooks: URLs whose requests become
+messages in an existing session or start new sessions ([webhooks
+spec](../specs/webhooks.md)). A `Webhook` is its daemon-assigned `id`,
+optional `name`, the `url_token` and `path` (`/hooks/<url_token>`, which a
+client puts after `webhooks.list`'s `public_base`, else after the address it
+reached the daemon at), the optional `prompt`, `target`, `delivery`,
+`verify`, `filter`, `headers`, `max_per_hour`, `max_concurrent`,
+`permission_mode`, and `max_consecutive_failures`, `enabled` with a
+`disabled_reason` (`failed` with `failures`, or `disabled` with `by`, an open
+set), `created_by`, `created_at`, `counts`, `consecutive_failures`, the
+number `waiting` in its backlog, the `history`, and its `threads`.
+
+- **Target.** `{ session }`, `{ subagent }`, or `{ new: <template> }`, as a
+  cron job's, but a template's `thread_key` is a `WebhookValueSource`,
+  `{ header }` or `{ json: <JSON Pointer> }`, read from each request. Events
+  whose keys match go into one session, with the webhook's `delivery`;
+  `thread_prompt` works as a cron job's, with the origin
+  `engine:webhook-<webhook id>`.
+- **Checks.** `verify` is `{ kind, secret?, header?, encoding?, prefix? }`
+  with `kind` one of `github`, `standard`, `hmac_sha256`, or `bearer`; the
+  last three members belong to `hmac_sha256`. The daemon makes a secret
+  when none is given and never returns it in a `Webhook`; `webhooks.secret`
+  reads it.
+- **Filter.** Each `WebhookCondition` names one of `header` and `json` and
+  the strings `one_of` its value may be; all must hold.
+- **Limits.** `max_per_hour`, `max_concurrent`, and
+  `max_consecutive_failures` take 0 or less for no limit; absent, the
+  `[webhooks]` settings (and 1 for `max_concurrent`).
+- **Events.** Each `history` entry is a `WebhookEvent`: `id`,
+  `received_at`, `test`, `delivery_id`, `thread_key`, `bytes`,
+  `content_type`, the `outcome` (`pending`, `waiting`, `delivered`, or
+  `failed` with an `error`, an open set), the `session_id`, and the
+  `run_id` and `run_end` of the run it landed in. `counts` holds the events
+  `accepted` and the requests `rejected`, `filtered`, `duplicate`,
+  `rate_limited`, and `backlog_full`, each with its last time.
+- **Sessions.** A session an event created records it in
+  `SessionMeta.webhook` (`{ webhook_id, event_id, thread_key? }`, also on
+  its `session_created` event).
+
+Each change and each event sends `webhooks.changed` to every connection but
+a conversation share's guests, which are refused every `webhooks.*`
+method. An unknown webhook is `webhook_not_found`, an unknown event
+`webhook_event_not_found`, a refused value `webhook_invalid`, and a failure
+to read or write `webhooks.json` `webhook_store_failed`. The URLs
+themselves are served over HTTP, not this protocol: see the webhooks
+guide.
 
 ### Push notifications
 
@@ -1713,6 +1770,7 @@ subscriptions to the deleted sessions end with them: no further
 | `shares.changed` | A share link was made, changed, revoked, or removed with its asset; an empty object (since 1.86.0) |
 | `projects.changed` | A project was created, changed, or deleted; an empty object |
 | `crons.changed` | A cron job was created, changed, fired, or deleted; an empty object |
+| `webhooks.changed` | A webhook was created, changed, received an event, or was deleted; an empty object |
 | `notifications.changed` | A push subscription was added, changed, or removed (since 1.30.0); an empty object |
 | `daemon.status` | The daemon's status changed (since 1.65.0): the new status, as the `daemon.status` method answers it. At most one every 250 ms, but a phase change goes at once; see [Daemon status](#daemon-status) |
 | `daemon.restarting` | Only to clients before 1.65.0, which read the restart from `daemon.status` instead. A restart is scheduled: `when` (`idle` or `now`), the `active_runs` and `background_calls` (since 1.35.0, omitted when zero) it still waits for, and an optional `reason` to show (since 1.19.0; see [Restarting the daemon](#restarting-the-daemon)) |
@@ -1733,7 +1791,7 @@ subscribed session's list again.
 
 ### Daemon-wide changes
 
-`runtime.changed`, `sessions.changed`, `mcp.changed`, `runtimes.changed`, `plugins.changed`, `machines.changed`, `memory.changed`, `assets.changed`, `shares.changed`, `projects.changed`, `crons.changed`, `notifications.changed`, `daemon.restarting`, and `onboarding.changed` reach every connection
+`runtime.changed`, `sessions.changed`, `mcp.changed`, `runtimes.changed`, `plugins.changed`, `machines.changed`, `memory.changed`, `assets.changed`, `shares.changed`, `projects.changed`, `crons.changed`, `webhooks.changed`, `notifications.changed`, `daemon.restarting`, and `onboarding.changed` reach every connection
 from its handshake on, whether or not it subscribed to any session, so each
 client sharing a daemon stays current with what the others do. Clients ignore
 notification methods they do not know.
@@ -1762,7 +1820,8 @@ bursts coalesce into one notification, and a client refetches `mcp.server.list`.
 `machines.list` and `runtimes.list`, `memory.changed` for
 `memory.list`, `assets.changed` for `assets.list` and `asset.get`,
 `projects.changed` for `projects.list`, `crons.changed`
-for `crons.list`, and `notifications.changed` for `notifications.get`.
+for `crons.list`, `webhooks.changed` for `webhooks.list`, and
+`notifications.changed` for `notifications.get`.
 
 ### Connection failures
 

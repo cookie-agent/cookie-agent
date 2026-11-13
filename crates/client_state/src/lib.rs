@@ -2267,6 +2267,7 @@ impl StateStore {
             | ClientDelivery::SharesChanged(_)
             | ClientDelivery::ProjectsChanged(_)
             | ClientDelivery::CronsChanged(_)
+            | ClientDelivery::WebhooksChanged(_)
             | ClientDelivery::NotificationsChanged(_)
             | ClientDelivery::DaemonRestarting(_)
             | ClientDelivery::DaemonStatus(_) => DeliveryOutcome::Applied,

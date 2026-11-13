@@ -3130,6 +3130,17 @@
             "type": {
               "const": "session_created",
               "type": "string"
+            },
+            "webhook": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/SessionWebhook"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The webhook whose event created this session (client protocol\n1.96.0); absent for every other session."
             }
           },
           "required": [
@@ -9996,6 +10007,33 @@
           "type": "object"
         }
       ]
+    },
+    "SessionWebhook": {
+      "description": "The webhook whose event created a session (`SessionMeta::webhook`).",
+      "properties": {
+        "event_id": {
+          "type": "string"
+        },
+        "thread_key": {
+          "description": "The thread the session is, for a webhook with a thread key.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "webhook_id": {
+          "description": "A webhook's ID: eight lowercase ASCII letters and digits.",
+          "maxLength": 8,
+          "minLength": 1,
+          "pattern": "^[a-z0-9]{8}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "webhook_id",
+        "event_id"
+      ],
+      "type": "object"
     },
     "SkillRule": {
       "description": "One rule over skills.",

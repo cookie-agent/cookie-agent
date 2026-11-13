@@ -3312,6 +3312,7 @@ fn history_assembles_from_a_best_effort_read() {
         run,
         EventPayload::SessionCreated {
             cron: None,
+            webhook: None,
             history_format: cookie_agent_protocol::HISTORY_FORMAT,
             short_id: "test_00000000".into(),
             origin: cookie_agent_protocol::SessionOrigin::Root,

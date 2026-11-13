@@ -1,7 +1,7 @@
 //! Threads (`docs/site/specs/webhooks.md` sections 7.4, 7.5, and 8): the
 //! sessions an owner sends its fires or events into by key.
 //!
-//! An owner (a cron job with a new-session target now, a webhook later)
+//! An owner (a cron job or a webhook with a new-session target)
 //! keeps a [`ThreadMap`] beside its definition, in its own store. A
 //! delivery whose key has a live session goes into it; one whose key has
 //! none creates a session from the owner's template and records it
@@ -13,7 +13,7 @@
 use std::collections::HashSet;
 
 use cookie_agent_protocol::{
-    CronJobId, CronThread, EventOrigin, ProducerOwner, SessionId, ThreadOwnerRef,
+    CronJobId, CronThread, EventOrigin, ProducerOwner, SessionId, ThreadOwnerRef, WebhookId,
     thread_prompt_origin, thread_prompt_owner,
 };
 use jiff::{Timestamp, tz::TimeZone};
@@ -29,6 +29,8 @@ pub(crate) const THREAD_LIMIT: usize = 1024;
 pub(crate) enum ThreadOwner {
     /// A cron job with a new-session target.
     Cron(CronJobId),
+    /// A webhook with a new-session target.
+    Webhook(WebhookId),
 }
 
 impl ThreadOwner {
@@ -36,6 +38,7 @@ impl ThreadOwner {
     pub(crate) fn reference(&self) -> ThreadOwnerRef {
         match self {
             Self::Cron(job) => ThreadOwnerRef::Cron(job.clone()),
+            Self::Webhook(webhook) => ThreadOwnerRef::Webhook(webhook.clone()),
         }
     }
 
@@ -49,13 +52,18 @@ impl ThreadOwner {
     pub(crate) fn from_origin(origin: &EventOrigin) -> Option<Self> {
         match thread_prompt_owner(origin)? {
             ThreadOwnerRef::Cron(job) => Some(Self::Cron(job)),
+            ThreadOwnerRef::Webhook(webhook) => Some(Self::Webhook(webhook)),
             _ => None,
         }
     }
 
     /// The owner whose fires or events `owner`'s producer messages carry.
     pub(crate) fn of_producer(owner: &ProducerOwner) -> Option<Self> {
-        let job = owner.source()?.cron_job()?;
+        let source = owner.source()?;
+        if let Some(webhook) = source.webhook_id() {
+            return WebhookId::new(webhook.to_owned()).ok().map(Self::Webhook);
+        }
+        let job = source.cron_job()?;
         CronJobId::new(job.to_owned()).ok().map(Self::Cron)
     }
 }

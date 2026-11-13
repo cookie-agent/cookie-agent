@@ -306,6 +306,7 @@ impl ProjectionFolds {
             creation_agent: created_with,
             revisions,
             cron,
+            webhook,
         } = &creation.payload
         else {
             return None;
@@ -337,6 +338,7 @@ impl ProjectionFolds {
                 waiting_on: Vec::new(),
                 delegated_attachments: Vec::new(),
                 cron: cron.clone(),
+                webhook: webhook.clone(),
                 held: None,
                 unread: false,
                 pinned: false,

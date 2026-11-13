@@ -219,6 +219,9 @@ pub enum ClientDelivery {
     /// A cron job was created, changed, fired, or deleted; refetch
     /// `crons.list`.
     CronsChanged(cookie_agent_protocol::CronsChangedNotification),
+    /// A webhook was created, changed, received an event, or was deleted;
+    /// refetch `webhooks.list`.
+    WebhooksChanged(cookie_agent_protocol::WebhooksChangedNotification),
     /// The push subscriptions changed; refetch `notifications.get`.
     NotificationsChanged(cookie_agent_protocol::NotificationsChangedNotification),
     /// The daemon will restart: when, and how many runs it still waits
@@ -1826,6 +1829,94 @@ impl Client {
         .await
     }
 
+    /// Every webhook with its state and history.
+    pub async fn list_webhooks(
+        &self,
+    ) -> Result<cookie_agent_protocol::WebhooksListResult, ClientError> {
+        self.call(
+            cookie_agent_protocol::WEBHOOKS_LIST_METHOD,
+            &cookie_agent_protocol::WebhooksListParams {},
+        )
+        .await
+    }
+
+    /// Creates a webhook; the result carries its signing secret once.
+    pub async fn create_webhook(
+        &self,
+        params: cookie_agent_protocol::WebhookCreateParams,
+    ) -> Result<cookie_agent_protocol::WebhookResult, ClientError> {
+        self.call(cookie_agent_protocol::WEBHOOKS_CREATE_METHOD, &params)
+            .await
+    }
+
+    /// Changes a webhook.
+    pub async fn update_webhook(
+        &self,
+        params: cookie_agent_protocol::WebhookUpdateParams,
+    ) -> Result<cookie_agent_protocol::WebhookResult, ClientError> {
+        self.call(cookie_agent_protocol::WEBHOOKS_UPDATE_METHOD, &params)
+            .await
+    }
+
+    /// Deletes a webhook; its sessions stay.
+    pub async fn delete_webhook(
+        &self,
+        id: cookie_agent_protocol::WebhookId,
+    ) -> Result<cookie_agent_protocol::WebhookDeleteResult, ClientError> {
+        self.call(
+            cookie_agent_protocol::WEBHOOKS_DELETE_METHOD,
+            &cookie_agent_protocol::WebhookDeleteParams { id },
+        )
+        .await
+    }
+
+    /// Gives a webhook a new URL token or signing secret.
+    pub async fn rotate_webhook(
+        &self,
+        id: cookie_agent_protocol::WebhookId,
+        what: cookie_agent_protocol::WebhookRotate,
+    ) -> Result<cookie_agent_protocol::WebhookResult, ClientError> {
+        self.call(
+            cookie_agent_protocol::WEBHOOKS_ROTATE_METHOD,
+            &cookie_agent_protocol::WebhookRotateParams { id, what },
+        )
+        .await
+    }
+
+    /// A webhook's signing secret, or bearer token.
+    pub async fn webhook_secret(
+        &self,
+        id: cookie_agent_protocol::WebhookId,
+    ) -> Result<cookie_agent_protocol::WebhookSecretResult, ClientError> {
+        self.call(
+            cookie_agent_protocol::WEBHOOKS_SECRET_METHOD,
+            &cookie_agent_protocol::WebhookSecretParams { id },
+        )
+        .await
+    }
+
+    /// One event of a webhook's history with its request.
+    pub async fn webhook_event(
+        &self,
+        id: cookie_agent_protocol::WebhookId,
+        event: String,
+    ) -> Result<cookie_agent_protocol::WebhookEventResult, ClientError> {
+        self.call(
+            cookie_agent_protocol::WEBHOOKS_EVENT_METHOD,
+            &cookie_agent_protocol::WebhookEventParams { id, event },
+        )
+        .await
+    }
+
+    /// Delivers a test event.
+    pub async fn test_webhook(
+        &self,
+        params: cookie_agent_protocol::WebhookTestParams,
+    ) -> Result<cookie_agent_protocol::WebhookTestResult, ClientError> {
+        self.call(cookie_agent_protocol::WEBHOOKS_TEST_METHOD, &params)
+            .await
+    }
+
     /// The daemon's push key and the browsers it pushes to.
     pub async fn get_notifications(
         &self,
@@ -3067,6 +3158,11 @@ async fn route_notification(
             let changed: cookie_agent_protocol::CronsChangedNotification =
                 serde_json::from_str(params)?;
             let _ = deliveries.send(ClientDelivery::CronsChanged(changed));
+        }
+        cookie_agent_protocol::WEBHOOKS_CHANGED_METHOD => {
+            let changed: cookie_agent_protocol::WebhooksChangedNotification =
+                serde_json::from_str(params)?;
+            let _ = deliveries.send(ClientDelivery::WebhooksChanged(changed));
         }
         cookie_agent_protocol::NOTIFICATIONS_CHANGED_METHOD => {
             let changed: cookie_agent_protocol::NotificationsChangedNotification =

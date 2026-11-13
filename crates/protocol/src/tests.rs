@@ -2312,6 +2312,7 @@ fn session_meta_serde_round_trip_preserves_last_activity() {
     let meta = SessionMeta {
         cache_compaction: None,
         cron: None,
+        webhook: None,
         held: None,
         unread: false,
         pinned: false,
@@ -3914,6 +3915,7 @@ fn meta_fixture() -> SessionMeta {
     SessionMeta {
         cache_compaction: None,
         cron: None,
+        webhook: None,
         held: None,
         unread: false,
         pinned: false,

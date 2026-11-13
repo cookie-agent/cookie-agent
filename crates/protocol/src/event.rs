@@ -365,6 +365,10 @@ pub struct SessionMeta {
     /// an older daemon.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cron: Option<crate::SessionCron>,
+    /// The webhook whose event created the session (client protocol
+    /// 1.96.0). Absent for every other session and from an older daemon.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub webhook: Option<crate::SessionWebhook>,
     /// Why the session's automatic runs are held, while they are
     /// (`docs/site/specs/held-sessions.md`, client protocol 1.34.0): the
     /// latest `automatic_runs_held` with no `automatic_runs_resumed` or
@@ -449,6 +453,8 @@ impl<'de> Deserialize<'de> for SessionMeta {
             #[serde(default)]
             cron: Option<crate::SessionCron>,
             #[serde(default)]
+            webhook: Option<crate::SessionWebhook>,
+            #[serde(default)]
             held: Option<Open<HeldReason>>,
             #[serde(default)]
             unread: bool,
@@ -483,6 +489,7 @@ impl<'de> Deserialize<'de> for SessionMeta {
             waiting_on: w.waiting_on,
             delegated_attachments: w.delegated_attachments,
             cron: w.cron,
+            webhook: w.webhook,
             held: w.held,
             unread: w.unread,
             pinned: w.pinned,
@@ -2969,6 +2976,10 @@ pub enum EventPayload {
         /// 1.15.0); absent for every other session.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cron: Option<crate::SessionCron>,
+        /// The webhook whose event created this session (client protocol
+        /// 1.96.0); absent for every other session.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        webhook: Option<crate::SessionWebhook>,
     },
     SessionPermissionOverlaySet {
         overlay: SessionPermissionOverlay,

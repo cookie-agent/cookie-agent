@@ -651,10 +651,13 @@ fn input_label(origin: Option<&str>) -> String {
 /// result is output, and a goal reminder is the engine's.
 fn producer_label(owner: &ProducerOwner) -> Option<String> {
     match owner {
-        ProducerOwner::External { source, name } => Some(match source.cron_job() {
-            Some(job) => format!("[scheduled prompt {job}]"),
-            None => format!("[message from {} {}]", source.as_str(), name.as_str()),
-        }),
+        ProducerOwner::External { source, name } => {
+            Some(match (source.cron_job(), source.webhook_id()) {
+                (Some(job), _) => format!("[scheduled prompt {job}]"),
+                (None, Some(webhook)) => format!("[webhook event {webhook}]"),
+                (None, None) => format!("[message from {} {}]", source.as_str(), name.as_str()),
+            })
+        }
         ProducerOwner::Agent { session_id } => Some(format!("[message from agent {session_id}]")),
         ProducerOwner::Subagent { session_id } => {
             Some(format!("[report from subagent {session_id}]"))

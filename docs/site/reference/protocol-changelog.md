@@ -5,6 +5,21 @@ The client protocol's version is `MAJOR.MINOR.PATCH`
 adds and a major breaks; before it, every minor could break the wire (see the
 [compatibility spec](../specs/compatibility-v1.md) section 3).
 
+## 1.96.0
+
+- Webhooks ([webhooks spec](../specs/webhooks.md)): `webhooks.list`,
+  `webhooks.create`, `webhooks.update`, `webhooks.delete`,
+  `webhooks.rotate`, `webhooks.secret`, `webhooks.event`, `webhooks.test`,
+  and the `webhooks.changed` notification, with `Webhook`, `WebhookTarget`,
+  `WebhookTemplate`, `WebhookValueSource`, `WebhookCondition`,
+  `WebhookVerify`, `WebhookEvent`, and `WebhookCounts`; `WebhookId`;
+  `SessionMeta.webhook` and `session_created.webhook` (`SessionWebhook`);
+  `ThreadOwnerRef::Webhook`, whose thread prompts have the origin
+  `engine:webhook-<webhook id>`; a webhook's events are producer messages
+  of the source `webhook:<id>`; the errors `webhook_not_found`,
+  `webhook_event_not_found`, `webhook_invalid`, and `webhook_store_failed`.
+  Plugin protocol 1.48.0 carries the new members.
+
 ## 1.95.0
 
 - Threads for new-session cron jobs ([webhooks spec](../specs/webhooks.md)

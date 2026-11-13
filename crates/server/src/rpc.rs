@@ -425,6 +425,7 @@ pub(crate) fn engine_fault(error: EngineError) -> RpcFault {
             errors::SHARE_NOT_FOUND.error().field("id", id)
         }
         EngineError::Cron(error) => cron_error(error),
+        EngineError::Webhook(error) => webhook_error(error),
         EngineError::Mcp(reason) => errors::MCP_REJECTED
             .error()
             .field("reason", reason_text(reason)),
@@ -608,6 +609,22 @@ fn cron_error(error: &cookie_agent_engine::CronError) -> errors::ErrorBuilder {
             .field("field", field)
             .field("reason", reason_text(reason)),
         CronError::Store(_) => errors::CRON_STORE_FAILED.error(),
+    }
+}
+
+fn webhook_error(error: &cookie_agent_engine::WebhookError) -> errors::ErrorBuilder {
+    use cookie_agent_engine::WebhookError;
+    match error {
+        WebhookError::NotFound(id) => errors::WEBHOOK_NOT_FOUND.error().field("id", id),
+        WebhookError::EventNotFound { id, event } => errors::WEBHOOK_EVENT_NOT_FOUND
+            .error()
+            .field("id", id)
+            .field("event", event),
+        WebhookError::Invalid { field, reason } => errors::WEBHOOK_INVALID
+            .error()
+            .field("field", field)
+            .field("reason", reason_text(reason)),
+        WebhookError::Store(_) => errors::WEBHOOK_STORE_FAILED.error(),
     }
 }
 

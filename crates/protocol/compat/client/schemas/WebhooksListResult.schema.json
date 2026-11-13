@@ -1,0 +1,976 @@
+{
+  "$defs": {
+    "CronActor": {
+      "description": "Who created or changed a job: you, through a client, or an agent from a\nsession.",
+      "oneOf": [
+        {
+          "enum": [
+            "user"
+          ],
+          "type": "string"
+        },
+        {
+          "properties": {
+            "agent": {
+              "$ref": "#/$defs/CronAgentActor"
+            }
+          },
+          "required": [
+            "agent"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "CronAgentActor": {
+      "properties": {
+        "agent": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[a-z0-9](?:[a-z0-9]|-(?=[a-z0-9]))*$",
+          "type": "string"
+        },
+        "session": {
+          "format": "uuid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "agent",
+        "session"
+      ],
+      "type": "object"
+    },
+    "CronRunEnd": {
+      "description": "How the run a fire started, or steered into, ended.",
+      "properties": {
+        "at": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/SessionStatus"
+        }
+      },
+      "required": [
+        "status",
+        "at"
+      ],
+      "type": "object"
+    },
+    "CronThread": {
+      "description": "One thread of a new-session job: the session its key's fires go into\n(client protocol 1.95.0).",
+      "properties": {
+        "key": {
+          "type": "string"
+        },
+        "last_used": {
+          "description": "When a fire last went into it.",
+          "format": "date-time",
+          "type": "string"
+        },
+        "session_id": {
+          "format": "uuid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "key",
+        "session_id",
+        "last_used"
+      ],
+      "type": "object"
+    },
+    "ModelSelection": {
+      "description": "One exact base or named-variant model selection.",
+      "properties": {
+        "model": {
+          "maxLength": 512,
+          "minLength": 3,
+          "pattern": "^[a-z0-9][a-z0-9._-]{0,127}/[^/\\s\\u0000-\\u001f\\u007f-\\u009f\\[\\]]+(?:/[^/\\s\\u0000-\\u001f\\u007f-\\u009f\\[\\]]+)*$",
+          "type": "string"
+        },
+        "variant": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^(?!base$)[a-z0-9][a-z0-9._-]{0,63}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "model"
+      ],
+      "type": "object"
+    },
+    "PermissionEffect": {
+      "description": "A value this build does not know reads as `ask`: asking, the effect that\nnever runs a call unapproved.",
+      "enum": [
+        "allow",
+        "deny",
+        "ask"
+      ],
+      "type": "string",
+      "x-open": true
+    },
+    "PermissionMode": {
+      "description": "A value this build does not know reads as `ask`: asking.",
+      "enum": [
+        "auto_approve",
+        "auto_approve_n",
+        "auto_approve_y",
+        "yolo",
+        "ask"
+      ],
+      "type": "string",
+      "x-open": true
+    },
+    "PermissionRule": {
+      "properties": {
+        "action": {
+          "description": "Permission action a tool declares, such as `read`, `bash`, or a runtime's own action.",
+          "pattern": "^[a-z][a-z0-9_]{0,31}$",
+          "type": "string"
+        },
+        "effect": {
+          "$ref": "#/$defs/PermissionEffect"
+        },
+        "resource": {
+          "description": "Current wildcard grammar: '*' matches any characters, '?' matches one character, and the exact '${workspace_dir}' expression is allowed; controls, globstar, escapes, classes, and every other brace form are forbidden. Runtime deserialization additionally enforces a maximum of 4096 UTF-8 bytes; x-cookie-agent-maxUtf8Bytes records that byte limit because JSON Schema maxLength counts Unicode code points.",
+          "minLength": 1,
+          "pattern": "^(?:\\$\\{workspace_dir\\}|[^\\u0000-\\u001f\\u007f-\\u009f\\\\\\[\\]\\{\\}])+$",
+          "type": "string",
+          "x-cookie-agent-maxUtf8Bytes": 4096
+        },
+        "runtime": {
+          "description": "Runtime selector (`bash@labpc`): the rule applies only to tools of\nruntimes with this runtime ID. Absent, it applies everywhere,\nincluding the base layer.",
+          "maxLength": 32,
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9_]{0,31}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "action",
+        "resource",
+        "effect"
+      ],
+      "type": "object"
+    },
+    "ProducerDeliveryMode": {
+      "description": "Per-send mode. Queue remains accepted-but-deferred during an active run;\nsteer joins the next safe request without interrupting an in-flight request.",
+      "enum": [
+        "steer",
+        "queue"
+      ],
+      "type": "string"
+    },
+    "ProjectRuntime": {
+      "description": "One runtime a project's new sessions attach, as `session.create`'s\n`runtimes` names it.",
+      "properties": {
+        "capability": {
+          "description": "The capability to attach; the runtime's only capability when\nomitted.",
+          "maxLength": 32,
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9_]{0,31}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "runtime_id": {
+          "maxLength": 32,
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9_]{0,31}$",
+          "type": "string"
+        },
+        "workspace": {
+          "description": "Required exactly when the capability takes a workspace.",
+          "maxLength": 4096,
+          "minLength": 1,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "runtime_id"
+      ],
+      "type": "object"
+    },
+    "SessionStatus": {
+      "oneOf": [
+        {
+          "enum": [
+            "idle",
+            "running",
+            "completed",
+            "failed",
+            "cancelled",
+            "interrupted"
+          ],
+          "type": "string"
+        }
+      ],
+      "x-open": true
+    },
+    "Webhook": {
+      "description": "One webhook with its state and history.",
+      "properties": {
+        "consecutive_failures": {
+          "default": 0,
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "counts": {
+          "$ref": "#/$defs/WebhookCounts",
+          "default": {
+            "accepted": 0,
+            "backlog_full": 0,
+            "duplicate": 0,
+            "filtered": 0,
+            "rate_limited": 0,
+            "rejected": 0
+          }
+        },
+        "created_at": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "created_by": {
+          "$ref": "#/$defs/CronActor"
+        },
+        "delivery": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ProducerDeliveryMode"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "For an existing-session webhook, and a new-session one with a\nthread key, whose events into an existing thread use it."
+        },
+        "disabled_reason": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WebhookDisabledReason"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "filter": {
+          "items": {
+            "$ref": "#/$defs/WebhookCondition"
+          },
+          "type": "array"
+        },
+        "headers": {
+          "description": "Extra request headers the model sees.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "history": {
+          "default": [],
+          "description": "The latest events, oldest first, as many as `[webhooks] history`\nkeeps, and every event still waiting.",
+          "items": {
+            "$ref": "#/$defs/WebhookEvent"
+          },
+          "type": "array"
+        },
+        "id": {
+          "description": "A webhook's ID: eight lowercase ASCII letters and digits.",
+          "maxLength": 8,
+          "minLength": 1,
+          "pattern": "^[a-z0-9]{8}$",
+          "type": "string"
+        },
+        "max_concurrent": {
+          "description": "New-session webhooks: how many of its sessions may run at once; 0 or\nless is no limit. 1 when absent.",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "max_consecutive_failures": {
+          "description": "The webhook's own `[webhooks] max_consecutive_failures`; 0 or less\nnever disables.",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "max_per_hour": {
+          "description": "The webhook's own limit of events per rolling hour; 0 or less is\nnone. `[webhooks] max_per_hour` when absent.",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "path": {
+          "description": "The URL's path, `/hooks/<url_token>`, which clients put after the\npublic base.",
+          "type": "string"
+        },
+        "permission_mode": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PermissionMode"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "New-session webhooks: the sessions' permission mode."
+        },
+        "prompt": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "target": {
+          "$ref": "#/$defs/WebhookTarget"
+        },
+        "threads": {
+          "description": "A new-session webhook's threads, the most recently used last.",
+          "items": {
+            "$ref": "#/$defs/CronThread"
+          },
+          "type": "array"
+        },
+        "url_token": {
+          "description": "The token in the webhook's URL, which rotating changes.",
+          "type": "string"
+        },
+        "verify": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WebhookVerify"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The signature check, without its secret."
+        },
+        "waiting": {
+          "default": 0,
+          "description": "Events in the backlog.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "url_token",
+        "path",
+        "target",
+        "enabled",
+        "created_by",
+        "created_at"
+      ],
+      "type": "object"
+    },
+    "WebhookCondition": {
+      "description": "One condition of a webhook's filter: the value its source reads must be\none of `one_of`.",
+      "properties": {
+        "header": {
+          "maxLength": 128,
+          "minLength": 1,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "json": {
+          "maxLength": 512,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "one_of": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 64,
+          "minItems": 1,
+          "type": "array"
+        }
+      },
+      "required": [
+        "one_of"
+      ],
+      "type": "object"
+    },
+    "WebhookCounts": {
+      "description": "How many requests a webhook turned away, and when it last did, by\nreason. Approximate: the daemon writes them with the webhook's next\nchange.",
+      "properties": {
+        "accepted": {
+          "default": 0,
+          "description": "Events accepted.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "backlog_full": {
+          "default": 0,
+          "description": "Requests that found the backlog full (`503`).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "duplicate": {
+          "default": 0,
+          "description": "Requests with a delivery ID seen before (`200`).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "filtered": {
+          "default": 0,
+          "description": "Requests the filter turned away (`204`).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "last_accepted": {
+          "format": "date-time",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "last_backlog_full": {
+          "format": "date-time",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "last_duplicate": {
+          "format": "date-time",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "last_filtered": {
+          "format": "date-time",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "last_rate_limited": {
+          "format": "date-time",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "last_rejected": {
+          "format": "date-time",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "rate_limited": {
+          "default": 0,
+          "description": "Requests over `max_per_hour` (`429`).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "rejected": {
+          "default": 0,
+          "description": "Requests that failed the signature check (`401`).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "WebhookDisabledReason": {
+      "description": "Why a webhook is disabled.",
+      "oneOf": [
+        {
+          "description": "Its events failed this many times in a row.",
+          "properties": {
+            "failures": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "kind": {
+              "const": "failed",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "failures"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "You or an agent disabled it.",
+          "properties": {
+            "by": {
+              "$ref": "#/$defs/CronActor"
+            },
+            "kind": {
+              "const": "disabled",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "by"
+          ],
+          "type": "object"
+        }
+      ],
+      "x-open": true
+    },
+    "WebhookEvent": {
+      "description": "One event of a webhook's history.",
+      "properties": {
+        "bytes": {
+          "description": "The body's size.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "content_type": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "delivery_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "outcome": {
+          "$ref": "#/$defs/WebhookEventOutcome"
+        },
+        "received_at": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "run_end": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CronRunEnd"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "run_id": {
+          "description": "The run it started or joined, once it has one.",
+          "format": "uuid",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "session_id": {
+          "description": "The session the event went to.",
+          "format": "uuid",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "test": {
+          "description": "A test event (`webhooks.test`), which skipped the checks and limits\nand counts toward no failure.",
+          "type": "boolean"
+        },
+        "thread_key": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "received_at",
+        "bytes",
+        "outcome"
+      ],
+      "type": "object"
+    },
+    "WebhookEventOutcome": {
+      "description": "What an event did.",
+      "oneOf": [
+        {
+          "description": "Stored and being delivered.",
+          "properties": {
+            "kind": {
+              "const": "pending",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "In the backlog: the webhook's `max_concurrent` sessions are running.",
+          "properties": {
+            "kind": {
+              "const": "waiting",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Accepted by its session, or its new session was created.",
+          "properties": {
+            "kind": {
+              "const": "delivered",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "It could not be delivered, or the run it started or joined failed.",
+          "properties": {
+            "error": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "failed",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "error"
+          ],
+          "type": "object"
+        }
+      ],
+      "x-open": true
+    },
+    "WebhookSignatureEncoding": {
+      "description": "How a generic HMAC signature is written.",
+      "enum": [
+        "hex",
+        "base64"
+      ],
+      "type": "string"
+    },
+    "WebhookTarget": {
+      "description": "Where each event goes.",
+      "oneOf": [
+        {
+          "description": "A root session.",
+          "properties": {
+            "session": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          "required": [
+            "session"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A delegated session.",
+          "properties": {
+            "subagent": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          "required": [
+            "subagent"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A new root session per event, or per thread key, from this\ntemplate.",
+          "properties": {
+            "new": {
+              "$ref": "#/$defs/WebhookTemplate"
+            }
+          },
+          "required": [
+            "new"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "WebhookTemplate": {
+      "description": "What a new-session webhook's sessions start with: a cron template's\nmembers, with a thread key read from each request.",
+      "properties": {
+        "acp_runtime": {
+          "description": "For an ACP agent, the runtime its runs run it on.",
+          "maxLength": 32,
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9_]{0,31}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "agent": {
+          "description": "The agent each session starts with; it must be able to run as a\nroot (`primary` or `all`).",
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[a-z0-9](?:[a-z0-9]|-(?=[a-z0-9]))*$",
+          "type": "string"
+        },
+        "cwd": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "global": {
+          "description": "Whether a session attaches the global runtime; `true` when omitted.",
+          "type": "boolean"
+        },
+        "model": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ModelSelection"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "A model pin; the agent's own model chain when omitted. Only clients\nset it."
+        },
+        "permission_rules": {
+          "description": "Rules added to each session as its permission overlay.",
+          "items": {
+            "$ref": "#/$defs/PermissionRule"
+          },
+          "maxItems": 256,
+          "type": "array"
+        },
+        "preset": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "project": {
+          "description": "The project the sessions belong to.",
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[a-z0-9][a-z0-9-]{0,63}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "runtimes": {
+          "description": "The runtimes a session attaches besides `global`, as\n`session.create`'s `runtimes` names them.",
+          "items": {
+            "$ref": "#/$defs/ProjectRuntime"
+          },
+          "maxItems": 256,
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "thread_key": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WebhookValueSource"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Where each request's thread key is read (section 7.4): events with\nthe same key go into one session, which the first of them creates.\nEach event creates a session when omitted, and so does an event\nwhose key is missing."
+        },
+        "thread_prompt": {
+          "description": "Instructions each session the webhook creates gets once, as a plain\nuser message before its first event, and again before the first\nevent after each compaction of that session (section 7.5).",
+          "maxLength": 32768,
+          "minLength": 1,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "agent"
+      ],
+      "type": "object"
+    },
+    "WebhookValueSource": {
+      "description": "Where a filter condition or a thread key reads its value: exactly one of\na request header, by name, or a JSON Pointer (RFC 6901) into a JSON or\nform body.",
+      "properties": {
+        "header": {
+          "maxLength": 128,
+          "minLength": 1,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "json": {
+          "maxLength": 512,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "WebhookVerify": {
+      "description": "A webhook's check as commands set it and reads show it. `secret` is\nthe secret, or the bearer token, on a create or an update; the daemon\nmakes one when it is omitted and never returns it here (see\n`webhooks.secret`). `header`, `encoding`, and `prefix` belong to\n`hmac_sha256` only.",
+      "properties": {
+        "encoding": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WebhookSignatureEncoding"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "header": {
+          "maxLength": 128,
+          "minLength": 1,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "kind": {
+          "$ref": "#/$defs/WebhookVerifyKind"
+        },
+        "prefix": {
+          "maxLength": 64,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "secret": {
+          "maxLength": 1024,
+          "minLength": 1,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "type": "object"
+    },
+    "WebhookVerifyKind": {
+      "description": "A webhook's signature check (section 6).",
+      "oneOf": [
+        {
+          "const": "github",
+          "description": "`X-Hub-Signature-256: sha256=<hex HMAC-SHA256 of the body>`.",
+          "type": "string"
+        },
+        {
+          "const": "standard",
+          "description": "Standard Webhooks: `webhook-id`, `webhook-timestamp`, and\n`webhook-signature`, with a `whsec_` secret.",
+          "type": "string"
+        },
+        {
+          "const": "hmac_sha256",
+          "description": "`<header>: <prefix><HMAC-SHA256 of the body>` in `encoding`.",
+          "type": "string"
+        },
+        {
+          "const": "bearer",
+          "description": "`Authorization: Bearer <token>`.",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Every webhook, in creation order.",
+  "properties": {
+    "public_base": {
+      "description": "The public base URLs are built on, when the daemon has one\n(`[public] url`, else `[server] page_url`); clients use the address\nthey reached the daemon at otherwise.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "receiving": {
+      "default": true,
+      "description": "Whether the daemon receives requests: `[webhooks] enabled`.",
+      "type": "boolean"
+    },
+    "webhooks": {
+      "items": {
+        "$ref": "#/$defs/Webhook"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "webhooks"
+  ],
+  "title": "WebhooksListResult",
+  "type": "object"
+}

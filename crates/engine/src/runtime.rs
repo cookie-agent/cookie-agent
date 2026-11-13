@@ -95,6 +95,7 @@ pub(crate) mod threads;
 mod titles;
 pub(crate) mod tool_execution;
 mod tool_prompts;
+pub(crate) mod webhook;
 
 pub(crate) use artifacts::reads::read_artifact_async;
 pub(crate) use artifacts::{ArtifactRouter, SessionArtifacts};
@@ -357,6 +358,9 @@ pub enum EngineError {
     /// A cron request was refused or failed.
     #[error(transparent)]
     Cron(#[from] crate::crons::CronError),
+    /// A webhook request was refused or failed.
+    #[error(transparent)]
+    Webhook(#[from] crate::webhooks::store::WebhookError),
     #[error("plugin request rejected: {0}")]
     Plugin(String),
     #[error(transparent)]
@@ -1081,6 +1085,9 @@ pub(crate) struct Inner {
     pub(crate) cron_scheduler: cron::fire::CronSchedulerState,
     /// The per-key locks of deliveries into threads.
     pub(crate) thread_locks: threads::ThreadLocks,
+    /// The webhooks.
+    pub(crate) webhooks: Arc<crate::webhooks::store::WebhookStore>,
+    pub(crate) webhook_state: webhook::WebhookState,
     pub(crate) cache_expiry: cache_expiry::CacheExpiryState,
     /// A restart a client scheduled, and the hook that does it.
     pub(crate) restart: restart::RestartState,
@@ -1295,6 +1302,9 @@ impl Engine {
             eprintln!("cookie-agent: projects: {error}");
         }
         let crons = Arc::new(crate::crons::CronStore::open(&options.data_dir)?);
+        let webhooks = Arc::new(crate::webhooks::store::WebhookStore::open(
+            &options.data_dir,
+        )?);
         let assets = Arc::new(crate::assets::AssetStores::new(&options.data_dir));
         let shares = Arc::new(crate::shares::ShareStore::new(&options.data_dir));
         drop(restoring);
@@ -1435,6 +1445,8 @@ impl Engine {
                 crons,
                 cron_scheduler: cron::fire::CronSchedulerState::default(),
                 thread_locks: threads::ThreadLocks::default(),
+                webhooks,
+                webhook_state: webhook::WebhookState::default(),
                 cache_expiry: cache_expiry::CacheExpiryState::default(),
                 restart: restart::RestartState::default(),
                 status,
@@ -1529,6 +1541,7 @@ impl Engine {
         engine.start_subagent_janitor();
         engine.start_mcp_wanted_watch();
         engine.start_cron_scheduler();
+        engine.start_webhooks();
         engine.start_cache_expiry_scheduler();
         engine.install_acp();
         Ok(engine)

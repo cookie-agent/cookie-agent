@@ -937,6 +937,46 @@ pub trait ServerProtocol: Send + Sync + 'static {
         &self,
         params: cookie_agent_protocol::CronRunParams,
     ) -> Result<cookie_agent_protocol::CronRunResult, ServerFault>;
+    /// Lists the webhooks with their state and history.
+    async fn list_webhooks(
+        &self,
+        params: cookie_agent_protocol::WebhooksListParams,
+    ) -> Result<cookie_agent_protocol::WebhooksListResult, ServerFault>;
+    /// Creates a webhook.
+    async fn create_webhook(
+        &self,
+        params: cookie_agent_protocol::WebhookCreateParams,
+    ) -> Result<cookie_agent_protocol::WebhookResult, ServerFault>;
+    /// Changes a webhook.
+    async fn update_webhook(
+        &self,
+        params: cookie_agent_protocol::WebhookUpdateParams,
+    ) -> Result<cookie_agent_protocol::WebhookResult, ServerFault>;
+    /// Deletes a webhook.
+    async fn delete_webhook(
+        &self,
+        params: cookie_agent_protocol::WebhookDeleteParams,
+    ) -> Result<cookie_agent_protocol::WebhookDeleteResult, ServerFault>;
+    /// Gives a webhook a new URL token or signing secret.
+    async fn rotate_webhook(
+        &self,
+        params: cookie_agent_protocol::WebhookRotateParams,
+    ) -> Result<cookie_agent_protocol::WebhookResult, ServerFault>;
+    /// A webhook's signing secret.
+    async fn webhook_secret(
+        &self,
+        params: cookie_agent_protocol::WebhookSecretParams,
+    ) -> Result<cookie_agent_protocol::WebhookSecretResult, ServerFault>;
+    /// One event of a webhook's history with its request.
+    async fn webhook_event(
+        &self,
+        params: cookie_agent_protocol::WebhookEventParams,
+    ) -> Result<cookie_agent_protocol::WebhookEventResult, ServerFault>;
+    /// Delivers a test event.
+    async fn test_webhook(
+        &self,
+        params: cookie_agent_protocol::WebhookTestParams,
+    ) -> Result<cookie_agent_protocol::WebhookTestResult, ServerFault>;
     /// The daemon's push key and the browsers it pushes to.
     async fn get_notifications(
         &self,
@@ -2140,6 +2180,30 @@ async fn dispatch<S: ServerProtocol>(
             value(server.delete_cron(decode(params)?).await?)
         }
         cookie_agent_protocol::CRONS_RUN_METHOD => value(server.run_cron(decode(params)?).await?),
+        cookie_agent_protocol::WEBHOOKS_LIST_METHOD => {
+            value(server.list_webhooks(decode_default(params)?).await?)
+        }
+        cookie_agent_protocol::WEBHOOKS_CREATE_METHOD => {
+            value(server.create_webhook(decode(params)?).await?)
+        }
+        cookie_agent_protocol::WEBHOOKS_UPDATE_METHOD => {
+            value(server.update_webhook(decode(params)?).await?)
+        }
+        cookie_agent_protocol::WEBHOOKS_DELETE_METHOD => {
+            value(server.delete_webhook(decode(params)?).await?)
+        }
+        cookie_agent_protocol::WEBHOOKS_ROTATE_METHOD => {
+            value(server.rotate_webhook(decode(params)?).await?)
+        }
+        cookie_agent_protocol::WEBHOOKS_SECRET_METHOD => {
+            value(server.webhook_secret(decode(params)?).await?)
+        }
+        cookie_agent_protocol::WEBHOOKS_EVENT_METHOD => {
+            value(server.webhook_event(decode(params)?).await?)
+        }
+        cookie_agent_protocol::WEBHOOKS_TEST_METHOD => {
+            value(server.test_webhook(decode(params)?).await?)
+        }
         cookie_agent_protocol::NOTIFICATIONS_GET_METHOD => {
             value(server.get_notifications(decode_default(params)?).await?)
         }

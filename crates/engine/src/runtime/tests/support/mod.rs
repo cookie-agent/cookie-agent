@@ -937,6 +937,7 @@ pub(crate) fn create_buffered_delegated_descendant(
         creation_agent,
         revisions,
         cron: _,
+        webhook: _,
     } = parent_projection
         .log
         .event_snapshot()
@@ -956,6 +957,7 @@ pub(crate) fn create_buffered_delegated_descendant(
             cookie_agent_protocol::EventOrigin::new("engine:test").expect("event origin"),
             EventPayload::SessionCreated {
                 cron: None,
+                webhook: None,
                 history_format: cookie_agent_protocol::HISTORY_FORMAT,
                 short_id: "test_00000000".into(),
                 origin: cookie_agent_protocol::SessionOrigin::Delegated {

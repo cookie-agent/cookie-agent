@@ -186,6 +186,19 @@ fn validate_cron_job_id(value: &str) -> Result<(), WireStringError> {
     }
 }
 
+/// A webhook's ID (`docs/site/specs/webhooks.md` section 4): eight
+/// lowercase ASCII letters and digits, assigned by the daemon (client
+/// protocol 1.96.0). It never changes; the URL token does.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct WebhookId(String);
+string_wire_impl!(
+    WebhookId,
+    8,
+    "^[a-z0-9]{8}$",
+    "A webhook's ID: eight lowercase ASCII letters and digits.",
+    validate_cron_job_id
+);
+
 /// An asset's handle (`docs/site/specs/assets.md` section 3.1): `asset_`
 /// and eight lowercase hexadecimal digits, assigned by the daemon. It is
 /// what a model names an asset by; clients use the [`AssetId`].
@@ -319,6 +332,7 @@ impl ProducerSource {
     const PLUGIN: &'static str = "plugin:";
     const RUNTIME: &'static str = "runtime:";
     const CRON: &'static str = "cron:";
+    const WEBHOOK: &'static str = "webhook:";
 
     /// The source of cron job `job`'s fires (`docs/site/specs/cron.md`
     /// section 9): the daemon's own, which no connection can claim, since
@@ -332,6 +346,27 @@ impl ProducerSource {
     #[must_use]
     pub fn cron_job(&self) -> Option<&str> {
         self.0.strip_prefix(Self::CRON)
+    }
+
+    /// The source of webhook `webhook`'s events
+    /// (`docs/site/specs/webhooks.md` section 7.2): the daemon's own, as a
+    /// cron job's is (client protocol 1.96.0).
+    #[must_use]
+    pub fn webhook(webhook: &WebhookId) -> Self {
+        Self(format!("{}{webhook}", Self::WEBHOOK))
+    }
+
+    /// The webhook ID, for a webhook source.
+    #[must_use]
+    pub fn webhook_id(&self) -> Option<&str> {
+        self.0.strip_prefix(Self::WEBHOOK)
+    }
+
+    /// Whether the daemon itself produces from this source (a cron job or
+    /// a webhook), which no connection can claim.
+    #[must_use]
+    pub fn is_daemon_owned(&self) -> bool {
+        self.cron_job().is_some() || self.webhook_id().is_some()
     }
 
     /// The source of the configured plugin `plugin`.

@@ -530,6 +530,54 @@ impl ServerProtocol for StubServer {
     ) -> Result<cookie_agent_protocol::CronRunResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
+    async fn list_webhooks(
+        &self,
+        _: cookie_agent_protocol::WebhooksListParams,
+    ) -> Result<cookie_agent_protocol::WebhooksListResult, ServerFault> {
+        Err(ServerFault::method_not_found("stub"))
+    }
+    async fn create_webhook(
+        &self,
+        _: cookie_agent_protocol::WebhookCreateParams,
+    ) -> Result<cookie_agent_protocol::WebhookResult, ServerFault> {
+        Err(ServerFault::method_not_found("stub"))
+    }
+    async fn update_webhook(
+        &self,
+        _: cookie_agent_protocol::WebhookUpdateParams,
+    ) -> Result<cookie_agent_protocol::WebhookResult, ServerFault> {
+        Err(ServerFault::method_not_found("stub"))
+    }
+    async fn delete_webhook(
+        &self,
+        _: cookie_agent_protocol::WebhookDeleteParams,
+    ) -> Result<cookie_agent_protocol::WebhookDeleteResult, ServerFault> {
+        Err(ServerFault::method_not_found("stub"))
+    }
+    async fn rotate_webhook(
+        &self,
+        _: cookie_agent_protocol::WebhookRotateParams,
+    ) -> Result<cookie_agent_protocol::WebhookResult, ServerFault> {
+        Err(ServerFault::method_not_found("stub"))
+    }
+    async fn webhook_secret(
+        &self,
+        _: cookie_agent_protocol::WebhookSecretParams,
+    ) -> Result<cookie_agent_protocol::WebhookSecretResult, ServerFault> {
+        Err(ServerFault::method_not_found("stub"))
+    }
+    async fn webhook_event(
+        &self,
+        _: cookie_agent_protocol::WebhookEventParams,
+    ) -> Result<cookie_agent_protocol::WebhookEventResult, ServerFault> {
+        Err(ServerFault::method_not_found("stub"))
+    }
+    async fn test_webhook(
+        &self,
+        _: cookie_agent_protocol::WebhookTestParams,
+    ) -> Result<cookie_agent_protocol::WebhookTestResult, ServerFault> {
+        Err(ServerFault::method_not_found("stub"))
+    }
     async fn get_notifications(
         &self,
         _: cookie_agent_protocol::NotificationsGetParams,

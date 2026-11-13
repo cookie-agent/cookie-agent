@@ -1,0 +1,229 @@
+{
+  "$defs": {
+    "CronRunEnd": {
+      "description": "How the run a fire started, or steered into, ended.",
+      "properties": {
+        "at": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/SessionStatus"
+        }
+      },
+      "required": [
+        "status",
+        "at"
+      ],
+      "type": "object"
+    },
+    "SessionStatus": {
+      "oneOf": [
+        {
+          "enum": [
+            "idle",
+            "running",
+            "completed",
+            "failed",
+            "cancelled",
+            "interrupted"
+          ],
+          "type": "string"
+        }
+      ],
+      "x-open": true
+    },
+    "WebhookEvent": {
+      "description": "One event of a webhook's history.",
+      "properties": {
+        "bytes": {
+          "description": "The body's size.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "content_type": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "delivery_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "outcome": {
+          "$ref": "#/$defs/WebhookEventOutcome"
+        },
+        "received_at": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "run_end": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CronRunEnd"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "run_id": {
+          "description": "The run it started or joined, once it has one.",
+          "format": "uuid",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "session_id": {
+          "description": "The session the event went to.",
+          "format": "uuid",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "test": {
+          "description": "A test event (`webhooks.test`), which skipped the checks and limits\nand counts toward no failure.",
+          "type": "boolean"
+        },
+        "thread_key": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "received_at",
+        "bytes",
+        "outcome"
+      ],
+      "type": "object"
+    },
+    "WebhookEventOutcome": {
+      "description": "What an event did.",
+      "oneOf": [
+        {
+          "description": "Stored and being delivered.",
+          "properties": {
+            "kind": {
+              "const": "pending",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "In the backlog: the webhook's `max_concurrent` sessions are running.",
+          "properties": {
+            "kind": {
+              "const": "waiting",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Accepted by its session, or its new session was created.",
+          "properties": {
+            "kind": {
+              "const": "delivered",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "It could not be delivered, or the run it started or joined failed.",
+          "properties": {
+            "error": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "failed",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "error"
+          ],
+          "type": "object"
+        }
+      ],
+      "x-open": true
+    },
+    "WebhookHeader": {
+      "description": "One request header.",
+      "properties": {
+        "name": {
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string"
+        },
+        "value": {
+          "maxLength": 8192,
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "value"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "An event with its request: the method, the headers but the secret ones,\nand the body, as text when it is UTF-8 and as base64 otherwise.",
+  "properties": {
+    "body_base64": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "body_text": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "event": {
+      "$ref": "#/$defs/WebhookEvent"
+    },
+    "headers": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/WebhookHeader"
+      },
+      "type": "array"
+    },
+    "method": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "event",
+    "method"
+  ],
+  "title": "WebhookEventResult",
+  "type": "object"
+}

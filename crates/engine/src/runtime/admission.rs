@@ -299,6 +299,7 @@ impl Engine {
                     fired_at: cron.fired_at,
                     thread_key: None,
                 }),
+            webhook: None,
             history_format: cookie_agent_protocol::HISTORY_FORMAT,
             origin,
             short_id,

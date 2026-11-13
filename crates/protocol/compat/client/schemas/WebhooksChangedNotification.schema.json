@@ -1,0 +1,6 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "A webhook was created, changed, received an event, or was deleted;\nrefetch `webhooks.list`.",
+  "title": "WebhooksChangedNotification",
+  "type": "object"
+}

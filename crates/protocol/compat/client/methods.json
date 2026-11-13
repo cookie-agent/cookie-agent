@@ -1320,6 +1320,78 @@
       "params": "SkillsUpdateParams",
       "params_role": "command",
       "result": "SkillsUpdateResult"
+    },
+    {
+      "direction": "from_daemon",
+      "kind": "notification",
+      "method": "webhooks.changed",
+      "params": "WebhooksChangedNotification",
+      "params_role": "information",
+      "result": null
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "webhooks.create",
+      "params": "WebhookCreateParams",
+      "params_role": "command",
+      "result": "WebhookResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "webhooks.delete",
+      "params": "WebhookDeleteParams",
+      "params_role": "command",
+      "result": "WebhookDeleteResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "webhooks.event",
+      "params": "WebhookEventParams",
+      "params_role": "command",
+      "result": "WebhookEventResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "webhooks.list",
+      "params": "WebhooksListParams",
+      "params_role": "command",
+      "result": "WebhooksListResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "webhooks.rotate",
+      "params": "WebhookRotateParams",
+      "params_role": "command",
+      "result": "WebhookResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "webhooks.secret",
+      "params": "WebhookSecretParams",
+      "params_role": "command",
+      "result": "WebhookSecretResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "webhooks.test",
+      "params": "WebhookTestParams",
+      "params_role": "command",
+      "result": "WebhookTestResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "webhooks.update",
+      "params": "WebhookUpdateParams",
+      "params_role": "command",
+      "result": "WebhookResult"
     }
   ],
   "surface": "client"

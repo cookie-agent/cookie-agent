@@ -314,6 +314,7 @@ mod tests {
         SessionMeta {
             cache_compaction: None,
             cron: None,
+            webhook: None,
             project: None,
             session_id: id,
             origin: SessionOrigin::Root,

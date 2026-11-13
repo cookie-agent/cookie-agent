@@ -502,6 +502,7 @@ fn a_revert_folds_what_stays_again() {
         origin(),
         EventPayload::SessionCreated {
             cron: None,
+            webhook: None,
             history_format: cookie_agent_protocol::HISTORY_FORMAT,
             short_id: "test_00000000".into(),
             origin: cookie_agent_protocol::SessionOrigin::Root,

@@ -741,6 +741,7 @@ impl Engine {
             self.observe_subagent_run(session, run, ended);
             if ended {
                 self.observe_cron_run(session, run);
+                self.observe_webhook_run(session, run);
             }
         }
         if let (Event::ToolCallTerminated { termination }, Some(run)) =

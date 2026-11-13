@@ -338,6 +338,10 @@ fn router(
             "/s/{*path}",
             axum::routing::any(super::share_pages::share_pages),
         )
+        .route(
+            "/hooks/{token}",
+            axum::routing::any(super::webhook_route::receive),
+        )
         .fallback(super::page::page)
         .with_state(WebSocketState {
             shared,
@@ -389,14 +393,18 @@ async fn listen(
 }
 
 /// The public listener's routes (`[public] listen`): the public paths and
-/// nothing else, today share links (`/s/…`,
-/// `docs/site/specs/share-links.md` section 6.2). Webhooks
-/// (`docs/site/specs/webhooks.md` section 5) add `/hooks/` here.
+/// nothing else: share links (`/s/…`, `docs/site/specs/share-links.md`
+/// section 6.2) and webhooks (`/hooks/…`, `docs/site/specs/webhooks.md`
+/// section 5).
 fn public_router(shared: Arc<Shared>, server: ServerSlot, token: Arc<Zeroizing<String>>) -> Router {
     Router::new()
         .route(
             "/s/{*path}",
             axum::routing::any(super::share_pages::share_pages),
+        )
+        .route(
+            "/hooks/{token}",
+            axum::routing::any(super::webhook_route::receive),
         )
         .fallback(super::share_pages::not_shared)
         .with_state(WebSocketState {

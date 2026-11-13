@@ -187,6 +187,7 @@ impl Engine {
         let child = SessionId::new_v7();
         let creation = Event::SessionCreated {
             cron: None,
+            webhook: None,
             history_format: cookie_agent_protocol::HISTORY_FORMAT,
             origin: SessionOrigin::Delegated {
                 root_session_id: root,

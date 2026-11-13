@@ -823,6 +823,44 @@ error_codes! {
         hint: Some("See the details, then check that the cookie data directory is readable and writable."),
         description: "Reading or writing `crons.json`, or taking the memory lock, failed; nothing changed.",
     }
+    WEBHOOK_NOT_FOUND {
+        code: "webhook_not_found",
+        rpc: APPLICATION_ERROR,
+        fields: [required("id", "The webhook ID.")],
+        message: "There is no webhook {id}.",
+        hint: Some("See `webhooks.list` for the webhooks."),
+        description: "A `webhooks.*` request named a webhook the daemon does not have.",
+    }
+    WEBHOOK_EVENT_NOT_FOUND {
+        code: "webhook_event_not_found",
+        rpc: APPLICATION_ERROR,
+        fields: [
+            required("id", "The webhook ID."),
+            required("event", "The event ID."),
+        ],
+        message: "Webhook {id} has no event {event}.",
+        hint: Some("Its history keeps only the latest events; see `webhooks.list`."),
+        description: "`webhooks.event` named an event the webhook's history no longer holds, or never did.",
+    }
+    WEBHOOK_INVALID {
+        code: "webhook_invalid",
+        rpc: APPLICATION_ERROR,
+        fields: [
+            required("field", "The member that was refused."),
+            required("reason", "Why, in the daemon's words."),
+        ],
+        message: "The webhook's {field} was refused: {reason}.",
+        hint: None,
+        description: "A `webhooks.create`, `webhooks.update`, or `webhooks.rotate` value the daemon does not accept: a target session that does not exist or has the other kind, a template whose agent cannot run as a root, a thread key or filter condition naming no single source or a malformed one, a check whose secret or header is refused, a member the webhook's kind has no use for, or rotating the secret of a webhook without a check; nothing changed.",
+    }
+    WEBHOOK_STORE_FAILED {
+        code: "webhook_store_failed",
+        rpc: APPLICATION_ERROR,
+        fields: [],
+        message: "The webhooks could not be read or changed.",
+        hint: Some("See the details, then check that the cookie data directory is readable and writable."),
+        description: "Reading or writing `webhooks.json` or an event's body, or taking the memory lock, failed; nothing changed.",
+    }
     PUSH_SUBSCRIPTION_NOT_FOUND {
         code: "push_subscription_not_found",
         rpc: APPLICATION_ERROR,

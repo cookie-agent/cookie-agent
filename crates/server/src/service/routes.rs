@@ -48,6 +48,7 @@ impl ServerProtocol for Server {
         self.start_asset_notifications(context.clone());
         self.start_share_notifications(context.clone());
         self.start_cron_notifications(context.clone());
+        self.start_webhook_notifications(context.clone());
         self.start_push_notifications(context.clone());
         self.start_restart_notifications(context.clone());
         self.start_background_notifications(context.clone());
@@ -1144,6 +1145,84 @@ impl ServerProtocol for Server {
     ) -> Result<cookie_agent_protocol::CronRunResult> {
         self.engine
             .run_cron(params.id)
+            .await
+            .map_err(protocol_fault)
+    }
+
+    async fn list_webhooks(
+        &self,
+        _params: cookie_agent_protocol::WebhooksListParams,
+    ) -> Result<cookie_agent_protocol::WebhooksListResult> {
+        Ok(self.engine.list_webhooks())
+    }
+
+    async fn create_webhook(
+        &self,
+        params: cookie_agent_protocol::WebhookCreateParams,
+    ) -> Result<cookie_agent_protocol::WebhookResult> {
+        self.engine
+            .create_webhook(params)
+            .await
+            .map_err(protocol_fault)
+    }
+
+    async fn update_webhook(
+        &self,
+        params: cookie_agent_protocol::WebhookUpdateParams,
+    ) -> Result<cookie_agent_protocol::WebhookResult> {
+        self.engine
+            .update_webhook(params)
+            .await
+            .map_err(protocol_fault)
+    }
+
+    async fn delete_webhook(
+        &self,
+        params: cookie_agent_protocol::WebhookDeleteParams,
+    ) -> Result<cookie_agent_protocol::WebhookDeleteResult> {
+        self.engine
+            .delete_webhook(params.id)
+            .await
+            .map(|()| cookie_agent_protocol::WebhookDeleteResult {})
+            .map_err(protocol_fault)
+    }
+
+    async fn rotate_webhook(
+        &self,
+        params: cookie_agent_protocol::WebhookRotateParams,
+    ) -> Result<cookie_agent_protocol::WebhookResult> {
+        self.engine
+            .rotate_webhook(params.id, params.what)
+            .await
+            .map_err(protocol_fault)
+    }
+
+    async fn webhook_secret(
+        &self,
+        params: cookie_agent_protocol::WebhookSecretParams,
+    ) -> Result<cookie_agent_protocol::WebhookSecretResult> {
+        self.engine
+            .webhook_secret(&params.id)
+            .map(|secret| cookie_agent_protocol::WebhookSecretResult { secret })
+            .map_err(protocol_fault)
+    }
+
+    async fn webhook_event(
+        &self,
+        params: cookie_agent_protocol::WebhookEventParams,
+    ) -> Result<cookie_agent_protocol::WebhookEventResult> {
+        self.engine
+            .webhook_event(params)
+            .await
+            .map_err(protocol_fault)
+    }
+
+    async fn test_webhook(
+        &self,
+        params: cookie_agent_protocol::WebhookTestParams,
+    ) -> Result<cookie_agent_protocol::WebhookTestResult> {
+        self.engine
+            .test_webhook(params)
             .await
             .map_err(protocol_fault)
     }

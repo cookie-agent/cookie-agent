@@ -107,6 +107,7 @@ pub use runtime::push_signals::{
 };
 pub use runtime::restart::{RestartHook, RestartScheduled, RestartStatus};
 pub use runtime::shares::{GuestLink, GuestPresence, OpenShare, OpenedLink};
+pub use runtime::webhook::receive::WebhookReply;
 pub use runtime::{
     AgentMessageHandle, AgentMessageInvocation, AgentRecipientState, ApprovalRespondFailure,
     Engine, EngineError, EngineHistoryView, EngineOptions, SkillInvocation,
@@ -119,6 +120,8 @@ pub use runtimes::{
 };
 pub use runtimes_tool::runtimes_tool_spec;
 pub use shares::ShareError;
+pub use webhooks::request::WebhookRequest;
+pub use webhooks::store::WebhookError;
 
 // The tool API, imported once for the engine's own modules.
 pub(crate) use cookie_agent_runtime_api::{

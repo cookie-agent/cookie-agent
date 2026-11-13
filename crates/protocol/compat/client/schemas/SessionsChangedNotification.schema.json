@@ -413,6 +413,17 @@
             "$ref": "#/$defs/WaitingOn"
           },
           "type": "array"
+        },
+        "webhook": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SessionWebhook"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The webhook whose event created the session (client protocol\n1.96.0). Absent for every other session and from an older daemon."
         }
       },
       "required": [
@@ -511,6 +522,33 @@
         }
       ],
       "x-open": true
+    },
+    "SessionWebhook": {
+      "description": "The webhook whose event created a session (`SessionMeta::webhook`).",
+      "properties": {
+        "event_id": {
+          "type": "string"
+        },
+        "thread_key": {
+          "description": "The thread the session is, for a webhook with a thread key.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "webhook_id": {
+          "description": "A webhook's ID: eight lowercase ASCII letters and digits.",
+          "maxLength": 8,
+          "minLength": 1,
+          "pattern": "^[a-z0-9]{8}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "webhook_id",
+        "event_id"
+      ],
+      "type": "object"
     },
     "SkippedEvent": {
       "properties": {

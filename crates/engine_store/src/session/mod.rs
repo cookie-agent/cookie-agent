@@ -4370,6 +4370,7 @@ mod windows_tests {
                     creation_selection: selection.clone(),
                     creation_agent: Box::new(agent.clone()),
                     cron: None,
+                    webhook: None,
                     revisions: cookie_agent_protocol::RuntimeRevisions {
                         runtime_revision: runtime_revision.clone(),
                         catalog_revision: catalog_revision.clone(),

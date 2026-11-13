@@ -902,7 +902,10 @@ impl Engine {
 
     /// The model selection a run of `template`'s agent starts with: its
     /// pin, else the first available model of the agent's chain.
-    fn template_selection(&self, template: &StoredTemplate) -> Result<RunSelection, EngineError> {
+    pub(crate) fn template_selection(
+        &self,
+        template: &StoredTemplate,
+    ) -> Result<RunSelection, EngineError> {
         let runtime = self.current_runtime();
         let agents = runtime.agents_for_preset(template.preset.as_deref())?;
         let agent = crate::policy::resolve_agent(&agents, &template.agent)?;
@@ -985,14 +988,14 @@ impl Engine {
                 template.permission_rules.clone(),
                 runtimes,
                 template.project.clone(),
-                Some((
-                    SessionCron {
+                Some(crate::runtime::sessions::SessionCreator {
+                    by: crate::runtime::sessions::CreatedBy::Cron(SessionCron {
                         job_id: job.id.clone(),
                         fired_at,
                         thread_key: thread_key.map(str::to_owned),
-                    },
+                    }),
                     title,
-                )),
+                }),
                 None,
             )
             .await?;

@@ -579,6 +579,7 @@ pub(crate) fn session_created_from_bindings(
         timestamp: Timestamp::now(),
         payload: EventPayload::SessionCreated {
             cron: None,
+            webhook: None,
             history_format: cookie_agent_protocol::HISTORY_FORMAT,
             short_id: "test_00000000".into(),
             origin: SessionOrigin::Root,
@@ -977,6 +978,7 @@ pub(crate) fn session_meta(id: SessionId) -> SessionMeta {
     SessionMeta {
         cache_compaction: None,
         cron: None,
+        webhook: None,
         held: None,
         unread: false,
         pinned: false,

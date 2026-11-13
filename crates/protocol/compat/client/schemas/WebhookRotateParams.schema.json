@@ -1,0 +1,39 @@
+{
+  "$defs": {
+    "WebhookRotate": {
+      "description": "What `webhooks.rotate` replaces.",
+      "oneOf": [
+        {
+          "const": "url",
+          "description": "The URL token: the old URL answers `404` at once.",
+          "type": "string"
+        },
+        {
+          "const": "secret",
+          "description": "The signing secret, or the bearer token.",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "description": "A webhook's ID: eight lowercase ASCII letters and digits.",
+      "maxLength": 8,
+      "minLength": 1,
+      "pattern": "^[a-z0-9]{8}$",
+      "type": "string"
+    },
+    "what": {
+      "$ref": "#/$defs/WebhookRotate"
+    }
+  },
+  "required": [
+    "id",
+    "what"
+  ],
+  "title": "WebhookRotateParams",
+  "type": "object"
+}

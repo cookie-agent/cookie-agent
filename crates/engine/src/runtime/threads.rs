@@ -135,6 +135,20 @@ impl Engine {
                     .thread_prompt
                     .clone()
             }
+            ThreadOwner::Webhook(id) => {
+                let summary = self.inner.store.summary(session).ok()?;
+                if summary.meta.webhook.as_ref()?.webhook_id != *id {
+                    return None;
+                }
+                self.inner
+                    .webhooks
+                    .webhook(id)?
+                    .target
+                    .new_target()?
+                    .template
+                    .thread_prompt
+                    .clone()
+            }
         }
     }
 

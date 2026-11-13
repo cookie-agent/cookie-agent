@@ -281,6 +281,7 @@ impl SessionStore {
             creation_agent,
             revisions,
             cron: None,
+            webhook: None,
         };
         if let Some(open) = self.reviewers.remove(parent) {
             open.log.suspend_writer();

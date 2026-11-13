@@ -64,6 +64,7 @@ fn session_meta(session_id: SessionId) -> SessionMeta {
     SessionMeta {
         cache_compaction: None,
         cron: None,
+        webhook: None,
         held: None,
         unread: false,
         pinned: false,

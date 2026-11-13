@@ -5,6 +5,7 @@ mod routes;
 mod runtime_notifications;
 mod share_landing;
 mod share_pages;
+mod webhook_route;
 mod websocket;
 pub use page::page_url;
 pub use websocket::{TlsConfig, load_tls};

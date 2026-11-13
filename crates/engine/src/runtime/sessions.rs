@@ -23,6 +23,19 @@ use super::{
 use crate::policy::{self, freeze_root_agent_policy, resolve_agent};
 use crate::session::SessionError;
 
+/// What made a root session: a cron job's fire or a webhook's event,
+/// recorded with its creation, and the title it starts with.
+pub(crate) struct SessionCreator {
+    pub(crate) by: CreatedBy,
+    pub(crate) title: cookie_agent_protocol::SessionTitle,
+}
+
+/// Whose fire or event created a session.
+pub(crate) enum CreatedBy {
+    Cron(cookie_agent_protocol::SessionCron),
+    Webhook(cookie_agent_protocol::SessionWebhook),
+}
+
 impl Engine {
     /// The accepted selection, advanced only by a committed fallback model turn.
     pub fn session_model_selection(&self, session: SessionId) -> Result<RunSelection, EngineError> {
@@ -157,10 +170,7 @@ impl Engine {
         rules: Vec<PermissionRule>,
         mut runtimes: super::attachments::SessionRuntimes,
         project: Option<cookie_agent_protocol::ProjectId>,
-        cron: Option<(
-            cookie_agent_protocol::SessionCron,
-            cookie_agent_protocol::SessionTitle,
-        )>,
+        creator: Option<SessionCreator>,
         exposure: Option<cookie_agent_protocol::ToolExposure>,
     ) -> Result<SessionMeta, EngineError> {
         crate::permissions::check_rule_selectors(&rules).map_err(EngineError::Permission)?;
@@ -210,7 +220,7 @@ impl Engine {
             .as_deref()
             .unwrap_or_else(|| self.inner.store.cwd());
         self.reconcile_provider_store_off_worker().await?;
-        let meta = self.create_session_in(selection, &attachments, cwd, project, cron)?;
+        let meta = self.create_session_in(selection, &attachments, cwd, project, creator)?;
         let session_id = meta.session_id;
         self.connect_session(session_id).await;
         if !overlay.rules.is_empty() {
@@ -269,10 +279,7 @@ impl Engine {
         attachments: &[cookie_agent_protocol::RuntimeAttachment],
         cwd: &std::path::Path,
         project: Option<cookie_agent_protocol::ProjectId>,
-        cron: Option<(
-            cookie_agent_protocol::SessionCron,
-            cookie_agent_protocol::SessionTitle,
-        )>,
+        creator: Option<SessionCreator>,
     ) -> Result<SessionMeta, EngineError> {
         let (runtime, policy) = self.freeze_selection_policy(&selection)?;
         // An ACP agent runs on the runtime chosen for it, else the first
@@ -288,7 +295,25 @@ impl Engine {
                 .place(&attached, None, selection.acp_runtime.as_ref())
                 .map_err(EngineError::Acp)?;
         }
-        let (cron, title) = cron.unzip();
+        let (cron, webhook, title) = match creator {
+            Some(SessionCreator {
+                by: CreatedBy::Cron(cron),
+                title,
+            }) => (Some(cron), None, Some(title)),
+            Some(SessionCreator {
+                by: CreatedBy::Webhook(webhook),
+                title,
+            }) => (None, Some(webhook), Some(title)),
+            None => (None, None, None),
+        };
+        let rename_id = cron
+            .as_ref()
+            .map(|cron| format!("cron:{}:{}", cron.job_id, cron.fired_at))
+            .or_else(|| {
+                webhook
+                    .as_ref()
+                    .map(|webhook| format!("webhook:{}:{}", webhook.webhook_id, webhook.event_id))
+            });
         let id = SessionId::new_v7();
         let cwd_identity = session_cwd_identity(attachments, cwd)?;
         // A new root begins an empty tree, so its first handle is trivially
@@ -301,6 +326,7 @@ impl Engine {
         )?;
         let creation = Event::SessionCreated {
             cron: cron.clone(),
+            webhook,
             history_format: cookie_agent_protocol::HISTORY_FORMAT,
             origin: SessionOrigin::Root,
             short_id,
@@ -320,15 +346,12 @@ impl Engine {
         }
         // A run session's title is set with its creation, runless, as a
         // rename is, so no automatic title replaces it.
-        if let (Some(title), Some(cron)) = (title, &cron) {
+        if let (Some(title), Some(rename_id)) = (title, rename_id) {
             initial.push(Event::SessionTitleCommitted {
                 change: cookie_agent_protocol::SessionTitleChange::UserSet {
                     title,
-                    client_rename_id: cookie_agent_protocol::ClientRenameId::new(format!(
-                        "cron:{}:{}",
-                        cron.job_id, cron.fired_at
-                    ))
-                    .map_err(|error| EngineError::ToolFailed(error.to_string()))?,
+                    client_rename_id: cookie_agent_protocol::ClientRenameId::new(rename_id)
+                        .map_err(|error| EngineError::ToolFailed(error.to_string()))?,
                 },
                 input_through_seq: 0,
             });
@@ -694,6 +717,7 @@ impl Engine {
         self.forget_live_waiting(deleted);
         self.inner.store.forget_marks(deleted);
         self.delete_crons_targeting(deleted);
+        self.delete_webhooks_targeting(deleted);
         // A wait on a deleted subagent ends now rather than at its recheck.
         for session in deleted {
             self.subagent_changed(*session);

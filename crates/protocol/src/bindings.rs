@@ -370,6 +370,14 @@ fn client_methods() -> Vec<MethodSpec> {
         request!(CRONS_UPDATE_METHOD, ToDaemon, CronUpdateParams => CronJobResult),
         request!(CRONS_DELETE_METHOD, ToDaemon, CronDeleteParams => CronDeleteResult),
         request!(CRONS_RUN_METHOD, ToDaemon, CronRunParams => CronRunResult),
+        request!(WEBHOOKS_LIST_METHOD, ToDaemon, WebhooksListParams => WebhooksListResult),
+        request!(WEBHOOKS_CREATE_METHOD, ToDaemon, WebhookCreateParams => WebhookResult),
+        request!(WEBHOOKS_UPDATE_METHOD, ToDaemon, WebhookUpdateParams => WebhookResult),
+        request!(WEBHOOKS_DELETE_METHOD, ToDaemon, WebhookDeleteParams => WebhookDeleteResult),
+        request!(WEBHOOKS_ROTATE_METHOD, ToDaemon, WebhookRotateParams => WebhookResult),
+        request!(WEBHOOKS_SECRET_METHOD, ToDaemon, WebhookSecretParams => WebhookSecretResult),
+        request!(WEBHOOKS_EVENT_METHOD, ToDaemon, WebhookEventParams => WebhookEventResult),
+        request!(WEBHOOKS_TEST_METHOD, ToDaemon, WebhookTestParams => WebhookTestResult),
         request!(NOTIFICATIONS_GET_METHOD, ToDaemon, NotificationsGetParams => NotificationsGetResult),
         request!(NOTIFICATIONS_SUBSCRIBE_METHOD, ToDaemon, NotificationsSubscribeParams => NotificationsSubscribeResult),
         request!(NOTIFICATIONS_UNSUBSCRIBE_METHOD, ToDaemon, NotificationsUnsubscribeParams => NotificationsUnsubscribeResult),
@@ -475,6 +483,11 @@ fn client_methods() -> Vec<MethodSpec> {
             ProjectsChangedNotification
         ),
         notification!(CRONS_CHANGED_METHOD, FromDaemon, CronsChangedNotification),
+        notification!(
+            WEBHOOKS_CHANGED_METHOD,
+            FromDaemon,
+            WebhooksChangedNotification
+        ),
         notification!(
             NOTIFICATIONS_CHANGED_METHOD,
             FromDaemon,

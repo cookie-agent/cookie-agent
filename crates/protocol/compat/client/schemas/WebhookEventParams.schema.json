@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Read one event of a webhook's history with its request.",
+  "properties": {
+    "event": {
+      "type": "string"
+    },
+    "id": {
+      "description": "A webhook's ID: eight lowercase ASCII letters and digits.",
+      "maxLength": 8,
+      "minLength": 1,
+      "pattern": "^[a-z0-9]{8}$",
+      "type": "string"
+    }
+  },
+  "required": [
+    "id",
+    "event"
+  ],
+  "title": "WebhookEventParams",
+  "type": "object"
+}

@@ -396,6 +396,7 @@ impl Engine {
                         match &registration.authority.owner {
                             ProducerOwner::Tool { .. } | ProducerOwner::Delegation { .. } => true,
                             owner if super::cron::fire::is_cron_owner(owner) => false,
+                            owner if super::messaging::producers::is_webhook_owner(owner) => false,
                             ProducerOwner::External { .. } => true,
                             _ => false,
                         }

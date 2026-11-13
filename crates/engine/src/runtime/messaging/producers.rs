@@ -325,9 +325,9 @@ impl Engine {
                 .or_default()
                 .registrations
                 .retain(|record| match &record.authority.owner {
-                    // A cron fire's registration lives only while its
-                    // prompt is sent.
-                    ProducerOwner::External { source, .. } if source.cron_job().is_some() => true,
+                    // A cron fire's or a webhook event's registration
+                    // lives only while its message is sent.
+                    ProducerOwner::External { source, .. } if source.is_daemon_owned() => true,
                     ProducerOwner::External { source, .. } => {
                         record.authority.connection_epoch.is_some_and(|epoch| {
                             self.external_connection_is_current(source, epoch)
@@ -1355,9 +1355,9 @@ impl Engine {
         authority: &ProducerAuthority,
     ) -> Result<(), EngineError> {
         if let ProducerOwner::External { source, .. } = &authority.owner {
-            // A cron job's fires are the daemon's own: no connection has a
-            // `cron:` source.
-            if source.cron_job().is_some() {
+            // A cron job's fires and a webhook's events are the daemon's
+            // own: no connection has a `cron:` or `webhook:` source.
+            if source.is_daemon_owned() {
                 return if authority.connection_epoch.is_none() {
                     Ok(())
                 } else {
@@ -1595,6 +1595,8 @@ impl Engine {
                     // A fire's own registration lasts only while it sends;
                     // the job counts through the store below.
                     owner if crate::runtime::cron::fire::is_cron_owner(owner) => continue,
+                    // A webhook keeps nothing waiting: it may never fire.
+                    owner if is_webhook_owner(owner) => continue,
                     ProducerOwner::External { .. } => WaitingOn::ExternalProducer,
                     _ => continue,
                 };
@@ -2444,4 +2446,11 @@ fn count_for_parent(
         return parent;
     }
     None
+}
+
+/// Whether `owner` is a webhook's.
+pub(crate) fn is_webhook_owner(owner: &ProducerOwner) -> bool {
+    owner
+        .source()
+        .is_some_and(|source| source.webhook_id().is_some())
 }
