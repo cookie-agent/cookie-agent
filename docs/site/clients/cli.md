@@ -27,6 +27,7 @@ attaching clients to it.
 | [`cookie memory`](#cookie-memory) | List, edit, and delete the daemon's memories |
 | [`cookie project`](#cookie-project) | List, create, rename, delete, and edit the daemon's projects |
 | [`cookie cron`](#cookie-cron) | List, create, edit, run, and delete the daemon's cron jobs |
+| [`cookie webhook`](#cookie-webhook) | List, create, edit, test, rotate, and delete the daemon's webhooks |
 | [`cookie share`](#cookie-share) | List, make, and revoke the daemon's share links |
 | [`cookie skills`](#cookie-skills) | List the daemon's skills, refresh the official ones, and check skills |
 | [`cookie agents`](#cookie-agents) | List the daemon's agents, refresh the official ones, and check agent documents |
@@ -648,6 +649,125 @@ one-shot whose time has passed needs a new `--schedule` first.
 the fire's outcome and the session it went to. A run now counts toward
 neither the job's run limit nor its failures, and fires even with
 `[cron] enabled = false`.
+
+### `cookie webhook`
+
+```text
+cookie webhook <COMMAND> [--url <URL>] [--token <TOKEN>]
+```
+
+Manages the daemon's webhooks: URLs that turn each HTTP request they
+accept into a message in a session, or into new sessions. See
+[Webhooks](../sessions/webhooks.md). The daemon needs client protocol 1.96
+or later; an older one is refused with a message saying so. A webhook's URL
+is its path below the daemon's public address (`[public] url`, else
+`[server] page_url`), else below the address this command reached the
+daemon at; a line after it warns when that address is probably reachable
+only privately.
+
+#### `cookie webhook list`
+
+`cookie webhook list` prints three lines per webhook: its ID, its name (or
+`Webhook <ID>`), and why it is disabled; then its check, its target, its
+request counts, and the outcome of its last event; then its URL. When
+`[webhooks] enabled = false` holds on the daemon, a first line says every
+URL answers 404.
+
+#### `cookie webhook show`
+
+`cookie webhook show <ID>` prints a webhook: its URL, target, state, check,
+delivery or agent, model pin, project, thread key, filter, extra headers,
+limits, permission mode, failures in a row, request counts, and who created
+it and when; then its prompt, its thread prompt, its threads, and its
+events, newest first, with each one's outcome, thread, and session.
+
+#### `cookie webhook create`
+
+```text
+cookie webhook create (--session <SESSION_ID> [--delivery steer|queue]
+                       | --agent <AGENT> [--model <MODEL>] [--permission-mode <MODE>] [--project <NAME>]
+                         [--thread-key <SOURCE> [--delivery steer|queue]] [--thread-prompt <TEXT>]
+                         [--max-concurrent <COUNT>])
+                      [--name <NAME>] [--prompt <TEXT>] [--check <CHECK> [--secret <SECRET>]]
+                      [--filter <CONDITION>]... [--show-header <NAME>]...
+                      [--max-per-hour <COUNT>] [--max-failures <COUNT>] [--disabled]
+```
+
+Creates a webhook and prints its ID, its URL, and, with a check, its
+signing secret, which is shown this once (`cookie webhook secret` prints it
+again).
+
+| Option | Meaning |
+|---|---|
+| `--name <NAME>` | What lists show instead of the ID. |
+| `--prompt <TEXT>` | Instructions sent with every event. |
+| `--session <SESSION_ID>` | Deliver into this session, a root or a delegated one. |
+| `--delivery <MODE>` | With `--session` or `--thread-key`: `queue` (after the running turn, the default) or `steer` (into it). |
+| `--agent <AGENT>` | Start new sessions with this agent instead: one per event, or one per thread. |
+| `--model <MODEL>` | With `--agent`: pin `provider/model` or `provider/model[variant]`. |
+| `--permission-mode <MODE>` | With `--agent`: the sessions' mode, spelled as for `cookie run`; `auto-approve-n` when omitted. |
+| `--project <NAME>` | With `--agent`: the project the sessions belong to. |
+| `--thread-key <SOURCE>` | With `--agent`: `json:/pointer` or `header:Name`; events with the same value go into one session, which the first creates. |
+| `--thread-prompt <TEXT>` | With `--agent`: instructions each session gets as a plain user message before its first event, and again after each compaction. |
+| `--max-concurrent <COUNT>` | With `--agent`: how many of its sessions may run at once; later events wait. 0 or less for no limit; 1 when omitted. |
+| `--check <CHECK>` | A signature check: `github`, `standard` (Standard Webhooks), `bearer`, or `"hmac_sha256 header=<name> encoding=hex\|base64 prefix=<text>"`. Without one, the URL alone admits a request. |
+| `--secret <SECRET>` | With `--check`: its secret; the daemon makes one when omitted. |
+| `--filter <CONDITION>` | A condition every request must meet, `header:Name=a,b` or `json:/pointer=a,b`; give it once per condition. |
+| `--show-header <NAME>` | A request header the model sees besides the usual ones; give it once per header. |
+| `--max-per-hour <COUNT>` | Events accepted per rolling hour; 0 or less for no limit; `[webhooks] max_per_hour` when omitted. |
+| `--max-failures <COUNT>` | Failures in a row that disable the webhook; 0 or less never; `[webhooks] max_consecutive_failures` when omitted. |
+| `--disabled` | Create the webhook disabled. |
+
+#### `cookie webhook edit`
+
+`cookie webhook edit <ID> [OPTIONS]` changes a webhook; only what the
+options give changes, and an edit that changes nothing says so. It takes
+the options of `create` but `--project` and `--disabled`: `--name` and
+`--prompt` (empty removes them), `--session` (deliver into that session
+instead), `--agent` (start new sessions with that agent, or change it),
+`--delivery`, `--model` (empty removes the pin), `--permission-mode`,
+`--thread-key` (empty makes every event start a session again),
+`--thread-prompt` (empty removes it), `--max-concurrent`, `--check` (empty
+removes the check), `--secret` (a new secret for the check), `--filter`
+(replaces the whole filter; `--no-filter` removes it), `--show-header`
+(replaces the extra headers; `--no-show-headers` removes them),
+`--max-per-hour`, and `--max-failures` (empty for the daemon's default).
+
+#### `cookie webhook rm`
+
+`cookie webhook rm <ID> [-y | --yes]` deletes a webhook, asking first unless
+`--yes`. Its sessions stay.
+
+#### `cookie webhook enable`
+
+`cookie webhook enable <ID>` enables a webhook and resets its failure count.
+
+#### `cookie webhook disable`
+
+`cookie webhook disable <ID>` disables a webhook: its URL answers 404 until
+it is enabled again. It keeps its history and threads.
+
+#### `cookie webhook rotate`
+
+`cookie webhook rotate <ID> url|secret` gives a webhook a new URL, and the
+old one stops working, or a new signing secret, printed once; senders need
+it before their next request.
+
+#### `cookie webhook secret`
+
+`cookie webhook secret <ID>` prints a webhook's signing secret.
+
+#### `cookie webhook test`
+
+```text
+cookie webhook test <ID> [--body <FILE>] [--content-type <TYPE>] [--header "<Name>: <value>"]...
+```
+
+Delivers a test event as if a request had arrived, skipping the check, the
+filter, and the limits; it counts toward neither the hourly limit nor the
+failures. `--body` reads the body from a file, or from standard input for
+`-`; `--content-type` names its type, such as `application/json`; each
+`--header` adds a request header.
 
 ### `cookie share`
 
