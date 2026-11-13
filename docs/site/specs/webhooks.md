@@ -1,9 +1,9 @@
 # Webhooks
 
-Status: **approved** (2026-11-12); phases 1 and 2 implemented (client protocol
-1.95.0 and 1.96.0), the shared client layer, `cookie webhook`, and the user
-guide ([Webhooks](../sessions/webhooks.md)) landed, the web and TUI views in
-progress. The user's decisions are in
+Status: **implemented** (2026-11-13; client protocol 1.95.0 and 1.96.0,
+plugin protocol 1.47.0 and 1.48.0): every phase, with the web Webhooks view,
+the TUI `/webhooks` panel, `cookie webhook`, and the user guide
+([Webhooks](../sessions/webhooks.md)). How it landed is in section 19. The user's decisions are in
 [section 2](#2-decisions-2026-11-12). Builds on [cron jobs](cron.md) (targets,
 templates, delivery, history), [share links](share-links.md) (the public
 listener and its port), [deferred tools in cookie](deferred-tools-cookie.md)

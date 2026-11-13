@@ -171,6 +171,7 @@ nav:
   - Specs:
       - Status and scope: specs/index.md
       - Implemented:
+          - Webhooks: specs/webhooks.md
           - "History format 3: an ACP tool's images stored once": specs/history-format-3.md
           - The web page opens a session newest first: specs/web-newest-first.md
           - The machine on a tool call: specs/tool-call-machines.md
@@ -215,7 +216,6 @@ nav:
           - Tree-local sessions: specs/tree-local-sessions.md
           - Store lock retention: specs/store-lock-retention.md
       - Drafts and records:
-          - Webhooks: specs/webhooks.md
           - "Web polish: a second pass after Quiet Ink": specs/web-polish.md
           - Session tool groups and skills: specs/session-tool-groups.md
           - Responsive session loading and storage v3: specs/session-storage-v3.md
