@@ -444,3 +444,40 @@ fn a_thread_key_formats_a_fire_time_in_a_zone() {
     );
     assert_eq!(super::thread_key_at("%Y-%", at, &berlin), None);
 }
+
+#[test]
+fn a_thread_preview_reads_the_key_at_the_next_fire() {
+    let zone = TimeZone::UTC;
+    let now: Timestamp = "2026-11-12T23:30:00Z".parse().unwrap();
+    let mut draft = CronDraft::for_new_session(super::bare_template("builder".parse().unwrap()));
+    draft.thread_key = "%Y-%m-%d".to_owned();
+    draft.schedule = "in 1h".to_owned();
+    assert_eq!(
+        draft.thread_preview(now, &zone).as_deref(),
+        Some("2026-11-13")
+    );
+    draft.schedule = "in 10m".to_owned();
+    assert_eq!(
+        draft.thread_preview(now, &zone).as_deref(),
+        Some("2026-11-12")
+    );
+    draft.schedule = "at 2026-12-01T00:00:00Z".to_owned();
+    assert_eq!(
+        draft.thread_preview(now, &zone).as_deref(),
+        Some("2026-12-01")
+    );
+    draft.schedule = "0 * * * *".to_owned();
+    assert_eq!(
+        draft.thread_preview(now, &zone).as_deref(),
+        Some("2026-11-12")
+    );
+    draft.thread_key = "main".to_owned();
+    assert_eq!(draft.thread_preview(now, &zone).as_deref(), Some("main"));
+    draft.schedule = "in soon".to_owned();
+    assert_eq!(draft.thread_preview(now, &zone), None);
+    draft.schedule = "in 1h".to_owned();
+    draft.thread_key.clear();
+    assert_eq!(draft.thread_preview(now, &zone), None);
+    let in_session = CronDraft::for_session(session(1), false);
+    assert_eq!(in_session.thread_preview(now, &zone), None);
+}

@@ -65,6 +65,7 @@ pub mod tree;
 pub mod unread;
 pub mod uploads;
 pub mod usage;
+pub mod webhook;
 
 pub use reduce::approval_state_from_record;
 use reduce::*;

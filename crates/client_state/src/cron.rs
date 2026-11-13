@@ -607,6 +607,21 @@ pub fn thread_key_at(format: &str, at: Timestamp, zone: &TimeZone) -> Option<Str
     (!key.is_empty()).then(|| key.to_owned())
 }
 
+/// A delay as `in` takes it (`20m`, `2h`, `1d`, `30s`), as a span.
+fn delay_span(delay: &str) -> Option<jiff::SignedDuration> {
+    let delay = delay.trim();
+    let unit = delay.chars().last()?;
+    let count: i64 = delay[..delay.len() - unit.len_utf8()].trim().parse().ok()?;
+    let seconds = match unit {
+        's' => 1,
+        'm' => 60,
+        'h' => 3600,
+        'd' => 86_400,
+        _ => return None,
+    };
+    Some(jiff::SignedDuration::from_secs(count.checked_mul(seconds)?))
+}
+
 /// How clients name a delivery mode.
 pub const fn delivery_label(delivery: ProducerDeliveryMode) -> &'static str {
     match delivery {
@@ -837,6 +852,23 @@ impl CronDraft {
     /// later fires take its delivery.
     pub fn threaded(&self) -> bool {
         self.target.is_new() && !self.thread_key.trim().is_empty()
+    }
+
+    /// The thread key the form's next fire would use, for a preview under
+    /// the thread key field: at a one-shot's time (`at` or `in`), and for a
+    /// cron schedule at `now`, which is the thread a fire now would go to.
+    /// `None` without a thread key, or when the schedule or format does not
+    /// read.
+    pub fn thread_preview(&self, now: Timestamp, zone: &TimeZone) -> Option<String> {
+        if !self.threaded() {
+            return None;
+        }
+        let at = match parse_schedule(&self.schedule).ok()? {
+            CronSchedule::At(at) => at,
+            CronSchedule::In(delay) => now.checked_add(delay_span(&delay)?).ok()?,
+            CronSchedule::Cron(_) => now,
+        };
+        thread_key_at(self.thread_key.trim(), at, zone)
     }
 
     /// Whether the form's delivery applies: in a session, or a thread.
