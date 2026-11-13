@@ -171,6 +171,8 @@ nav:
   - Specs:
       - Status and scope: specs/index.md
       - Implemented:
+          - "The Webhooks view, polished, and titles for webhook sessions": specs/webhooks-view.md
+          - "Web polish: a second pass after Quiet Ink": specs/web-polish.md
           - Webhooks: specs/webhooks.md
           - "History format 3: an ACP tool's images stored once": specs/history-format-3.md
           - The web page opens a session newest first: specs/web-newest-first.md
@@ -216,8 +218,6 @@ nav:
           - Tree-local sessions: specs/tree-local-sessions.md
           - Store lock retention: specs/store-lock-retention.md
       - Drafts and records:
-          - "The Webhooks view, polished, and titles for webhook sessions": specs/webhooks-view.md
-          - "Web polish: a second pass after Quiet Ink": specs/web-polish.md
           - Session tool groups and skills: specs/session-tool-groups.md
           - Responsive session loading and storage v3: specs/session-storage-v3.md
           - Session store locks and durability: specs/store-locks-and-durability.md
