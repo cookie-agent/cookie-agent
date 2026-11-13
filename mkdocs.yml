@@ -110,6 +110,7 @@ nav:
       - Goal mode: sessions/goals.md
       - Memory: sessions/memory.md
       - Scheduling prompts: sessions/scheduling.md
+      - Webhooks: sessions/webhooks.md
       - Held sessions: sessions/held.md
       - Usage and cost: sessions/usage.md
   - Extend:

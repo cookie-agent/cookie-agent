@@ -1,7 +1,8 @@
 # Webhooks [webhooks]
 
 Limits for incoming webhooks, the URLs that turn HTTP requests into
-messages in sessions (see the [webhooks spec](../specs/webhooks.md)).
+messages in sessions (see [Webhooks](../sessions/webhooks.md) and the
+[webhooks spec](../specs/webhooks.md)).
 Complete `config.toml`:
 
 ```toml

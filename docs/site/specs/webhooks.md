@@ -1,6 +1,9 @@
 # Webhooks
 
-Status: **approved** (2026-11-12), being implemented, with the user's decisions in
+Status: **approved** (2026-11-12); phases 1 and 2 implemented (client protocol
+1.95.0 and 1.96.0), the shared client layer, `cookie webhook`, and the user
+guide ([Webhooks](../sessions/webhooks.md)) landed, the web and TUI views in
+progress. The user's decisions are in
 [section 2](#2-decisions-2026-11-12). Builds on [cron jobs](cron.md) (targets,
 templates, delivery, history), [share links](share-links.md) (the public
 listener and its port), [deferred tools in cookie](deferred-tools-cookie.md)

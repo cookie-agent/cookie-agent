@@ -24,7 +24,7 @@ Each tool declares a permission *action* and names the *resource* of each call:
 - `asset` (the [asset tools](../sessions/assets.md)): what the call does,
   `read`, `write`, or `delete`;
 - `share` (`share_link`, [share links](../sessions/sharing.md)): `asset`;
-- `webhook` (the webhook tools, [webhooks](../specs/webhooks.md)): the
+- `webhook` (the webhook tools, [webhooks](../sessions/webhooks.md)): the
   target kind of the webhook a call touches, `session`, `subagent`, or
   `new`.
 
@@ -120,7 +120,10 @@ so no default allows it. See [Share links](../sessions/sharing.md).
 The `webhook` action (`webhook_create`, `webhook_list`, `webhook_update`,
 and `webhook_delete`) defaults to `webhook: ask` for a root run of any agent
 but an internal one, and to none for a delegated run, which then does not
-see the tools: a webhook opens a public URL. See
+see the tools: a webhook opens a public URL. A webhook's thread prompt is
+sent into its new sessions as a plain user message, so `webhook: allow`
+lets an agent write messages that read as yours without asking. See
+[Webhooks](../sessions/webhooks.md) and
 [Webhook permissions](../extend/agents.md#webhook-permissions).
 
 ## How the levels combine

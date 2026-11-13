@@ -85,7 +85,8 @@ command = ["ssh", "-o", "BatchMode=yes", "labpc", "cookie", "runtime", "serve", 
   [dial in](runtimes/dial-in.md) and [run as a service](runtimes/service.md),
   and the [MCP servers and ACP agents](runtimes/tools.md) they host.
 - **[Working with sessions](sessions/index.md):** media, compaction, goal mode,
-  memory, [scheduled prompts](sessions/scheduling.md), and usage.
+  memory, [scheduled prompts](sessions/scheduling.md),
+  [webhooks](sessions/webhooks.md), and usage.
 - **Extend:** [agents and presets](extend/agents.md), [skills](extend/skills.md),
   [providers](extend/providers.md), [MCP servers](extend/mcp.md), and
   [plugins](extend/plugins.md).

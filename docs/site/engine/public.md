@@ -2,7 +2,7 @@
 
 The address the internet reaches the daemon's public paths at, and a port
 that serves those paths alone. The public paths are share links (`/s/…`)
-and webhooks (`/hooks/…`). Complete `config.toml` for a tunnel at
+and [webhooks](../sessions/webhooks.md) (`/hooks/…`). Complete `config.toml` for a tunnel at
 `https://share.example.com`:
 
 ```toml

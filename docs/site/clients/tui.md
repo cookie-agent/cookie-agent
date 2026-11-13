@@ -727,6 +727,13 @@ job. A daemon older than client protocol 1.15 keeps no jobs: `/cron` says so,
 and `/cron new` is not offered. See
 [Scheduling prompts](../sessions/scheduling.md) for how jobs fire.
 
+## Webhooks
+
+The TUI has no `/webhooks` panel yet; it is coming. Until then, manage
+[webhooks](../sessions/webhooks.md) with
+[`cookie webhook`](cli.md#cookie-webhook). A session a webhook started is
+an ordinary session in the picker.
+
 ## Background calls
 
 A running call of a tool that supports the background (such as `bash` or

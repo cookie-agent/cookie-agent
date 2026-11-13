@@ -1149,6 +1149,13 @@ changes (`crons.changed`), from any client or agent.
   The daemon checks the job when it is saved and says what it refused
   under the form.
 
+## Webhooks
+
+The page has no Webhooks view yet; it is coming. Until then, manage
+[webhooks](../sessions/webhooks.md) with
+[`cookie webhook`](cli.md#cookie-webhook). A session a webhook started is
+an ordinary session in the list.
+
 ## Phones
 
 - **Size.** The page works from 360 px wide, in portrait and landscape.
