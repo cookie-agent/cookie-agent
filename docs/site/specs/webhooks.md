@@ -665,3 +665,73 @@ Decisions taken where the spec left room, and deviations:
   details. The web's form only keeps the fields it does not show; its
   controls and the clients' mark for a thread prompt's origin are left to
   the clients phase.
+
+### 19.2 Phase 1B: configuration and the request side (2026-11-12)
+
+Landed: `[public]` and `[webhooks]`, and the request side as pure functions,
+not yet wired to a route or a store.
+
+- **Configuration** (`crates/config/src/runtime.rs`): `PublicConfig` (`url`,
+  `listen`, validated as `[share]`'s were), `ShareConfig` reduced to
+  `enabled`, and `WebhooksConfig` with `per_hour_limit()` and
+  `failure_limit()` reading 0 or less as none. `max_body_bytes` is
+  1..=64 MiB, `inline_body_bytes` 1..=1 MiB (so a message stays within the
+  producer body limit), `backlog` 1..=10000, `history` 1..=1000.
+  `[share] url` and `listen` fail as unknown keys. The settings form gains
+  the `[public]` fields under Transfers and sharing and a Webhooks section.
+- **The public listener** is `DaemonListener::serve_public_on` with
+  `public_router` (`crates/server/src/service/websocket.rs`), which serves
+  `/s/` today; `/hooks/` joins it there.
+- **The request side** lives in the engine, `cookie_agent_engine::webhooks`,
+  since delivery is the engine's and the server already depends on it:
+  - `request`: `WebhookRequest` (method, headers as received, body),
+    `parse_body` → `ParsedBody` (`Empty`, `Json`, `Form`, `Text`,
+    `Binary`), `ValueSource` (`Header`, `Json` pointer) with `validate`,
+    `read_value`, `thread_key`, and `delivery_id` with `DeliveryHeader`;
+  - `verify`: `Verifier` (`GitHub`, `Standard`, `HmacSha256`, `Bearer`)
+    with `validate`, `verify(request, now)`, `delivery_header`, and
+    `secret_headers`; `generate_secret(SecretKind)`;
+  - `filter`: `Condition` (a `ValueSource` and `one_of`), `validate`,
+    `matches`;
+  - `render`: `shown_body` → `ShownBody` (with `wants_artifact`), then
+    `render_event(&EventMessage)` with the artifact reference the caller
+    stored;
+  - `ids`: `new_webhook_id`, `is_webhook_id`, `new_url_token`,
+    `is_url_token`.
+- **Dependencies:** none new in the lock file. The engine now names
+  `aws-lc-rs` (already the server's, for the page ticket's HMAC) for
+  HMAC-SHA256 and constant-time comparison, and `form_urlencoded` (already
+  in the tree through `url`).
+
+Decisions taken where the spec left room:
+
+- **Bodies.** A body labelled `application/json` or `+json`, or unlabelled
+  and starting with `{` or `[`, is JSON when it parses; a form field sent
+  several times is an array of strings; a body that is UTF-8 without NUL is
+  text, anything else binary. The inline limit applies to the shown text
+  (pretty-printed for JSON), not the bytes received; the cut falls at a
+  line break in the last half of the limit, else at a character boundary.
+- **Defusing.** Closing tags of the message's own elements
+  (`webhook_event`, `instructions`, `request`, `body`) inside the request
+  are written `<\/name`, so a request cannot end its block; nothing else
+  is escaped, so HTML and JSON read as sent. Header values and attributes
+  have control characters made spaces, and header values are cut at 1000
+  characters.
+- **Hidden headers.** Besides `Authorization`, `Cookie`, and the signature
+  headers, `Proxy-Authorization`, `Set-Cookie`, and `X-Hub-Signature` are
+  never shown, and a `hmac_sha256` check's own header is hidden; such a
+  check may not name `Authorization`, `Cookie`, or `Content-Type`.
+- **Delivery IDs** follow section 5.3 strictly: `X-GitHub-Delivery` counts
+  only with the `github` check and `webhook-id` only with `standard`. An ID
+  or a thread key that is empty, too long (200 characters), or holds a
+  control character counts as none.
+- **Filters** hold at most 32 conditions, each `one_of` string at most 512
+  characters; values compare exactly, case included.
+- **Secrets** are 32 random bytes: base64url for `github`, `hmac_sha256`,
+  and `bearer`, `whsec_` and standard base64 for `standard`, whose secret
+  must decode to 24 to 64 bytes as that specification says. A secret is 1
+  to 1024 characters without control characters. A verifier's `Debug`
+  never prints it.
+- **Standard Webhooks** accepts any of several space-separated `v1,`
+  signatures and skips other versions; a header with no `v1,` signature is
+  malformed. Every failure answers `401` alike.
