@@ -4626,6 +4626,33 @@ fn user_file_parts_render_as_attachment_chips() {
     );
 }
 
+/// A thread prompt, a user message a cron job or webhook sent, records its
+/// owner by the message's sequence; a user's own message records none.
+#[test]
+fn a_thread_prompt_records_the_cron_job_or_webhook_that_sent_it() {
+    let webhook = cookie_agent_protocol::ThreadOwnerRef::Webhook(
+        cookie_agent_protocol::WebhookId::new("w7k2m9qa".to_owned()).expect("webhook id"),
+    );
+    let origin = cookie_agent_protocol::thread_prompt_origin(&webhook);
+    let mut state = SessionState::default();
+    let session_id = SessionId::new_v7();
+    for (sequence, origin) in [(1, Some(origin.clone())), (2, None)] {
+        super::reduce::reduce_event_from(
+            &mut state,
+            session_id,
+            Some(RunId::new_v7()),
+            sequence,
+            jiff::Timestamp::new(sequence as i64, 0).expect("timestamp"),
+            origin,
+            EventPayload::UserInputSubmitted {
+                content: "look after the issue".into(),
+            },
+        );
+    }
+    assert_eq!(state.thread_prompt_origins.get(&1), Some(&origin));
+    assert_eq!(state.thread_prompt_origins.get(&2), None);
+}
+
 /// `presentation` as `tool_call_started` stores it for base-layer tool
 /// `presentation.title`.
 fn base_presentation(

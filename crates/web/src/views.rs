@@ -2489,6 +2489,8 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
                                             state,
                                             machines.as_ref(),
                                         );
+                                    // The names a thread prompt's label can show.
+                                    let thread_owners = workspace.thread_owner_names();
                                     let view = TranscriptView {
                                         session_id,
                                         state,
@@ -2498,6 +2500,7 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
                                         delegates: &delegates,
                                         homes,
                                         machines: &labels,
+                                        thread_owners: &thread_owners,
                                         transcript,
                                         now,
                                     };

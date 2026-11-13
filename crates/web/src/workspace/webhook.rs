@@ -95,6 +95,29 @@ impl Workspace {
         })
     }
 
+    /// The names of the cron jobs and webhooks the page knows, for the
+    /// labels of their thread prompts.
+    pub fn thread_owner_names(self) -> Vec<(cookie_agent_protocol::ThreadOwnerRef, String)> {
+        use cookie_agent_protocol::ThreadOwnerRef;
+        let mut names: Vec<(ThreadOwnerRef, String)> = self
+            .webhook_list()
+            .iter()
+            .map(|webhook| {
+                (
+                    ThreadOwnerRef::Webhook(webhook.id.clone()),
+                    webhook_title(webhook),
+                )
+            })
+            .collect();
+        names.extend(self.cron_jobs().iter().map(|job| {
+            (
+                ThreadOwnerRef::Cron(job.id.clone()),
+                cookie_agent_client_state::cron::job_title(job),
+            )
+        }));
+        names
+    }
+
     /// The daemon's public base, as `webhooks.list` gave it.
     fn webhook_public_base(self) -> Option<String> {
         self.webhooks.with_untracked(|webhooks| {

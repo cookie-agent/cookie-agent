@@ -55,10 +55,25 @@ pub struct TranscriptView<'a> {
     pub homes: &'a cookie_agent_client_state::paths::RuntimeHomes,
     /// The machines' labels of this session's calls.
     pub machines: &'a MachineLabels,
+    /// The names of the cron jobs and webhooks a thread prompt can come
+    /// from, which its message shows in place of the user's.
+    pub thread_owners: &'a [(cookie_agent_protocol::ThreadOwnerRef, String)],
     /// How the transcript shows agent work.
     pub transcript: TranscriptMode,
     /// The time live work rows count their elapsed time to.
     pub now: jiff::Timestamp,
+}
+
+/// The label of user message `seq` when it is a cron job's or webhook's
+/// thread prompt: `from webhook <name>`, by the name the page knows.
+fn thread_prompt_label(view: &TranscriptView<'_>, seq: u64) -> Option<String> {
+    let origin = view.state.thread_prompt_origins.get(&seq)?;
+    cookie_agent_client_state::webhook::thread_prompt_label(origin, |owner| {
+        view.thread_owners
+            .iter()
+            .find(|(known, _)| known == owner)
+            .map(|(_, name)| name.clone())
+    })
 }
 
 /// A fingerprint of `homes`, which every cached row depends on.
@@ -467,6 +482,8 @@ fn item_key_in(pass: &Pass<'_, '_>, item: &TranscriptItem) -> u64 {
     }
     if let TranscriptItem::User { seq, .. } = item {
         (pass.latest_user == Some(*seq)).hash(&mut hasher);
+        // A thread prompt's label names its owner, which can be renamed.
+        thread_prompt_label(view, *seq).hash(&mut hasher);
     }
     // Every fold pushes the row of history at version 0 under the same id,
     // and a page can land before any pass sees it loading: what the row
@@ -547,11 +564,19 @@ fn item_html_in(
                     )
                 })
                 .unwrap_or_default();
+            let thread = thread_prompt_label(view, *seq)
+                .map(|label| {
+                    format!(
+                        "<div class=\"mb-1 rounded-full bg-sunken px-2 py-0.5 text-xs text-muted\" data-thread-prompt-label>{}</div>",
+                        super::escape(&label)
+                    )
+                })
+                .unwrap_or_default();
             format!(
                 // Under the bubble, its icons, which show while a mouse is
                 // over the row (style/main.css) and keep their room; a
                 // touch screen long-presses the bubble instead.
-                "<div class=\"user-row flex flex-col items-end\" data-seq=\"{seq}\">{guest}<div class=\"user-message ml-auto flex w-fit max-w-[80%] justify-end\" data-seq=\"{seq}\"><div class=\"min-w-0 rounded-2xl rounded-tr-sm bg-sunken px-3 py-2\" data-bubble><div class=\"markdown\">{}</div>{files}</div></div>{}</div>",
+                "<div class=\"user-row flex flex-col items-end\" data-seq=\"{seq}\">{guest}{thread}<div class=\"user-message ml-auto flex w-fit max-w-[80%] justify-end\" data-seq=\"{seq}\"><div class=\"min-w-0 rounded-2xl rounded-tr-sm bg-sunken px-3 py-2\" data-bubble><div class=\"markdown\">{}</div>{files}</div></div>{}</div>",
                 document_html(markdown),
                 point_actions_html(
                     "message",
@@ -2472,6 +2497,74 @@ mod tests {
         std::collections::HashMap<cookie_agent_protocol::ToolCallId, Delegate>,
     > = std::sync::LazyLock::new(Default::default);
 
+    /// A thread prompt's message names the webhook that sent it, by the
+    /// name the page knows, and draws again when that name changes.
+    #[test]
+    fn a_thread_prompt_names_its_webhook_and_redraws_when_it_is_renamed() {
+        let mut store = cookie_agent_client_state::StateStore::default();
+        let mut session_id = None;
+        for line in include_str!(
+            "../../../engine/tests/fixtures/history/1/coding/01a152fa-2785-7822-b056-5a3ad818855f/events.jsonl"
+        )
+        .lines()
+        {
+            let event: cookie_agent_protocol::StoredEvent = serde_json::from_str(line).unwrap();
+            session_id = Some(event.session_id);
+            store.apply_event(event);
+        }
+        let session_id = session_id.unwrap();
+        let mut state = store.sessions[&session_id].clone();
+        let (first, seq) = state
+            .transcript
+            .iter()
+            .find_map(|item| match item {
+                TranscriptItem::User { seq, .. } => Some((item.clone(), *seq)),
+                _ => None,
+            })
+            .expect("a user message");
+        let owner = cookie_agent_protocol::ThreadOwnerRef::Webhook(
+            cookie_agent_protocol::WebhookId::new("w7k2m9qa".to_owned()).expect("webhook id"),
+        );
+        state
+            .thread_prompt_origins
+            .insert(seq, cookie_agent_protocol::thread_prompt_origin(&owner));
+        let names = ModelDisplayNames::default();
+        let expanded = Expanded::default();
+        let named = [(owner.clone(), "GitHub issues".to_owned())];
+        let renamed = [(owner, "Issues".to_owned())];
+        let view = |owners| TranscriptView {
+            session_id,
+            state: &state,
+            names: &names,
+            minimum_level: EventLevel::Warning,
+            expanded: &expanded,
+            delegates: &NO_DELEGATES,
+            homes: &NO_HOMES,
+            machines: &NO_MACHINES,
+            thread_owners: owners,
+            transcript: TranscriptMode::Full,
+            now: jiff::Timestamp::UNIX_EPOCH,
+        };
+        let rows = super::transcript_rows(&view(&named), None, &mut super::RowCache::default());
+        let html = rows
+            .order
+            .iter()
+            .filter_map(|id| match &rows.html[id] {
+                super::RowHtml::Html(html) => Some(html.to_string()),
+                super::RowHtml::Reply { .. } => None,
+            })
+            .collect::<String>();
+        assert_eq!(html.matches("data-thread-prompt-label").count(), 1);
+        assert!(
+            html.contains("GitHub issues"),
+            "the label does not name its webhook"
+        );
+        assert_ne!(
+            super::item_key(&view(&named), &first),
+            super::item_key(&view(&renamed), &first)
+        );
+    }
+
     #[test]
     fn messages_and_finished_replies_carry_their_icons_and_the_newest_keep_them_shown() {
         // The `coding` golden history: four user messages, five finished
@@ -2500,6 +2593,7 @@ mod tests {
             delegates: &NO_DELEGATES,
             homes: &NO_HOMES,
             machines: &NO_MACHINES,
+            thread_owners: &[],
             transcript: TranscriptMode::Full,
             now: jiff::Timestamp::UNIX_EPOCH,
         };
@@ -2621,6 +2715,7 @@ mod tests {
             delegates: &NO_DELEGATES,
             homes: &NO_HOMES,
             machines: &NO_MACHINES,
+            thread_owners: &[],
             transcript: TranscriptMode::Full,
             now: jiff::Timestamp::UNIX_EPOCH,
         };
@@ -2724,6 +2819,7 @@ mod tests {
             delegates: &NO_DELEGATES,
             homes: &NO_HOMES,
             machines: &labels,
+            thread_owners: &[],
             transcript: TranscriptMode::Full,
             now: jiff::Timestamp::UNIX_EPOCH,
         };
@@ -2807,6 +2903,7 @@ mod tests {
                 delegates: &NO_DELEGATES,
                 homes: &NO_HOMES,
                 machines: &NO_MACHINES,
+                thread_owners: &[],
                 transcript: TranscriptMode::Full,
                 now: jiff::Timestamp::UNIX_EPOCH,
             };
@@ -2998,6 +3095,7 @@ mod tests {
             delegates: &NO_DELEGATES,
             homes: &NO_HOMES,
             machines: &NO_MACHINES,
+            thread_owners: &[],
             transcript: TranscriptMode::Full,
             now: jiff::Timestamp::UNIX_EPOCH,
         };
@@ -3022,6 +3120,7 @@ mod tests {
             delegates: &NO_DELEGATES,
             homes: &NO_HOMES,
             machines: &NO_MACHINES,
+            thread_owners: &[],
             transcript: TranscriptMode::Full,
             now: jiff::Timestamp::UNIX_EPOCH,
         };
@@ -3066,6 +3165,7 @@ mod tests {
             delegates: &NO_DELEGATES,
             homes: &NO_HOMES,
             machines: &NO_MACHINES,
+            thread_owners: &[],
             transcript: TranscriptMode::Full,
             now,
         };
@@ -3123,6 +3223,7 @@ mod tests {
             delegates: &NO_DELEGATES,
             homes: &NO_HOMES,
             machines: &NO_MACHINES,
+            thread_owners: &[],
             transcript: TranscriptMode::Full,
             now: jiff::Timestamp::UNIX_EPOCH,
         };
@@ -3165,6 +3266,7 @@ mod tests {
             delegates: &NO_DELEGATES,
             homes: &NO_HOMES,
             machines: &NO_MACHINES,
+            thread_owners: &[],
             transcript: TranscriptMode::Full,
             now: jiff::Timestamp::UNIX_EPOCH,
         };
@@ -3190,6 +3292,7 @@ mod tests {
             delegates: &NO_DELEGATES,
             homes: &NO_HOMES,
             machines: &NO_MACHINES,
+            thread_owners: &[],
             transcript: TranscriptMode::Full,
             now: jiff::Timestamp::UNIX_EPOCH,
         };
@@ -3362,6 +3465,7 @@ mod tests {
             delegates: &NO_DELEGATES,
             homes: &NO_HOMES,
             machines: &NO_MACHINES,
+            thread_owners: &[],
             transcript: TranscriptMode::Reduced,
             now: jiff::Timestamp::UNIX_EPOCH,
         };
@@ -3467,6 +3571,7 @@ mod tests {
                 delegates: &NO_DELEGATES,
                 homes: &NO_HOMES,
                 machines: &NO_MACHINES,
+                thread_owners: &[],
                 transcript: TranscriptMode::Reduced,
                 now: jiff::Timestamp::UNIX_EPOCH,
             };
@@ -3560,6 +3665,7 @@ mod tests {
             delegates: &NO_DELEGATES,
             homes: &NO_HOMES,
             machines: &NO_MACHINES,
+            thread_owners: &[],
             transcript,
             now: jiff::Timestamp::UNIX_EPOCH,
         };
@@ -3628,6 +3734,7 @@ mod tests {
                 delegates: &NO_DELEGATES,
                 homes: &NO_HOMES,
                 machines: &NO_MACHINES,
+                thread_owners: &[],
                 transcript: TranscriptMode::Full,
                 now: jiff::Timestamp::UNIX_EPOCH,
             };
@@ -3681,6 +3788,7 @@ mod tests {
                 delegates: &NO_DELEGATES,
                 homes: &NO_HOMES,
                 machines: &NO_MACHINES,
+                thread_owners: &[],
                 transcript: TranscriptMode::Full,
                 now: jiff::Timestamp::UNIX_EPOCH,
             };
@@ -3725,6 +3833,7 @@ mod tests {
             delegates: &NO_DELEGATES,
             homes: &NO_HOMES,
             machines: &NO_MACHINES,
+            thread_owners: &[],
             transcript: TranscriptMode::Full,
             now: jiff::Timestamp::UNIX_EPOCH,
         };
@@ -3781,6 +3890,7 @@ mod tests {
                 delegates: &NO_DELEGATES,
                 homes: &NO_HOMES,
                 machines: &NO_MACHINES,
+                thread_owners: &[],
                 transcript: TranscriptMode::Full,
                 now: jiff::Timestamp::UNIX_EPOCH,
             };
@@ -3861,6 +3971,7 @@ mod tests {
                 delegates: &NO_DELEGATES,
                 homes: &NO_HOMES,
                 machines: &NO_MACHINES,
+                thread_owners: &[],
                 transcript: TranscriptMode::Full,
                 now: jiff::Timestamp::UNIX_EPOCH,
             };
@@ -3932,6 +4043,7 @@ mod tests {
                 delegates: &NO_DELEGATES,
                 homes: &NO_HOMES,
                 machines: &NO_MACHINES,
+                thread_owners: &[],
                 transcript: TranscriptMode::Full,
                 now: jiff::Timestamp::UNIX_EPOCH,
             };
@@ -3987,6 +4099,7 @@ mod tests {
                 delegates: &NO_DELEGATES,
                 homes: &NO_HOMES,
                 machines: &NO_MACHINES,
+                thread_owners: &[],
                 transcript: TranscriptMode::Full,
                 now: jiff::Timestamp::UNIX_EPOCH,
             };
@@ -4021,6 +4134,7 @@ mod tests {
                 delegates: &NO_DELEGATES,
                 homes: &NO_HOMES,
                 machines: &NO_MACHINES,
+                thread_owners: &[],
                 transcript: TranscriptMode::Full,
                 now: jiff::Timestamp::UNIX_EPOCH,
             };
@@ -4103,6 +4217,7 @@ mod tests {
                 delegates: &NO_DELEGATES,
                 homes: &NO_HOMES,
                 machines: &NO_MACHINES,
+                thread_owners: &[],
                 transcript: TranscriptMode::Full,
                 now: jiff::Timestamp::UNIX_EPOCH,
             };
@@ -4233,6 +4348,7 @@ mod tests {
                 delegates: &NO_DELEGATES,
                 homes: &NO_HOMES,
                 machines: &NO_MACHINES,
+                thread_owners: &[],
                 transcript: TranscriptMode::Full,
                 now: jiff::Timestamp::UNIX_EPOCH,
             };
