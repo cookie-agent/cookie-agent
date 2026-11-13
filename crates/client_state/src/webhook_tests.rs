@@ -395,10 +395,43 @@ fn a_create_takes_the_forms_fields_by_target() {
 }
 
 #[test]
+fn a_session_title_is_checked_and_round_trips_through_the_text_form() {
+    let mut draft =
+        WebhookDraft::for_new_session(WebhookTemplate::for_agent("builder".parse().unwrap()));
+    draft.title = "  Shop issues ".to_owned();
+    let params = draft.create_params().unwrap();
+    let WebhookTarget::New(template) = &params.target else {
+        panic!("a new-session target: {params:?}");
+    };
+    assert_eq!(template.title.as_deref(), Some("Shop issues"));
+    assert!(!template.title_auto);
+
+    draft.title_auto = true;
+    let mut reread = draft.clone();
+    reread
+        .apply_form(&draft.form_text("a new session"))
+        .unwrap();
+    assert_eq!(reread.title.trim(), "Shop issues");
+    assert!(reread.title_auto);
+
+    for bad in ["x".repeat(97), "two\u{7}bells".to_owned()] {
+        draft.title = bad;
+        assert!(draft.create_params().is_err(), "{:?}", draft.title);
+    }
+    assert!(reread.apply_form("title_auto: maybe\n---\n").is_err());
+
+    let mut in_session = WebhookDraft::for_session(session(1), false);
+    in_session.title = "Issues".to_owned();
+    assert!(in_session.create_params().is_err());
+}
+
+#[test]
 fn a_text_form_refuses_what_its_target_cannot_take() {
     let mut in_session = WebhookDraft::for_session(session(1), false);
     let refused = [
         "name: x\nagent: builder\n---\n",
+        "name: x\ntitle: Issues\n---\n",
+        "name: x\ntitle_auto: yes\n---\n",
         "name: x\n---\nprompt\n--- thread prompt\nonce\n",
         "name: x\nname: y\n---\n",
         "colour: red\n---\n",

@@ -37,6 +37,9 @@ pub const CRON_THREAD_KEY_MAX_CHARS: usize = 64;
 pub const THREAD_KEY_MAX_CHARS: usize = 200;
 /// The most bytes a `thread_prompt` may have.
 pub const THREAD_PROMPT_MAX_BYTES: usize = 32 * 1024;
+/// The most characters a new-session template's `title` may have (client
+/// protocol 1.97.0).
+pub const SESSION_TITLE_TEMPLATE_MAX_CHARS: usize = 96;
 
 const fn attach_global() -> bool {
     true
@@ -326,6 +329,19 @@ pub struct CronTemplate {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(length(min = 1, max = 32768))]
     pub thread_prompt: Option<String>,
+    /// What the sessions it creates are called (client protocol 1.97.0;
+    /// `docs/site/specs/webhooks-view.md` section 6): plain text, given when
+    /// the job is made, in place of its name in their titles, which the
+    /// thread key or the time still follows. Its name when omitted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(length(min = 1, max = 384))]
+    pub title: Option<String>,
+    /// Whether each session it creates is left untitled for the automatic
+    /// title to name after its first turn, as a session the user starts is
+    /// (client protocol 1.97.0); `title` then goes unused. Off when
+    /// `[session_title] generate_on_first_turn` is.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub title_auto: bool,
 }
 
 impl CronTemplate {
@@ -344,6 +360,8 @@ impl CronTemplate {
             acp_runtime: None,
             thread_key: None,
             thread_prompt: None,
+            title: None,
+            title_auto: false,
         }
     }
 }

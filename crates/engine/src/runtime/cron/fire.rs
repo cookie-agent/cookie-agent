@@ -104,13 +104,16 @@ pub(crate) fn render_scheduled_job(job: &StoredJob, fired_at: Timestamp) -> Stri
     )
 }
 
-/// A new-session fire's session title: the job's label and the local time
-/// of the fire, or the thread key of a thread's session.
+/// A new-session fire's session title: the template's title or the job's
+/// label, and the local time of the fire or the thread key of a thread's
+/// session; none for the automatic title.
 fn run_title(
     job: &StoredJob,
+    template: &crate::crons::StoredTemplate,
     fired_at: Timestamp,
     thread_key: Option<&str>,
-) -> Result<SessionTitle, String> {
+    generated: bool,
+) -> Result<Option<SessionTitle>, String> {
     let local = match thread_key {
         Some(key) => key.to_owned(),
         None => fired_at
@@ -118,13 +121,7 @@ fn run_title(
             .strftime("%Y-%m-%d %H:%M")
             .to_string(),
     };
-    let mut label = job.label();
-    // Room for the separator and the time within the title limit.
-    let room = SessionTitle::MAX_BYTES.saturating_sub(local.len() + 8);
-    while label.len() > room {
-        label.pop();
-    }
-    SessionTitle::new(format!("{label} · {local}")).map_err(|error| error.to_string())
+    crate::runtime::sessions::run_session_title(template, || job.label(), &local, generated)
 }
 
 /// Where a delivered fire went.
@@ -980,7 +977,15 @@ impl Engine {
             global: template.global,
             cwd: template.cwd.as_ref().map(std::path::PathBuf::from),
         };
-        let title = run_title(job, fired_at, thread_key).map_err(EngineError::ToolFailed)?;
+        let generated = self
+            .inner
+            .config
+            .load()
+            .runtime
+            .session_title
+            .generate_on_first_turn;
+        let title = run_title(job, template, fired_at, thread_key, generated)
+            .map_err(EngineError::ToolFailed)?;
         let meta = self
             .create_root_session(
                 selection,

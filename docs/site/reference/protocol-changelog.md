@@ -5,6 +5,15 @@ The client protocol's version is `MAJOR.MINOR.PATCH`
 adds and a major breaks; before it, every minor could break the wire (see the
 [compatibility spec](../specs/compatibility-v1.md) section 3).
 
+## 1.97.0
+
+- Titles for the sessions webhooks and cron jobs start
+  ([webhooks view spec](../specs/webhooks-view.md) section 6):
+  `WebhookTemplate.title` and `CronTemplate.title`, plain text given when
+  the webhook or job is made, in place of its name in the sessions'
+  titles; `title_auto` on both leaves each session untitled for the
+  automatic title.
+
 ## 1.96.0
 
 - Webhooks ([webhooks spec](../specs/webhooks.md)): `webhooks.list`,

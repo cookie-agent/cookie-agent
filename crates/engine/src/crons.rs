@@ -194,6 +194,13 @@ pub(crate) struct StoredTemplate {
     pub(crate) thread_key: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) thread_prompt: Option<String>,
+    /// What the sessions are called, in place of the job's or webhook's
+    /// name (`docs/site/specs/webhooks-view.md` section 6).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) title: Option<String>,
+    /// The sessions are left for the automatic title.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) title_auto: bool,
 }
 
 impl From<CronTemplate> for StoredTemplate {
@@ -210,6 +217,8 @@ impl From<CronTemplate> for StoredTemplate {
             acp_runtime: template.acp_runtime,
             thread_key: template.thread_key,
             thread_prompt: template.thread_prompt,
+            title: template.title,
+            title_auto: template.title_auto,
         }
     }
 }
@@ -228,6 +237,8 @@ impl StoredTemplate {
             acp_runtime: self.acp_runtime.clone(),
             thread_key: self.thread_key.clone(),
             thread_prompt: self.thread_prompt.clone(),
+            title: self.title.clone(),
+            title_auto: self.title_auto,
         }
     }
 }

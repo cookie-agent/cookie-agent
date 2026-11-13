@@ -234,6 +234,9 @@ pub(in crate::ui) fn form_text(draft: &CronDraft, session: Option<&str>) -> Stri
          #   (%Y-%m-%d: one session per day, later fires go into it with delivery);\n\
          #   empty for a new session per fire. A thread prompt, sent once to each\n\
          #   session the job creates, goes after a `{THREAD_PROMPT_LINE}` line.\n\
+         # title: new-session targets: what the sessions are called, followed by\n\
+         #   \" · \" and the thread key or the time; empty for the job's name.\n\
+         #   title_auto: yes lets the model name each session after its first turn.\n\
          {}name: {}\n\
          schedule: {}\n\
          max_runs: {}\n\
@@ -243,6 +246,8 @@ pub(in crate::ui) fn form_text(draft: &CronDraft, session: Option<&str>) -> Stri
          model: {}\n\
          permission_mode: {}\n\
          thread_key: {}\n\
+         title: {}\n\
+         title_auto: {}\n\
          ---\n\
          {}\n{}",
         draft
@@ -258,6 +263,8 @@ pub(in crate::ui) fn form_text(draft: &CronDraft, session: Option<&str>) -> Stri
         draft.model,
         draft.permission_mode.map_or("", mode_name),
         draft.thread_key,
+        draft.title,
+        if draft.title_auto { "yes" } else { "no" },
         draft.prompt,
         if draft.thread_prompt.is_empty() {
             String::new()
@@ -310,6 +317,8 @@ pub(in crate::ui) fn parse_form(
                 | "model"
                 | "permission_mode"
                 | "thread_key"
+                | "title"
+                | "title_auto"
         ) {
             return Err(format!("`{key}` is not a field of a job"));
         }
@@ -372,6 +381,8 @@ pub(in crate::ui) fn parse_form(
         agent: agent.to_owned(),
         thread_key: field("thread_key").to_owned(),
         thread_prompt: thread_prompt.to_owned(),
+        title: field("title").to_owned(),
+        title_auto: cookie_agent_client_state::cron::parse_title_auto(field("title_auto"))?,
     })
 }
 

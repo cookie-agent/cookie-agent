@@ -300,7 +300,11 @@ async fn threads_share_a_session_and_the_backlog_waits_for_a_free_slot() {
     let (endpoint, responses, _captured) = scripted_channel_server(3).await;
     let (fixture, selection) = custom_fixture_with_endpoint(&endpoint);
     let engine = &fixture.engine;
-    let mut create = WebhookCreateParams::new(WebhookTarget::New(template(&selection)));
+    let mut titled = template(&selection);
+    titled.title = Some("Shop issues".into());
+    // Without generated titles, `title_auto` gives way to the title.
+    titled.title_auto = true;
+    let mut create = WebhookCreateParams::new(WebhookTarget::New(titled));
     create.name = Some("Issues".into());
     create.max_concurrent = Some(1);
     let webhook = engine
@@ -331,7 +335,7 @@ async fn threads_share_a_session_and_the_backlog_waits_for_a_free_slot() {
         .expect("the session records its webhook");
     assert_eq!(created_by.webhook_id, webhook.id);
     assert_eq!(created_by.thread_key.as_deref(), Some("1"));
-    assert!(meta.title.unwrap().to_string().ends_with("· 1"));
+    assert_eq!(meta.title.unwrap().to_string(), "Shop issues · 1");
 
     // Issue 1's next event goes into its thread whatever the limit.
     let second = event_id(
@@ -578,6 +582,15 @@ async fn definitions_are_checked_and_secrets_rotate() {
     )));
     unkeyed.delivery = Some(ProducerDeliveryMode::Steer);
     assert!(engine.create_webhook(unkeyed).await.is_err());
+    for bad in ["  ", "two\nlines", &"x".repeat(97)] {
+        let mut titled = template(&selection);
+        titled.title = Some(bad.into());
+        let refused = engine
+            .create_webhook(WebhookCreateParams::new(WebhookTarget::New(titled)))
+            .await
+            .expect_err("a bad title is refused");
+        assert!(refused.to_string().contains("title"), "{refused}");
+    }
     let mut both = template(&selection);
     both.thread_key = Some(WebhookValueSource {
         header: Some("X-Key".into()),

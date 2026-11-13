@@ -557,6 +557,9 @@ pub fn detail_lines(
         if template.thread_prompt.is_some() {
             lines.push(CronDetail::new("thread prompt", "set".to_owned()));
         }
+        if let Some(title) = session_title_reading(template.title.as_deref(), template.title_auto) {
+            lines.push(CronDetail::new("session title", title));
+        }
     }
     if let Some(mode) = job.permission_mode {
         lines.push(CronDetail::new(
@@ -669,6 +672,46 @@ pub fn parse_max_runs(text: &str) -> Result<Option<CronMaxRuns>, String> {
         .ok_or_else(|| "runs are a whole number; 0 or less runs without a limit".to_owned())
 }
 
+/// A form's session title for a new-session job or webhook
+/// (`docs/site/specs/webhooks-view.md` section 6): `None` when blank, else
+/// the trimmed text, refused past
+/// [`cookie_agent_protocol::SESSION_TITLE_TEMPLATE_MAX_CHARS`] characters or
+/// with a control character, as the daemon refuses it.
+pub fn parse_session_title(text: &str) -> Result<Option<String>, String> {
+    let title = text.trim();
+    if title.is_empty() {
+        return Ok(None);
+    }
+    let max = cookie_agent_protocol::SESSION_TITLE_TEMPLATE_MAX_CHARS;
+    if title.chars().count() > max {
+        return Err(format!("a session title is at most {max} characters"));
+    }
+    if title.chars().any(char::is_control) {
+        return Err("a session title is one line of text".to_owned());
+    }
+    Ok(Some(title.to_owned()))
+}
+
+/// What a new-session template's sessions are called, for its details:
+/// none when they take the owner's name.
+pub fn session_title_reading(title: Option<&str>, title_auto: bool) -> Option<String> {
+    match (title, title_auto) {
+        (_, true) => Some("named by the model".to_owned()),
+        (Some(title), false) => Some(format!("{title} · …")),
+        (None, false) => None,
+    }
+}
+
+/// A text form's `title_auto` line: empty, `no`, or `false` for off; `yes`
+/// or `true` for on.
+pub fn parse_title_auto(text: &str) -> Result<bool, String> {
+    match text.trim() {
+        "" | "no" | "false" => Ok(false),
+        "yes" | "true" => Ok(true),
+        other => Err(format!("title_auto is yes or no, not `{other}`")),
+    }
+}
+
 /// Reads a model pin as typed: empty for none, `provider/model`, or
 /// `provider/model[variant]`.
 pub fn parse_model_pin(text: &str) -> Result<Option<ModelSelection>, String> {
@@ -748,6 +791,11 @@ pub struct CronDraft {
     pub thread_key: String,
     /// For a new-session job: the thread prompt; none when blank.
     pub thread_prompt: String,
+    /// For a new-session job: what its sessions are called, as
+    /// [`parse_session_title`] reads it; the job's name when blank.
+    pub title: String,
+    /// For a new-session job: the automatic title names its sessions.
+    pub title_auto: bool,
 }
 
 impl CronDraft {
@@ -766,6 +814,8 @@ impl CronDraft {
             agent: String::new(),
             thread_key: String::new(),
             thread_prompt: String::new(),
+            title: String::new(),
+            title_auto: false,
         }
     }
 
@@ -779,6 +829,8 @@ impl CronDraft {
             .unwrap_or_default();
         let thread_key = template.thread_key.clone().unwrap_or_default();
         let thread_prompt = template.thread_prompt.clone().unwrap_or_default();
+        let title = template.title.clone().unwrap_or_default();
+        let title_auto = template.title_auto;
         Self {
             name: String::new(),
             prompt: String::new(),
@@ -791,6 +843,8 @@ impl CronDraft {
             agent,
             thread_key,
             thread_prompt,
+            title,
+            title_auto,
         }
     }
 
@@ -820,12 +874,14 @@ impl CronDraft {
             ),
             _ => (String::new(), String::new()),
         };
-        let (thread_key, thread_prompt) = match &job.target {
+        let (thread_key, thread_prompt, title, title_auto) = match &job.target {
             CronTarget::New(template) => (
                 template.thread_key.clone().unwrap_or_default(),
                 template.thread_prompt.clone().unwrap_or_default(),
+                template.title.clone().unwrap_or_default(),
+                template.title_auto,
             ),
-            _ => (String::new(), String::new()),
+            _ => (String::new(), String::new(), String::new(), false),
         };
         Self {
             name: job.name.clone().unwrap_or_default(),
@@ -845,6 +901,8 @@ impl CronDraft {
             agent,
             thread_key,
             thread_prompt,
+            title,
+            title_auto,
         }
     }
 
@@ -895,7 +953,12 @@ impl CronDraft {
                 template.thread_key = (!thread_key.is_empty()).then(|| thread_key.to_owned());
                 template.thread_prompt = (!self.thread_prompt.trim().is_empty())
                     .then(|| self.thread_prompt.trim_end().to_owned());
+                template.title = parse_session_title(&self.title)?;
+                template.title_auto = self.title_auto;
                 Ok(CronTarget::New(template))
+            }
+            _ if !self.title.trim().is_empty() || self.title_auto => {
+                Err("a session title is for a job that starts new sessions".to_owned())
             }
             target => Ok(target.target()),
         }

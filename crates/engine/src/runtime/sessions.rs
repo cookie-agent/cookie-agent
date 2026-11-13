@@ -24,10 +24,35 @@ use crate::policy::{self, freeze_root_agent_policy, resolve_agent};
 use crate::session::SessionError;
 
 /// What made a root session: a cron job's fire or a webhook's event,
-/// recorded with its creation, and the title it starts with.
+/// recorded with its creation, and the title it starts with: none leaves it
+/// to the automatic title (`title_auto`).
 pub(crate) struct SessionCreator {
     pub(crate) by: CreatedBy,
-    pub(crate) title: cookie_agent_protocol::SessionTitle,
+    pub(crate) title: Option<cookie_agent_protocol::SessionTitle>,
+}
+
+/// The title a cron job's or a webhook's new session starts with: the
+/// template's `title`, else the owner's label, then ` · ` and the thread key
+/// or the local time (`docs/site/specs/webhooks-view.md` section 6). None
+/// when `title_auto` asks for the automatic title and it is generated.
+pub(crate) fn run_session_title(
+    template: &crate::crons::StoredTemplate,
+    label: impl FnOnce() -> String,
+    suffix: &str,
+    generated: bool,
+) -> Result<Option<cookie_agent_protocol::SessionTitle>, String> {
+    if template.title_auto && generated {
+        return Ok(None);
+    }
+    let mut name = template.title.clone().unwrap_or_else(label);
+    // Room for the separator and the suffix within the title limit.
+    let room = cookie_agent_protocol::SessionTitle::MAX_BYTES.saturating_sub(suffix.len() + 8);
+    while name.len() > room {
+        name.pop();
+    }
+    cookie_agent_protocol::SessionTitle::new(format!("{name} · {suffix}"))
+        .map(Some)
+        .map_err(|error| error.to_string())
 }
 
 /// Whose fire or event created a session.
@@ -299,11 +324,11 @@ impl Engine {
             Some(SessionCreator {
                 by: CreatedBy::Cron(cron),
                 title,
-            }) => (Some(cron), None, Some(title)),
+            }) => (Some(cron), None, title),
             Some(SessionCreator {
                 by: CreatedBy::Webhook(webhook),
                 title,
-            }) => (None, Some(webhook), Some(title)),
+            }) => (None, Some(webhook), title),
             None => (None, None, None),
         };
         let rename_id = cron
@@ -1407,6 +1432,45 @@ fn merge_session_tree_usage(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn run_session_titles_take_the_template_title_or_leave_it_to_the_model() {
+        let template = |title: Option<&str>, title_auto: bool| {
+            crate::crons::StoredTemplate::from(cookie_agent_protocol::CronTemplate {
+                title: title.map(str::to_owned),
+                title_auto,
+                ..cookie_agent_protocol::CronTemplate::for_agent(AgentId::new("primary").unwrap())
+            })
+        };
+        let title = |template: &crate::crons::StoredTemplate, generated| {
+            run_session_title(template, || "Issues".to_owned(), "42", generated)
+                .unwrap()
+                .map(|title| title.to_string())
+        };
+        assert_eq!(
+            title(&template(Some("Shop issues"), false), true).as_deref(),
+            Some("Shop issues · 42")
+        );
+        assert_eq!(
+            title(&template(None, false), true).as_deref(),
+            Some("Issues · 42")
+        );
+        assert_eq!(title(&template(Some("Shop issues"), true), true), None);
+        // Without generated titles, `title_auto` does nothing.
+        assert_eq!(
+            title(&template(Some("Shop issues"), true), false).as_deref(),
+            Some("Shop issues · 42")
+        );
+        // A long title gives way to the suffix within the limit.
+        let long = template(Some(&"é".repeat(96)), false);
+        let suffix = "k".repeat(200);
+        let made = run_session_title(&long, String::new, &suffix, true)
+            .unwrap()
+            .unwrap()
+            .to_string();
+        assert!(made.ends_with(&format!(" · {suffix}")), "{made}");
+        assert!(made.len() <= cookie_agent_protocol::SessionTitle::MAX_BYTES);
+    }
 
     #[test]
     fn malformed_usage_tree_cycle_is_reported_as_delegation_corruption() {

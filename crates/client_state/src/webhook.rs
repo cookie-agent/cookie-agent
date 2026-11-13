@@ -454,6 +454,11 @@ pub fn detail_lines(
         if template.thread_prompt.is_some() {
             lines.push(detail("thread prompt", "set".to_owned()));
         }
+        if let Some(title) =
+            crate::cron::session_title_reading(template.title.as_deref(), template.title_auto)
+        {
+            lines.push(detail("session title", title));
+        }
     }
     for condition in &webhook.filter {
         lines.push(detail("filter", condition_text(condition)));
@@ -581,6 +586,12 @@ pub struct WebhookDraft {
     /// For a new-session target: sent once to each session it creates, and
     /// again after each compaction.
     pub thread_prompt: String,
+    /// For a new-session target: what its sessions are called, as
+    /// [`crate::cron::parse_session_title`] reads it; the webhook's name
+    /// when blank.
+    pub title: String,
+    /// For a new-session target: the automatic title names its sessions.
+    pub title_auto: bool,
     /// As [`parse_verify`] reads it.
     pub verify: String,
     /// A secret to set with the check; blank to have the daemon make one
@@ -610,6 +621,8 @@ impl WebhookDraft {
             agent: String::new(),
             thread_key: String::new(),
             thread_prompt: String::new(),
+            title: String::new(),
+            title_auto: false,
             verify: String::new(),
             secret: String::new(),
             filter: String::new(),
@@ -648,6 +661,8 @@ impl WebhookDraft {
             .map(value_source_text)
             .unwrap_or_default();
         self.thread_prompt = template.thread_prompt.clone().unwrap_or_default();
+        self.title = template.title.clone().unwrap_or_default();
+        self.title_auto = template.title_auto;
     }
 
     /// The form filled from `webhook`, to edit it.
@@ -708,6 +723,9 @@ impl WebhookDraft {
                         .to_owned(),
                 );
             }
+            if !self.title.trim().is_empty() || self.title_auto {
+                return Err("a session title is for a webhook that starts new sessions".to_owned());
+            }
             return Ok(self.target.target());
         };
         let agent = self.agent.trim();
@@ -729,6 +747,8 @@ impl WebhookDraft {
         };
         template.thread_prompt = (!self.thread_prompt.trim().is_empty())
             .then(|| self.thread_prompt.trim_end().to_owned());
+        template.title = crate::cron::parse_session_title(&self.title)?;
+        template.title_auto = self.title_auto;
         Ok(WebhookTarget::New(template))
     }
 
@@ -868,6 +888,9 @@ impl WebhookDraft {
              #   model is provider/model or provider/model[variant], empty for the agent's own;\n\
              #   thread_key is json:/pointer or header:Name; events with the same key share a\n\
              #   session.\n\
+             # title: new-session targets: what the sessions are called, followed by\n\
+             #   \" · \" and the thread key or the time; empty for the webhook's name.\n\
+             #   title_auto: yes lets the model name each session after its first turn.\n\
              # check: empty (the URL alone), github, standard, bearer, or\n\
              #   hmac_sha256 header=<name> encoding=hex|base64 prefix=<text>.\n\
              # secret: empty to keep the current one, or have one made for a new check.\n\
@@ -882,11 +905,13 @@ impl WebhookDraft {
         );
         if self.target.is_new() {
             text.push_str(&format!(
-                "agent: {}\nmodel: {}\npermission_mode: {}\nthread_key: {}\n",
+                "agent: {}\nmodel: {}\npermission_mode: {}\nthread_key: {}\ntitle: {}\ntitle_auto: {}\n",
                 self.agent,
                 self.model,
                 self.permission_mode.map_or("", permission_mode_code),
                 self.thread_key,
+                self.title,
+                if self.title_auto { "yes" } else { "no" },
             ));
         }
         text.push_str(&format!(
@@ -965,9 +990,19 @@ impl WebhookDraft {
             seen.push(key);
             let new_only = matches!(
                 key,
-                "agent" | "model" | "permission_mode" | "thread_key" | "max_concurrent"
+                "agent"
+                    | "model"
+                    | "permission_mode"
+                    | "thread_key"
+                    | "title"
+                    | "title_auto"
+                    | "max_concurrent"
             );
-            if new_only && !self.target.is_new() && !value.is_empty() {
+            if new_only
+                && !self.target.is_new()
+                && !value.is_empty()
+                && !(key == "title_auto" && matches!(value, "no" | "false"))
+            {
                 return Err(format!("`{key}` is for a webhook that starts new sessions"));
             }
             match key {
@@ -992,6 +1027,8 @@ impl WebhookDraft {
                     }
                 }
                 "thread_key" => next.thread_key = value.to_owned(),
+                "title" => next.title = value.to_owned(),
+                "title_auto" => next.title_auto = crate::cron::parse_title_auto(value)?,
                 "check" => next.verify = value.to_owned(),
                 "secret" => next.secret = value.to_owned(),
                 "headers" => next.headers = value.to_owned(),

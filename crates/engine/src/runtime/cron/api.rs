@@ -235,6 +235,10 @@ impl Engine {
             crate::threads::check_thread_prompt(prompt)
                 .map_err(|reason| refused(format!("thread_prompt {reason}")))?;
         }
+        if let Some(title) = &template.title {
+            crate::threads::check_session_title(title)
+                .map_err(|reason| refused(format!("title {reason}")))?;
+        }
         crate::permissions::check_rule_selectors(&template.permission_rules)
             .map_err(|error| refused(EngineError::Permission(error).to_string()))?;
         cookie_agent_protocol::SessionPermissionOverlay {

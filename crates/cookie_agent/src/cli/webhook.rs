@@ -145,6 +145,13 @@ pub(crate) struct WebhookCreateArgs {
     /// each compaction.
     #[arg(long, value_name = "TEXT", conflicts_with = "session")]
     thread_prompt: Option<String>,
+    /// New sessions: what they are called, then " · " and the thread key or
+    /// the time; the webhook's name when not given. At most 96 characters.
+    #[arg(long, value_name = "TEXT", conflicts_with = "session")]
+    title: Option<String>,
+    /// New sessions: let the model name each one after its first turn.
+    #[arg(long, conflicts_with = "session")]
+    title_auto: bool,
     /// A signature check: `github`, `standard`, `bearer`, or
     /// `hmac_sha256 header=<name> encoding=hex|base64 prefix=<text>`.
     #[arg(long, value_name = "CHECK")]
@@ -209,6 +216,13 @@ pub(crate) struct WebhookEditArgs {
     /// New sessions: the thread prompt; an empty one removes it.
     #[arg(long, value_name = "TEXT")]
     thread_prompt: Option<String>,
+    /// New sessions: their title; an empty one gives them the webhook's name.
+    #[arg(long, value_name = "TEXT")]
+    title: Option<String>,
+    /// New sessions: let the model name each one (`--title-auto=false` to
+    /// stop).
+    #[arg(long, value_name = "BOOL", num_args = 0..=1, default_missing_value = "true")]
+    title_auto: Option<bool>,
     /// A new check; an empty one removes it, leaving the URL alone.
     #[arg(long, value_name = "CHECK")]
     check: Option<String>,
@@ -688,6 +702,8 @@ async fn create_draft(client: &Client, args: WebhookCreateArgs) -> anyhow::Resul
             draft.permission_mode = args.permission_mode.map(Into::into);
             draft.thread_key = args.thread_key.unwrap_or_default();
             draft.thread_prompt = args.thread_prompt.unwrap_or_default();
+            draft.title = args.title.unwrap_or_default();
+            draft.title_auto = args.title_auto;
             draft.max_concurrent = args.max_concurrent.unwrap_or_default();
             draft
         }
@@ -726,6 +742,8 @@ async fn edit_update(
         };
         draft.thread_key.clear();
         draft.thread_prompt.clear();
+        draft.title.clear();
+        draft.title_auto = false;
         draft.max_concurrent.clear();
     }
     if let Some(agent) = changes.agent {
@@ -745,6 +763,7 @@ async fn edit_update(
             changes.thread_prompt,
             &mut draft.thread_prompt,
         ),
+        ("--title", changes.title, &mut draft.title),
         (
             "--max-concurrent",
             changes.max_concurrent,
@@ -755,6 +774,13 @@ async fn edit_update(
             anyhow::ensure!(new, "{flag} is for a webhook that starts new sessions");
             *field = value;
         }
+    }
+    if let Some(auto) = changes.title_auto {
+        anyhow::ensure!(
+            new,
+            "--title-auto is for a webhook that starts new sessions"
+        );
+        draft.title_auto = auto;
     }
     if let Some(mode) = changes.permission_mode {
         anyhow::ensure!(

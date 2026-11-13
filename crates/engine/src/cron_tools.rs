@@ -52,7 +52,7 @@ pub(crate) const RUN: &str = "cron_run";
 
 const SCHEDULE_NOTES: &str = "Schedules are in the daemon host's local time. Each fire arrives marked as a <scheduled_job>, never as the user, and is not user consent. Prefer `cron_update` on an existing job to creating a near duplicate. max_runs defaults to 1, so a job fires once unless told otherwise; 0 runs until the job is deleted or disabled.";
 
-const TARGET_NOTES: &str = "`target`: \"self\" (the default) fires into this session; a subagent's session ID (e.g. \"explore_1a2b3c4d\") fires into that subagent's session, which must be below this one; {\"new\": {...}} starts a new root session per fire, whose agent, capabilities, and project default to this session's. With `new.thread_key` (a strftime format of the fire's local time, such as \"%Y-%m-%d\"), fires with the same key share one session: the first creates it, later ones go into it with `delivery`. A new session's agent must be able to run as a root (call `list_agents` with for=\"cron\").";
+const TARGET_NOTES: &str = "`target`: \"self\" (the default) fires into this session; a subagent's session ID (e.g. \"explore_1a2b3c4d\") fires into that subagent's session, which must be below this one; {\"new\": {...}} starts a new root session per fire, whose agent, capabilities, and project default to this session's. With `new.thread_key` (a strftime format of the fire's local time, such as \"%Y-%m-%d\"), fires with the same key share one session: the first creates it, later ones go into it with `delivery`. Give `new.title` for what the sessions will be about (they are called it, then \" · \" and the key or the time), or `new.title_auto: true` to let the automatic title name each. A new session's agent must be able to run as a root (call `list_agents` with for=\"cron\").";
 
 fn create_description() -> String {
     format!(
@@ -136,6 +136,15 @@ pub(crate) struct NewArg {
     /// `prompt` is then the per-fire text
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) thread_prompt: Option<String>,
+    /// What each new session is called, plain text of at most 96
+    /// characters, followed by " · " and the thread key or the fire's
+    /// time; the job's name when omitted. Name what the sessions are about
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) title: Option<String>,
+    /// true leaves each new session's title to the automatic title after
+    /// its first turn instead of `title`
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) title_auto: bool,
 }
 
 /// A [`PermissionRule`] as the tools' schemas describe it, for the model
@@ -476,6 +485,8 @@ impl Engine {
                     acp_runtime: None,
                     thread_key: new.thread_key,
                     thread_prompt: new.thread_prompt,
+                    title: new.title,
+                    title_auto: new.title_auto,
                 }))
             }
         }

@@ -135,6 +135,13 @@ pub(crate) struct CronCreateArgs {
     /// once, and again after each compaction.
     #[arg(long, value_name = "TEXT", conflicts_with = "session")]
     thread_prompt: Option<String>,
+    /// New-session jobs: what the sessions are called, then " · " and the thread key or
+    /// the time; the job's name when not given. At most 96 characters.
+    #[arg(long, value_name = "TEXT", conflicts_with = "session")]
+    title: Option<String>,
+    /// New-session jobs: let the model name each one after its first turn.
+    #[arg(long, conflicts_with = "session")]
+    title_auto: bool,
     /// Create the job disabled.
     #[arg(long)]
     disabled: bool,
@@ -176,6 +183,13 @@ pub(crate) struct CronEditArgs {
     /// New-session jobs: the thread prompt; an empty one removes it.
     #[arg(long, value_name = "TEXT")]
     thread_prompt: Option<String>,
+    /// New-session jobs: the sessions' title; an empty one gives them the job's name.
+    #[arg(long, value_name = "TEXT")]
+    title: Option<String>,
+    /// New-session jobs: let the model name each one (`--title-auto=false` to
+    /// stop).
+    #[arg(long, value_name = "BOOL", num_args = 0..=1, default_missing_value = "true")]
+    title_auto: Option<bool>,
 }
 
 pub(crate) fn parse_job_id(value: &str) -> Result<CronJobId, String> {
@@ -535,6 +549,8 @@ async fn create_draft(client: &Client, args: CronCreateArgs) -> anyhow::Result<(
             draft.permission_mode = args.permission_mode.map(Into::into);
             draft.thread_key = args.thread_key.unwrap_or_default();
             draft.thread_prompt = args.thread_prompt.unwrap_or_default();
+            draft.title = args.title.unwrap_or_default();
+            draft.title_auto = args.title_auto;
             draft
         }
         (None, None) => anyhow::bail!("give --session or --agent"),
@@ -567,6 +583,8 @@ async fn edit_update(
             session,
             subagent: is_subagent(client, session).await?,
         };
+        draft.title.clear();
+        draft.title_auto = false;
     }
     if let Some(agent) = changes.agent {
         if !draft.target.is_new() {
@@ -598,6 +616,7 @@ async fn edit_update(
             changes.thread_prompt,
             &mut draft.thread_prompt,
         ),
+        ("--title", changes.title, &mut draft.title),
     ] {
         if let Some(value) = value {
             anyhow::ensure!(
@@ -606,6 +625,13 @@ async fn edit_update(
             );
             *field = value;
         }
+    }
+    if let Some(auto) = changes.title_auto {
+        anyhow::ensure!(
+            new,
+            "--title-auto is for a job that starts a new session per fire"
+        );
+        draft.title_auto = auto;
     }
     if let Some(delivery) = changes.delivery {
         anyhow::ensure!(

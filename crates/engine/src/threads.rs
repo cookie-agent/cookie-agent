@@ -191,6 +191,26 @@ pub(crate) fn check_thread_prompt(prompt: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Checks a new-session template's `title`
+/// (`docs/site/specs/webhooks-view.md` section 6): not blank, at most
+/// [`cookie_agent_protocol::SESSION_TITLE_TEMPLATE_MAX_CHARS`] characters,
+/// and no control characters, as a rename's title.
+pub(crate) fn check_session_title(title: &str) -> Result<(), String> {
+    if title.trim().is_empty() {
+        return Err("must not be blank".into());
+    }
+    if title.chars().count() > cookie_agent_protocol::SESSION_TITLE_TEMPLATE_MAX_CHARS {
+        return Err(format!(
+            "must be at most {} characters",
+            cookie_agent_protocol::SESSION_TITLE_TEMPLATE_MAX_CHARS
+        ));
+    }
+    if title.chars().any(char::is_control) {
+        return Err("must not hold a control character".into());
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -270,6 +290,16 @@ mod tests {
             assert!(check_time_key_format(refused).is_err(), "{refused:?}");
         }
         assert!(check_time_key_format(&"x".repeat(64)).is_ok());
+    }
+
+    #[test]
+    fn session_titles_are_checked() {
+        assert!(check_session_title("Shop issues").is_ok());
+        assert!(check_session_title("  ").is_err());
+        assert!(check_session_title("line\nbreak").is_err());
+        let limit = cookie_agent_protocol::SESSION_TITLE_TEMPLATE_MAX_CHARS;
+        assert!(check_session_title(&"é".repeat(limit)).is_ok());
+        assert!(check_session_title(&"é".repeat(limit + 1)).is_err());
     }
 
     #[test]

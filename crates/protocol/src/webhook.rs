@@ -195,6 +195,19 @@ pub struct WebhookTemplate {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(length(min = 1, max = 32768))]
     pub thread_prompt: Option<String>,
+    /// What the sessions it creates are called (client protocol 1.97.0;
+    /// `docs/site/specs/webhooks-view.md` section 6): plain text, given when
+    /// the webhook is made, in place of its name in their titles, which the
+    /// thread key or the time still follows. Its name when omitted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(length(min = 1, max = 384))]
+    pub title: Option<String>,
+    /// Whether each session it creates is left untitled for the automatic
+    /// title to name after its first turn, as a session the user starts is
+    /// (client protocol 1.97.0); `title` then goes unused. Off when
+    /// `[session_title] generate_on_first_turn` is.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub title_auto: bool,
 }
 
 impl WebhookTemplate {
@@ -213,6 +226,8 @@ impl WebhookTemplate {
             acp_runtime: None,
             thread_key: None,
             thread_prompt: None,
+            title: None,
+            title_auto: false,
         }
     }
 }

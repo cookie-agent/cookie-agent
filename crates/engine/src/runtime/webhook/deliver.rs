@@ -82,9 +82,15 @@ enum Plan {
     Wait,
 }
 
-/// A new-session event's title: the webhook's label and the thread key or
-/// the local time it arrived.
-fn session_title(webhook: &StoredWebhook, event: &StoredEvent) -> Result<SessionTitle, String> {
+/// A new-session event's title: the template's title or the webhook's
+/// label, and the thread key or the local time it arrived; none for the
+/// automatic title.
+fn session_title(
+    webhook: &StoredWebhook,
+    template: &crate::crons::StoredTemplate,
+    event: &StoredEvent,
+    generated: bool,
+) -> Result<Option<SessionTitle>, String> {
     let suffix = match &event.thread_key {
         Some(key) => key.clone(),
         None => event
@@ -93,12 +99,7 @@ fn session_title(webhook: &StoredWebhook, event: &StoredEvent) -> Result<Session
             .strftime("%Y-%m-%d %H:%M")
             .to_string(),
     };
-    let mut label = webhook.label();
-    let room = SessionTitle::MAX_BYTES.saturating_sub(suffix.len() + 8);
-    while label.len() > room {
-        label.pop();
-    }
-    SessionTitle::new(format!("{label} · {suffix}")).map_err(|error| error.to_string())
+    crate::runtime::sessions::run_session_title(template, || webhook.label(), &suffix, generated)
 }
 
 impl Engine {
@@ -477,7 +478,15 @@ impl Engine {
             global: template.global,
             cwd: template.cwd.as_ref().map(std::path::PathBuf::from),
         };
-        let title = session_title(webhook, event).map_err(EngineError::ToolFailed)?;
+        let generated = self
+            .inner
+            .config
+            .load()
+            .runtime
+            .session_title
+            .generate_on_first_turn;
+        let title =
+            session_title(webhook, template, event, generated).map_err(EngineError::ToolFailed)?;
         let meta = self
             .create_root_session(
                 selection,

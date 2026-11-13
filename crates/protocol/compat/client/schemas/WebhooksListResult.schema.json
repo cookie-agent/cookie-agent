@@ -847,6 +847,19 @@
             "string",
             "null"
           ]
+        },
+        "title": {
+          "description": "What the sessions it creates are called (client protocol 1.97.0;\n`docs/site/specs/webhooks-view.md` section 6): plain text, given when\nthe webhook is made, in place of its name in their titles, which the\nthread key or the time still follows. Its name when omitted.",
+          "maxLength": 384,
+          "minLength": 1,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "title_auto": {
+          "description": "Whether each session it creates is left untitled for the automatic\ntitle to name after its first turn, as a session the user starts is\n(client protocol 1.97.0); `title` then goes unused. Off when\n`[session_title] generate_on_first_turn` is.",
+          "type": "boolean"
         }
       },
       "required": [

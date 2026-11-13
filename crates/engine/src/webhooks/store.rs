@@ -146,6 +146,8 @@ impl StoredWebhookTarget {
                     acp_runtime: template.acp_runtime.clone(),
                     thread_key: target.thread_key.clone(),
                     thread_prompt: template.thread_prompt.clone(),
+                    title: template.title.clone(),
+                    title_auto: template.title_auto,
                 })
             }
         }
@@ -171,6 +173,8 @@ impl From<WebhookTarget> for StoredWebhookTarget {
                     acp_runtime: template.acp_runtime,
                     thread_key: None,
                     thread_prompt: template.thread_prompt,
+                    title: template.title,
+                    title_auto: template.title_auto,
                 },
             }),
         }

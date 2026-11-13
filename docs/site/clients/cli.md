@@ -595,7 +595,8 @@ newest first, with each fire's outcome, thread, and the session it went to.
 cookie cron create --prompt <TEXT> --schedule <SCHEDULE>
                    (--session <SESSION_ID> [--delivery steer|queue]
                     | --agent <AGENT> [--model <MODEL>] [--permission-mode <MODE>] [--project <NAME>]
-                      [--thread-key <FORMAT> [--delivery steer|queue]] [--thread-prompt <TEXT>])
+                      [--thread-key <FORMAT> [--delivery steer|queue]] [--thread-prompt <TEXT>]
+                      [--title <TEXT> | --title-auto])
                    [--name <NAME>] [--max-runs <RUNS>] [--disabled]
 ```
 
@@ -615,6 +616,8 @@ Creates a job and prints its ID and next fire.
 | `--project <NAME>` | With `--agent`: the project the run sessions belong to. |
 | `--thread-key <FORMAT>` | With `--agent`: a time format of each fire's local time, such as `%Y-%m-%d`; fires with the same key go into one session, which the first creates. A format without `%` is one session for every fire. |
 | `--thread-prompt <TEXT>` | With `--agent`: instructions each session the job creates gets as a plain user message before its first fire, and again after each compaction. |
+| `--title <TEXT>` | With `--agent`: what the sessions are called, at most 96 characters, followed by ` · ` and the thread key or the fire's time; the job's name when omitted. |
+| `--title-auto` | With `--agent`: let the model name each session after its first turn instead, as it names a session you start; does nothing while `[session_title] generate_on_first_turn` is off. |
 | `--disabled` | Create the job disabled. |
 
 #### `cookie cron edit`
@@ -625,8 +628,9 @@ changes, and an edit that changes nothing says so. It takes `--prompt`,
 (fire into that session instead), `--delivery`, `--agent` (start a new
 session with that agent per fire, or change a new-session job's agent),
 `--model` (empty removes the pin), `--permission-mode`, `--thread-key`
-(empty starts a session at every fire again), and `--thread-prompt` (empty
-removes it). A new schedule computes the next fire from now.
+(empty starts a session at every fire again), `--thread-prompt` (empty
+removes it), `--title` (empty gives the sessions the job's name again), and
+`--title-auto` (`--title-auto=false` to stop). A new schedule computes the next fire from now.
 
 #### `cookie cron rm`
 
@@ -687,7 +691,7 @@ events, newest first, with each one's outcome, thread, and session.
 cookie webhook create (--session <SESSION_ID> [--delivery steer|queue]
                        | --agent <AGENT> [--model <MODEL>] [--permission-mode <MODE>] [--project <NAME>]
                          [--thread-key <SOURCE> [--delivery steer|queue]] [--thread-prompt <TEXT>]
-                         [--max-concurrent <COUNT>])
+                         [--title <TEXT> | --title-auto] [--max-concurrent <COUNT>])
                       [--name <NAME>] [--prompt <TEXT>] [--check <CHECK> [--secret <SECRET>]]
                       [--filter <CONDITION>]... [--show-header <NAME>]...
                       [--max-per-hour <COUNT>] [--max-failures <COUNT>] [--disabled]
@@ -709,6 +713,8 @@ again).
 | `--project <NAME>` | With `--agent`: the project the sessions belong to. |
 | `--thread-key <SOURCE>` | With `--agent`: `json:/pointer` or `header:Name`; events with the same value go into one session, which the first creates. |
 | `--thread-prompt <TEXT>` | With `--agent`: instructions each session gets as a plain user message before its first event, and again after each compaction. |
+| `--title <TEXT>` | With `--agent`: what the sessions are called, at most 96 characters, followed by ` · ` and the thread key or the arrival time; the webhook's name when omitted. Nothing in it is read from requests. |
+| `--title-auto` | With `--agent`: let the model name each session after its first turn instead; does nothing while `[session_title] generate_on_first_turn` is off. |
 | `--max-concurrent <COUNT>` | With `--agent`: how many of its sessions may run at once; later events wait. 0 or less for no limit; 1 when omitted. |
 | `--check <CHECK>` | A signature check: `github`, `standard` (Standard Webhooks), `bearer`, or `"hmac_sha256 header=<name> encoding=hex\|base64 prefix=<text>"`. Without one, the URL alone admits a request. |
 | `--secret <SECRET>` | With `--check`: its secret; the daemon makes one when omitted. |
@@ -727,7 +733,9 @@ the options of `create` but `--project` and `--disabled`: `--name` and
 instead), `--agent` (start new sessions with that agent, or change it),
 `--delivery`, `--model` (empty removes the pin), `--permission-mode`,
 `--thread-key` (empty makes every event start a session again),
-`--thread-prompt` (empty removes it), `--max-concurrent`, `--check` (empty
+`--thread-prompt` (empty removes it), `--title` (empty gives the sessions
+the webhook's name again), `--title-auto` (`--title-auto=false` to stop),
+`--max-concurrent`, `--check` (empty
 removes the check), `--secret` (a new secret for the check), `--filter`
 (replaces the whole filter; `--no-filter` removes it), `--show-header`
 (replaces the extra headers; `--no-show-headers` removes them),
