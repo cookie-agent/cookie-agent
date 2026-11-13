@@ -485,6 +485,7 @@ fn job(id: &str, schedule: StoredSchedule) -> StoredJob {
         consecutive_failures: 0,
         last_fire: None,
         history: Vec::new(),
+        threads: crate::threads::ThreadMap::default(),
     }
 }
 

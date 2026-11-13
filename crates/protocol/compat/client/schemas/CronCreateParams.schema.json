@@ -165,6 +165,24 @@
             "array",
             "null"
           ]
+        },
+        "thread_key": {
+          "description": "A thread key (client protocol 1.95.0; `docs/site/specs/webhooks.md`\nsection 8): a time format, as `strftime` takes it, applied to each\nfire's scheduled time in the host's local time. Fires with the same\nkey go into one session, which the first of them creates; a format\nwithout `%` is one session for every fire. Each fire creates a\nsession when omitted.",
+          "maxLength": 256,
+          "minLength": 1,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "thread_prompt": {
+          "description": "Instructions each session the job creates gets once, as a plain user\nmessage before its first fire, and again before the first fire after\neach compaction of that session (client protocol 1.95.0).",
+          "maxLength": 32768,
+          "minLength": 1,
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [
@@ -309,7 +327,7 @@
           "type": "null"
         }
       ],
-      "description": "In-session jobs only; `queue` when omitted."
+      "description": "In-session jobs and new-session jobs with a thread key; `queue` when\nomitted."
     },
     "enabled": {
       "description": "`true` when omitted.",

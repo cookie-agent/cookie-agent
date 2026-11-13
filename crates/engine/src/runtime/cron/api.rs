@@ -227,6 +227,14 @@ impl Engine {
                 .get(project)
                 .map_err(|error| refused(error.to_string()))?;
         }
+        if let Some(format) = &template.thread_key {
+            crate::threads::check_time_key_format(format)
+                .map_err(|reason| refused(format!("thread_key {reason}")))?;
+        }
+        if let Some(prompt) = &template.thread_prompt {
+            crate::threads::check_thread_prompt(prompt)
+                .map_err(|reason| refused(format!("thread_prompt {reason}")))?;
+        }
         crate::permissions::check_rule_selectors(&template.permission_rules)
             .map_err(|error| refused(EngineError::Permission(error).to_string()))?;
         cookie_agent_protocol::SessionPermissionOverlay {
@@ -269,14 +277,21 @@ impl Engine {
         let (delivery, permission_mode) = match &target {
             StoredTarget::New(template) => {
                 self.check_cron_template(template)?;
-                if delivery.is_some() {
+                // A thread's later fires go into its session
+                // (`docs/site/specs/webhooks.md` section 8).
+                let delivery = if template.thread_key.is_some() {
+                    Some(delivery.unwrap_or(ProducerDeliveryMode::Queue))
+                } else if delivery.is_some() {
                     return Err(CronError::invalid(
                         "delivery",
-                        "a new-session job starts a session; delivery applies to in-session jobs",
+                        "a new-session job without a thread key starts a session at every fire; \
+                         delivery applies to in-session jobs and thread keys",
                     ));
-                }
+                } else {
+                    None
+                };
                 (
-                    None,
+                    delivery,
                     Some(permission_mode.unwrap_or(PermissionMode::AutoApproveN)),
                 )
             }
@@ -463,6 +478,7 @@ impl Engine {
                 consecutive_failures: 0,
                 last_fire: None,
                 history: Vec::new(),
+                threads: crate::threads::ThreadMap::default(),
             };
             let wire = job.wire();
             jobs.push(job);
@@ -502,13 +518,23 @@ impl Engine {
                 .map_or_else(|| job.target.clone(), Into::into);
             let kind_changed = target.kind() != job.target.kind();
             let in_session = target.session().is_some();
+            let thread_format = |target: &StoredTarget| {
+                target
+                    .template()
+                    .and_then(|template| template.thread_key.clone())
+            };
+            let threaded = thread_format(&target).is_some();
+            let threads_kept =
+                !kind_changed && thread_format(&target) == thread_format(&job.target);
             // A delivery or mode the new kind has no use for goes with the
             // old kind, unless the update names one.
-            let delivery = params.delivery.or(if in_session && !kind_changed {
-                job.delivery
-            } else {
-                None
-            });
+            let delivery = params.delivery.or(
+                if (in_session || threaded) && !kind_changed && job.delivery.is_some() {
+                    job.delivery
+                } else {
+                    None
+                },
+            );
             let permission_mode = match params.permission_mode {
                 Some(mode) => mode,
                 None if !in_session && !kind_changed => job.permission_mode,
@@ -546,6 +572,11 @@ impl Engine {
             job.delivery = definition.delivery;
             job.permission_mode = definition.permission_mode;
             job.max_consecutive_failures = definition.max_consecutive_failures;
+            // Keys of another format, or of another kind of target, name
+            // no thread of the job's any longer.
+            if !threads_kept {
+                job.threads = crate::threads::ThreadMap::default();
+            }
             match params.enabled {
                 Some(false) => {
                     if job.enabled {
@@ -588,11 +619,13 @@ impl Engine {
 
     /// Deletes the jobs that target any of `deleted`, which are deleted
     /// sessions (`docs/site/specs/cron.md` section 6).
+    /// Deleted sessions also leave every job's threads.
     pub(crate) fn delete_crons_targeting(&self, deleted: &HashSet<SessionId>) {
         if !self.inner.crons.jobs().iter().any(|job| {
             job.target
                 .session()
                 .is_some_and(|session| deleted.contains(&session))
+                || job.threads.names_any(deleted)
         }) {
             return;
         }
@@ -603,6 +636,9 @@ impl Engine {
                     .session()
                     .is_some_and(|session| deleted.contains(&session))
             });
+            for job in jobs.iter_mut() {
+                job.threads.forget_sessions(&deleted);
+            }
             Ok(())
         }) {
             eprintln!("cookie-agent: cron jobs of deleted sessions: {error}");

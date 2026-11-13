@@ -42,6 +42,7 @@ mod shares;
 mod test_support;
 #[cfg(any(test, feature = "test-support"))]
 pub mod testing;
+mod threads;
 
 // The storage layer, at the paths the engine's modules have always used.
 pub use cookie_agent_engine_store::{TailOwner, delegation_events, events, session, status};

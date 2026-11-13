@@ -744,6 +744,13 @@ impl Engine {
         }
         self.inner.store.persist_buffered_session(session)?;
         self.append_direct(session, Some(run), event_origin("engine:producer"), event)?;
+        // A thread's owner gives the session its thread prompt first
+        // (`docs/site/specs/webhooks.md` section 7.5).
+        self.submit_due_thread_prompts_direct(
+            session,
+            run,
+            messages.iter().map(|message| &message.producer_owner),
+        )?;
         for message in messages {
             self.append_direct(
                 session,
@@ -2018,6 +2025,11 @@ impl Engine {
             {
                 continue;
             }
+            self.submit_due_thread_prompts_direct(
+                session,
+                run,
+                std::iter::once(&message.producer_owner),
+            )?;
             self.append_direct(
                 session,
                 Some(run),

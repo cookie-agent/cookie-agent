@@ -19,6 +19,7 @@ mod cache_expiry;
 mod chatgpt;
 mod compaction;
 mod configuration;
+mod cron_threads;
 mod crons;
 mod default_models;
 mod deferred_tools;

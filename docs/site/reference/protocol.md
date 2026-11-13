@@ -13,7 +13,7 @@ A client must call `handshake` before any other method:
 
 ```json
 { "jsonrpc": "2.0", "id": 1, "method": "handshake", "params": {
-    "protocol_version": "1.94.0",
+    "protocol_version": "1.95.0",
     "client": { "kind": "web", "instance_id": "<uuid>" },
     "token": "<the daemon's token>",
     "features": [] } }
@@ -22,7 +22,7 @@ A client must call `handshake` before any other method:
 The reply:
 
 ```json
-{ "protocol_version": "1.94.0", "engine_version": "0.3.0",
+{ "protocol_version": "1.95.0", "engine_version": "0.3.0",
   "origin": "client:web-<id>", "machine_id": "<opaque>", "features": [],
   "status": { "phase": "ready" } }
 ```
@@ -949,22 +949,35 @@ its state: `next_fire`, `runs`, `consecutive_failures`, `last_fire`, and the
   agent did.
 - **Target.** `{ session: <root session ID> }`, `{ subagent: <delegated
   session ID> }`, or `{ new: <template> }`. A template is `{ agent, preset?,
-  model?, permission_rules?, runtimes?, global?, cwd?, project? }`, checked
-  as `session.create` would check it; its agent must be able to run as a
-  root. `delivery` is `queue` (default) or `steer`; `permission_mode`
-  defaults to `auto_approve_n`.
+  model?, permission_rules?, runtimes?, global?, cwd?, project?,
+  acp_runtime?, thread_key?, thread_prompt? }`, checked as `session.create`
+  would check it; its agent must be able to run as a root. `delivery` is
+  `queue` (default) or `steer`; `permission_mode` defaults to
+  `auto_approve_n`.
+- **Threads** (since 1.95.0; [webhooks spec](../specs/webhooks.md) section
+  8). A template's `thread_key` is a time format (`strftime`, at most 64
+  characters) of each fire's scheduled time in the host's local time:
+  fires whose keys match go into one session, which the first creates,
+  with the job's `delivery`, which such a job takes; a format without `%`
+  is one session for every fire. `thread_prompt` (at most 32 KiB) is sent
+  to each session the job creates as a plain user message before its first
+  fire, and again before the first fire after each compaction (an ACP
+  agent's session gets it once). Its `user_input_submitted` carries the
+  origin `engine:cron-<job id>`, which `thread_prompt_owner` reads. The
+  job lists its `threads` (`{ key, session_id, last_used }`, at most 1024,
+  the most recently used last), and each fire its `thread_key`.
 - **Fires.** Each `history` entry is a `CronFire`: `scheduled_at` (absent
   for a run now), `fired_at`, `run_now`, the `outcome` (`pending`,
   `delivered`, `skipped` with a `reason`, or `failed` with an `error`),
   `missed` for a fire skipped because the daemon was down, the `session_id`
   it went to, and the `run_id` and `run_end` (`{ status, at }`) of the run
-  its prompt landed in. A skip `reason` is `previous_fire_not_delivered`,
+  its prompt landed in, and `thread_key` for a job with one. A skip `reason` is `previous_fire_not_delivered`,
   `previous_run_still_running`, `daemon_was_down`, `interrupted`,
   `firing_disabled`, `daemon_restarting` (since 1.19.0), or `session_held`
   (since 1.34.0), an open set.
 - **Run sessions.** A new-session fire's session records the job in
-  `SessionMeta.cron` (`{ job_id, fired_at }`, also on its `session_created`
-  event) and is otherwise ordinary.
+  `SessionMeta.cron` (`{ job_id, fired_at, thread_key? }`, also on its
+  `session_created` event) and is otherwise ordinary.
 - **Waiting.** A session targeted by an enabled job with a next fire lists
   `scheduled_job` in `SessionMeta.waiting_on`.
 

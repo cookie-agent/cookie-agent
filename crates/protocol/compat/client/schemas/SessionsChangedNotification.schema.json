@@ -219,6 +219,13 @@
           "minLength": 1,
           "pattern": "^[a-z0-9]{8}$",
           "type": "string"
+        },
+        "thread_key": {
+          "description": "The thread the session is, for a job with a thread key (client\nprotocol 1.95.0).",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [

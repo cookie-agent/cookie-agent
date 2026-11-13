@@ -81,6 +81,11 @@ impl From<DeliveryArg> for ProducerDeliveryMode {
 }
 
 #[derive(Debug, PartialEq, Eq, Args)]
+#[command(group(
+    clap::ArgGroup::new("delivered_into")
+        .args(["session", "thread_key"])
+        .multiple(true)
+))]
 pub(crate) struct CronCreateArgs {
     /// The prompt each fire sends.
     #[arg(long)]
@@ -104,9 +109,9 @@ pub(crate) struct CronCreateArgs {
         required_unless_present = "agent"
     )]
     session: Option<SessionId>,
-    /// In-session jobs: `steer` into a running turn or `queue` after it;
-    /// `queue` when omitted.
-    #[arg(long, value_enum, conflicts_with = "agent")]
+    /// In-session jobs and thread keys: `steer` into a running turn or
+    /// `queue` after it; `queue` when omitted.
+    #[arg(long, value_enum, requires = "delivered_into")]
     delivery: Option<DeliveryArg>,
     /// Start a new session with this agent per fire.
     #[arg(long)]
@@ -122,6 +127,14 @@ pub(crate) struct CronCreateArgs {
     /// New-session jobs: the project the run sessions belong to.
     #[arg(long, value_parser = super::project::parse_project_name, conflicts_with = "session")]
     project: Option<ProjectName>,
+    /// New-session jobs: a thread key, a time format of each fire's local
+    /// time such as `%Y-%m-%d`; fires with the same key share a session.
+    #[arg(long, value_name = "FORMAT", conflicts_with = "session")]
+    thread_key: Option<String>,
+    /// New-session jobs: instructions each session the job creates gets
+    /// once, and again after each compaction.
+    #[arg(long, value_name = "TEXT", conflicts_with = "session")]
+    thread_prompt: Option<String>,
     /// Create the job disabled.
     #[arg(long)]
     disabled: bool,
@@ -144,7 +157,7 @@ pub(crate) struct CronEditArgs {
     /// Fire into this session instead.
     #[arg(long, value_name = "SESSION_ID", conflicts_with = "agent")]
     session: Option<SessionId>,
-    /// In-session jobs: `steer` or `queue`.
+    /// In-session jobs and thread keys: `steer` or `queue`.
     #[arg(long, value_enum)]
     delivery: Option<DeliveryArg>,
     /// Start a new session with this agent per fire instead.
@@ -156,6 +169,13 @@ pub(crate) struct CronEditArgs {
     /// New-session jobs: the run sessions' permission mode.
     #[arg(long, value_enum)]
     permission_mode: Option<PermissionModeArg>,
+    /// New-session jobs: a thread key's time format; an empty one makes
+    /// each fire start a session again.
+    #[arg(long, value_name = "FORMAT")]
+    thread_key: Option<String>,
+    /// New-session jobs: the thread prompt; an empty one removes it.
+    #[arg(long, value_name = "TEXT")]
+    thread_prompt: Option<String>,
 }
 
 pub(crate) fn parse_job_id(value: &str) -> Result<CronJobId, String> {
@@ -436,6 +456,27 @@ pub(crate) fn show_lines(
     lines.push(String::new());
     lines.extend(job.prompt.lines().map(str::to_owned));
     lines.push(String::new());
+    if let cookie_agent_protocol::CronTarget::New(template) = &job.target
+        && let Some(thread_prompt) = &template.thread_prompt
+    {
+        lines.push("Thread prompt:".to_owned());
+        lines.extend(thread_prompt.lines().map(|line| format!("  {line}")));
+        lines.push(String::new());
+    }
+    if !job.threads.is_empty() {
+        lines.push("Threads:".to_owned());
+        for thread in job.threads.iter().rev() {
+            lines.push(format!(
+                "  {} · session {} · used {}",
+                thread.key,
+                names
+                    .title(thread.session_id)
+                    .unwrap_or_else(|| thread.session_id.to_string()),
+                cron::local_minute(thread.last_used, zone)
+            ));
+        }
+        lines.push(String::new());
+    }
     if job.history.is_empty() {
         lines.push("No fires yet.".to_owned());
     } else {
@@ -446,6 +487,9 @@ pub(crate) fn show_lines(
                 cron::local_minute(fire.fired_at, zone),
                 cron::fire_outcome(fire)
             );
+            if let Some(thread) = &fire.thread_key {
+                line.push_str(&format!(" · thread {thread}"));
+            }
             if let Some(session) = fire.session_id {
                 line.push_str(&format!(" · session {session}"));
             }
@@ -489,6 +533,8 @@ async fn create_draft(client: &Client, args: CronCreateArgs) -> anyhow::Result<(
             let mut draft = CronDraft::for_new_session(template);
             draft.model = args.model.unwrap_or_default();
             draft.permission_mode = args.permission_mode.map(Into::into);
+            draft.thread_key = args.thread_key.unwrap_or_default();
+            draft.thread_prompt = args.thread_prompt.unwrap_or_default();
             draft
         }
         (None, None) => anyhow::bail!("give --session or --agent"),
@@ -498,6 +544,10 @@ async fn create_draft(client: &Client, args: CronCreateArgs) -> anyhow::Result<(
     draft.name = args.name.unwrap_or_default();
     draft.max_runs = args.max_runs.unwrap_or_default();
     if let Some(delivery) = args.delivery {
+        anyhow::ensure!(
+            !draft.target.is_new() || draft.threaded(),
+            "--delivery is for a job that fires into a session or has a --thread-key"
+        );
         draft.delivery = delivery.into();
     }
     Ok((draft, args.disabled))
@@ -541,8 +591,27 @@ async fn edit_update(
         );
         draft.permission_mode = Some(mode.into());
     }
+    for (flag, value, field) in [
+        ("--thread-key", changes.thread_key, &mut draft.thread_key),
+        (
+            "--thread-prompt",
+            changes.thread_prompt,
+            &mut draft.thread_prompt,
+        ),
+    ] {
+        if let Some(value) = value {
+            anyhow::ensure!(
+                new,
+                "{flag} is for a job that starts a new session per fire"
+            );
+            *field = value;
+        }
+    }
     if let Some(delivery) = changes.delivery {
-        anyhow::ensure!(!new, "--delivery is for a job that fires into a session");
+        anyhow::ensure!(
+            !new || draft.threaded(),
+            "--delivery is for a job that fires into a session or has a thread key"
+        );
         draft.delivery = delivery.into();
     }
     if let Some(prompt) = changes.prompt {

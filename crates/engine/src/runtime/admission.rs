@@ -297,6 +297,7 @@ impl Engine {
                 .map(|cron| cookie_agent_protocol::SessionCron {
                     job_id: cron.job.clone(),
                     fired_at: cron.fired_at,
+                    thread_key: None,
                 }),
             history_format: cookie_agent_protocol::HISTORY_FORMAT,
             origin,

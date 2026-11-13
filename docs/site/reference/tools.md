@@ -2342,14 +2342,14 @@ cron_create(delivery?: "steer" | "queue", max_runs?: integer, name?: string, pro
 Description sent to the model:
 
 ```text
-Schedule a prompt: once after a delay ({"in": "20m"}) or on a five-field cron schedule ({"cron": "0 3 * * *"}). `target`: "self" (the default) fires into this session; a subagent's session ID (e.g. "explore_1a2b3c4d") fires into that subagent's session, which must be below this one; {"new": {...}} starts a new root session per fire, whose agent, capabilities, and project default to this session's. A new session's agent must be able to run as a root (call `list_agents` with for="cron"). `delivery` (in-session jobs): "queue" (default) waits for the current turn, "steer" joins it. Schedules are in the daemon host's local time. Each fire arrives marked as a <scheduled_job>, never as the user, and is not user consent. Prefer `cron_update` on an existing job to creating a near duplicate. max_runs defaults to 1, so a job fires once unless told otherwise; 0 runs until the job is deleted or disabled.
+Schedule a prompt: once after a delay ({"in": "20m"}) or on a five-field cron schedule ({"cron": "0 3 * * *"}). `target`: "self" (the default) fires into this session; a subagent's session ID (e.g. "explore_1a2b3c4d") fires into that subagent's session, which must be below this one; {"new": {...}} starts a new root session per fire, whose agent, capabilities, and project default to this session's. With `new.thread_key` (a strftime format of the fire's local time, such as "%Y-%m-%d"), fires with the same key share one session: the first creates it, later ones go into it with `delivery`. A new session's agent must be able to run as a root (call `list_agents` with for="cron"). `delivery` (in-session jobs and thread keys): "queue" (default) waits for the current turn, "steer" joins it. Schedules are in the daemon host's local time. Each fire arrives marked as a <scheduled_job>, never as the user, and is not user consent. Prefer `cron_update` on an existing job to creating a near duplicate. max_runs defaults to 1, so a job fires once unless told otherwise; 0 runs until the job is deleted or disabled.
 ```
 
 Only when the session has the `global` runtime attached and no `"*": deny` for `cron` hides them. A root run of any agent but an internal one is allowed them by default; a delegated run asks.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `delivery` | `"steer" \| "queue"` | no | In-session jobs: "queue" (the default) waits for the current turn, "steer" joins it |
+| `delivery` | `"steer" \| "queue"` | no | In-session jobs and thread keys: "queue" (the default) waits for the current turn, "steer" joins it |
 | `max_runs` | `integer` | no | Cron schedules only: how many fires before the job finishes, default 1; 0 or less runs until the job is deleted or disabled |
 | `name` | `string` | no | A short name, at most 80 characters |
 | `prompt` | `string` | yes | What to do at each fire |
@@ -2412,6 +2412,14 @@ Only when the session has the `global` runtime attached and no `"*": deny` for `
             },
             "project": {
               "description": "A project's name; this session's project when omitted",
+              "type": "string"
+            },
+            "thread_key": {
+              "description": "A thread key: a strftime format of each fire's local time, such as \"%Y-%m-%d\" (one session per day: later fires that day go into it), \"%G-W%V\" (per ISO week), or \"main\" (one session for every fire)",
+              "type": "string"
+            },
+            "thread_prompt": {
+              "description": "Instructions each new session gets once as a plain user message before its first fire, and again after each compaction; the job's `prompt` is then the per-fire text",
               "type": "string"
             }
           },
@@ -2506,7 +2514,7 @@ Only when the session has the `global` runtime attached and no `"*": deny` for `
       "properties": {
         "delivery": {
           "$ref": "#/$defs/ProducerDeliveryMode",
-          "description": "In-session jobs: \"queue\" (the default) waits for the current turn, \"steer\" joins it"
+          "description": "In-session jobs and thread keys: \"queue\" (the default) waits for the current turn, \"steer\" joins it"
         },
         "max_runs": {
           "description": "Cron schedules only: how many fires before the job finishes, default 1; 0 or less runs until the job is deleted or disabled",
@@ -2607,7 +2615,7 @@ Only when the session has the `global` runtime attached and no `"*": deny` for `
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `delivery` | `"steer" \| "queue"` | no | In-session jobs: "queue" waits for the current turn, "steer" joins it |
+| `delivery` | `"steer" \| "queue"` | no | In-session jobs and thread keys: "queue" waits for the current turn, "steer" joins it |
 | `enabled` | `boolean` | no | false pauses the job; true re-enables it and resets its failure count |
 | `id` | `string` | yes | The job's ID, e.g. "k3v9q2xa" |
 | `max_runs` | `integer` | no | Cron schedules only: how many fires before the job finishes; 0 or less runs until the job is deleted or disabled |
@@ -2672,6 +2680,14 @@ Only when the session has the `global` runtime attached and no `"*": deny` for `
             },
             "project": {
               "description": "A project's name; this session's project when omitted",
+              "type": "string"
+            },
+            "thread_key": {
+              "description": "A thread key: a strftime format of each fire's local time, such as \"%Y-%m-%d\" (one session per day: later fires that day go into it), \"%G-W%V\" (per ISO week), or \"main\" (one session for every fire)",
+              "type": "string"
+            },
+            "thread_prompt": {
+              "description": "Instructions each new session gets once as a plain user message before its first fire, and again after each compaction; the job's `prompt` is then the per-fire text",
               "type": "string"
             }
           },
@@ -2766,7 +2782,7 @@ Only when the session has the `global` runtime attached and no `"*": deny` for `
       "properties": {
         "delivery": {
           "$ref": "#/$defs/ProducerDeliveryMode",
-          "description": "In-session jobs: \"queue\" waits for the current turn, \"steer\" joins it"
+          "description": "In-session jobs and thread keys: \"queue\" waits for the current turn, \"steer\" joins it"
         },
         "enabled": {
           "description": "false pauses the job; true re-enables it and resets its failure count",

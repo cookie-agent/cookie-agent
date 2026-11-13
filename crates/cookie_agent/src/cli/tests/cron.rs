@@ -48,6 +48,42 @@ fn cron_commands_take_ids_targets_and_options() {
         parsed(&["cookie", "cron", "edit", "k3v9q2xa", "--name", ""]),
         CronCommand::Edit { .. }
     ));
+    assert!(matches!(
+        parsed(&[
+            "cookie",
+            "cron",
+            "create",
+            "--prompt",
+            "p",
+            "--schedule",
+            "0 * * * *",
+            "--agent",
+            "primary",
+            "--thread-key",
+            "%Y-%m-%d",
+            "--thread-prompt",
+            "Keep a log.",
+            "--delivery",
+            "steer"
+        ]),
+        CronCommand::Create(_)
+    ));
+    assert!(
+        Cli::try_parse_from([
+            "cookie",
+            "cron",
+            "create",
+            "--prompt",
+            "p",
+            "--schedule",
+            "in 5m",
+            "--session",
+            "01a1d222-d726-7923-95e2-62018c541d75",
+            "--thread-key",
+            "main"
+        ])
+        .is_err()
+    );
     for arguments in [
         // A job id is eight lowercase letters and digits.
         &["cookie", "cron", "show", "K3V9Q2XA"][..],

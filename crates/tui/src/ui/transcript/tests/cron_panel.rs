@@ -411,6 +411,22 @@ async fn a_form_names_only_the_fields_of_a_job() {
     .expect("the form");
     assert_eq!(draft.prompt, "above\n---\nbelow\n");
     assert_eq!(draft.schedule, "at 2026-10-23T03:00:00Z");
+    // A thread prompt follows its own line after the prompt.
+    let draft = parse_form(
+        "target: new\nagent: builder\nthread_key: %Y-%m-%d\n---\nAdd an entry.\n--- thread prompt\nKeep a log.\n",
+        &request,
+    )
+    .expect("the form");
+    assert_eq!(draft.prompt, "Add an entry.");
+    assert_eq!(draft.thread_key, "%Y-%m-%d");
+    assert_eq!(draft.thread_prompt, "Keep a log.");
+    let again = parse_form(
+        &crate::ui::app::cron_panel::form_text(&draft, None),
+        &request,
+    )
+    .expect("the form again");
+    assert_eq!(again.thread_key, draft.thread_key);
+    assert_eq!(again.thread_prompt, draft.thread_prompt);
 }
 
 #[tokio::test]
@@ -521,6 +537,7 @@ async fn a_cron_run_session_shows_a_clock_in_the_session_list() {
     run.cron = Some(cookie_agent_protocol::SessionCron {
         job_id: cookie_agent_protocol::CronJobId::new("k3v9q2xa").unwrap(),
         fired_at: now,
+        thread_key: None,
     });
     let mut plain = titled_meta(SessionId::new_v7(), "Build fixes", 1);
     plain.last_activity = now;

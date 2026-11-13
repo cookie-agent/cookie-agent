@@ -153,6 +153,13 @@
             "string",
             "null"
           ]
+        },
+        "thread_key": {
+          "description": "The thread key of a fire of a job with a thread key (client protocol\n1.95.0).",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [
@@ -251,7 +258,7 @@
               "type": "null"
             }
           ],
-          "description": "For an in-session job."
+          "description": "For an in-session job, and a new-session job with a thread key,\nwhose fires into an existing thread use it."
         },
         "disabled_reason": {
           "anyOf": [
@@ -351,6 +358,13 @@
         },
         "target": {
           "$ref": "#/$defs/CronTarget"
+        },
+        "threads": {
+          "description": "A new-session job's threads, the most recently used last (client\nprotocol 1.95.0).",
+          "items": {
+            "$ref": "#/$defs/CronThread"
+          },
+          "type": "array"
         }
       },
       "required": [
@@ -588,10 +602,51 @@
             "array",
             "null"
           ]
+        },
+        "thread_key": {
+          "description": "A thread key (client protocol 1.95.0; `docs/site/specs/webhooks.md`\nsection 8): a time format, as `strftime` takes it, applied to each\nfire's scheduled time in the host's local time. Fires with the same\nkey go into one session, which the first of them creates; a format\nwithout `%` is one session for every fire. Each fire creates a\nsession when omitted.",
+          "maxLength": 256,
+          "minLength": 1,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "thread_prompt": {
+          "description": "Instructions each session the job creates gets once, as a plain user\nmessage before its first fire, and again before the first fire after\neach compaction of that session (client protocol 1.95.0).",
+          "maxLength": 32768,
+          "minLength": 1,
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [
         "agent"
+      ],
+      "type": "object"
+    },
+    "CronThread": {
+      "description": "One thread of a new-session job: the session its key's fires go into\n(client protocol 1.95.0).",
+      "properties": {
+        "key": {
+          "type": "string"
+        },
+        "last_used": {
+          "description": "When a fire last went into it.",
+          "format": "date-time",
+          "type": "string"
+        },
+        "session_id": {
+          "format": "uuid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "key",
+        "session_id",
+        "last_used"
       ],
       "type": "object"
     },

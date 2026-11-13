@@ -823,6 +823,8 @@ async fn a_new_session_fire_creates_a_run_session_that_records_its_job() {
         cwd: None,
         project: None,
         acp_runtime: None,
+        thread_key: None,
+        thread_prompt: None,
     };
     let mut create = params(
         "Write the daily summary.",
@@ -925,6 +927,8 @@ async fn agents_cannot_set_a_mode_or_a_model_and_new_sessions_need_a_root_agent(
         cwd: None,
         project: None,
         acp_runtime: None,
+        thread_key: None,
+        thread_prompt: None,
     };
     let mut moded = params("Run.", daily(), CronTarget::New(template.clone()));
     moded.permission_mode = Some(PermissionMode::Yolo);
@@ -1103,6 +1107,8 @@ async fn deleting_a_session_or_a_project_deletes_its_jobs() {
                 cwd: None,
                 project: Some(project.id.clone()),
                 acp_runtime: None,
+                thread_key: None,
+                thread_prompt: None,
             }),
         ))
         .await
@@ -1430,6 +1436,7 @@ fn failures_count_across_skips_reset_on_completion_and_not_on_cancel() {
         consecutive_failures: 0,
         last_fire: None,
         history: Vec::new(),
+        threads: crate::threads::ThreadMap::default(),
     };
     let run_with = |job: &mut StoredJob, status: SessionStatus, uncounted: bool| {
         let mut fire = StoredFire::with_outcome(None, Timestamp::now(), StoredOutcome::Delivered);
@@ -1497,6 +1504,8 @@ async fn cron_run_runs_a_new_session_job_as_a_subagent_of_the_caller() {
                 cwd: None,
                 project: None,
                 acp_runtime: None,
+                thread_key: None,
+                thread_prompt: None,
             }),
         ))
         .await

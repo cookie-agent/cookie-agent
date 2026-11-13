@@ -30,6 +30,13 @@ pub const CRONS_CHANGED_METHOD: &str = "crons.changed";
 pub const CRON_NAME_MAX_CHARS: usize = 80;
 /// The most bytes a job's prompt may have.
 pub const CRON_PROMPT_MAX_BYTES: usize = 32 * 1024;
+/// The most characters a new-session job's `thread_key` format may have
+/// (client protocol 1.95.0).
+pub const CRON_THREAD_KEY_MAX_CHARS: usize = 64;
+/// The most characters a thread key may have once formatted.
+pub const THREAD_KEY_MAX_CHARS: usize = 200;
+/// The most bytes a `thread_prompt` may have.
+pub const THREAD_PROMPT_MAX_BYTES: usize = 32 * 1024;
 
 const fn attach_global() -> bool {
     true
@@ -304,6 +311,51 @@ pub struct CronTemplate {
     /// attached runtime that offers it when omitted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub acp_runtime: Option<crate::RuntimeId>,
+    /// A thread key (client protocol 1.95.0; `docs/site/specs/webhooks.md`
+    /// section 8): a time format, as `strftime` takes it, applied to each
+    /// fire's scheduled time in the host's local time. Fires with the same
+    /// key go into one session, which the first of them creates; a format
+    /// without `%` is one session for every fire. Each fire creates a
+    /// session when omitted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(length(min = 1, max = 256))]
+    pub thread_key: Option<String>,
+    /// Instructions each session the job creates gets once, as a plain user
+    /// message before its first fire, and again before the first fire after
+    /// each compaction of that session (client protocol 1.95.0).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(length(min = 1, max = 32768))]
+    pub thread_prompt: Option<String>,
+}
+
+impl CronTemplate {
+    /// A template that runs `agent` with every other member at its default.
+    #[must_use]
+    pub fn for_agent(agent: AgentId) -> Self {
+        Self {
+            agent,
+            preset: None,
+            model: None,
+            permission_rules: Vec::new(),
+            runtimes: None,
+            global: true,
+            cwd: None,
+            project: None,
+            acp_runtime: None,
+            thread_key: None,
+            thread_prompt: None,
+        }
+    }
+}
+
+/// One thread of a new-session job: the session its key's fires go into
+/// (client protocol 1.95.0).
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct CronThread {
+    pub key: String,
+    pub session_id: SessionId,
+    /// When a fire last went into it.
+    pub last_used: Timestamp,
 }
 
 /// Who created or changed a job: you, through a client, or an agent from a
@@ -424,6 +476,10 @@ pub struct CronFire {
     pub run_id: Option<RunId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run_end: Option<CronRunEnd>,
+    /// The thread key of a fire of a job with a thread key (client protocol
+    /// 1.95.0).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_key: Option<String>,
 }
 
 /// One job with its state and history.
@@ -437,7 +493,8 @@ pub struct CronJob {
     /// Meaningful for a cron schedule; a one-shot fires once.
     pub max_runs: CronMaxRuns,
     pub target: CronTarget,
-    /// For an in-session job.
+    /// For an in-session job, and a new-session job with a thread key,
+    /// whose fires into an existing thread use it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delivery: Option<ProducerDeliveryMode>,
     /// For a new-session job: the run sessions' permission mode.
@@ -464,6 +521,10 @@ pub struct CronJob {
     /// The latest fires, oldest first, as many as `[cron] history` keeps.
     #[serde(default)]
     pub history: Vec<CronFire>,
+    /// A new-session job's threads, the most recently used last (client
+    /// protocol 1.95.0).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub threads: Vec<CronThread>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
@@ -494,7 +555,8 @@ pub struct CronCreateParams {
     #[schemars(with = "Option<CronMaxRunsInput>")]
     pub max_runs: Option<CronMaxRuns>,
     pub target: CronTarget,
-    /// In-session jobs only; `queue` when omitted.
+    /// In-session jobs and new-session jobs with a thread key; `queue` when
+    /// omitted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delivery: Option<ProducerDeliveryMode>,
     /// New-session jobs only; `auto_approve_n` when omitted.
@@ -610,4 +672,8 @@ pub struct CronsChangedNotification {}
 pub struct SessionCron {
     pub job_id: CronJobId,
     pub fired_at: Timestamp,
+    /// The thread the session is, for a job with a thread key (client
+    /// protocol 1.95.0).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_key: Option<String>,
 }

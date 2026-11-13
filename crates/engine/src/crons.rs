@@ -29,6 +29,7 @@ use jiff::{Timestamp, tz::TimeZone};
 use serde::{Deserialize, Serialize};
 
 use crate::memory::{MemoryError, MemoryRoot};
+use crate::threads::{ThreadMap, ThreadOwner};
 
 /// The store's file in the data root.
 pub(crate) const CRONS_FILE: &str = "crons.json";
@@ -187,6 +188,12 @@ pub(crate) struct StoredTemplate {
     pub(crate) project: Option<ProjectId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) acp_runtime: Option<cookie_agent_protocol::RuntimeId>,
+    /// The time format of the job's thread keys
+    /// (`docs/site/specs/webhooks.md` section 8).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) thread_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) thread_prompt: Option<String>,
 }
 
 impl From<CronTemplate> for StoredTemplate {
@@ -201,6 +208,8 @@ impl From<CronTemplate> for StoredTemplate {
             cwd: template.cwd,
             project: template.project,
             acp_runtime: template.acp_runtime,
+            thread_key: template.thread_key,
+            thread_prompt: template.thread_prompt,
         }
     }
 }
@@ -217,6 +226,8 @@ impl StoredTemplate {
             cwd: self.cwd.clone(),
             project: self.project.clone(),
             acp_runtime: self.acp_runtime.clone(),
+            thread_key: self.thread_key.clone(),
+            thread_prompt: self.thread_prompt.clone(),
         }
     }
 }
@@ -372,6 +383,9 @@ pub(crate) struct StoredFire {
     /// fires do, runs now do not.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub(crate) uncounted: bool,
+    /// The thread key of a fire of a job with one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) thread_key: Option<String>,
 }
 
 impl StoredFire {
@@ -393,6 +407,7 @@ impl StoredFire {
             run_id: None,
             run_end: None,
             uncounted: false,
+            thread_key: None,
         }
     }
 
@@ -438,6 +453,7 @@ impl StoredFire {
                 status: end.status,
                 at: end.at,
             }),
+            thread_key: self.thread_key.clone(),
         }
     }
 }
@@ -474,6 +490,10 @@ pub(crate) struct StoredJob {
     pub(crate) last_fire: Option<Timestamp>,
     #[serde(default)]
     pub(crate) history: Vec<StoredFire>,
+    /// A new-session job's threads (`docs/site/specs/webhooks.md` section
+    /// 8).
+    #[serde(default, skip_serializing_if = "ThreadMap::is_empty")]
+    pub(crate) threads: ThreadMap,
 }
 
 impl StoredJob {
@@ -501,7 +521,24 @@ impl StoredJob {
             consecutive_failures: self.consecutive_failures,
             last_fire: self.last_fire,
             history: self.history.iter().map(StoredFire::wire).collect(),
+            threads: self.threads.wire(),
         }
+    }
+
+    /// The owner of the job's threads.
+    pub(crate) fn thread_owner(&self) -> ThreadOwner {
+        ThreadOwner::Cron(self.id.clone())
+    }
+
+    /// A new-session job's thread key format.
+    pub(crate) fn thread_key_format(&self) -> Option<&str> {
+        self.target.template()?.thread_key.as_deref()
+    }
+
+    /// The thread key of a fire at `at`, for a job with a thread key.
+    pub(crate) fn thread_key_at(&self, at: Timestamp, zone: &TimeZone) -> Option<String> {
+        let format = self.thread_key_format()?;
+        crate::threads::time_key(format, at, zone).ok()
     }
 
     /// Whether the job keeps its target session waiting: enabled, in a

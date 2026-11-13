@@ -585,15 +585,16 @@ target, state, next fire, runs against its limit, delivery or agent, model
 pin, and permission mode, failures in a row, who created it and when, and
 the session an agent created it in; the target and that session are named
 by title with their session IDs; then
-its prompt and its history, newest first, with each fire's outcome and the
-session it went to.
+its prompt, its thread prompt and threads when it has them, and its history,
+newest first, with each fire's outcome, thread, and the session it went to.
 
 #### `cookie cron create`
 
 ```text
 cookie cron create --prompt <TEXT> --schedule <SCHEDULE>
                    (--session <SESSION_ID> [--delivery steer|queue]
-                    | --agent <AGENT> [--model <MODEL>] [--permission-mode <MODE>] [--project <NAME>])
+                    | --agent <AGENT> [--model <MODEL>] [--permission-mode <MODE>] [--project <NAME>]
+                      [--thread-key <FORMAT> [--delivery steer|queue]] [--thread-prompt <TEXT>])
                    [--name <NAME>] [--max-runs <RUNS>] [--disabled]
 ```
 
@@ -606,11 +607,13 @@ Creates a job and prints its ID and next fire.
 | `--name <NAME>` | What lists show instead of the prompt's start. |
 | `--max-runs <RUNS>` | Cron schedules only: the fires the job delivers, a whole number, 0 or less for no limit; 1 when omitted. |
 | `--session <SESSION_ID>` | Fire into this session, a root or a delegated one. |
-| `--delivery <MODE>` | With `--session`: `queue` (after the running turn, the default) or `steer` (into it). |
+| `--delivery <MODE>` | With `--session` or `--thread-key`: `queue` (after the running turn, the default) or `steer` (into it). |
 | `--agent <AGENT>` | Start a new session with this agent per fire instead. |
 | `--model <MODEL>` | With `--agent`: pin `provider/model` or `provider/model[variant]`; the agent's own models otherwise. |
 | `--permission-mode <MODE>` | With `--agent`: the run sessions' mode, spelled as for `cookie run`; `auto-approve-n` when omitted. |
 | `--project <NAME>` | With `--agent`: the project the run sessions belong to. |
+| `--thread-key <FORMAT>` | With `--agent`: a time format of each fire's local time, such as `%Y-%m-%d`; fires with the same key go into one session, which the first creates. A format without `%` is one session for every fire. |
+| `--thread-prompt <TEXT>` | With `--agent`: instructions each session the job creates gets as a plain user message before its first fire, and again after each compaction. |
 | `--disabled` | Create the job disabled. |
 
 #### `cookie cron edit`
@@ -620,8 +623,9 @@ changes, and an edit that changes nothing says so. It takes `--prompt`,
 `--schedule`, `--name` (empty removes the name), `--max-runs`, `--session`
 (fire into that session instead), `--delivery`, `--agent` (start a new
 session with that agent per fire, or change a new-session job's agent),
-`--model` (empty removes the pin), and `--permission-mode`. A new schedule
-computes the next fire from now.
+`--model` (empty removes the pin), `--permission-mode`, `--thread-key`
+(empty starts a session at every fire again), and `--thread-prompt` (empty
+removes it). A new schedule computes the next fire from now.
 
 #### `cookie cron rm`
 

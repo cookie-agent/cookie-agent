@@ -91,6 +91,7 @@ mod submit;
 pub(crate) mod test_hooks;
 #[cfg(test)]
 pub(crate) mod tests;
+pub(crate) mod threads;
 mod titles;
 pub(crate) mod tool_execution;
 mod tool_prompts;
@@ -1078,6 +1079,8 @@ pub(crate) struct Inner {
     /// The cron jobs.
     pub(crate) crons: Arc<crate::crons::CronStore>,
     pub(crate) cron_scheduler: cron::fire::CronSchedulerState,
+    /// The per-key locks of deliveries into threads.
+    pub(crate) thread_locks: threads::ThreadLocks,
     pub(crate) cache_expiry: cache_expiry::CacheExpiryState,
     /// A restart a client scheduled, and the hook that does it.
     pub(crate) restart: restart::RestartState,
@@ -1431,6 +1434,7 @@ impl Engine {
                 message_attachments: Default::default(),
                 crons,
                 cron_scheduler: cron::fire::CronSchedulerState::default(),
+                thread_locks: threads::ThreadLocks::default(),
                 cache_expiry: cache_expiry::CacheExpiryState::default(),
                 restart: restart::RestartState::default(),
                 status,

@@ -409,3 +409,38 @@ fn an_edit_sends_only_what_changed() {
     let update = draft.update_params(&one_shot, &utc).expect("params");
     assert!(!update_changes_anything(&update));
 }
+
+#[test]
+fn a_thread_key_gives_a_new_session_form_a_delivery_and_a_thread_prompt() {
+    let template = super::bare_template("builder".parse().expect("agent"));
+    let mut draft = CronDraft::for_new_session(template);
+    draft.prompt = "Add an entry".into();
+    draft.schedule = "0 * * * *".into();
+    draft.delivery = ProducerDeliveryMode::Steer;
+    // Without a thread key the delivery is not sent.
+    assert_eq!(draft.create_params().expect("params").delivery, None);
+
+    draft.thread_key = " %Y-%m-%d ".into();
+    draft.thread_prompt = "Keep one log a day.\n\n".into();
+    let params = draft.create_params().expect("params");
+    assert_eq!(params.delivery, Some(ProducerDeliveryMode::Steer));
+    let CronTarget::New(template) = &params.target else {
+        panic!("a new-session target");
+    };
+    assert_eq!(template.thread_key.as_deref(), Some("%Y-%m-%d"));
+    assert_eq!(
+        template.thread_prompt.as_deref(),
+        Some("Keep one log a day.")
+    );
+}
+
+#[test]
+fn a_thread_key_formats_a_fire_time_in_a_zone() {
+    let berlin = TimeZone::get("Europe/Berlin").expect("zone");
+    let at = "2026-11-12T23:30:00Z".parse().expect("time");
+    assert_eq!(
+        super::thread_key_at("%Y-%m-%d", at, &berlin).as_deref(),
+        Some("2026-11-13")
+    );
+    assert_eq!(super::thread_key_at("%Y-%", at, &berlin), None);
+}

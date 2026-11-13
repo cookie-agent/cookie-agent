@@ -230,6 +230,10 @@ pub(in crate::ui) fn form_text(draft: &CronDraft, session: Option<&str>) -> Stri
          # agent, model, permission_mode: new-session targets. model is provider/model or\n\
          #   provider/model[variant], empty for the agent's own; permission_mode is empty\n\
          #   for auto_approve_n, or auto_approve, auto_approve_y, ask, yolo.\n\
+         # thread_key: new-session targets: a time format of the fire's local time\n\
+         #   (%Y-%m-%d: one session per day, later fires go into it with delivery);\n\
+         #   empty for a new session per fire. A thread prompt, sent once to each\n\
+         #   session the job creates, goes after a `{THREAD_PROMPT_LINE}` line.\n\
          name: {}\n\
          schedule: {}\n\
          max_runs: {}\n\
@@ -238,8 +242,9 @@ pub(in crate::ui) fn form_text(draft: &CronDraft, session: Option<&str>) -> Stri
          agent: {}\n\
          model: {}\n\
          permission_mode: {}\n\
+         thread_key: {}\n\
          ---\n\
-         {}\n",
+         {}\n{}",
         draft.name,
         draft.schedule,
         draft.max_runs,
@@ -247,9 +252,18 @@ pub(in crate::ui) fn form_text(draft: &CronDraft, session: Option<&str>) -> Stri
         draft.agent,
         draft.model,
         draft.permission_mode.map_or("", mode_name),
+        draft.thread_key,
         draft.prompt,
+        if draft.thread_prompt.is_empty() {
+            String::new()
+        } else {
+            format!("{THREAD_PROMPT_LINE}\n{}\n", draft.thread_prompt)
+        },
     )
 }
+
+/// The line a form's thread prompt follows, after its prompt.
+const THREAD_PROMPT_LINE: &str = "--- thread prompt";
 
 /// Reads a form back as a draft for `request`'s job, or says what is wrong.
 pub(in crate::ui) fn parse_form(
@@ -262,6 +276,13 @@ pub(in crate::ui) fn parse_form(
             Some(header) => (header, ""),
             None => return Err("the form needs the --- line before the prompt".to_owned()),
         },
+    };
+    let (prompt, thread_prompt) = match prompt.split_once(&format!("{THREAD_PROMPT_LINE}\n")) {
+        Some((prompt, thread_prompt)) => (
+            prompt.strip_suffix('\n').unwrap_or(prompt),
+            thread_prompt.trim_end(),
+        ),
+        None => (prompt, ""),
     };
     let mut fields: Vec<(&str, &str)> = Vec::new();
     for line in header.lines() {
@@ -283,6 +304,7 @@ pub(in crate::ui) fn parse_form(
                 | "agent"
                 | "model"
                 | "permission_mode"
+                | "thread_key"
         ) {
             return Err(format!("`{key}` is not a field of a job"));
         }
@@ -343,6 +365,8 @@ pub(in crate::ui) fn parse_form(
         permission_mode,
         model: field("model").to_owned(),
         agent: agent.to_owned(),
+        thread_key: field("thread_key").to_owned(),
+        thread_prompt: thread_prompt.to_owned(),
     })
 }
 

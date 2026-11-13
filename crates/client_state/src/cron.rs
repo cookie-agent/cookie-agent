@@ -538,6 +538,25 @@ pub fn detail_lines(
                 format!("{} added", template.permission_rules.len()),
             ));
         }
+        if let Some(format) = &template.thread_key {
+            lines.push(CronDetail::new("thread key", format.clone()));
+            if let Some(next) = job.next_fire
+                && let Some(key) = thread_key_at(format, next, zone)
+            {
+                let session = if job.threads.iter().any(|thread| thread.key == key) {
+                    "its session"
+                } else {
+                    "a new session"
+                };
+                lines.push(CronDetail::new("next thread", format!("{key} ({session})")));
+            }
+            if !job.threads.is_empty() {
+                lines.push(CronDetail::new("threads", job.threads.len().to_string()));
+            }
+        }
+        if template.thread_prompt.is_some() {
+            lines.push(CronDetail::new("thread prompt", "set".to_owned()));
+        }
     }
     if let Some(mode) = job.permission_mode {
         lines.push(CronDetail::new(
@@ -577,6 +596,15 @@ fn template_agent(template: &CronTemplate) -> String {
         Some(preset) => format!("{} ({preset})", template.agent),
         None => template.agent.to_string(),
     }
+}
+
+/// The thread key `format` gives a fire at `at` in `zone`, as the daemon
+/// computes it; `None` when the format does not format.
+pub fn thread_key_at(format: &str, at: Timestamp, zone: &TimeZone) -> Option<String> {
+    let zoned = at.to_zoned(zone.clone());
+    let key = jiff::fmt::strtime::format(format, &zoned).ok()?;
+    let key = key.trim();
+    (!key.is_empty()).then(|| key.to_owned())
 }
 
 /// How clients name a delivery mode.
@@ -679,17 +707,7 @@ impl CronDraftTarget {
 
 /// A new-session template running `agent` with nothing else set.
 pub fn bare_template(agent: AgentId) -> CronTemplate {
-    CronTemplate {
-        agent,
-        preset: None,
-        model: None,
-        permission_rules: Vec::new(),
-        runtimes: None,
-        global: true,
-        cwd: None,
-        project: None,
-        acp_runtime: None,
-    }
+    CronTemplate::for_agent(agent)
 }
 
 /// The job form: what a user types to create or edit a job.
@@ -710,6 +728,11 @@ pub struct CronDraft {
     pub model: String,
     /// For a new-session job: the template's agent.
     pub agent: String,
+    /// For a new-session job: the thread key's time format; none when
+    /// blank.
+    pub thread_key: String,
+    /// For a new-session job: the thread prompt; none when blank.
+    pub thread_prompt: String,
 }
 
 impl CronDraft {
@@ -726,6 +749,8 @@ impl CronDraft {
             permission_mode: None,
             model: String::new(),
             agent: String::new(),
+            thread_key: String::new(),
+            thread_prompt: String::new(),
         }
     }
 
@@ -737,6 +762,8 @@ impl CronDraft {
             .as_ref()
             .map(model_pin_text)
             .unwrap_or_default();
+        let thread_key = template.thread_key.clone().unwrap_or_default();
+        let thread_prompt = template.thread_prompt.clone().unwrap_or_default();
         Self {
             name: String::new(),
             prompt: String::new(),
@@ -747,6 +774,8 @@ impl CronDraft {
             permission_mode: None,
             model,
             agent,
+            thread_key,
+            thread_prompt,
         }
     }
 
@@ -776,6 +805,13 @@ impl CronDraft {
             ),
             _ => (String::new(), String::new()),
         };
+        let (thread_key, thread_prompt) = match &job.target {
+            CronTarget::New(template) => (
+                template.thread_key.clone().unwrap_or_default(),
+                template.thread_prompt.clone().unwrap_or_default(),
+            ),
+            _ => (String::new(), String::new()),
+        };
         Self {
             name: job.name.clone().unwrap_or_default(),
             prompt: job.prompt.clone(),
@@ -792,7 +828,20 @@ impl CronDraft {
             permission_mode: job.permission_mode,
             model,
             agent,
+            thread_key,
+            thread_prompt,
         }
+    }
+
+    /// Whether the form's job is a new-session one with a thread key, whose
+    /// later fires take its delivery.
+    pub fn threaded(&self) -> bool {
+        self.target.is_new() && !self.thread_key.trim().is_empty()
+    }
+
+    /// Whether the form's delivery applies: in a session, or a thread.
+    fn takes_delivery(&self) -> bool {
+        !self.target.is_new() || self.threaded()
     }
 
     /// The target with the form's agent and model pin applied.
@@ -810,6 +859,10 @@ impl CronDraft {
                 let mut template = template.clone();
                 template.agent = agent;
                 template.model = parse_model_pin(&self.model)?;
+                let thread_key = self.thread_key.trim();
+                template.thread_key = (!thread_key.is_empty()).then(|| thread_key.to_owned());
+                template.thread_prompt = (!self.thread_prompt.trim().is_empty())
+                    .then(|| self.thread_prompt.trim_end().to_owned());
                 Ok(CronTarget::New(template))
             }
             target => Ok(target.target()),
@@ -843,7 +896,7 @@ impl CronDraft {
             schedule,
             max_runs,
             target: self.resolved_target()?,
-            delivery: (!new).then_some(self.delivery),
+            delivery: self.takes_delivery().then_some(self.delivery),
             permission_mode: if new { self.permission_mode } else { None },
             max_consecutive_failures: None,
             enabled: None,
@@ -883,7 +936,7 @@ impl CronDraft {
         if target != job.target {
             params.target = Some(target);
         }
-        if !self.target.is_new() && Some(self.delivery) != job.delivery {
+        if self.takes_delivery() && Some(self.delivery) != job.delivery {
             params.delivery = Some(self.delivery);
         }
         if self.target.is_new() && self.permission_mode != job.permission_mode {

@@ -5,6 +5,19 @@ The client protocol's version is `MAJOR.MINOR.PATCH`
 adds and a major breaks; before it, every minor could break the wire (see the
 [compatibility spec](../specs/compatibility-v1.md) section 3).
 
+## 1.95.0
+
+- Threads for new-session cron jobs ([webhooks spec](../specs/webhooks.md)
+  section 8): `CronTemplate` gains `thread_key`, a time format whose key
+  routes each fire into one session per key, and `thread_prompt`, sent to
+  each session the job creates as a plain user message, again after each
+  compaction; `CronJob` gains `threads` (`CronThread { key, session_id,
+  last_used }`), `CronFire` and `SessionCron` gain `thread_key`, and
+  `delivery` is taken by a new-session job with a thread key. A thread
+  prompt's `user_input_submitted` has the origin `engine:cron-<job id>`
+  (`thread_prompt_origin`, `thread_prompt_owner`). Plugin protocol 1.47.0
+  carries the new members.
+
 ## 1.94.0
 
 - `AssetThumbnailResult` gains `retry_later` (false when absent): without a

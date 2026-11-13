@@ -71,7 +71,13 @@ impl Engine {
             .crons
             .job(&id)
             .ok_or_else(|| ToolError::execution(format!("there is no cron job {id}")))?;
-        let StoredTarget::New(template) = &job.target else {
+        // A job with a thread key fires into its thread of the moment, as
+        // its scheduled fires do (`docs/site/specs/webhooks.md` section 8).
+        let template = match &job.target {
+            StoredTarget::New(template) if template.thread_key.is_none() => Some(template),
+            _ => None,
+        };
+        let Some(template) = template else {
             let result = self.run_cron_now(id.clone()).await.map_err(refused)?;
             let output = match result.session_id {
                 Some(session) => {
@@ -85,7 +91,7 @@ impl Engine {
                     format!("Fired cron job {id} into session {handle}.")
                 }
                 None => format!(
-                    "Cron job {id} was skipped: its previous fire is still waiting in its session."
+                    "Cron job {id} was skipped: its previous fire is still waiting in its session, or the session is held."
                 ),
             };
             return Ok(ToolCompletion::single(
@@ -152,7 +158,15 @@ impl Engine {
                 parent_tool_call_id: call,
                 agent_type: template.agent.clone(),
                 description: job.label(),
-                prompt: super::fire::render_scheduled_job(&job, fired_at),
+                // A child has no producer message to lead with the thread
+                // prompt, so the prompt leads its task.
+                prompt: match &template.thread_prompt {
+                    Some(thread_prompt) => format!(
+                        "{thread_prompt}\n\n{}",
+                        super::fire::render_scheduled_job(&job, fired_at)
+                    ),
+                    None => super::fire::render_scheduled_job(&job, fired_at),
+                },
                 background: context.background,
                 resume_session_id: None,
                 inherit_context: false,

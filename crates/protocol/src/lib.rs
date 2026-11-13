@@ -229,6 +229,7 @@ mod share;
 mod stop;
 mod stored_display;
 pub mod strict;
+mod threads;
 mod tool_exposure;
 mod transport;
 mod uploads;
@@ -280,6 +281,7 @@ pub use setup_value::*;
 pub use share::*;
 #[cfg(not(target_arch = "wasm32"))]
 pub use stop::StopSignals;
+pub use threads::*;
 pub use tool_exposure::*;
 pub use transport::{
     InProcessStream, MAX_WEBSOCKET_MESSAGE_BYTES, MessageFrame, MessageStream, Transport,

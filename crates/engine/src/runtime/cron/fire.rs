@@ -105,15 +105,22 @@ pub(crate) fn render_scheduled_job(job: &StoredJob, fired_at: Timestamp) -> Stri
 }
 
 /// A new-session fire's session title: the job's label and the local time
-/// of the fire.
-fn run_title(job: &StoredJob, fired_at: Timestamp) -> Result<SessionTitle, String> {
-    let local = fired_at
-        .to_zoned(host_zone())
-        .strftime("%Y-%m-%d %H:%M")
-        .to_string();
+/// of the fire, or the thread key of a thread's session.
+fn run_title(
+    job: &StoredJob,
+    fired_at: Timestamp,
+    thread_key: Option<&str>,
+) -> Result<SessionTitle, String> {
+    let local = match thread_key {
+        Some(key) => key.to_owned(),
+        None => fired_at
+            .to_zoned(host_zone())
+            .strftime("%Y-%m-%d %H:%M")
+            .to_string(),
+    };
     let mut label = job.label();
     // Room for the separator and the time within the title limit.
-    let room = SessionTitle::MAX_BYTES - local.len() - 8;
+    let room = SessionTitle::MAX_BYTES.saturating_sub(local.len() + 8);
     while label.len() > room {
         label.pop();
     }
@@ -133,12 +140,15 @@ pub(crate) struct PendingFire {
     job: StoredJob,
     key: String,
     fired_at: Timestamp,
+    thread_key: Option<String>,
 }
 
 struct Claim {
     job: StoredJob,
     key: String,
     fired_at: Timestamp,
+    /// The thread the fire goes into, for a job with a thread key.
+    thread_key: Option<String>,
 }
 
 /// Removes or disables `jobs[index]`, which has nothing left to fire: an
@@ -190,6 +200,10 @@ fn settle_fire(
             fire.outcome = StoredOutcome::Delivered;
             fire.session_id = Some(delivery.session);
             fire.message_id = delivery.message;
+            if let Some(thread) = fire.thread_key.clone() {
+                let at = fire.fired_at;
+                job.threads.record(&thread, delivery.session, at);
+            }
             if counted {
                 job.runs = job.runs.saturating_add(1);
                 if job.schedule.is_one_shot() || job.max_runs.reached(job.runs) {
@@ -358,6 +372,7 @@ impl Engine {
                         job: job.clone(),
                         key: key.clone(),
                         fired_at: fire.fired_at,
+                        thread_key: fire.thread_key.clone(),
                     });
                 }
             }
@@ -380,8 +395,16 @@ impl Engine {
     pub(crate) async fn reconcile_crons_at_start(&self, left_pending: Vec<PendingFire>) {
         let started_at = self.inner.cron_scheduler.started_at;
         let mut found = Vec::new();
-        for PendingFire { job, key, fired_at } in left_pending {
-            let delivery = self.find_delivery(&job, &key, fired_at).await;
+        for PendingFire {
+            job,
+            key,
+            fired_at,
+            thread_key,
+        } in left_pending
+        {
+            let delivery = self
+                .find_delivery(&job, &key, fired_at, thread_key.as_deref())
+                .await;
             found.push((job.id.clone(), key, delivery));
         }
         let limit = self
@@ -489,19 +512,31 @@ impl Engine {
         job: &StoredJob,
         key: &str,
         fired_at: Timestamp,
+        thread_key: Option<&str>,
     ) -> Option<Delivery> {
+        let created = || {
+            self.list_sessions()
+                .into_iter()
+                .find(|meta| {
+                    meta.cron
+                        .as_ref()
+                        .is_some_and(|cron| cron.job_id == job.id && cron.fired_at == fired_at)
+                })
+                .map(|meta| meta.session_id)
+        };
         let session = match &job.target {
             StoredTarget::Session(session) | StoredTarget::Subagent(session) => *session,
-            StoredTarget::New(_) => {
-                self.list_sessions()
-                    .into_iter()
-                    .find(|meta| {
-                        meta.cron
-                            .as_ref()
-                            .is_some_and(|cron| cron.job_id == job.id && cron.fired_at == fired_at)
-                    })?
-                    .session_id
-            }
+            // A thread's fire went into the session its key had, or one it
+            // created.
+            StoredTarget::New(_) => match thread_key {
+                Some(thread) => created().or_else(|| {
+                    self.inner
+                        .crons
+                        .job(&job.id)
+                        .and_then(|job| job.threads.session(thread))
+                })?,
+                None => created()?,
+            },
         };
         let owner = cron_owner(&job.id);
         let message = ProducerIdempotencyKey::new(key.to_owned())
@@ -511,12 +546,20 @@ impl Engine {
                     .ok()?
                     .accepted(&owner, &key)
             });
+        let created_here = self
+            .inner
+            .store
+            .summary(session)
+            .ok()
+            .and_then(|summary| summary.meta.cron)
+            .is_some_and(|cron| cron.job_id == job.id && cron.fired_at == fired_at);
         match (message, &job.target) {
             (Some(message), _) => Some(Delivery {
                 session,
                 message: Some(message),
             }),
-            (None, StoredTarget::New(_)) => self
+            // A session the fire created, which never got its prompt.
+            (None, StoredTarget::New(_)) if created_here => self
                 .send_fire(job, session, key, fired_at, ProducerDeliveryMode::Queue)
                 .await
                 .ok(),
@@ -540,10 +583,15 @@ impl Engine {
     /// Why a fire of `job` is skipped now (sections 4.2 and 4.3): its
     /// previous fire's prompt still waits in its session, or, for a
     /// new-session job, its previous run session still runs.
-    fn skip_reason(&self, job: &StoredJob) -> Option<StoredSkip> {
-        if let StoredTarget::Session(session) | StoredTarget::Subagent(session) = &job.target
-            && self.held_reason(*session).is_some()
-        {
+    /// A job with a thread key follows the in-session rule, for the session
+    /// `thread_key`'s thread is.
+    fn skip_reason(&self, job: &StoredJob, thread_key: Option<&str>) -> Option<StoredSkip> {
+        let into = match (&job.target, thread_key) {
+            (StoredTarget::Session(session) | StoredTarget::Subagent(session), _) => Some(*session),
+            (StoredTarget::New(_), Some(thread)) => job.threads.session(thread),
+            (StoredTarget::New(_), None) => None,
+        };
+        if into.is_some_and(|session| self.held_reason(session).is_some()) {
             return Some(StoredSkip::SessionHeld);
         }
         let previous = job
@@ -565,6 +613,9 @@ impl Engine {
                 .unwrap_or(false)
         });
         match &job.target {
+            StoredTarget::New(_) if job.thread_key_format().is_some() => {
+                waiting.then_some(StoredSkip::PreviousFireNotDelivered)
+            }
             StoredTarget::New(_) => {
                 let running = self
                     .inner
@@ -592,8 +643,9 @@ impl Engine {
         if self.restart_due() {
             return false;
         }
+        let thread_key = job.thread_key_at(scheduled, &host_zone());
         let skip = if self.inner.config.load().runtime.cron.enabled {
-            self.skip_reason(&job)
+            self.skip_reason(&job, thread_key.as_deref())
         } else {
             Some(StoredSkip::FiringDisabled)
         };
@@ -628,11 +680,13 @@ impl Engine {
                 let mut fire =
                     StoredFire::with_outcome(Some(scheduled), fired_at, StoredOutcome::Pending);
                 fire.key = Some(key.clone());
+                fire.thread_key.clone_from(&thread_key);
                 job.record(fire, history);
                 Ok(Some(Claim {
                     job: job.clone(),
                     key,
                     fired_at,
+                    thread_key,
                 }))
             })
             .await;
@@ -653,7 +707,14 @@ impl Engine {
     /// landed in may have ended before the fire was recorded delivered,
     /// when nothing awaited it yet; its end is recorded now instead.
     async fn deliver_claim(&self, claim: Claim) -> Result<Delivery, EngineError> {
-        let result = self.deliver(&claim.job, &claim.key, claim.fired_at).await;
+        let result = self
+            .deliver(
+                &claim.job,
+                &claim.key,
+                claim.fired_at,
+                claim.thread_key.as_deref(),
+            )
+            .await;
         #[cfg(test)]
         self.wait_for_cron_settle_hook().await;
         let limit = self
@@ -701,7 +762,13 @@ impl Engine {
         job: &StoredJob,
         key: &str,
         fired_at: Timestamp,
+        thread_key: Option<&str>,
     ) -> Result<Delivery, String> {
+        if let (StoredTarget::New(template), Some(thread)) = (&job.target, thread_key) {
+            return self
+                .deliver_to_thread(job, template, key, fired_at, thread)
+                .await;
+        }
         match &job.target {
             StoredTarget::Session(session) | StoredTarget::Subagent(session) => {
                 self.send_fire(
@@ -715,13 +782,70 @@ impl Engine {
             }
             StoredTarget::New(template) => {
                 let session = self
-                    .create_run_session(job, template, fired_at)
+                    .create_run_session(job, template, fired_at, None)
                     .await
                     .map_err(|error| error.to_string())?;
                 self.send_fire(job, session, key, fired_at, ProducerDeliveryMode::Queue)
                     .await
             }
         }
+    }
+
+    /// Delivers a fire of `job` into its thread `thread`
+    /// (`docs/site/specs/webhooks.md` section 8): the session the key has,
+    /// with the job's delivery, or a new one made from `template`, which
+    /// the job then records.
+    async fn deliver_to_thread(
+        &self,
+        job: &StoredJob,
+        template: &StoredTemplate,
+        key: &str,
+        fired_at: Timestamp,
+        thread: &str,
+    ) -> Result<Delivery, String> {
+        let id = job.id.clone();
+        let target = self
+            .thread_target(
+                &job.thread_owner(),
+                thread,
+                |engine| {
+                    engine
+                        .inner
+                        .crons
+                        .job(&id)
+                        .and_then(|job| job.threads.session(thread))
+                },
+                || async {
+                    self.create_run_session(job, template, fired_at, Some(thread))
+                        .await
+                        .map_err(|error| error.to_string())
+                },
+                |session| {
+                    let id = job.id.clone();
+                    let thread = thread.to_owned();
+                    async move {
+                        self.crons_blocking(move |_, jobs| {
+                            if let Some(job) = jobs.iter_mut().find(|job| job.id == id) {
+                                job.threads.record(&thread, session, fired_at);
+                            }
+                            Ok(())
+                        })
+                        .await
+                        .map_err(|error| error.to_string())
+                    }
+                },
+            )
+            .await?;
+        let mode = if target.created {
+            ProducerDeliveryMode::Queue
+        } else {
+            job.delivery.unwrap_or(ProducerDeliveryMode::Queue)
+        };
+        let delivered = self
+            .send_fire(job, target.session, key, fired_at, mode)
+            .await;
+        drop(target.guard);
+        delivered
     }
 
     /// Sends `job`'s marked prompt to `session` as a producer message, once
@@ -833,6 +957,7 @@ impl Engine {
         job: &StoredJob,
         template: &StoredTemplate,
         fired_at: Timestamp,
+        thread_key: Option<&str>,
     ) -> Result<SessionId, EngineError> {
         self.check_cron_template(template)?;
         let selection = self.template_selection(template)?;
@@ -852,7 +977,7 @@ impl Engine {
             global: template.global,
             cwd: template.cwd.as_ref().map(std::path::PathBuf::from),
         };
-        let title = run_title(job, fired_at).map_err(EngineError::ToolFailed)?;
+        let title = run_title(job, fired_at, thread_key).map_err(EngineError::ToolFailed)?;
         let meta = self
             .create_root_session(
                 selection,
@@ -864,6 +989,7 @@ impl Engine {
                     SessionCron {
                         job_id: job.id.clone(),
                         fired_at,
+                        thread_key: thread_key.map(str::to_owned),
                     },
                     title,
                 )),
@@ -884,9 +1010,11 @@ impl Engine {
             .crons
             .job(&id)
             .ok_or_else(|| CronError::NotFound(id.clone()))?;
-        let skip = self.skip_reason(&job);
-        let history = self.inner.config.load().runtime.cron.history;
         let now = Timestamp::now();
+        // A run now goes into the thread of the moment.
+        let thread_key = job.thread_key_at(now, &host_zone());
+        let skip = self.skip_reason(&job, thread_key.as_deref());
+        let history = self.inner.config.load().runtime.cron.history;
         let claim_key = format!("{}:now:{}", job.id, uuid::Uuid::now_v7());
         let claim = self
             .crons_blocking(move |_, jobs| {
@@ -900,6 +1028,7 @@ impl Engine {
                 };
                 fire.run_now = true;
                 fire.uncounted = true;
+                fire.thread_key.clone_from(&thread_key);
                 if skip.is_none() {
                     fire.key = Some(claim_key.clone());
                 }
@@ -908,6 +1037,7 @@ impl Engine {
                     job: job.clone(),
                     key: claim_key,
                     fired_at: now,
+                    thread_key,
                 }))
             })
             .await?;
