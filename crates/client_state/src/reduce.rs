@@ -497,6 +497,12 @@ pub(super) fn reduce_event_from(
             if let Some(label) = origin.as_ref().and_then(cookie_agent_protocol::guest_label) {
                 state.guest_labels.insert(sequence, label);
             }
+            if let Some(origin) = origin
+                .as_ref()
+                .filter(|origin| cookie_agent_protocol::thread_prompt_owner(origin).is_some())
+            {
+                state.thread_prompt_origins.insert(sequence, origin.clone());
+            }
             push_item(state, timestamp, |id| TranscriptItem::User {
                 id,
                 version: 0,

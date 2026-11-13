@@ -234,7 +234,7 @@ pub(in crate::ui) fn form_text(draft: &CronDraft, session: Option<&str>) -> Stri
          #   (%Y-%m-%d: one session per day, later fires go into it with delivery);\n\
          #   empty for a new session per fire. A thread prompt, sent once to each\n\
          #   session the job creates, goes after a `{THREAD_PROMPT_LINE}` line.\n\
-         name: {}\n\
+         {}name: {}\n\
          schedule: {}\n\
          max_runs: {}\n\
          target: {target}\n\
@@ -245,6 +245,11 @@ pub(in crate::ui) fn form_text(draft: &CronDraft, session: Option<&str>) -> Stri
          thread_key: {}\n\
          ---\n\
          {}\n{}",
+        draft
+            .thread_preview(jiff::Timestamp::now(), &TimeZone::system())
+            .map_or_else(String::new, |key| format!(
+                "# The next fire goes to the thread {key}.\n"
+            )),
         draft.name,
         draft.schedule,
         draft.max_runs,

@@ -363,6 +363,12 @@ pub(super) fn transcript_item_layout(
                         theme.muted(),
                     )));
                 }
+                // A thread prompt is its cron job's or webhook's, not yours.
+                if let Some(label) = state.thread_prompt_origins.get(seq).and_then(|origin| {
+                    cookie_agent_client_state::webhook::thread_prompt_label(origin, |_| None)
+                }) {
+                    lines.push(Line::from(Span::styled(label, theme.muted())));
+                }
                 lines.extend(
                     crate::markdown::render_markdown_lines_width(
                         markdown,

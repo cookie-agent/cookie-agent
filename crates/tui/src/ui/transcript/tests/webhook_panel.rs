@@ -592,3 +592,54 @@ async fn webhook_panel_preview() {
     }
     std::fs::write(out, dump).unwrap();
 }
+
+#[tokio::test]
+async fn a_thread_prompt_is_labelled_with_its_sender_not_as_the_user() {
+    use cookie_agent_protocol::{ThreadOwnerRef, WebhookId, thread_prompt_origin};
+
+    let mut app = test_app().await;
+    let session = SessionId::new_v7();
+    let run = run_id();
+    app.selected = Some(session);
+    app.tree_root = Some(session);
+    app.store
+        .sessions
+        .insert(session, crate::state::SessionState::default());
+    let owner = ThreadOwnerRef::Webhook(WebhookId::new("w7k2m9qa").unwrap());
+    let mut prompt = user_input(session, 1, run, "You look after one GitHub issue.");
+    prompt.origin = Some(thread_prompt_origin(&owner));
+    assert!(app.store.apply_event(prompt));
+    let mut typed = user_input(session, 2, run, "And close stale ones.");
+    typed.origin = Some(cookie_agent_protocol::EventOrigin::new("client:tui-other").unwrap());
+    assert!(app.store.apply_event(typed));
+
+    let state = &app.store.sessions[&session];
+    assert_eq!(
+        state
+            .thread_prompt_origins
+            .keys()
+            .copied()
+            .collect::<Vec<_>>(),
+        [1]
+    );
+    // The webhook is named once, above its prompt, and the user's own
+    // message carries no sender.
+    let rows = frame_rows(&mut app, 100, 30);
+    let named = rows
+        .iter()
+        .position(|row| row.contains("w7k2m9qa"))
+        .expect("the sender");
+    assert_eq!(
+        rows.iter().filter(|row| row.contains("w7k2m9qa")).count(),
+        1
+    );
+    let prompt_row = rows
+        .iter()
+        .position(|row| row.contains("You look after one GitHub issue."))
+        .expect("the prompt");
+    let typed_row = rows
+        .iter()
+        .position(|row| row.contains("And close stale ones."))
+        .expect("the typed message");
+    assert!(named < prompt_row && prompt_row < typed_row, "{rows:#?}");
+}

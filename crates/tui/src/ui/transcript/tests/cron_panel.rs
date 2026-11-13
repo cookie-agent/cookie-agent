@@ -708,3 +708,20 @@ async fn a_renamed_target_session_is_named_again() {
     assert!(rows.contains("Release prep"), "{rows}");
     assert!(!rows.contains("Build fixes"), "{rows}");
 }
+
+#[test]
+fn a_keyed_jobs_form_says_which_thread_its_next_fire_goes_to() {
+    use cookie_agent_client_state::cron::{CronDraft, bare_template};
+
+    let mut draft = CronDraft::for_new_session(bare_template("builder".parse().unwrap()));
+    draft.schedule = "0 3 * * *".to_owned();
+    let preview = |draft: &CronDraft| {
+        crate::ui::app::cron_panel::form_text(draft, None)
+            .lines()
+            .filter(|line| line.starts_with('#') && line.contains("dailythread"))
+            .count()
+    };
+    assert_eq!(preview(&draft), 0);
+    draft.thread_key = "dailythread".to_owned();
+    assert_eq!(preview(&draft), 1);
+}

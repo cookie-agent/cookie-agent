@@ -1388,6 +1388,11 @@ pub struct SessionState {
     /// The share link's label of each user message a guest sent, by its
     /// sequence (`docs/site/specs/conversation-shares.md` section 7).
     pub guest_labels: HashMap<u64, String>,
+    /// The origin of each user message that is a cron job's or webhook's
+    /// thread prompt, by its sequence, for clients to label it with its
+    /// sender ([`crate::webhook::thread_prompt_label`]) instead of as the
+    /// user's (`docs/site/specs/webhooks.md` section 7.5).
+    pub thread_prompt_origins: HashMap<u64, cookie_agent_protocol::EventOrigin>,
     /// Where each committed text child stands in its model turn: its
     /// `model_turn_seq` and `content_index`, by the child's ID, which its
     /// attachments are keyed by.
