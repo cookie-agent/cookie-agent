@@ -3617,6 +3617,14 @@ def cron_jobs(browser):
     set_text(browser, "#cron-prompt", "Start somewhere new.")
     set_text(browser, "#cron-schedule", "in 2h")
     cron_reading(browser, "once in 2h")
+    # A thread key gives the job a delivery and previews the next fire's
+    # thread; cleared again, each run starts its own session.
+    set_text(browser, "#cron-thread-key", "%Y-%m-%d")
+    browser.wait("the thread preview", lambda: re.search(r"session for \d{4}-\d\d-\d\d", browser.text("#cron-thread-preview")))
+    assert shown(browser, "#cron-delivery") and shown(browser, "#cron-thread-prompt")
+    browser.shot("cron-thread")
+    set_text(browser, "#cron-thread-key", "")
+    browser.wait("no delivery", lambda: not shown(browser, "#cron-delivery"))
     browser.click("#cron-save")
     fresh = cron_row("E2E fresh")
     browser.wait("the new-session job", lambda: count(browser, fresh + " [data-cron-details]") == 1)

@@ -452,7 +452,11 @@ fn cron_form(workspace: Workspace, form: CronForm) -> impl IntoView {
     });
     let model = RwSignal::new(draft.model.clone());
     let mode = RwSignal::new(draft.permission_mode);
+    let thread_key = RwSignal::new(draft.thread_key.clone());
+    let thread_prompt = RwSignal::new(draft.thread_prompt.clone());
     let creating = editing.is_none();
+    // A new-session job with a thread key: its later fires take a delivery.
+    let threaded = move || new.get() && !thread_key.with(|key| key.trim().is_empty());
     // A plain reading of what is typed, or why it is not a schedule.
     let reading = move || {
         let zone = zone_at(jiff::Timestamp::now());
@@ -514,6 +518,8 @@ fn cron_form(workspace: Workspace, form: CronForm) -> impl IntoView {
                 permission_mode: mode.get_untracked(),
                 model: model.get_untracked(),
                 agent: agent.get_untracked(),
+                thread_key: thread_key.get_untracked(),
+                thread_prompt: thread_prompt.get_untracked(),
                 ..draft.clone()
             };
             if creating {
@@ -528,6 +534,17 @@ fn cron_form(workspace: Workspace, form: CronForm) -> impl IntoView {
             }
             draft
         }
+    };
+    // Which thread the next fire goes to, as the schedule and key read now.
+    let thread_preview = {
+        let build = build.clone();
+        Signal::derive(move || {
+            schedule.track();
+            thread_key.track();
+            new.track();
+            let now = jiff::Timestamp::now();
+            build().thread_preview(now, &zone_at(now))
+        })
     };
     let heading = match &editing {
         Some(job) => format!("Edit {}", job_title(job)),
@@ -625,7 +642,7 @@ fn cron_form(workspace: Workspace, form: CronForm) -> impl IntoView {
                 }
                 .into_any(),
             }}
-            <Show when=move || !new.get()>
+            <Show when=move || !new.get() || threaded()>
                 <label class=LABEL>
                     <span class="font-bold">"Delivery"</span>
                     <select
@@ -694,6 +711,33 @@ fn cron_form(workspace: Workspace, form: CronForm) -> impl IntoView {
                     </label>
                 </div>
                 <p class=NOTE>"Each run starts a session of this agent; only you can choose its model and permission mode, agents' jobs always start in auto-n."</p>
+                <label class=LABEL>
+                    <span class="font-bold">"Thread key"</span>
+                    <input
+                        type="text"
+                        id="cron-thread-key"
+                        class=FIELD
+                        placeholder="%Y-%m-%d for a session per day; main for one session"
+                        prop:value=move || thread_key.get()
+                        on:input=move |event| thread_key.set(event_target_value(&event))
+                    />
+                </label>
+                <p class=NOTE id="cron-thread-preview">
+                    {move || match thread_preview.get() {
+                        Some(key) => format!("The next fire goes to the session for {key}."),
+                        None => "Fires with the same key go into one session, which the first of them starts. A time format (strftime of the fire's time) or a fixed word; blank for a new session each run.".to_owned(),
+                    }}
+                </p>
+                <label class=LABEL>
+                    <span class="font-bold">"Thread prompt"</span>
+                    <textarea
+                        id="cron-thread-prompt"
+                        class="min-h-[6rem] w-full resize-y rounded-lg bg-surface p-2 text-sm hover:shadow-[inset_0_0_0_1px_var(--color-faint)] focus:shadow-[inset_0_0_0_1px_var(--color-accent),0_0_0_3px_var(--color-accent-soft)] focus:outline-none shadow-[inset_0_0_0_1px_var(--color-line-2)]"
+                        placeholder="optional; sent as your message when a session starts, and again after each compaction"
+                        prop:value=move || thread_prompt.get()
+                        on:input=move |event| thread_prompt.set(event_target_value(&event))
+                    ></textarea>
+                </label>
             </Show>
             {move || workspace.cron_error.get().map(|error| view! { <p class=ERROR id="cron-error">{error}</p> })}
             <div class=EDITOR_ACTIONS>
