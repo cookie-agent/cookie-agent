@@ -715,6 +715,13 @@ Check for outdated dependencies and open a summary.
   `model`, and `permission_mode` to a new-session target. `model` pins
   `provider/model` or `provider/model[variant]`; empty, the agent's own
   chain runs. `permission_mode` empty means `auto_approve_n`.
+- `thread_key` (new-session targets) is a time format of the fire's local
+  time, such as `%Y-%m-%d` for one session per day: later fires with the
+  same key go into that session with `delivery`. A constant such as `main`
+  keeps one session. A thread prompt, sent once to each session the job
+  creates and again after each compaction, goes after a `--- thread prompt`
+  line below the prompt. **Details** says which thread the next fire goes
+  to.
 
 A new-session job's template starts from the session on screen: its agent
 and preset (the agent you picked for its next run), its project, and the
@@ -729,10 +736,91 @@ and `/cron new` is not offered. See
 
 ## Webhooks
 
-The TUI has no `/webhooks` panel yet; it is coming. Until then, manage
-[webhooks](../sessions/webhooks.md) with
-[`cookie webhook`](cli.md#cookie-webhook). A session a webhook started is
-an ordinary session in the picker.
+`/webhooks` opens the daemon's [webhooks](../sessions/webhooks.md): URLs
+that turn each request they accept into a message in a session, or into a
+new session per event (or per thread key). Each row shows the webhook's
+name (or `Webhook <id>`), its target, whether it is enabled or why not, its
+check (`URL only`, `GitHub signature`, …), what its last event did, and its
+request counts. Under the list, **Details** gives the selected webhook's
+target and, for one an agent made, the session it was created in (a click,
+or `o` and `i`, shows that session's transcript); then its URL, with a
+warning when the address works only where cookie's page can be reached
+(set [`[public] url`](../engine/public.md) for senders on the internet), its
+check, delivery, template, thread key, filter, limits, counts, prompt, and
+thread prompt. **Events** lists what it received, newest first; a click on
+one, or `v` for the newest, opens its request (method, headers without the
+secret ones, and the body, JSON pretty-printed), where ← and → step through
+the events, ↑ ↓ and Page Up/Down scroll, and Esc goes back. The title says
+when the daemon's receiving is off (`[webhooks] enabled = false`).
+
+Up and Down select a webhook, or click its row. Each action is a key and a
+button below the panel:
+
+| Key | Action |
+|---|---|
+| `e` or Enter | Edit the selected webhook |
+| `c` | Copy its URL to the clipboard |
+| `p` | Send it a test event; the status line says what it did |
+| `v` | Open its newest event |
+| `t` | Enable or disable it |
+| `r` | Show its secret (for a webhook with a check) |
+| `k` | Make a new secret, after `y` confirms; the old one stops working at once |
+| `u` | Give it a new URL, after `y` confirms; the old one stops working at once |
+| `d` | Delete it, after `y` confirms; its sessions stay |
+| `n` | Create a webhook that delivers into the session on screen |
+| `s` | Create a webhook that starts new sessions |
+| Esc | Cancel a confirmation, a refused form, a shown secret, or an open event, else close the panel |
+
+`/webhooks new` in the command palette opens a new webhook's form for the
+session on screen directly: a root session is targeted as a session, a
+subagent's as a subagent.
+
+A webhook is created and edited as a short form in `$VISUAL` or `$EDITOR`,
+as `/cron` edits its jobs: `key: value` lines, then the prompt sent with
+every event after a `---` line, and for a webhook that starts sessions the
+thread prompt after a `--- thread prompt` line. Lines starting with `#`
+explain the fields and are ignored. The target is fixed when the form
+opens.
+
+```text
+name: GitHub issues
+delivery: queue
+agent: builder
+model:
+permission_mode:
+thread_key: json:/issue/number
+check: github
+secret:
+filter: header:X-GitHub-Event=issues,issue_comment
+filter: json:/action=opened,created
+headers: X-GitHub-Event
+max_per_hour: 60
+max_concurrent: 2
+max_consecutive_failures:
+---
+A new event on the issue: act on it if it needs anything.
+--- thread prompt
+You look after one GitHub issue. Keep its labels right.
+```
+
+- `check` is empty (the URL alone), `github`, `standard`, `bearer`, or
+  `hmac_sha256 header=<name> encoding=hex|base64 prefix=<text>`. Leave
+  `secret` empty to have the daemon make one: it is shown once after the
+  save, where `c` copies it and Esc hides it. `r` shows it again later.
+- `filter` may repeat; every line must match an event.
+- `thread_key` is `json:/pointer` or `header:Name`: events with the same key
+  share a session, and later ones go into it with `delivery`.
+- Limits left empty take the daemon's defaults; 0 or less means no limit.
+
+A new-session webhook's template starts from the session on screen, as a
+cron job's does. Saving unchanged text creates or changes nothing, and an
+edit sends only what changed. A form the TUI cannot read, or that the daemon
+refuses, stays open with the reason: `e` edits it again, Esc drops it. The
+panel refreshes when any client or agent changes a webhook. A session a
+webhook started shows ⚡ before its title in the session picker, and a
+thread prompt in a transcript is labelled with the webhook or cron job that
+sent it instead of as yours. A daemon older than client protocol 1.96 keeps
+no webhooks: `/webhooks` says so, and `/webhooks new` is not offered.
 
 ## Background calls
 
