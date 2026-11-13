@@ -34,6 +34,7 @@ impl Workspace {
             View::Machines => self.poll_runtimes(),
             View::Memory => self.open_memory(),
             View::Cron => self.open_crons(),
+            View::Webhooks => self.open_webhooks(),
         }
         self.view.set(view);
     }
@@ -88,7 +89,7 @@ impl Workspace {
             View::Assets => self.poll_assets(),
             View::Sharing => self.refresh_shares(),
             View::Mcp => self.poll_mcp(),
-            View::Chat | View::Machines | View::Cron => {}
+            View::Chat | View::Machines | View::Cron | View::Webhooks => {}
         }
         match self.panel.get_untracked() {
             Some(Panel::Skills) => self.load_skills(),
@@ -160,6 +161,7 @@ impl Workspace {
                 self.memory_edit.with(Option::is_none) && self.memory_pending.with(Option::is_none)
             }
             View::Cron => self.cron_form.with(Option::is_none),
+            View::Webhooks => self.webhook_form.with(Option::is_none),
             View::Assets => self.asset_page.with(Option::is_none),
             View::Skills | View::Mcp | View::Machines | View::Sharing => true,
         }
@@ -185,6 +187,7 @@ impl Workspace {
                 self.memory_edit.with(Option::is_some) || self.memory_pending.with(Option::is_some)
             }
             View::Cron => self.cron_form.with(Option::is_some),
+            View::Webhooks => self.webhook_form.with(Option::is_some),
             View::Assets => self.asset_page.with(Option::is_some),
             View::Chat | View::Skills | View::Mcp | View::Machines | View::Sharing => false,
         };
@@ -267,6 +270,7 @@ impl Workspace {
                 self.memory_edit.set(None);
                 self.memory_pending.set(None);
                 self.cron_form.set(None);
+                self.webhook_form.set(None);
                 self.asset_page.set(None);
             }
         }

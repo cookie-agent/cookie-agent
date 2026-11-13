@@ -62,6 +62,7 @@ mod skills;
 mod tool_groups;
 mod tree;
 mod unread;
+mod webhook;
 
 use drafts::ComposerSlot;
 
@@ -78,6 +79,7 @@ pub use projects::{EditorFields, ProjectEditor};
 pub use provider_sign_in::{PASTE_BACK_STEPS, ProviderSignIn, page_on_loopback};
 pub use selection::{PickState, Picked};
 pub use shares::ShareDialog;
+pub use webhook::{WebhookEventOpen, WebhookForm, WebhookRevealed};
 
 /// How long usage events settle before the status bar's cost is read again.
 const COST_DEBOUNCE: Duration = Duration::from_millis(250);
@@ -439,6 +441,22 @@ pub struct Workspace {
     pub has_crons: RwSignal<bool>,
     /// `crons.list`: read on connect and on every `crons.changed`.
     pub crons: RwSignal<Option<Result<cookie_agent_protocol::CronsListResult, String>>>,
+    /// Whether the daemon keeps webhooks (client protocol 1.96.0).
+    pub has_webhooks: RwSignal<bool>,
+    /// `webhooks.list`: read on connect and on every `webhooks.changed`.
+    pub webhooks: RwSignal<Option<Result<cookie_agent_protocol::WebhooksListResult, String>>>,
+    /// The webhook the Webhooks view shows the details of.
+    pub webhook_selected: RwSignal<Option<cookie_agent_protocol::WebhookId>>,
+    /// The webhook form, while it is open.
+    pub webhook_form: RwSignal<Option<WebhookForm>>,
+    /// Why the form was not sent, or a webhook action failed.
+    pub webhook_error: RwSignal<Option<String>>,
+    /// A secret the daemon returned, shown until dismissed: the webhook's
+    /// ID and the secret, or its new URL's note.
+    pub webhook_revealed: RwSignal<Option<WebhookRevealed>>,
+    /// The event open in the Webhooks view: the webhook, the event, and
+    /// `webhooks.event` once read.
+    pub webhook_event: RwSignal<Option<WebhookEventOpen>>,
     /// The daemon has push notifications (client protocol 1.30).
     pub has_push: RwSignal<bool>,
     /// Whether the daemon keeps unread sessions (client protocol 1.51.0).
@@ -754,6 +772,13 @@ impl Workspace {
             plugins: RwSignal::new(None),
             has_crons: RwSignal::new(false),
             crons: RwSignal::new(None),
+            has_webhooks: RwSignal::new(false),
+            webhooks: RwSignal::new(None),
+            webhook_selected: RwSignal::new(None),
+            webhook_form: RwSignal::new(None),
+            webhook_error: RwSignal::new(None),
+            webhook_revealed: RwSignal::new(None),
+            webhook_event: RwSignal::new(None),
             has_push: RwSignal::new(false),
             keeps_unread: RwSignal::new(false),
             keeps_pins: RwSignal::new(false),
@@ -897,6 +922,10 @@ impl Workspace {
             .set(cookie_agent_client_state::cron::daemon_has_crons(
                 client.daemon_version(),
             ));
+        self.has_webhooks
+            .set(cookie_agent_client_state::webhook::daemon_has_webhooks(
+                client.daemon_version(),
+            ));
         self.can_restart
             .set(cookie_agent_client_state::restart::daemon_can_restart(
                 client.daemon_version(),
@@ -922,6 +951,7 @@ impl Workspace {
             self.has_projects.set(false);
             self.can_sign_in.set(false);
             self.has_crons.set(false);
+            self.has_webhooks.set(false);
             self.can_restart.set(false);
             self.has_push.set(false);
             self.keeps_unread.set(false);
@@ -1018,6 +1048,7 @@ impl Workspace {
         self.refresh_projects();
         self.poll_runtimes();
         self.poll_crons();
+        self.poll_webhooks();
         match client.runtime_snapshot().await {
             Ok(result) => {
                 self.runtime
@@ -1138,6 +1169,10 @@ impl Workspace {
             }
             ClientDelivery::CronsChanged(_) => {
                 self.poll_crons();
+                return;
+            }
+            ClientDelivery::WebhooksChanged(_) => {
+                self.poll_webhooks();
                 return;
             }
             ClientDelivery::NotificationsChanged(_) => {
@@ -3160,6 +3195,7 @@ impl Workspace {
             }
             Command::Goal => self.goal_command(crate::goal::GoalCommand::Show),
             Command::Schedule => self.schedule_prompt(),
+            Command::Webhook => self.add_webhook(),
             Command::Skills => self.open_skills(String::new()),
             Command::Background => self.open_background(),
             Command::Runtime => self.open_runtimes(),

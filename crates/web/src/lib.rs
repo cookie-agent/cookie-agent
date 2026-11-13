@@ -48,6 +48,7 @@ pub mod theme;
 pub mod thumbnail_store;
 pub mod tree;
 mod views;
+pub mod webhook;
 pub mod workspace;
 
 pub use app::App;

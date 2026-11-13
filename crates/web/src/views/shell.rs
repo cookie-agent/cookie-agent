@@ -39,6 +39,7 @@ pub fn view_icon(view: View) -> crate::icons::Icon {
         View::Machines => icondata::LuServer,
         View::Memory => icondata::LuBrain,
         View::Cron => icondata::LuClock,
+        View::Webhooks => icondata::LuWebhook,
     }
 }
 
@@ -165,6 +166,7 @@ pub fn PageView(workspace: Workspace, connection: Connection) -> impl IntoView {
                                 View::Machines => machines_page(workspace).into_any(),
                                 View::Memory => memory_sheet(workspace).into_any(),
                                 View::Cron => cron_page(workspace).into_any(),
+                                View::Webhooks => super::webhooks::webhooks_page(workspace).into_any(),
                                 View::Skills => super::skills::skills_page(workspace).into_any(),
                                 View::Sharing => super::shares::sharing_page(workspace).into_any(),
                                 View::Mcp => mcp_sheet(workspace).into_any(),

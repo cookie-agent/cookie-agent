@@ -3720,6 +3720,77 @@ return [open.top + open.height / 2, box.top + box.height / 2, box.width, box.hei
 """
 
 
+def webhook_row(name):
+    """The Webhooks row whose title is `name`."""
+    return '#page [data-webhook][data-title="%s"]' % name
+
+
+def webhooks(browser):
+    """Webhooks: the ⋮ menu's "Add a webhook" opens the form for the open
+    session; adding one shows its URL once; a test event is delivered into
+    the session and its request opens from the history; a GitHub check's
+    secret is shown once; deleting asks first."""
+    browser.resize(1280, 900)
+    new_session(browser)
+    send(browser, "a session for a webhook")
+    idle(browser)
+    browser.wait("an open session", lambda: browser.text("#session-title") != "New session")
+    session_title = browser.text("#session-title").strip()
+
+    menu(browser, "webhook")
+    browser.wait("the webhook form", lambda: count(browser, "#webhook-form") == 1)
+    assert page_view(browser) == "webhooks"
+    assert browser.script(
+        "return document.querySelector('#webhook-target-session').getAttribute('aria-checked')"
+    ) == "true", "the form does not target the open session"
+    set_text(browser, "#webhook-name", "E2E hook")
+    set_text(browser, "#webhook-prompt", "Note what arrived.")
+    browser.shot("webhook-form")
+    browser.click("#webhook-save")
+    hook = webhook_row("E2E hook")
+    browser.wait("the webhook", lambda: count(browser, "#webhook-form") == 0 and count(browser, hook) == 1)
+    browser.wait("its URL, shown once", lambda: "/hooks/" in browser.text("#webhook-revealed-url"))
+    assert count(browser, "#webhook-revealed-secret") == 0, "a URL-only webhook has no secret"
+    text = browser.text(hook)
+    for part in (session_title, "enabled", "URL only", "no requests yet"):
+        assert part in text, (part, text)
+    browser.wait("its details", lambda: count(browser, hook + " [data-webhook-details]") == 1)
+    assert "/hooks/" in browser.text(hook + " #webhook-url")
+    browser.shot("webhooks-view")
+    browser.click("#webhook-revealed-close")
+    print("webhooks: the ⋮ menu adds a webhook for the open session and shows its URL")
+
+    # A test event goes into the session; its request opens from the history.
+    browser.click(hook + " [data-webhook-action=test]")
+    browser.wait("the test event", lambda: "test · delivered" in browser.text(hook + " [data-webhook-history]"), timeout=40)
+    event = hook + " [data-webhook-event] button[aria-expanded]"
+    browser.click(event)
+    browser.wait("its request", lambda: '"test"' in browser.text(hook + " [data-webhook-body]"))
+    browser.shot("webhook-event")
+    assert count(browser, hook + " [data-webhook-event-session]") == 1
+    print("webhooks: a test event is delivered, and its request opens")
+
+    # A GitHub check: its secret is shown once, then on request.
+    browser.click(hook + " [data-webhook-action=edit]")
+    browser.wait("the edit form", lambda: count(browser, "#webhook-form") == 1)
+    set_text(browser, "#webhook-verify", "github")
+    browser.click("#webhook-save")
+    browser.wait("the new secret", lambda: len(browser.text("#webhook-revealed-secret").strip()) >= 32)
+    browser.wait("the check", lambda: "GitHub signature" in browser.text(hook))
+    browser.click("#webhook-revealed-close")
+    browser.click(hook + " [data-webhook-action=reveal]")
+    browser.wait("the secret again", lambda: len(browser.text("#webhook-revealed-secret").strip()) >= 32)
+    browser.click("#webhook-revealed-close")
+    print("webhooks: a check's secret is shown once, and again on request")
+
+    # Deleting asks, then the row goes.
+    browser.click(hook + " [data-webhook-action=delete]")
+    browser.wait("the confirmation", lambda: count(browser, hook + " [data-webhook-confirm]") == 1)
+    browser.click("#webhook-confirm")
+    browser.wait("the row gone", lambda: count(browser, hook) == 0)
+    print("webhooks: deleting asks first")
+
+
 def deleting(browser):
     """Deleting a session from its row: the trash on hover, the inline
     confirmation naming it, a running session refused with the daemon's
@@ -4609,8 +4680,8 @@ def desktop_layout(browser):
     # The session's actions, then what opens in the session panel
     # (docs/site/specs/web-polish.md, P4).
     assert names == [
-        "rename", "compact", "share", "schedule", "preset", "goal", "skills", "background", "runtime", "permissions",
-        "usage", "events",
+        "rename", "compact", "share", "schedule", "webhook", "preset", "goal", "skills", "background", "runtime",
+        "permissions", "usage", "events",
     ], names
     for name, text, icon in entries:
         assert icon and "/" not in text, (name, text, icon)
@@ -4622,9 +4693,10 @@ def desktop_layout(browser):
     close_sheet(browser)
     click_row(browser, "aside nav[aria-label=Sessions] [data-session]")
     browser.wait("an open session", lambda: browser.text("#session-title") != "New session")
-    # Rename edits the title in place (renaming), and Schedule a prompt
-    # opens the job form (cron), and share its dialog; the others open sheets.
-    for name in [name for name in names[1:] if name not in ("schedule", "share")]:
+    # Rename edits the title in place (renaming), Schedule a prompt opens
+    # the job form (cron), Add a webhook its form (webhooks), and share its
+    # dialog; the others open sheets.
+    for name in [name for name in names[1:] if name not in ("schedule", "webhook", "share")]:
         menu(browser, name)
         browser.wait("the %s sheet" % name, lambda: count(browser, "#sheet [data-command]") == 0 and count(browser, "#sheet") == 1)
         assert page_view(browser) == "chat"
@@ -4993,9 +5065,10 @@ SHEETS = [
 ]
 SCRIPTED = [
     ("view-%s" % name, ["#sidebar [data-view=%s]" % name])
-    for name in ("agents", "skills", "mcp", "settings", "machines", "memory", "cron")
+    for name in ("agents", "skills", "mcp", "settings", "machines", "memory", "cron", "webhooks")
 ] + [
     ("cron-form", ["#sidebar [data-view=cron]", "#cron-new"]),
+    ("webhook-form", ["#sidebar [data-view=webhooks]", "#webhook-new"]),
 ] + [
     ("new-session-cards", ["[data-new-session]"]),
 ] + [
@@ -7476,7 +7549,7 @@ def guest_link(browser):
         sheet_at_rest(guest)
         for command in ["goal", "skills", "permissions"]:
             assert count(guest, '[data-command="%s"]' % command) == 1, command
-        for command in ["rename", "share", "schedule", "preset"]:
+        for command in ["rename", "share", "schedule", "webhook", "preset"]:
             assert count(guest, '[data-command="%s"]' % command) == 0, command
         guest.click("#sheet [data-command=permissions]")
         guest.wait("the note", lambda: count(guest, "[data-owner-only]") == 1)
@@ -7585,6 +7658,7 @@ SCENARIOS = [
     ("session_badges", session_badges, "chat", ["management", "runtime_cards"]),
     ("renaming", renaming, "chat", ["basics"]),
     ("cron", cron_jobs, "chat", []),
+    ("webhooks", webhooks, "chat", []),
     ("deleting", deleting, "chat", []),
     ("projects", projects, "chat", ["basics", "composer"]),
     ("narrow", narrow, "chat", []),

@@ -31,13 +31,13 @@ use crate::{
 };
 
 /// A select, as the form's fields.
-const SELECT: &str = "min-h-11 w-full rounded-lg bg-surface px-2 text-sm hover:shadow-[inset_0_0_0_1px_var(--color-faint)] focus:shadow-[inset_0_0_0_1px_var(--color-accent),0_0_0_3px_var(--color-accent-soft)] focus:outline-none shadow-[inset_0_0_0_1px_var(--color-line-2)]";
+pub(super) const SELECT: &str = "min-h-11 w-full rounded-lg bg-surface px-2 text-sm hover:shadow-[inset_0_0_0_1px_var(--color-faint)] focus:shadow-[inset_0_0_0_1px_var(--color-accent),0_0_0_3px_var(--color-accent-soft)] focus:outline-none shadow-[inset_0_0_0_1px_var(--color-line-2)]";
 
 /// A field's label above it.
-const LABEL: &str = "flex flex-col gap-1 text-sm";
+pub(super) const LABEL: &str = "flex flex-col gap-1 text-sm";
 
 /// A detail that opens a session.
-const LINK: &str =
+pub(super) const LINK: &str =
     "text-left font-bold text-accent underline-offset-2 hover:underline focus-visible:underline";
 
 pub fn cron_page(workspace: Workspace) -> impl IntoView {

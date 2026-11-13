@@ -34,7 +34,7 @@ const NAV_TILE: &str = "group flex h-14 min-w-0 flex-col items-center justify-ce
 
 /// The views the sidebar lists under *Workspace*: every view but Chat,
 /// which is the session list itself, and Settings, at the foot.
-const WORKSPACE_VIEWS: [View; 8] = [
+const WORKSPACE_VIEWS: [View; 9] = [
     View::Agents,
     View::Skills,
     View::Memory,
@@ -43,6 +43,7 @@ const WORKSPACE_VIEWS: [View; 8] = [
     View::Machines,
     View::Mcp,
     View::Cron,
+    View::Webhooks,
 ];
 
 /// The sidebar entry of `view`.
@@ -51,6 +52,7 @@ fn nav_entry(workspace: Workspace, view: View) -> impl IntoView {
     // Scheduled prompts need a daemon that keeps cron jobs.
     let offered = move || {
         (view != View::Cron || workspace.has_crons.get())
+            && (view != View::Webhooks || workspace.has_webhooks.get())
             && (view != View::Sharing || workspace.has_shares.get())
     };
     let label = match view {

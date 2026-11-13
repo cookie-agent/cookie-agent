@@ -77,7 +77,7 @@ impl Workspace {
     }
 
     /// The open session as a job's target, when one is open.
-    fn cron_session(self) -> Option<(SessionId, bool)> {
+    pub(super) fn cron_session(self) -> Option<(SessionId, bool)> {
         if self.new_session.get_untracked() {
             return None;
         }
@@ -93,7 +93,7 @@ impl Workspace {
     /// The template a new-session job starts from: the open session's
     /// agent (else the new session's), the preset in use, and the open
     /// session's project (else the new session's).
-    fn cron_template(self) -> Option<CronTemplate> {
+    pub(super) fn cron_template(self) -> Option<CronTemplate> {
         let agent = self
             .draft
             .get_untracked()

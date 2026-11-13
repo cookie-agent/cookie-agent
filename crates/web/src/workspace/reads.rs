@@ -16,6 +16,7 @@ use super::Workspace;
 #[derive(Debug, Default)]
 pub(super) struct Reads {
     pub crons: Latest,
+    pub webhooks: Latest,
     pub memory: Latest,
     pub plugins: Latest,
     pub mcp: Latest,

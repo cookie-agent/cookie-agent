@@ -66,6 +66,7 @@ mod shell;
 mod sidebar;
 mod skills;
 mod tool_groups;
+mod webhooks;
 
 pub(crate) use assets::AssetDialogs;
 pub(crate) use install::{Install, InstallAction, InstallBanner};
@@ -1281,6 +1282,8 @@ fn session_row(
     let pinned = session.pinned;
     // A run session of a cron job: its clock opens the job.
     let cron = session.cron.clone();
+    // A session a webhook's event started: its mark opens the webhook.
+    let webhook = session.webhook.clone();
     // Where it runs, once the runtimes are known; the tooltip lists every
     // workspace with its path.
     // Fitted to the line: machines whole, the last ones left out for a
@@ -1607,6 +1610,7 @@ fn session_row(
                         <span class="sr-only">"pinned"</span>
                     })}
                     {cron.clone().map(|cron| cron::clock_mark(workspace, cron))}
+                    {webhook.clone().map(|webhook| webhooks::webhook_mark(workspace, webhook))}
                     // The whole title on hover, as a long one is cut here.
                     // Unread titles stand out; read ones are quieter.
                     <span
@@ -5827,6 +5831,7 @@ fn transcript_sheet(workspace: Workspace) -> impl IntoView {
 /// in for cookie's command of its name. A filter on top narrows both.
 fn commands_sheet(workspace: Workspace) -> impl IntoView {
     let has_crons = workspace.has_crons.get_untracked();
+    let has_webhooks = workspace.has_webhooks.get_untracked();
     let filter = RwSignal::new(String::new());
     let query = move || filter.get().trim().trim_start_matches('/').to_lowercase();
     let matches = |query: &str, texts: [&str; 2]| {
@@ -5896,7 +5901,7 @@ fn commands_sheet(workspace: Workspace) -> impl IntoView {
         let replaced = replaced.get();
         let offered: Vec<&'static crate::commands::MenuEntry> = MENU
             .iter()
-            .filter(|entry| crate::commands::offered(entry.command, has_crons))
+            .filter(|entry| crate::commands::offered(entry.command, has_crons, has_webhooks))
             .filter(|entry| {
                 !workspace.is_guest() || crate::commands::offered_to_guest(entry.command)
             })

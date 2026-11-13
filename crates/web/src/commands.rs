@@ -23,6 +23,9 @@ pub enum Command {
     /// Schedule a prompt into the session: the cron job form, in the
     /// Scheduled prompts view (client protocol 1.15).
     Schedule,
+    /// Add a webhook that delivers into the session: the webhook form, in
+    /// the Webhooks view (client protocol 1.96.0).
+    Webhook,
     /// Search the skills and run one.
     Skills,
     /// The background calls, to stop one.
@@ -88,6 +91,13 @@ pub const MENU: &[MenuEntry] = &[
         description: "Send this session a prompt later, or on a schedule",
     },
     MenuEntry {
+        command: Command::Webhook,
+        id: "webhook",
+        label: "Add a webhook",
+        icon: icondata::LuWebhook,
+        description: "A URL that turns each request it receives into a message here",
+    },
+    MenuEntry {
         command: Command::Skills,
         id: "skills",
         label: "Skills",
@@ -139,9 +149,14 @@ pub const MENU: &[MenuEntry] = &[
 ];
 
 /// Whether the menu shows `command` to a daemon that does or does not keep
-/// cron jobs (`has_crons`, client protocol 1.15).
-pub const fn offered(command: Command, has_crons: bool) -> bool {
-    !matches!(command, Command::Schedule) || has_crons
+/// cron jobs (`has_crons`, client protocol 1.15) and webhooks
+/// (`has_webhooks`, client protocol 1.96.0).
+pub const fn offered(command: Command, has_crons: bool, has_webhooks: bool) -> bool {
+    match command {
+        Command::Schedule => has_crons,
+        Command::Webhook => has_webhooks,
+        _ => true,
+    }
 }
 
 /// Whether a guest is offered `command`: what acts in the session or only
@@ -150,7 +165,7 @@ pub const fn offered(command: Command, has_crons: bool) -> bool {
 pub const fn offered_to_guest(command: Command) -> bool {
     !matches!(
         command,
-        Command::Rename | Command::Share | Command::Schedule | Command::Preset
+        Command::Rename | Command::Share | Command::Schedule | Command::Webhook | Command::Preset
     )
 }
 
@@ -183,6 +198,7 @@ mod tests {
             Command::Rename,
             Command::Share,
             Command::Schedule,
+            Command::Webhook,
             Command::Preset,
         ] {
             assert!(!offered_to_guest(command), "{command:?}");
@@ -190,10 +206,12 @@ mod tests {
     }
 
     #[test]
-    fn only_a_daemon_that_keeps_cron_jobs_offers_scheduling() {
-        assert!(offered(Command::Schedule, true));
-        assert!(!offered(Command::Schedule, false));
-        assert!(offered(Command::Goal, false));
+    fn only_a_daemon_that_keeps_cron_jobs_or_webhooks_offers_them() {
+        assert!(offered(Command::Schedule, true, false));
+        assert!(!offered(Command::Schedule, false, true));
+        assert!(offered(Command::Webhook, false, true));
+        assert!(!offered(Command::Webhook, true, false));
+        assert!(offered(Command::Goal, false, false));
     }
 
     #[test]
@@ -204,6 +222,7 @@ mod tests {
             Command::Compact,
             Command::Goal,
             Command::Schedule,
+            Command::Webhook,
             Command::Skills,
             Command::Background,
             Command::Runtime,
