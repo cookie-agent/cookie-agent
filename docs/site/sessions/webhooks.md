@@ -273,9 +273,12 @@ a remote daemon.
 
 ### Terminal UI and web
 
-A Webhooks view in the [web client](../clients/web.md#webhooks) and a
-`/webhooks` panel in the [terminal UI](../clients/tui.md#webhooks) are
-coming; until then, use `cookie webhook`.
+The [web client](../clients/web.md#webhooks) has a **Webhooks** view in
+its sidebar: each webhook's URL to copy, its details and events (each
+opening to its request), and its actions, including test events and a new
+URL or secret; the session ⋮ menu's **Add a webhook** adds one for the open
+session. The [terminal UI](../clients/tui.md#webhooks) has a `/webhooks`
+panel.
 
 ### Deleting
 

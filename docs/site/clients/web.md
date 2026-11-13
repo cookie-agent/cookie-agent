@@ -1144,17 +1144,67 @@ changes (`crons.changed`), from any client or agent.
     Only you set the model and the mode; an agent's jobs always start in
     `auto-n`. The template takes the open session's agent, the preset in
     use, and the open session's project (the new session's, with none
-    open); the daemon attaches what `session.create` would.
+    open); the daemon attaches what `session.create` would;
+  - a new-session job's **Thread key** (a time format such as `%Y-%m-%d`
+    for one session per day, or a fixed word for one session; see
+    [threads](../sessions/scheduling.md#threads)), with a line saying which
+    thread the next fire goes to, and a **Thread prompt**, sent as your
+    message when a thread's session starts and again after each
+    compaction. A job with a thread key also has a **Delivery**, for the
+    fires that go into a thread's session.
 
   The daemon checks the job when it is saved and says what it refused
   under the form.
 
 ## Webhooks
 
-The page has no Webhooks view yet; it is coming. Until then, manage
-[webhooks](../sessions/webhooks.md) with
-[`cookie webhook`](cli.md#cookie-webhook). A session a webhook started is
-an ordinary session in the list.
+**Webhooks** in the sidebar opens the daemon's
+[webhooks](../sessions/webhooks.md); a daemon older than client protocol
+1.96.0 keeps none, and the page hides the entry and the ⋮ menu's **Add a
+webhook**. The view reads `webhooks.list` again whenever a webhook changes
+(`webhooks.changed`), from any client or agent.
+
+- **The list.** Each webhook shows its name (or `Webhook <id>`), its state
+  (`enabled`, `failed 3 times in a row`, `disabled by you`), a switch to
+  turn it on or off, its target (the session's title, `subagent <title>`,
+  or `new session · <agent>`, with its project and thread key), its check
+  (`URL only`, `GitHub signature`, …), and the requests it has had
+  (`12 accepted · 3 filtered`). A banner says when receiving is off
+  (`[webhooks] enabled = false`).
+- **A webhook.** Click a webhook for its **URL** with a copy button (built
+  on the daemon's [`[public] url`](../engine/public.md), else the address
+  the page reached the daemon at, with a note when that address works only
+  where the page can be reached), its details (target, check, delivery, a
+  new-session webhook's agent, model, project, thread key, and threads,
+  filter, headers, limits, failures, who made it; the target is a link to
+  its transcript), its thread prompt and prompt, and its events, newest
+  first: when, what the event did (`delivered · completed`, `waiting`,
+  `failed: …`, `test · …`), its thread, and **Open session**. Click an
+  event for its request: method, headers, and body. Its actions are
+  **Edit**, **Disable** or **Enable**, **Send a test event** (which skips
+  the check, the filter, and the limits), **New URL** and, with a check,
+  **New secret** and **Show secret**, and **Delete**; a new URL or secret
+  and deleting ask first. A right-click on a row offers the same.
+- **Shown once.** Adding a webhook shows its URL, and its secret when it
+  has a check; a new URL or secret is shown the same way, with copy
+  buttons, until you close it.
+- **The form.** **New webhook** in the view, or **Add a webhook** in the ⋮
+  menu (for the open session), opens it: **Name**; **Target**, when
+  adding: the open session (or subagent), or **New sessions**, with their
+  **Agent**, **Model**, **Permission mode**, **Sessions at once**,
+  **Thread key** (`json:/issue/number` or `header:X-Thread`), and **Thread
+  prompt**; the **Prompt** sent with every event; **Delivery** for a
+  session, or for a new-session webhook with a thread key; the **Check**
+  (`github`, `standard`, `bearer`, or `hmac_sha256 header=…`) and its
+  **Secret** (blank to have the daemon make one); the **Filter**, one
+  condition per line; the **Headers shown** to the model; **Events per
+  hour**; and **Failures before off**. A blank limit takes the daemon's
+  default. The daemon checks the form when it is saved and says what it
+  refused under it.
+- **In the session list,** a session a webhook started shows the webhook's
+  mark before its title; a click opens its webhook. In a transcript, a
+  [thread prompt](../sessions/webhooks.md) shows `from webhook <name>` (or
+  `from cron job <name>`) above its message, in place of you.
 
 ## Phones
 
