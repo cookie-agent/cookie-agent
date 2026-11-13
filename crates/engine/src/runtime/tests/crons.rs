@@ -1174,7 +1174,7 @@ async fn root_runs_get_the_cron_tools_and_list_agents_by_default() {
     }));
 
     // With cron denied the cron tools go, cron_list with them; without
-    // delegation either, so does list_agents.
+    // delegation or webhooks either, so does list_agents.
     let deny_cron = || {
         PermissionRule::new(
             PermissionAction::CRON,
@@ -1183,11 +1183,15 @@ async fn root_runs_get_the_cron_tools_and_list_agents_by_default() {
         )
     };
     let mut no_cron = policy.clone();
-    no_cron
-        .agent
-        .permissions
-        .retain(|rule| rule.action != PermissionAction::CRON);
+    no_cron.agent.permissions.retain(|rule| {
+        rule.action != PermissionAction::CRON && rule.action != PermissionAction::WEBHOOK
+    });
     no_cron.agent.permissions.push(deny_cron());
+    no_cron.agent.permissions.push(PermissionRule::new(
+        PermissionAction::WEBHOOK,
+        WildcardPattern::new("*").unwrap(),
+        PermissionEffect::Deny,
+    ));
     assert!(names(&no_cron).is_empty());
 
     // Rules for one kind show only that kind's jobs.
@@ -1320,7 +1324,7 @@ helper (all) — Helper test agent
   usable for: delegate, cron
   permissions as a root run:
     bash: ask
-    defaults: read, write, webfetch, mcp, delegate, list_runtimes, memory, memory_write, cron, attach, asset, share, message
+    defaults: read, write, webfetch, mcp, delegate, list_runtimes, memory, memory_write, cron, attach, asset, share, webhook, message
   permissions as a subagent:
     bash: ask
     defaults: read, write, webfetch, mcp, delegate, list_runtimes, memory, memory_write, asset, share, message
@@ -1332,7 +1336,7 @@ primary (primary) — Primary test agent
     write: ${workspace_dir}/* allow; * ask
     memory_write: agent://primary allow
     delegate: worker allow; helper allow
-    defaults: webfetch, mcp, list_runtimes, memory, cron, attach, asset, share, message
+    defaults: webfetch, mcp, list_runtimes, memory, cron, attach, asset, share, webhook, message
 worker (subagent) — Worker test agent
   models: custom.test/group/model
   usable for: delegate
@@ -1353,6 +1357,7 @@ Defaults (for actions an agent document names no key for):
     attach: allow
     asset: allow
     share: ask
+    webhook: ask
     message: as `delegate`: allow when a delegate rule allows, ask when one asks, else deny
   as a subagent:
     read: allow

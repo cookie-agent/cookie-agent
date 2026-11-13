@@ -1170,7 +1170,9 @@ async fn a_finished_compaction_takes_a_new_snapshot_at_the_next_run() {
     // history still has something to compact.
     let (fixture, selection) = custom_fixture_with_endpoint_and_primary_agent(
         &endpoint,
-        &agent("{ memory: allow, memory_write: deny, cron: deny, asset: deny, share: deny }"),
+        &agent(
+            "{ memory: allow, memory_write: deny, cron: deny, asset: deny, share: deny, webhook: deny }",
+        ),
     );
     let session = fixture
         .engine
@@ -1247,7 +1249,9 @@ async fn a_compaction_that_records_nothing_leaves_memory_unseen() {
     let (endpoint, responses, _captured) = scripted_channel_server(2).await;
     let (fixture, selection) = custom_fixture_with_endpoint_and_primary_agent(
         &endpoint,
-        &agent("{ memory: allow, memory_write: deny, cron: deny, asset: deny, share: deny }"),
+        &agent(
+            "{ memory: allow, memory_write: deny, cron: deny, asset: deny, share: deny, webhook: deny }",
+        ),
     );
     let session = fixture
         .engine

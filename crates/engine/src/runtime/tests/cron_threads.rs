@@ -176,7 +176,7 @@ async fn the_thread_prompt_is_sent_again_after_a_compaction() {
     // something to compact.
     let (mut fixture, selection) = custom_fixture_with_endpoint_and_primary_agent(
         &endpoint,
-        "---\ndescription: Thread test agent\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions: { memory: allow, memory_write: deny, cron: deny, asset: deny, share: deny }\n---\nKeep logs.\n",
+        "---\ndescription: Thread test agent\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions: { memory: allow, memory_write: deny, cron: deny, asset: deny, share: deny, webhook: deny }\n---\nKeep logs.\n",
     );
     fixture.engine.shutdown().await;
     fixture.config.runtime.context_compaction.max_summary_bytes = 256;

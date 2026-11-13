@@ -51,7 +51,7 @@ async fn an_idle_session_compacts_quietly_shortly_before_its_assumed_cache_expir
     let (mut fixture, selection) =
         custom_fixture_with_endpoint_primary_internal_concurrency_and_context(
             &endpoint,
-            "---\ndescription: Cache expiry test\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions: { memory: deny, cron: deny, list_runtimes: deny, attach: deny, asset: deny, share: deny }\n---\nTest compaction before cache expiry.\n",
+            "---\ndescription: Cache expiry test\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions: { memory: deny, cron: deny, list_runtimes: deny, attach: deny, asset: deny, share: deny, webhook: deny }\n---\nTest compaction before cache expiry.\n",
             None,
             None,
             false,

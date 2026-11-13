@@ -92,7 +92,7 @@ async fn rejected_unsigned_replay_is_not_silently_removed_after_restart_or_varia
         AnthropicReplayResponse::Text("later run"),
     ])
     .await;
-    let primary = "---\ndescription: Replay recovery test\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions: { memory: deny, cron: deny }\n---\nReplay recovery.\n";
+    let primary = "---\ndescription: Replay recovery test\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions: { memory: deny, cron: deny, webhook: deny }\n---\nReplay recovery.\n";
     let (mut fixture, selection) = custom_fixture_with_capabilities_and_variants(
         &endpoint,
         primary,
@@ -151,7 +151,7 @@ async fn signed_anthropic_replay_never_triggers_degradation() {
         AnthropicReplayResponse::Status400,
     ])
     .await;
-    let primary = "---\ndescription: Signed replay test\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions: { memory: deny, cron: deny }\n---\nSigned replay.\n";
+    let primary = "---\ndescription: Signed replay test\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions: { memory: deny, cron: deny, webhook: deny }\n---\nSigned replay.\n";
     let (fixture, selection) = custom_fixture_with_capabilities(
         &endpoint,
         primary,
@@ -315,7 +315,7 @@ fn anthropic_request_has_thinking(request: &str) -> bool {
 }
 
 fn signed_replay_primary() -> &'static str {
-    "---\ndescription: Binding test\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions: { memory: deny, cron: deny }\n---\nBinding.\n"
+    "---\ndescription: Binding test\nmode: primary\nenabled: true\nmodels: [{ model: \"custom.test/group/model\", variant: base }]\npermissions: { memory: deny, cron: deny, webhook: deny }\n---\nBinding.\n"
 }
 
 fn binding_fixture(endpoint: &str) -> (Fixture, cookie_agent_protocol::RunSelection) {
