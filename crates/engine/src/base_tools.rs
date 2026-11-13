@@ -185,6 +185,10 @@ pub fn builtin_tool_groups(
             names(crate::cron_tools::cron_tool_specs()),
         ),
         (
+            crate::webhook_tools::WebhookTools::GROUP,
+            names(crate::webhook_tools::webhook_tool_specs()),
+        ),
+        (
             crate::asset_tools::AssetTools::GROUP,
             names(crate::asset_tools::asset_tool_specs()),
         ),

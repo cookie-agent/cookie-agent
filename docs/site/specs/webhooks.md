@@ -735,3 +735,120 @@ Decisions taken where the spec left room:
 - **Standard Webhooks** accepts any of several space-separated `v1,`
   signatures and skips other versions; a header with no `v1,` signature is
   malformed. Every failure answers `401` alike.
+
+### 19.3 Phases 1C and 2: the store, the route, delivery, and the tools (2026-11-13)
+
+Landed: everything sections 4 to 13 describe but the clients. Client
+protocol 1.96.0, plugin protocol 1.48.0; the runtime protocol and history
+format 3 are unchanged (`session_created` only gained `webhook`).
+
+Where it is:
+
+- **Wire types:** `crates/protocol/src/webhook.rs` (`Webhook`,
+  `WebhookTarget`, `WebhookTemplate`, `WebhookValueSource`,
+  `WebhookCondition`, `WebhookVerify`, `WebhookEvent`, `WebhookCounts`, the
+  params and results, `SessionWebhook`), `WebhookId` and
+  `ProducerSource::webhook` in `identity.rs`, `ThreadOwnerRef::Webhook` in
+  `threads.rs`, `PermissionAction::WEBHOOK` in `agent.rs`, the `webhook_*`
+  error codes in `errors.rs`.
+- **Store:** `crates/engine/src/webhooks/store.rs` (`webhooks.json` and
+  `webhook-events/`, both private).
+- **Requests:** `crates/engine/src/runtime/webhook/api.rs`; **receiving:**
+  `receive.rs` (`Engine::receive_webhook`, `webhook_receives`,
+  `webhook_body_limit`); **delivery:** `deliver.rs` (the pump, the backlog,
+  sessions, artifacts, run outcomes, start).
+- **Tools:** `crates/engine/src/webhook_tools.rs` (`builtin.webhooks`, the
+  `webhooks` group); the default in `webhook_default_rules`
+  (`crates/engine_permissions`).
+- **Daemon:** `crates/server/src/service/webhook_route.rs`, on both routers
+  in `websocket.rs`; the RPCs in `routes.rs`, the notification in
+  `runtime_notifications.rs`, the errors in `rpc.rs`, and the guest
+  socket's refusals in `guest.rs`.
+
+Decisions taken where the spec left room, and deviations:
+
+- **`thread_key` lives in the template** (`target.new.thread_key`), beside
+  `thread_prompt`, as a cron template's does, rather than beside `new` as
+  section 4's example shows. A webhook's template is otherwise a cron
+  template, stored as one (its time-format `thread_key` unused).
+- **Information types are open.** `WebhookValueSource`, `WebhookCondition`,
+  `WebhookTemplate`, `WebhookVerify`, and `WebhookHeader` appear in reads,
+  so they take unknown members as the compatibility rules require; a source
+  or condition that names neither or both of `header` and `json` is refused
+  when saved.
+- **`verify` is one shape** for commands and reads, `{ kind, secret?,
+  header?, encoding?, prefix? }`; reads never carry `secret` (section 4's
+  `"set"` is its absence). An update with a `verify` of the same kind and no
+  secret keeps the secret and returns none; another kind, or a given
+  secret, replaces it and returns it. `hmac_sha256` needs `header` and
+  defaults `encoding` to `hex`.
+- **The URL.** `Webhook.path` is `/hooks/<url_token>` and
+  `webhooks.list` gives `public_base` (`[public] url`, else `[server]
+  page_url`), which clients put before it. The route answers `405` (with
+  `Allow: POST`) before anything else, then `404` for an unknown, disabled,
+  or switched-off URL, or a path that is no URL token, then reads the body
+  up to `max_body_bytes` (`413`). Every answer has `Cache-Control:
+  no-store` and a short JSON body: `{"event": "<id>"}`, `{"duplicate":
+  true}`, or `{"error": "<reason>"}`. `Retry-After` is the seconds until the
+  oldest event of the hour leaves the window (`429`), or 60 (`503`).
+- **Counts.** Requests turned away are counted in memory and written with
+  the webhook's next change, so internet noise never writes the file; a
+  crash loses them, as share link views. They are not in the history and
+  send no `webhooks.changed`. Accepted events count when stored.
+- **Races.** The duplicate and rate checks run again under the store's lock
+  when the event is written; a request that lost the race answers `200` as a
+  duplicate.
+- **Events** have 8-character IDs, unique within their webhook. The history
+  keeps every pending or waiting event and the last `[webhooks] history`
+  finished ones. Each keeps the request's method and headers but the hidden
+  and check headers, beside its body file, so the backlog and a restart can
+  render it again.
+- **The pump.** One task per webhook at a time delivers its open events in
+  arrival order, one event per step, after an event is stored, when a run
+  of one of its sessions ends, when it is updated (so enabling it delivers
+  what waited), and at start. A disabled webhook's events stay pending
+  until it is enabled. An event of a key that already has a live thread
+  goes into it whatever `max_concurrent` says; an earlier waiting event of
+  the same key holds later ones back, so a key's events keep their order;
+  once one event needing a new session waits, later ones do too.
+- **Running sessions** for `max_concurrent` are the webhook's delivered
+  sessions that are busy, or that hold one of its events no run has taken
+  yet. A thread session the user is chatting in counts too.
+- **Exactly once.** Delivery uses the event's delivery ID, else its own ID,
+  as the producer key, so a pending event whose message was accepted before
+  a restart is not delivered twice. A pending new-session event at start
+  first looks for a session that records it (`SessionMeta.webhook`) before
+  making one.
+- **Artifacts.** A body the inline limit cuts, or a binary one, is written to
+  the target session's tree as an artifact under the artifact store's
+  publication lock, held until the message naming it is accepted, so a
+  revert cannot collect it in between.
+- **Failures.** A delivery that fails, or a run it landed in that fails,
+  counts; a completed run resets the count; test events count for nothing.
+  At the limit the webhook is disabled as `failed`, and its URL answers
+  `404`.
+- **Reviewer labels.** A webhook's producer messages are labelled
+  `[webhook event <id>]` for the approval reviewer, as cron's are.
+- **Producers.** A `webhook:` source is the daemon's own, like `cron:`
+  (`ProducerSource::is_daemon_owned`): no connection can claim it, its
+  short registration survives reconciliation, and it never adds a wait or
+  holds back a settle push.
+- **Tools.** `webhook_create`, `webhook_list`, `webhook_update`, and
+  `webhook_delete`; targets resolve through the cron tools' resolution (the
+  same `"self"`, handles below the caller, and template defaults), with
+  `thread_key` a `{json}` or `{header}` source. The result of
+  `webhook_create` gives the URL (or the path and a note when the daemon
+  knows no public base) and the secret; the approval card never shows a
+  given secret. `list_agents`'s `cron` use also lists the agents a
+  new-session webhook can run, and is offered with the webhook tools.
+- **`[deferred_tools] always_load`** takes `webhooks`.
+
+What the clients need: a Webhooks view and `/webhooks` panel over
+`webhooks.list`, refetched on `webhooks.changed`, with each webhook's URL
+(`public_base` + `path`, or the address the client used), the secret shown
+once from `webhooks.create` and `webhooks.rotate` and on demand from
+`webhooks.secret`, an event's request from `webhooks.event`, and a test
+button (`webhooks.test`); the session mark from `SessionMeta.webhook`; the
+label of a thread prompt by its origin (`thread_prompt_owner`, now with
+`Webhook`); the cron form's thread fields; `cookie webhook`; and a webhooks
+guide.

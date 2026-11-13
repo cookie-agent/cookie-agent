@@ -18,6 +18,7 @@ use cookie_agent_coding_runtime::{BuiltinTools, bash::bash_tool_description_for}
 use cookie_agent_engine::{
     agents_tool_spec, asset_tool_specs, base_layer_tool_specs, builtin_tool_groups,
     cron_tool_specs, machines_tool_specs, memory_tool_specs, runtimes_tool_spec,
+    webhook_tool_specs,
 };
 use cookie_agent_protocol::SessionId;
 use cookie_agent_runtime_api::{SessionToolContext, ToolProvider, ToolSpec, WorkspaceContext};
@@ -45,6 +46,7 @@ fn documented_specs() -> Vec<ToolSpec> {
     specs.push(agents_tool_spec());
     specs.extend(machines_tool_specs());
     specs.extend(cron_tool_specs());
+    specs.extend(webhook_tool_specs());
     specs.extend(asset_tool_specs());
     specs
 }
@@ -91,7 +93,8 @@ fn availability(name: &str) -> Option<&'static str> {
         }
         "list_agents" => {
             "Only when the session has the `global` runtime attached and the run is offered \
-             `delegate_subagent` or a cron tool. It has no permission of its own."
+             `delegate_subagent`, a cron tool, or a webhook tool. It has no permission of its \
+             own."
         }
         "cron_create" | "cron_update" | "cron_delete" | "cron_run" => {
             "Only when the session has the `global` runtime attached and no `\"*\": deny` for \
@@ -121,6 +124,16 @@ fn availability(name: &str) -> Option<&'static str> {
              `asset` hides them. A root run of any agent but an internal one is allowed them by \
              default; a delegated run is denied them. `write_asset` also checks its file as \
              `read` on the machine it reads it from."
+        }
+        "webhook_create" | "webhook_update" | "webhook_delete" => {
+            "Only when the session has the `global` runtime attached and no `\"*\": deny` for \
+             `webhook` hides them. A root run of any agent but an internal one asks the user by \
+             default, since a webhook opens a public URL; a delegated run has no default, so \
+             they are hidden unless granted. Their resource is the target kind."
+        }
+        "webhook_list" => {
+            "Only next to the other webhook tools. It needs no rule of its own: it lists the \
+             webhooks whose target kind the `webhook` rules allow or ask for."
         }
         "share_link" => {
             "Only when the session has the `global` runtime attached and no `\"*\": deny` for \

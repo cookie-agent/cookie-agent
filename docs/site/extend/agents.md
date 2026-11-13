@@ -1476,6 +1476,44 @@ daemon's defaults share one `defaults:` line, and the defaults are listed
 once at the end. See
 [`list_agents`](../reference/tools.md#list_agents).
 
+### Webhook permissions
+
+The webhook tools of the `global` runtime (`webhook_create`, `webhook_list`,
+`webhook_update`, and `webhook_delete`; see the
+[webhooks spec](../specs/webhooks.md)) use one action, `webhook`, whose
+resource is the target kind of the webhook a call touches: `session`,
+`subagent`, or `new`, as for `cron`. Creating checks the new webhook's
+kind, updating its current kind and, when it changes, the new one, and
+deleting its kind. `webhook_list` has no action of its own and shows only
+the webhooks whose kind the rules allow or ask for.
+
+**Defaults.** When the agent document has no `webhook` key:
+
+| Run | Default |
+|---|---|
+| Root, any agent but an internal one | `webhook: ask` |
+| Delegated | none: the tools are hidden |
+| Internal agent | none |
+
+A webhook opens a public URL, so by default you approve each one an agent
+makes, changes, or deletes, and see its target, prompt, and check in the
+approval.
+
+**Hard limits.** As for cron jobs: an agent's webhook may target only its
+own session, a session below it, or a new session; the tools have no
+permission-mode or model parameter, so a new-session webhook an agent makes
+runs in `auto-approve-n` with its agent's own models; and an agent sees a
+webhook's secret only in the result of the call that made it (or a call
+that set a check of another kind), never afterwards.
+
+**A thread prompt is a user message.** A new-session webhook's
+`thread_prompt` reaches each session it creates as a plain user message,
+trusted as yours. With the default `webhook: ask`, you approve that text
+when you approve the call. A rule that sets `webhook: allow` lets an agent
+write such messages into new sessions without asking, as
+`delegate_subagent` lets it write its child's task, so grant it
+deliberately. The events themselves are never user messages: they arrive
+marked as `<webhook_event>`, as external data.
 ### Listing runtimes
 
 `list_runtimes`, a tool of the `global` runtime, lists the daemon's machines

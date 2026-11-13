@@ -684,3 +684,145 @@ async fn deleting_a_session_or_a_project_deletes_its_webhooks() {
     assert!(engine.inner.webhooks.webhook(&in_project.id).is_none());
     assert!(engine.inner.webhooks.webhook(&kept.id).is_some());
 }
+
+#[tokio::test]
+async fn root_runs_get_the_webhook_tools_asking_and_list_agents_with_them() {
+    use cookie_agent_protocol::{
+        PermissionAction, PermissionEffect, PermissionRule, WildcardPattern,
+    };
+    let (endpoint, _responses, _captured) = scripted_channel_server(0).await;
+    let (fixture, selection) = custom_fixture_with_endpoint(&endpoint);
+    let engine = &fixture.engine;
+    let session = engine.create_session(selection.clone()).unwrap().session_id;
+    let policy = frozen_root_policy(&fixture, &selection);
+    let names = |policy: &crate::policy::FrozenRunPolicy| {
+        engine
+            .published_tool_definitions(session, policy)
+            .expect("composed")
+            .definitions
+            .into_iter()
+            .map(|definition| definition.name)
+            .filter(|name| name.starts_with("webhook_") || name == "list_agents")
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        names(&policy),
+        [
+            "list_agents",
+            "webhook_create",
+            "webhook_delete",
+            "webhook_list",
+            "webhook_update"
+        ]
+    );
+    assert!(policy.agent.permissions.iter().any(|rule| {
+        rule.action == PermissionAction::WEBHOOK
+            && rule.resource.as_str() == "*"
+            && rule.effect == PermissionEffect::Ask
+    }));
+
+    // Without webhook or cron rules, the webhook tools, webhook_list, and
+    // list_agents all go.
+    let mut neither = policy.clone();
+    neither.agent.permissions.retain(|rule| {
+        rule.action != PermissionAction::WEBHOOK && rule.action != PermissionAction::CRON
+    });
+    for action in [PermissionAction::WEBHOOK, PermissionAction::CRON] {
+        neither.agent.permissions.push(PermissionRule::new(
+            action,
+            WildcardPattern::new("*").unwrap(),
+            PermissionEffect::Deny,
+        ));
+    }
+    assert!(names(&neither).is_empty());
+}
+
+#[test]
+fn delegated_and_internal_runs_get_no_webhook_rule() {
+    use cookie_agent_config::AgentMode;
+    use cookie_agent_protocol::PermissionEffect;
+    let root = crate::permissions::webhook_default_rules(AgentMode::Primary, false);
+    assert_eq!(root.len(), 1);
+    assert_eq!(root[0].effect, PermissionEffect::Ask);
+    assert!(crate::permissions::webhook_default_rules(AgentMode::Primary, true).is_empty());
+    assert!(crate::permissions::webhook_default_rules(AgentMode::Internal, false).is_empty());
+}
+
+#[tokio::test]
+async fn agents_cannot_set_a_mode_or_a_model_and_target_only_their_tree() {
+    use cookie_agent_protocol::{CronAgentActor, PermissionMode};
+
+    use crate::runtime::cron::api::CronRequester;
+
+    let (endpoint, _responses, _captured) = scripted_channel_server(0).await;
+    let (fixture, selection) = custom_fixture_with_endpoint(&endpoint);
+    let engine = &fixture.engine;
+    let root = engine.create_session(selection.clone()).unwrap().session_id;
+    let child = create_buffered_delegated_child(engine, root);
+    let agent = CronRequester::Agent(CronAgentActor {
+        agent: selection.agent.clone(),
+        session: root,
+    });
+    let mut moded = WebhookCreateParams::new(WebhookTarget::New(template(&selection)));
+    moded.permission_mode = Some(PermissionMode::Yolo);
+    let refused = engine
+        .create_webhook_as(agent.clone(), moded)
+        .await
+        .expect_err("an agent's mode");
+    assert!(refused.to_string().contains("permission_mode"), "{refused}");
+    let mut pinned = template(&selection);
+    pinned.model = Some(selection.model.clone());
+    assert!(
+        engine
+            .create_webhook_as(
+                agent.clone(),
+                WebhookCreateParams::new(WebhookTarget::New(pinned))
+            )
+            .await
+            .is_err()
+    );
+    let made = engine
+        .create_webhook_as(
+            agent.clone(),
+            WebhookCreateParams::new(WebhookTarget::New(template(&selection))),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        made.webhook.permission_mode,
+        Some(PermissionMode::AutoApproveN)
+    );
+    assert!(matches!(made.webhook.created_by, CronActor::Agent(_)));
+
+    assert_eq!(
+        engine
+            .webhook_target_for_test(root, serde_json::json!("self"))
+            .unwrap(),
+        WebhookTarget::Session(root)
+    );
+    assert_eq!(
+        engine
+            .webhook_target_for_test(child, serde_json::json!("self"))
+            .unwrap(),
+        WebhookTarget::Subagent(child)
+    );
+    assert!(
+        engine
+            .webhook_target_for_test(child, serde_json::json!(root.to_string()))
+            .is_err()
+    );
+    let WebhookTarget::New(made) = engine
+        .webhook_target_for_test(
+            root,
+            serde_json::json!({"new": {"thread_key": {"header": "X-Thread"}}}),
+        )
+        .unwrap()
+    else {
+        panic!("a new-session target");
+    };
+    assert_eq!(made.agent, selection.agent);
+    assert_eq!(
+        made.thread_key,
+        Some(WebhookValueSource::header("X-Thread"))
+    );
+}

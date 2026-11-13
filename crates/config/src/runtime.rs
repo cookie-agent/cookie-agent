@@ -1342,8 +1342,9 @@ pub const PRODUCER_MAX_BODY_BYTES: usize = 4 * 1024 * 1024;
 
 /// The built-in tool groups the deferral policy defers on a model that loads
 /// deferred tools (`docs/site/specs/stable-prefix.md` section 3).
-pub const DEFERRED_BUILTIN_GROUPS: &[&str] =
-    &["agents", "assets", "cron", "goal", "memory", "runtimes"];
+pub const DEFERRED_BUILTIN_GROUPS: &[&str] = &[
+    "agents", "assets", "cron", "goal", "memory", "runtimes", "webhooks",
+];
 
 /// `[deferred_tools]`: which deferred tools are sent up front instead.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq)]

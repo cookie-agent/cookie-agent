@@ -35,7 +35,7 @@ use crate::{Engine, runtime::Inner};
 pub(crate) const PROVIDER_ID: &str = "builtin.agents";
 pub(crate) const LIST_AGENTS: &str = "list_agents";
 
-const DESCRIPTION: &str = "List the agents you can pick: for `delegate` the subagents `delegate_subagent` can start from here, for `cron` the agents a new-session cron job can run. Each shows its mode, description, presets, models, and the permission rules its document declares, with the actions left to the daemon's defaults on one `defaults:` line; the defaults themselves are listed once at the end. An ACP agent (an external agent such as Claude Code, marked `acp`) shows the runtimes that offer it and whether it runs here, on the one attached runtime that offers it. Leave `for` out to list both.";
+const DESCRIPTION: &str = "List the agents you can pick: for `delegate` the subagents `delegate_subagent` can start from here, for `cron` the agents a new-session cron job or webhook can run. Each shows its mode, description, presets, models, and the permission rules its document declares, with the actions left to the daemon's defaults on one `defaults:` line; the defaults themselves are listed once at the end. An ACP agent (an external agent such as Claude Code, marked `acp`) shows the runtimes that offer it and whether it runs here, on the one attached runtime that offers it. Leave `for` out to list both.";
 
 /// What an agent is listed for.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
@@ -362,12 +362,18 @@ pub(crate) fn render_agent_list(
     attached: &[RuntimeId],
 ) -> String {
     let delegate_targets = policy.delegate_targets(depth);
-    let cron_offered = crate::permissions::tool_visible(
-        &policy.agent.permissions,
-        Some(overlay),
-        &PermissionAction::CRON,
-        Some(RuntimeId::GLOBAL),
-    );
+    // A new-session webhook runs its agent as a root too
+    // (`docs/site/specs/webhooks.md` section 9.2).
+    let cron_offered = [PermissionAction::CRON, PermissionAction::WEBHOOK]
+        .iter()
+        .any(|action| {
+            crate::permissions::tool_visible(
+                &policy.agent.permissions,
+                Some(overlay),
+                action,
+                Some(RuntimeId::GLOBAL),
+            )
+        });
     let wants = |use_for: Use| filter.is_none_or(|filter| filter == use_for);
     let presets_of = |agent: &AgentId| {
         runtime

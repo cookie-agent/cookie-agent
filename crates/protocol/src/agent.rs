@@ -67,9 +67,14 @@ impl PermissionAction {
     /// Making public share links to assets (`share_link`); the resource is
     /// `asset` (`docs/site/specs/share-links.md` section 7.2).
     pub const SHARE: Self = Self(Cow::Borrowed("share"));
+    /// Listing, creating, changing, and deleting webhooks
+    /// (`webhook_create`, `webhook_list`, `webhook_update`,
+    /// `webhook_delete`); the resource is a webhook's target kind
+    /// (`docs/site/specs/webhooks.md` section 9.1, client protocol 1.96.0).
+    pub const WEBHOOK: Self = Self(Cow::Borrowed("webhook"));
 
     /// The actions of the tools Cookie Agent ships, in display order.
-    pub const BUILT_IN: [Self; 14] = [
+    pub const BUILT_IN: [Self; 15] = [
         Self::READ,
         Self::WRITE,
         Self::BASH,
@@ -84,6 +89,7 @@ impl PermissionAction {
         Self::ATTACH,
         Self::ASSET,
         Self::SHARE,
+        Self::WEBHOOK,
     ];
 
     pub const MAX_LEN: usize = 32;

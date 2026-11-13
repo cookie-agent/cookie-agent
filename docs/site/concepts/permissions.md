@@ -23,7 +23,10 @@ Each tool declares a permission *action* and names the *resource* of each call:
   the target runtime (`attach@labpc`);
 - `asset` (the [asset tools](../sessions/assets.md)): what the call does,
   `read`, `write`, or `delete`;
-- `share` (`share_link`, [share links](../sessions/sharing.md)): `asset`.
+- `share` (`share_link`, [share links](../sessions/sharing.md)): `asset`;
+- `webhook` (the webhook tools, [webhooks](../specs/webhooks.md)): the
+  target kind of the webhook a call touches, `session`, `subagent`, or
+  `new`.
 
 Actions are free-form labels, a lowercase letter then up to 31 lowercase
 letters, digits, or underscores, so a runtime's or a plugin's tools can
@@ -113,6 +116,12 @@ The `share` action (`share_link`, whose resource is `asset`) defaults to
 `share: ask` for a root run of any agent but an internal one, and
 `share: deny` for a delegated run at any depth: a link publishes an asset,
 so no default allows it. See [Share links](../sessions/sharing.md).
+
+The `webhook` action (`webhook_create`, `webhook_list`, `webhook_update`,
+and `webhook_delete`) defaults to `webhook: ask` for a root run of any agent
+but an internal one, and to none for a delegated run, which then does not
+see the tools: a webhook opens a public URL. See
+[Webhook permissions](../extend/agents.md#webhook-permissions).
 
 ## How the levels combine
 

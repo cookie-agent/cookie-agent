@@ -18,7 +18,7 @@ defaults for omitted fields. Unknown fields fail. See
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `always_load` | array of strings | `[]` | Built-in groups sent up front: any of `agents`, `assets`, `cron`, `goal`, `memory`, and `runtimes`, each at most once. Any other name fails. |
+| `always_load` | array of strings | `[]` | Built-in groups sent up front: any of `agents`, `assets`, `cron`, `goal`, `memory`, `runtimes`, and `webhooks`, each at most once. Any other name fails. |
 
 MCP servers and plugins have their own `always_load` keys: see
 [MCP](../extend/mcp.md) and [plugins](../extend/plugins.md).

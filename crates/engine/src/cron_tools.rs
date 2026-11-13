@@ -93,7 +93,7 @@ impl From<ScheduleArg> for CronSchedule {
 /// `target` as a tool takes it.
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
 #[serde(untagged)]
-enum TargetArg {
+pub(crate) enum TargetArg {
     /// `"self"` or a subagent's session ID, such as `explore_1a2b3c4d`
     Session(String),
     /// A new root session per fire
@@ -102,40 +102,40 @@ enum TargetArg {
 
 impl TargetArg {
     /// `"self"`: the calling session.
-    fn own_session() -> Self {
+    pub(crate) fn own_session() -> Self {
         Self::Session("self".into())
     }
 }
 
 #[derive(Clone, Debug, Default, Deserialize, JsonSchema, Serialize)]
 #[serde(deny_unknown_fields)]
-struct NewArg {
+pub(crate) struct NewArg {
     /// The agent each new session runs; this session's agent when omitted
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    agent: Option<AgentId>,
+    pub(crate) agent: Option<AgentId>,
     /// Rules added to each new session, e.g. {"action": "bash",
     /// "resource": "git *", "effect": "allow"}
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "Option<Vec<RuleArg>>")]
-    permission_rules: Option<Vec<PermissionRule>>,
+    pub(crate) permission_rules: Option<Vec<PermissionRule>>,
     /// The runtime capabilities each new session works through, as
     /// `delegate_subagent` takes them; this session's when omitted. Each
     /// session also has `global` exactly when this one does.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    capabilities: Option<Vec<CapabilityArg>>,
+    pub(crate) capabilities: Option<Vec<CapabilityArg>>,
     /// A project's name; this session's project when omitted
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    project: Option<String>,
+    pub(crate) project: Option<String>,
     /// A thread key: a strftime format of each fire's local time, such as
     /// "%Y-%m-%d" (one session per day: later fires that day go into it),
     /// "%G-W%V" (per ISO week), or "main" (one session for every fire)
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    thread_key: Option<String>,
+    pub(crate) thread_key: Option<String>,
     /// Instructions each new session gets once as a plain user message
     /// before its first fire, and again after each compaction; the job's
     /// `prompt` is then the per-fire text
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    thread_prompt: Option<String>,
+    pub(crate) thread_prompt: Option<String>,
 }
 
 /// A [`PermissionRule`] as the tools' schemas describe it, for the model
@@ -144,7 +144,7 @@ struct NewArg {
 #[derive(JsonSchema)]
 #[serde(deny_unknown_fields)]
 #[allow(dead_code)]
-struct RuleArg {
+pub(crate) struct RuleArg {
     /// The permission action, such as `bash`, `read`, or `write`
     action: String,
     /// What the rule matches, such as a command or a path: `*` matches any
@@ -382,7 +382,7 @@ impl CronTools {
 
 impl Engine {
     /// The agent of the calling run, as it creates or changes jobs.
-    fn cron_agent(
+    pub(crate) fn cron_agent(
         &self,
         session: SessionId,
         run: cookie_agent_protocol::RunId,
@@ -407,7 +407,7 @@ impl Engine {
     /// a session below it, or a new-session template with the calling
     /// session's agent, runtimes, and project as defaults. Anything else is
     /// refused whatever the rules say.
-    fn resolve_tool_target(
+    pub(crate) fn resolve_tool_target(
         &self,
         caller: &CronAgentActor,
         target: TargetArg,
@@ -512,7 +512,7 @@ impl Engine {
     }
 
     /// How a target reads in a tool result: a session by its handle.
-    fn target_text(&self, target: &CronTarget) -> String {
+    pub(crate) fn target_text(&self, target: &CronTarget) -> String {
         let handle = |session: SessionId| {
             self.inner
                 .store
@@ -579,7 +579,7 @@ fn kind_visible(
 }
 
 /// `at` in local time and UTC.
-fn when(at: jiff::Timestamp) -> String {
+pub(crate) fn when(at: jiff::Timestamp) -> String {
     let local = at
         .to_zoned(crate::runtime::cron::api::host_zone())
         .strftime("%Y-%m-%d %H:%M:%S %Z")
@@ -616,7 +616,7 @@ fn last_fire_text(job: &CronJob) -> String {
     format!("{outcome} at {}", when(fire.fired_at))
 }
 
-fn status_name(status: cookie_agent_protocol::SessionStatus) -> &'static str {
+pub(crate) fn status_name(status: cookie_agent_protocol::SessionStatus) -> &'static str {
     use cookie_agent_protocol::SessionStatus;
     match status {
         SessionStatus::Idle => "idle",
@@ -685,7 +685,7 @@ fn job_text(engine: &Engine, job: &CronJob) -> String {
     )
 }
 
-fn text_result(title: &str, output: String) -> ToolCompletion {
+pub(crate) fn text_result(title: &str, output: String) -> ToolCompletion {
     ToolCompletion::single(ToolResult {
         title: safe_title(title),
         display: crate::base_tools::markdown_display(&format!("```text\n{output}\n```")),

@@ -1354,6 +1354,10 @@ impl Engine {
         reserve_provider_id(&mut provider_ids, cron_tools.as_ref())?;
         mcp.reserve_provider(cron_tools.as_ref())
             .map_err(|error| EngineError::ToolFailed(error.to_string()))?;
+        let webhook_tools = Arc::new(crate::webhook_tools::WebhookTools::new());
+        reserve_provider_id(&mut provider_ids, webhook_tools.as_ref())?;
+        mcp.reserve_provider(webhook_tools.as_ref())
+            .map_err(|error| EngineError::ToolFailed(error.to_string()))?;
         let asset_tools = Arc::new(crate::asset_tools::AssetTools::new());
         reserve_provider_id(&mut provider_ids, asset_tools.as_ref())?;
         mcp.reserve_provider(asset_tools.as_ref())
@@ -1373,6 +1377,7 @@ impl Engine {
         global_providers.push(runtimes_tool.clone());
         global_providers.push(machines_tool.clone());
         global_providers.push(cron_tools.clone());
+        global_providers.push(webhook_tools.clone());
         global_providers.push(asset_tools.clone());
         global_providers.push(agents_tool.clone());
         // Each plugin's tools compose under the plugin's name.
@@ -1488,6 +1493,7 @@ impl Engine {
         runtimes_tool.bind(&engine);
         machines_tool.bind(&engine);
         cron_tools.bind(&engine);
+        webhook_tools.bind(&engine);
         asset_tools.bind(&engine);
         agents_tool.bind(&engine);
         // Engine unit tests compose their own base-layer stand-ins.

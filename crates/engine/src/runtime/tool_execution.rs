@@ -1394,13 +1394,21 @@ impl Engine {
         let offers_cron = composition.tools.iter().any(|tool| {
             from_global(tool, crate::cron_tools::PROVIDER_ID) && tool.spec.permission_name.is_some()
         });
+        // `webhook_list` likewise comes with the other webhook tools, which
+        // also bring `list_agents` (webhooks spec section 9.2).
+        let offers_webhooks = composition.tools.iter().any(|tool| {
+            from_global(tool, crate::webhook_tools::PROVIDER_ID)
+                && tool.spec.permission_name.is_some()
+        });
         let offers_delegate = composition
             .tools
             .iter()
             .any(|tool| tool.source.attachment.is_none() && tool.spec.name == "delegate_subagent");
         composition.tools.retain(|tool| {
             (offers_cron || !from_global(tool, crate::cron_tools::PROVIDER_ID))
+                && (offers_webhooks || !from_global(tool, crate::webhook_tools::PROVIDER_ID))
                 && (offers_cron
+                    || offers_webhooks
                     || offers_delegate
                     || !from_global(tool, crate::agents_tool::PROVIDER_ID))
         });

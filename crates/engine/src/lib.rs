@@ -43,6 +43,7 @@ mod test_support;
 #[cfg(any(test, feature = "test-support"))]
 pub mod testing;
 mod threads;
+mod webhook_tools;
 pub mod webhooks;
 
 // The storage layer, at the paths the engine's modules have always used.
@@ -120,6 +121,7 @@ pub use runtimes::{
 };
 pub use runtimes_tool::runtimes_tool_spec;
 pub use shares::ShareError;
+pub use webhook_tools::webhook_tool_specs;
 pub use webhooks::request::WebhookRequest;
 pub use webhooks::store::WebhookError;
 
