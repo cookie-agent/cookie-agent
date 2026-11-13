@@ -580,3 +580,88 @@ sharing guide move them to `[public]`.
   and agents could not create one.
 - **Answering the sender with the agent's reply:** senders time out in
   seconds, and runs take minutes.
+
+## 19. Implementation notes
+
+### 19.1 Phase 1A: threads, thread prompts, and cron thread keys (2026-11-13)
+
+Landed: the shared threads piece, thread prompts, and thread keys for
+new-session cron jobs (sections 7.4, 7.5, and 8), with `cookie cron
+--thread-key --thread-prompt` and the two fields in the TUI's form. Client
+protocol 1.95.0, plugin protocol 1.47.0; the runtime protocol and the history
+format are unchanged. The webhook store, route, and tools are later phases.
+
+Where it is:
+
+- **Wire:** `CronTemplate.thread_key` and `thread_prompt`, `CronJob.threads`
+  (`CronThread`), `CronFire.thread_key`, and `SessionCron.thread_key` in
+  `crates/protocol/src/cron.rs`; the thread prompt's origin in
+  `crates/protocol/src/threads.rs` (`ThreadOwnerRef`, `thread_prompt_origin`,
+  `thread_prompt_owner`).
+- **Store side:** `crates/engine/src/threads.rs`: `ThreadOwner` (the owner a
+  producer message or a thread prompt belongs to), `ThreadMap` (key →
+  session with `last_used`, kept by each owner in its own store), and the
+  checks of a time key format and a thread prompt. `crons.json` keeps a
+  job's map as `threads` and each fire's `thread_key`.
+- **Engine side:** `crates/engine/src/runtime/threads.rs`:
+  `Engine::thread_target` (lock the key, use the mapped session while it is a
+  live root, otherwise create and record one) and
+  `submit_due_thread_prompts_direct`, called where producer messages are
+  admitted.
+- **Cron:** `runtime/cron/fire.rs` (`deliver_to_thread`, the key computed
+  at the claim from the scheduled time, the in-session skip rule, thread
+  titles, restart reconciliation), `runtime/cron/api.rs` (checks, delivery
+  on a keyed `new` target, maps cleared when the format or kind changes,
+  deleted sessions leaving maps), `runtime/cron/run.rs`.
+
+For phase 1C, webhooks plug in by adding a `ThreadOwner::Webhook` variant
+(and `ThreadOwnerRef::Webhook` with an `engine:webhook-<id>` origin), the
+owner's arms in `ThreadOwner::of_producer` and `Engine::thread_prompt_of`,
+a `ThreadMap` in the webhook store, and a call of `thread_target` whose
+`lookup`, `create`, and `record` reach that store.
+
+Decisions taken where the spec left room, and deviations:
+
+- **How the thread prompt goes in.** It is not sent as a separate input. When
+  a run admits a producer message (a fire's `<scheduled_job>`, later a
+  webhook event) of an owner whose thread prompt is due in that session, the
+  engine first appends `user_input_submitted` and `user_input_applied` with
+  the thread prompt under the owner's origin, then the admission. So the
+  thread prompt and the fire are always in the same run and request, in that
+  order, whether the fire started the run (`queue` into an idle session, a
+  new session) or joined a running one (`steer`), and a `queue` fire into a
+  busy thread takes it with the run it starts after the turn. The thread
+  prompt never answers an approval: it is not client input.
+- **When it is due** is read from the session, not stored: the owner created
+  the session (its `SessionMeta::cron` names the job) and has a thread
+  prompt, and the session's model context holds no thread prompt of that
+  owner from the latest checkpoint's window start on (the summary's kept
+  range, or what follows a provider window). An ACP agent's run looks only
+  at the session's first inputs, so it gets the prompt once. A restart
+  between a checkpoint and the next fire needs nothing extra.
+- **The origin** is `engine:cron-<job id>`, an engine origin of the existing
+  `EventOrigin` grammar, so the wire and the history needed no new shape;
+  `thread_prompt_owner` reads it back for clients.
+- **The map** is capped at 1,024 threads, forgetting the least recently used
+  (the spec set no bound; a daily key grows one entry a day). A forgotten
+  thread's session stays.
+- **Deletion and edits.** A deleted session leaves every job's map. A change
+  of the target's kind or of its thread key format clears the map, since
+  the old keys name no thread of the new format.
+- **`cron_run` of a job with a thread key** fires into the thread of the
+  moment, as `crons.run` does, rather than running as the caller's subagent
+  (cron spec section 8.2 still holds for jobs without a key). The child of a
+  job without a key has no producer message to lead with the thread
+  prompt, so its task text starts with the thread prompt instead.
+- **The key** comes from the fire's scheduled time (a run now's own time),
+  computed when the fire is claimed and kept in its history entry, so a
+  delivery after a restart uses the same thread.
+- **Waiting and residency** are unchanged: a thread's session lists no
+  `scheduled_job` wait, as the spec says.
+- **Clients.** The TUI's `/cron` form has a `thread_key:` line and takes a
+  thread prompt after a `--- thread prompt` line under the prompt;
+  `client_state` (`CronDraft.thread_key`, `thread_prompt`, `thread_key_at`)
+  shows the format, the next fire's thread, and the thread count in a job's
+  details. The web's form only keeps the fields it does not show; its
+  controls and the clients' mark for a thread prompt's origin are left to
+  the clients phase.

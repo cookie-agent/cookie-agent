@@ -137,6 +137,39 @@ session that created it: an agent allowed to create new-session jobs can
 start sessions of any agent with any rules. Grant `cron` on `new` to a
 subagent with that in mind ([Permissions](#permissions)).
 
+### Threads
+
+A new-session job with a **thread key** reuses its sessions instead of
+starting one at every fire. The key is a time format, as `strftime` takes
+it, applied to each fire's scheduled time in the daemon host's local time:
+
+| Thread key | Sessions |
+|---|---|
+| `%Y-%m-%d` | one a day: an hourly job adds to today's session |
+| `%G-W%V` | one per ISO week |
+| `%Y-%m` | one a month |
+| `main` (no `%`) | one for every fire, made again if you delete it |
+
+The first fire with a key creates the session, titled `<name> · <key>`; later
+fires with that key go into it with the job's delivery, `queue` (the default)
+or `steer`, as an in-session job's do. A fire is then skipped only while the
+job's previous prompt still waits in its thread, never because the thread is
+busy. A run now goes into the thread of the moment. Deleting a thread's
+session forgets it, and the key's next fire starts a new one. The job lists
+its threads, at most 1,024, the least recently used forgotten first.
+
+### Thread prompts
+
+A new-session job may carry a **thread prompt**: instructions each session it
+creates gets once, as a plain user message, before the first fire's
+`<scheduled_job>` and in the same run. The job's prompt is then what each
+fire adds. A long thread is compacted now and then, which folds its first
+message into a summary, so the thread prompt is sent again before the first
+fire after each compaction. An ACP agent's session gets it only at the start:
+cookie does not see the agent's own compactions. Clients mark the message as
+coming from the job. Instructions that must hold in every request belong in
+the agent's own document instead.
+
 ## Firing
 
 ### Skips and missed fires
@@ -146,7 +179,7 @@ A fire is **skipped**, and recorded with the reason, when:
 - the job's previous prompt into its session has not been delivered yet
   (`previous fire not delivered`);
 - a new-session job's previous run session is still running (`previous run
-  still running`);
+  still running`), unless the job has a thread key;
 - `[cron] enabled = false` holds (`firing turned off`);
 - the daemon stopped between recording a fire and delivering it
   (`interrupted`);
@@ -186,18 +219,20 @@ the error), and how that run ended. The clients show it newest first.
 ### Running a job now
 
 You can fire a job at once from any client (`crons.run`): it is delivered as
-its schedule would deliver it, a new root session for a new-session job, and
+its schedule would deliver it, a new root session for a new-session job (its
+current thread for one with a thread key), and
 recorded as `run now`. A run now counts toward neither `max_runs` nor the
 failure count, moves nothing else, and fires even with `[cron] enabled =
 false`. It still obeys the skips: a run now of a job whose previous prompt is
 still waiting is recorded as skipped.
 
 An agent runs a job now with `cron_run`, the way it delegates: a new-session
-job runs as a **subagent of the caller** with the job's agent, rules, and
+job without a thread key runs as a **subagent of the caller** with the job's agent, rules, and
 attachments, in the foreground (waiting for the result) or in the background
 (reporting when done), and counts against the caller's delegation depth. The
 job's agent need not be one the caller may delegate to. An in-session job
-fires into its session as scheduled.
+fires into its session as scheduled, and a job with a thread key into its
+current thread.
 
 ### The prompt cache
 
