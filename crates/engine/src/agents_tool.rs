@@ -210,10 +210,16 @@ fn defaults_section(root: bool, subagent: bool) -> Vec<String> {
         for mode in modes {
             let rules = crate::permissions::run_default_rules(mode, delegated);
             for (key, mut text) in key_lines(&rules) {
-                // A root run's `message` follows its `delegate` rules.
-                if !delegated && key == PermissionAction::MESSAGE.as_str() {
-                    "as `delegate`: allow when a delegate rule allows, ask when one asks, else deny"
-                        .clone_into(&mut text);
+                // `message` follows the run's `delegate` rules, which the
+                // agent's document may set.
+                if key == PermissionAction::MESSAGE.as_str() {
+                    if delegated {
+                        "* allow; other_tree ask"
+                    } else {
+                        "as `delegate`: allow when a delegate rule allows, ask when one asks, \
+                         else deny"
+                    }
+                    .clone_into(&mut text);
                 }
                 match entries
                     .iter_mut()

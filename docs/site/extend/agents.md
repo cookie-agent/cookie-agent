@@ -409,9 +409,11 @@ background; the report still wakes the parent. Result and stop operations reject
 children of the caller.
 
 The former `steer_subagent` tool is removed. Agents reach children and other
-same-tree peers with `send_message`, which is governed by the dedicated
-`message` permission action (by default a delegated run messages its tree and a root run follows its `delegate` rules) and can also wake finished
-sessions. See the [tool reference](../reference/tools.md#agent-messaging) and
+same-tree peers with `send_message`, and sessions of other trees by full UUID.
+It is governed by the dedicated `message` permission action (by default a
+delegated run messages its tree, a root run follows its `delegate` rules, and
+mail to another tree follows `delegate` for a root run and asks for a
+delegated one) and can also wake finished sessions. See the [tool reference](../reference/tools.md#agent-messaging) and
 the [messaging migration notes](../specs/agent-messaging.md#migration-notes).
 
 Terminal delegated sessions are paged out of memory when their session tree's
@@ -1067,7 +1069,7 @@ Tool providers publish a static permission name and an optional resource label:
 | `delegate_subagent` | `delegate` | Target `agent_type` |
 | `get_subagent_result` | `delegate` | Owned subagent's `agent_type` |
 | `stop_background` | none | Needs no permission |
-| `send_message` | `message` | Recipient's relationship to the sender: `parent`, `child`, `sibling`, or `*` |
+| `send_message` | `message` | Recipient's relationship to the sender: `parent`, `child`, `sibling`, `*`, or `other_tree` |
 | `<server>_<tool>` | `mcp` | The complete generated MCP tool name |
 | `skill` | none | None: skills take no permission; a session's and agent's [skill choices](#tool-groups-and-skills) decide which the model may load |
 | `goal_get`, `goal_set`, `goal_update` | none | None: published to root runs (an ACP agent's only while the session has an active or paused goal), and always allowed |
@@ -1257,7 +1259,7 @@ Old tool calls and prepared-operation grants therefore fail closed. The
 
 Agent-to-agent messaging is separate from delegation. The removed
 `steer_subagent` tool is replaced by `send_message`, which uses the `message`
-action with relationship labels (`parent`, `child`, `sibling`, `*`) rather than
+action with relationship labels (`parent`, `child`, `sibling`, `*`, `other_tree`) rather than
 agent types, so a `delegate` grant no longer authorizes steering. The tool is
 hidden until a `message` rule allows or asks; agents that previously steered
 children need an explicit rule such as `message: { "child": allow }`. The

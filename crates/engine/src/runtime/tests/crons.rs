@@ -1376,7 +1376,7 @@ Defaults (for actions an agent document names no key for):
     memory_write: agent://<agent id> allow
     asset: deny
     share: deny
-    message: allow
+    message: * allow; other_tree ask
   Internal agents are denied every action.
   Variables: ${session_machine} is each machine the session's attachments run on; ${session_project} is the session's project; ${workspace_dir} is the session's workspace.
 
@@ -1410,7 +1410,7 @@ Defaults (for actions an agent document names no key for):
     memory_write: agent://<agent id> allow
     asset: deny
     share: deny
-    message: allow
+    message: * allow; other_tree ask
   Internal agents are denied every action.
   Variables: ${workspace_dir} is the session's workspace.
 

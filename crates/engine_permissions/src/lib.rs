@@ -21,6 +21,10 @@ use thiserror::Error;
 /// Display stand-in for a permission resource the tool did not scope.
 pub const UNSCOPED_PERMISSION_RESOURCE_DISPLAY: &str = "<permission-name-only>";
 
+/// The `message` resource label of a recipient in another session tree than
+/// the sender's. The in-tree labels are `parent`, `child`, `sibling`, and `*`.
+pub const MESSAGE_OTHER_TREE: &str = "other_tree";
+
 /// Where a permission is evaluated: the runtime that offers the tool, that
 /// runtime's workspace, and the home directory it reported.
 ///
@@ -994,12 +998,14 @@ pub fn mode_default_rules(mode: AgentMode) -> Vec<PermissionRule> {
         .collect()
 }
 
-/// The `message` rule a run of an agent of `mode` gets when its document
-/// names no `message` key: a delegated run messages anyone in its tree; a
-/// root run follows its `delegate` rules (`delegate`, the run's own or the
-/// default), allowed when one of them allows, asking when one asks, and
-/// denied when it may delegate to nobody, as it then has no subagent to
-/// message. Internal agents get nothing.
+/// The `message` rules a run of an agent of `mode` gets when its document
+/// names no `message` key. Both follow the run's `delegate` rules
+/// (`delegate`, the run's own or the default): allowed when one of them
+/// allows, asking when one asks, and denied when it may delegate to nobody.
+/// Within its own tree (`*`), a delegated run messages anyone instead, and a
+/// root run takes that effect, as with no subagent it has nobody to message.
+/// A session in another tree ([`MESSAGE_OTHER_TREE`]) takes that effect for
+/// a root run and asks for a delegated one. Internal agents get nothing.
 pub fn message_default_rules<'r>(
     mode: AgentMode,
     delegated: bool,
@@ -1008,21 +1014,27 @@ pub fn message_default_rules<'r>(
     if mode == AgentMode::Internal {
         return Vec::new();
     }
-    let effect = if delegated {
-        PermissionEffect::Allow
+    let follows_delegate = delegate
+        .into_iter()
+        .filter(|rule| rule.action == PermissionAction::DELEGATE)
+        .map(|rule| rule.effect)
+        .min_by_key(|effect| effect_rank(*effect))
+        .unwrap_or(PermissionEffect::Deny);
+    let (in_tree, other_tree) = if delegated {
+        (PermissionEffect::Allow, PermissionEffect::Ask)
     } else {
-        delegate
-            .into_iter()
-            .filter(|rule| rule.action == PermissionAction::DELEGATE)
-            .map(|rule| rule.effect)
-            .min_by_key(|effect| effect_rank(*effect))
-            .unwrap_or(PermissionEffect::Deny)
+        (follows_delegate, follows_delegate)
     };
-    vec![PermissionRule::new(
-        PermissionAction::MESSAGE,
-        WildcardPattern::new("*").expect("static default pattern"),
-        effect,
-    )]
+    [("*", in_tree), (MESSAGE_OTHER_TREE, other_tree)]
+        .into_iter()
+        .map(|(pattern, effect)| {
+            PermissionRule::new(
+                PermissionAction::MESSAGE,
+                WildcardPattern::new(pattern).expect("static default pattern"),
+                effect,
+            )
+        })
+        .collect()
 }
 
 /// The rules a run of an agent of `mode` gets for each memory action its

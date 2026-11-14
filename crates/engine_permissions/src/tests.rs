@@ -193,6 +193,39 @@ fn message_relationship_labels_match_literal_resources_with_wildcard_catch_all()
     );
 }
 
+/// The default `message` rules let a delegated run mail its tree but ask
+/// before it mails another tree: `other_tree` outranks `*` as the more
+/// specific pattern.
+#[test]
+fn default_message_rules_ask_before_mailing_another_tree() {
+    let delegate = [rule(
+        "delegate",
+        PermissionAction::DELEGATE,
+        "*",
+        PermissionEffect::Allow,
+    )];
+    let rules = policy(super::message_default_rules(
+        AgentMode::All,
+        true,
+        &delegate,
+    ));
+    for (label, effect) in [
+        ("child", PermissionEffect::Allow),
+        ("*", PermissionEffect::Allow),
+        (super::MESSAGE_OTHER_TREE, PermissionEffect::Ask),
+    ] {
+        assert_eq!(
+            decide(
+                &rules,
+                resource(PermissionAction::MESSAGE, label, label.as_bytes())
+            )
+            .effect,
+            effect,
+            "{label}"
+        );
+    }
+}
+
 #[test]
 fn later_run_agent_governs_permission_mutation_classification() {
     let creation = policy(vec![rule(
@@ -2326,12 +2359,15 @@ fn mode_defaults_follow_the_agent_mode() {
     for mode in [AgentMode::Primary, AgentMode::All] {
         let mut expected = working.to_vec();
         expected.push(triple("list_runtimes", "*", allow));
-        // A root run that may delegate to nobody messages nobody.
+        // A root run that may delegate to nobody messages nobody, in its
+        // tree or another.
         expected.push(triple("message", "*", deny));
+        expected.push(triple("message", "other_tree", deny));
         assert_eq!(mode_rules(mode), expected, "{mode:?}");
     }
     let mut subagent = working.to_vec();
     subagent.push(triple("message", "*", deny));
+    subagent.push(triple("message", "other_tree", deny));
     assert_eq!(mode_rules(AgentMode::Subagent), subagent);
     // Internal agents call no tools: every action is denied.
     let rules = root_rules(&agent_document("worker", AgentMode::Internal, &[]));
@@ -2349,7 +2385,16 @@ fn message_follows_delegate_for_a_root_run_and_is_allowed_when_delegated() {
                 .collect::<Vec<_>>(),
         )
     };
-    let star = |effect| [("message".to_owned(), "*".to_owned(), effect)];
+    let rules = |in_tree, other_tree| {
+        [
+            ("message".to_owned(), "*".to_owned(), in_tree),
+            (
+                "message".to_owned(),
+                super::MESSAGE_OTHER_TREE.to_owned(),
+                other_tree,
+            ),
+        ]
+    };
     let resources = |entries: &[(&str, PermissionEffect)]| {
         cookie_agent_config::PermissionValue::Resources(
             entries
@@ -2371,25 +2416,28 @@ fn message_follows_delegate_for_a_root_run_and_is_allowed_when_delegated() {
             ("explore", allow),
             ("*", deny)
         ])))),
-        star(allow)
+        rules(allow, allow)
     );
     assert_eq!(
         message(root_rules(&with_delegate(effect_value(ask)))),
-        star(ask)
+        rules(ask, ask)
     );
     assert_eq!(
         message(root_rules(&with_delegate(effect_value(deny)))),
-        star(deny)
+        rules(deny, deny)
     );
-    // Delegated, it messages its tree whatever it may delegate to.
-    assert_eq!(
+    // Delegated, it messages its tree and asks for another tree, whatever it
+    // may delegate to.
+    let delegated = |delegate| {
         message(super::agent_permission_rules(
-            &with_delegate(effect_value(deny)),
+            &with_delegate(effect_value(delegate)),
             true,
             &super::MemoryVariables::default(),
-        )),
-        star(allow)
-    );
+        ))
+    };
+    for delegate in [allow, ask, deny] {
+        assert_eq!(delegated(delegate), rules(allow, ask), "{delegate:?}");
+    }
     // A declared `message` key replaces the default.
     let declared = agent_document(
         "worker",

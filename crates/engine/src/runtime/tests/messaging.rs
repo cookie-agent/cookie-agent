@@ -4,8 +4,8 @@ use cookie_agent_protocol::{
 };
 
 use crate::runtime::messaging::api::{
-    MESSAGE_INFLIGHT_FULL, MESSAGE_INVALID_BODY, MESSAGE_MAX_HOPS_EXCEEDED, MESSAGE_NOT_TREE_PEER,
-    MESSAGE_SELF_SEND, relationship_label,
+    MESSAGE_INFLIGHT_FULL, MESSAGE_INVALID_BODY, MESSAGE_MAX_HOPS_EXCEEDED, MESSAGE_SELF_SEND,
+    relationship_label,
 };
 use crate::{AgentMessageInvocation, EngineError};
 
@@ -121,14 +121,38 @@ fn ac2_relationship_labels_are_used_for_all_tree_edges() {
         relationship_label(&origin(root), &origin(root), child, sibling),
         "sibling"
     );
+    // A grandchild and the root share a tree but no edge.
+    assert_eq!(
+        relationship_label(
+            &origin(child),
+            &cookie_agent_protocol::SessionOrigin::Root,
+            sibling,
+            root
+        ),
+        "*"
+    );
+    // Two roots are two trees, whatever else they share.
+    let other_root = SessionId::new_v7();
     assert_eq!(
         relationship_label(
             &cookie_agent_protocol::SessionOrigin::Root,
             &cookie_agent_protocol::SessionOrigin::Root,
             root,
-            sibling
+            other_root
         ),
-        "*"
+        "other_tree"
+    );
+    let foreign = cookie_agent_protocol::SessionOrigin::Delegated {
+        root_session_id: other_root,
+        parent_session_id: other_root,
+        parent_run_id: RunId::new_v7(),
+        parent_tool_call_id: ToolCallId::new_v7(),
+        invocation_id: cookie_agent_protocol::InvocationId::new_v7(),
+        depth: 1,
+    };
+    assert_eq!(
+        relationship_label(&origin(root), &foreign, child, sibling),
+        "other_tree"
     );
 }
 
@@ -467,25 +491,69 @@ fn ac10_guard_codes_are_stable_and_distinct() {
     assert_eq!(MESSAGE_INFLIGHT_FULL, "send_message:inflight_full");
 }
 
+/// Mail crosses trees: a subagent of one tree reaches the root of another,
+/// which is told the sender's full UUID, since the sender's handle resolves
+/// only in its own tree. In-tree mail keeps naming the handle.
 #[tokio::test]
-async fn ac3_finished_recipient_is_rejected_only_when_not_a_tree_peer() {
+async fn ac3_mail_reaches_another_tree_and_names_the_full_sender_id() {
     let (fixture, selection) = super::support::custom_fixture();
-    let sender = fixture
+    let root = fixture
         .engine
         .create_session(selection.clone())
-        .expect("sender");
-    let recipient = fixture.engine.create_session(selection).expect("recipient");
-    let error = fixture
+        .expect("sender root")
+        .session_id;
+    let sender = tree_recipient(&fixture.engine, root);
+    let recipient = fixture
         .engine
-        .send_agent_message(invocation(sender.session_id, recipient.session_id))
+        .create_session(selection)
+        .expect("recipient")
+        .session_id;
+    assert_eq!(
+        fixture
+            .engine
+            .message_relationship(sender, recipient)
+            .unwrap(),
+        "other_tree"
+    );
+    let first_body = |session: SessionId| {
+        fixture
+            .engine
+            .inner
+            .store
+            .get(session)
+            .unwrap()
+            .log
+            .events()
+            .iter()
+            .find_map(|event| match &event.payload {
+                EventPayload::ProducerMessageAccepted { body, .. } => {
+                    Some(body.as_plain_text().into_owned())
+                }
+                _ => None,
+            })
+            .expect("accepted mail")
+    };
+    fixture
+        .engine
+        .send_agent_message(invocation(sender, recipient))
         .await
-        .expect_err("separate roots");
-    assert!(matches!(error, EngineError::Messaging(code) if code == MESSAGE_NOT_TREE_PEER));
+        .expect("mail to another tree");
+    let across = first_body(recipient);
+    assert!(across.contains(&format!("from=\"{sender}\"")), "{across}");
+    assert!(!across.contains("test_00000000"), "{across}");
+
+    fixture
+        .engine
+        .send_agent_message(invocation(sender, root))
+        .await
+        .expect("mail to its parent");
+    let within = first_body(root);
+    assert!(within.contains("from=\"test_00000000\""), "{within}");
     fixture.engine.shutdown().await;
 }
 
 #[tokio::test]
-async fn ac4_tree_authorization_rejects_self_and_foreign_roots() {
+async fn ac4_only_self_sends_and_unknown_sessions_are_refused() {
     let (fixture, selection) = super::support::custom_fixture();
     let sender = fixture
         .engine
@@ -496,8 +564,13 @@ async fn ac4_tree_authorization_rejects_self_and_foreign_roots() {
         matches!(fixture.engine.send_agent_message(invocation(sender.session_id, sender.session_id)).await, Err(EngineError::Messaging(code)) if code == MESSAGE_SELF_SEND)
     );
     assert!(
-        matches!(fixture.engine.send_agent_message(invocation(sender.session_id, recipient.session_id)).await, Err(EngineError::Messaging(code)) if code == MESSAGE_NOT_TREE_PEER)
+        matches!(fixture.engine.send_agent_message(invocation(sender.session_id, SessionId::new_v7())).await, Err(EngineError::Messaging(code)) if code == crate::MESSAGE_UNKNOWN_SESSION)
     );
+    fixture
+        .engine
+        .send_agent_message(invocation(sender.session_id, recipient.session_id))
+        .await
+        .expect("another root takes mail");
     fixture.engine.shutdown().await;
 }
 

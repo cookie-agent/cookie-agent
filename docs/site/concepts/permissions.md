@@ -13,7 +13,8 @@ Each tool declares a permission *action* and names the *resource* of each call:
 - `bash`: the whole command string;
 - `webfetch`: the URL;
 - `delegate`: the subagent's agent ID; `message`: the recipient's relation,
-  `parent`, `child`, or `sibling`;
+  `parent`, `child`, `sibling`, `*` for another session of the same tree, or
+  `other_tree` for a session in another tree;
 - `mcp`: the MCP tool's name;
 - `memory` and `memory_write`: the memory URL;
 - `cron`: the target kind of the cron job a call touches, `session`,
@@ -68,7 +69,7 @@ counts). Every agent that is not internal gets:
 | `mcp` | `"*": ask` |
 | `delegate` | `deny`: an agent delegates only to the subagents its document names |
 | `list_runtimes` | `allow` for `primary` and `all` agents; a subagent asks |
-| `message` | a delegated run: `allow`; a root run: as its `delegate` rules, `allow` when one allows, `ask` when one asks, else `deny` |
+| `message` | `*` (its own tree): for a delegated run `allow`, for a root run as its `delegate` rules, `allow` when one allows, `ask` when one asks, else `deny`; `other_tree` (another tree): for a delegated run `ask`, for a root run as its `delegate` rules |
 
 `bash` has no default: each command asks. Internal agents, which call no
 tools, are denied every action. So every agent that is not internal is

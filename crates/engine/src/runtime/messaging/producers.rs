@@ -1683,7 +1683,18 @@ impl Engine {
         hop: u32,
     ) -> Result<ProducerMessageId, EngineError> {
         self.require_registration(session, producer_id, authority)?;
-        let sender_short_id = self.session_short_id(sender);
+        // A handle resolves only in its own tree, so a recipient in another
+        // tree is told the sender's full UUID to reply to. The send path has
+        // checked both sessions already.
+        let other_tree = matches!(
+            (self.session_root(sender), self.session_root(session)),
+            (Ok(sender_root), Ok(recipient_root)) if sender_root != recipient_root
+        );
+        let sender_short_id = if other_tree {
+            None
+        } else {
+            self.session_short_id(sender)
+        };
         let projection = self.goal_producer_projection(session)?;
         if let Some(existing) = projection.messages.iter().find(|message| {
             message.producer_owner == authority.owner && message.idempotency_key == key

@@ -1023,7 +1023,7 @@ tools instead of in the system prompt.
 | `goal` | [`goal_get`](#goal_get), [`goal_set`](#goal_set), [`goal_update`](#goal_update) | yes | The session's goal and the checklist that tracks it. |
 | `machines` | [`attach_machine`](#attach_machine), [`detach_machine`](#detach_machine), [`transfer`](#transfer) | no | The user's machines: attach one to this session to work on it, detach it, or copy files between machines. |
 | `memory` | [`memory_search`](#memory_search), [`memory_read`](#memory_read), [`memory_write`](#memory_write), [`memory_edit`](#memory_edit), [`memory_delete`](#memory_delete) | yes | Durable notes across sessions: what the user prefers, project decisions, and facts about machines. |
-| `messaging` | [`send_message`](#send_message) | no | Messages between the agents of a session tree. |
+| `messaging` | [`send_message`](#send_message) | no | Messages between agents, in a session tree or across trees. |
 | `runtimes` | [`list_runtimes`](#list_runtimes) | yes | The runtimes this session can work through: the machines and capabilities a subagent can be started on. |
 | `skills` | [`skill`](#skill) | no | Skills: packaged instructions for a kind of task, loaded by name. |
 | `web` | [`webfetch`](#webfetch) | no | Fetching web pages. |
@@ -1528,8 +1528,9 @@ describes, which shows its output.
 
 ## Agent messaging
 
-`send_message` delivers a durable message to another session in the same
-delegation tree. It replaces the removed `steer_subagent` tool; see the
+`send_message` delivers a durable message to another session: one in the
+sender's delegation tree, or, by full UUID, any session in another tree the
+daemon owns. It replaces the removed `steer_subagent` tool; see the
 [migration notes](../specs/agent-messaging.md#migration-notes). Its argument
 object is strict, and `body` is the markdown message text. The earlier
 `recipient_session_id` spelling of `to` is not an alias and fails with `send_message:invalid_arguments`. A
@@ -1548,14 +1549,14 @@ send_message(body: string, mode?: "steer" | "queue", to: string)
 Description sent to the model:
 
 ```text
-Send a message to another agent in your session tree: `to` is its session ID, such as `explore_1a2b3c4d`, or its full UUID.
+Send a message to another agent: `to` is its session ID, such as `explore_1a2b3c4d`, or its full UUID. A session in another session tree takes its full UUID.
 ```
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `body` | `string` | yes | The message, not empty. |
 | `mode` | `"steer" \| "queue"` | no | `steer` (the default) joins the recipient's current turn; `queue` waits for it to end. Default: `"steer"`. |
-| `to` | `string` | yes | Handle or full UUID of the recipient agent. |
+| `to` | `string` | yes | Handle of an agent in your session tree, or the full UUID of any session. |
 
 ??? note "Parameters JSON Schema"
 
@@ -1583,7 +1584,7 @@ Send a message to another agent in your session tree: `to` is its session ID, su
           "description": "`steer` (the default) joins the recipient's current turn; `queue` waits for it to end."
         },
         "to": {
-          "description": "Handle or full UUID of the recipient agent.",
+          "description": "Handle of an agent in your session tree, or the full UUID of any session.",
           "type": "string"
         }
       },
@@ -1598,8 +1599,11 @@ Send a message to another agent in your session tree: `to` is its session ID, su
 <!-- /generated -->
 
 Calls use the `message` permission action. The resource label is the
-recipient's relationship to the sender — `parent`, `child`, `sibling`, or `*`
-for any other same-tree peer — derived from stored session-origin metadata.
+recipient's relationship to the sender — `parent`, `child`, `sibling`, `*`
+for any other same-tree peer, or `other_tree` for a session in another tree —
+derived from stored session-origin metadata. For an agent document without a
+`message` key, `other_tree` follows a root run's `delegate` rules, as its `*`
+default does, and asks for a delegated run.
 Messaging is deny-by-default and the tool is hidden until an agent document or
 session overlay declares a `message` `allow` or `ask` rule. Denied calls use
 the standard policy-denial path and `ask` rules use the normal approval flow;
@@ -1623,7 +1627,6 @@ Failures are explicit tool errors with stable codes:
 | `send_message:invalid_arguments` | Missing, unknown, or wrongly typed arguments, including the removed `recipient_session_id` spelling; the code is followed by `: ` and the member at fault, such as ``send_message:invalid_arguments: missing `to` `` |
 | `send_message:invalid_body` | Empty body or body over `max_body_bytes` |
 | `send_message:unknown_session` | Well-formed recipient UUID that names no session |
-| `send_message:not_tree_peer` | Well-formed recipient UUID in a different delegation tree |
 | `send_message:self_send` | Sender targeted its own session |
 | `send_message:inbox_full` | Recipient has `max_pending_per_session` pending agent messages; nothing was admitted |
 | `send_message:max_hops_exceeded` | The message chain exceeded `max_hops` |

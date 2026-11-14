@@ -31,7 +31,6 @@ pub const MESSAGE_DISABLED: &str = "send_message:disabled";
 pub const MESSAGE_INVALID_BODY: &str = "send_message:invalid_body";
 pub const MESSAGE_INVALID_ARGUMENTS: &str = "send_message:invalid_arguments";
 pub const MESSAGE_UNKNOWN_SESSION: &str = "send_message:unknown_session";
-pub const MESSAGE_NOT_TREE_PEER: &str = "send_message:not_tree_peer";
 pub const MESSAGE_SELF_SEND: &str = "send_message:self_send";
 pub const MESSAGE_INBOX_FULL: &str = "send_message:inbox_full";
 pub const MESSAGE_MAX_HOPS_EXCEEDED: &str = "send_message:max_hops_exceeded";
@@ -151,9 +150,11 @@ pub(in crate::runtime) fn render_agent_message_envelope(
 }
 
 /// Relationship label for one send: the recipient's relationship to the
-/// sender, derived from stored `SessionOrigin` metadata only. This is purely
-/// labeling for the ordinary permission pipeline; there is no
-/// relationship-based authority check anywhere in the engine.
+/// sender, derived from stored `SessionOrigin` metadata only: `other_tree`
+/// when the two belong to different session trees, else `parent`, `child`,
+/// `sibling`, or `*`. This is purely labeling for the ordinary permission
+/// pipeline; there is no relationship-based authority check anywhere in the
+/// engine.
 pub(crate) fn relationship_label(
     sender_origin: &SessionOrigin,
     recipient_origin: &SessionOrigin,
@@ -166,6 +167,9 @@ pub(crate) fn relationship_label(
         } => Some(*parent_session_id),
         SessionOrigin::Root => None,
     };
+    if origin_root(sender_origin, sender) != origin_root(recipient_origin, recipient) {
+        return cookie_agent_engine_permissions::MESSAGE_OTHER_TREE;
+    }
     let sender_parent = parent_of(sender_origin);
     let recipient_parent = parent_of(recipient_origin);
     if sender_parent == Some(recipient) {
@@ -176,6 +180,17 @@ pub(crate) fn relationship_label(
         "sibling"
     } else {
         "*"
+    }
+}
+
+/// The root of the session tree `session`, whose origin is `origin`, belongs
+/// to.
+fn origin_root(origin: &SessionOrigin, session: SessionId) -> SessionId {
+    match origin {
+        SessionOrigin::Root => session,
+        SessionOrigin::Delegated {
+            root_session_id, ..
+        } => *root_session_id,
     }
 }
 
@@ -212,24 +227,22 @@ impl Engine {
         &self,
         session: SessionId,
     ) -> Result<std::sync::Arc<crate::session::SessionProjection>, EngineError> {
-        self.inner
-            .store
-            .get(session)
+        // A session of another tree may load that tree from disk first.
+        cookie_agent_engine_store::blocking::off_worker(|| self.inner.store.get(session))
             .map_err(|error| map_unknown_session(error.into()))
     }
 
     /// The root session of the delegation tree a session belongs to.
     pub(crate) fn session_root(&self, session: SessionId) -> Result<SessionId, EngineError> {
-        Ok(match self.messaging_projection(session)?.meta.origin {
-            SessionOrigin::Root => session,
-            SessionOrigin::Delegated {
-                root_session_id, ..
-            } => root_session_id,
-        })
+        Ok(origin_root(
+            &self.messaging_projection(session)?.meta.origin,
+            session,
+        ))
     }
 
     /// Relationship label used as the `message` permission resource for a
-    /// sender→recipient pair: `parent`, `child`, `sibling`, or `*`.
+    /// sender→recipient pair: `parent`, `child`, `sibling`, `*`, or
+    /// `other_tree`.
     ///
     /// # Errors
     ///
@@ -250,11 +263,12 @@ impl Engine {
         ))
     }
 
-    /// Tree-peer authorization: two sessions may exchange mail iff they carry
-    /// the same stored `root_session_id`. No live registry walk, ancestry, or
-    /// taint validation (spec Resolved Decision 1; ghost sessions left by a
-    /// reverted branch remain reachable by design).
-    pub(crate) fn ensure_tree_peer(
+    /// Recipient check: any session the daemon owns takes mail, in the
+    /// sender's tree or another (spec Resolved Decision 1, amended
+    /// 2026-11-14); whether a send may go is the `message` permission's
+    /// call, on the relationship label. Only a send to oneself and an
+    /// unknown session are refused here.
+    pub(crate) fn ensure_messageable(
         &self,
         sender: SessionId,
         recipient: SessionId,
@@ -262,9 +276,8 @@ impl Engine {
         if sender == recipient {
             return Err(messaging_error(MESSAGE_SELF_SEND));
         }
-        if self.session_root(sender)? != self.session_root(recipient)? {
-            return Err(messaging_error(MESSAGE_NOT_TREE_PEER));
-        }
+        self.messaging_projection(sender)?;
+        self.messaging_projection(recipient)?;
         Ok(())
     }
 
@@ -320,9 +333,8 @@ impl Engine {
     /// # Errors
     ///
     /// Returns [`EngineError::Messaging`] stable codes for disabled messaging,
-    /// invalid bodies, unknown recipients, non-tree-peer recipients, self
-    /// sends, full inboxes, exhausted pair windows, chains past `max_hops`,
-    /// and shutdown races; [`EngineError::Producer`] for idempotency payload
+    /// invalid bodies, unknown recipients, self sends, full inboxes,
+    /// exhausted pair windows, chains past `max_hops`, and shutdown races; [`EngineError::Producer`] for idempotency payload
     /// conflicts.
     pub async fn send_agent_message(
         &self,
@@ -335,7 +347,7 @@ impl Engine {
         if invocation.body.trim().is_empty() || invocation.body.len() > messaging.max_body_bytes {
             return Err(messaging_error(MESSAGE_INVALID_BODY));
         }
-        self.ensure_tree_peer(
+        self.ensure_messageable(
             invocation.sender_session_id,
             invocation.recipient_session_id,
         )?;

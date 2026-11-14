@@ -21,7 +21,8 @@ fn default_mode() -> ProducerDeliveryMode {
 #[derive(Debug, Deserialize, JsonSchema, Serialize)]
 #[serde(deny_unknown_fields)]
 struct MessageArgs {
-    /// Handle or full UUID of the recipient agent.
+    /// Handle of an agent in your session tree, or the full UUID of any
+    /// session.
     to: String,
     /// The message, not empty.
     #[schemars(length(min = 1))]
@@ -56,7 +57,7 @@ impl MessageToolProvider {
             result_truncation: cookie_agent_runtime_api::ToolResultTruncationPolicy::Bounded,
             name: "send_message".into(),
             permission_name: Some("message".into()),
-            description: "Send a message to another agent in your session tree: `to` is its session ID, such as `explore_1a2b3c4d`, or its full UUID.".into(),
+            description: "Send a message to another agent: `to` is its session ID, such as `explore_1a2b3c4d`, or its full UUID. A session in another session tree takes its full UUID.".into(),
             parameters: cookie_agent_runtime_api::authoring::schema::<MessageArgs>(),
         }
     }
@@ -99,10 +100,11 @@ impl MessageToolProvider {
         Ok(value)
     }
 
-    /// Resolves the recipient: a full UUID passes through unchanged (so the
-    /// engine's `not_tree_peer` / `self_send` guards keep their stable codes);
-    /// anything else is a handle resolved within the sender's tree, with the
-    /// self-repairing candidate-list error on failure.
+    /// Resolves the recipient: a full UUID passes through unchanged and may
+    /// name a session in any tree (so the engine's `unknown_session` /
+    /// `self_send` guards keep their stable codes); anything else is a handle
+    /// resolved within the sender's tree, with the self-repairing
+    /// candidate-list error on failure.
     fn resolve_recipient(
         engine: &Engine,
         sender: SessionId,
@@ -121,7 +123,7 @@ impl MessageToolProvider {
     /// The group this provider's tools are announced under when deferred.
     pub const GROUP: cookie_agent_runtime_api::ToolGroup = cookie_agent_runtime_api::ToolGroup::new(
         "messaging",
-        "Messages between the agents of a session tree.",
+        "Messages between agents, in a session tree or across trees.",
     );
 }
 #[async_trait]

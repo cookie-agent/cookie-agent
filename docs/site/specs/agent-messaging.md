@@ -8,7 +8,9 @@ summarized in the [tool reference](../reference/tools.md#agent-messaging).
 ## Goals
 
 - Let any agent in a delegation tree send a durable message to any other agent
-  in the **same tree** (parent ↔ child, sibling ↔ sibling, child → grandparent).
+  in the **same tree** (parent ↔ child, sibling ↔ sibling, child → grandparent),
+  and, by full session UUID, to any session in **another tree** the daemon
+  owns (amended 2026-11-14, see [Cross-tree messaging](#cross-tree-messaging)).
 - Delivery semantics: all delivery is producer-backed. The recipient receives
   the message either **steered** into its next safe model-request boundary (if
   running) or **queued** durably (if idle or queued). Messaging an idle or
@@ -21,8 +23,8 @@ summarized in the [tool reference](../reference/tools.md#agent-messaging).
 
 - Cross-daemon / cross-process agent mesh. The engine is in-process; one daemon
   owns all sessions.
-- Arbitrary cross-session messaging outside the delegation tree. No discovery or
-  authorization basis exists for that yet.
+- Discovery of sessions in other trees. A cross-tree recipient is named by a
+  full UUID the sender was given; handles never resolve across trees.
 - Request/response RPC between agents. Async mail only; replies are new
   messages.
 - Broadcast topics / pub-sub. Can be layered later on the same envelope.
@@ -130,8 +132,6 @@ give up, or report to its parent):
 - `send_message:invalid_body` — empty or over `max_body_bytes`,
 - `send_message:unknown_session` — a well-formed session UUID that names no
   session,
-- `send_message:not_tree_peer` — a well-formed session UUID whose
-  `root_session_id` differs from the sender's,
 - a **non-UUID recipient** is treated as a subagent handle: a handle that
   matches no live peer in the sender's tree fails with the self-repairing
   `unknown subagent reference …` tool error, whose candidate list renders each
@@ -186,11 +186,12 @@ guard checks and acceptance are serialized inside the recipient actor.
 1. **`ProducerOwner::Agent { session_id }` variant**
    (`protocol/src/producer.rs`). Additive payload change; the versionless,
    best-effort event log tolerates it and old readers degrade gracefully.
-2. **Authorization predicate** beside `ensure_subagent_owned`:
-   `ensure_tree_peer(sender, recipient)` — both sessions are tree peers iff
-   their stored `SessionOrigin` metadata carries the same `root_session_id`.
-   That is the entire contract (decided): no live-registry walk, no ancestry
-   or taint validation. Known, accepted limitation: after a parent reverts
+2. **Recipient predicate** beside `ensure_subagent_owned`:
+   `ensure_messageable(sender, recipient)` — the recipient is a session the
+   daemon knows and not the sender itself. Whether the two share a tree
+   (their stored `SessionOrigin` metadata carries the same `root_session_id`)
+   only picks the permission label; no live-registry walk, no ancestry or
+   taint validation. Known, accepted limitation: after a parent reverts
    history, "ghost" sessions from the reverted branch remain reachable by
    agents that hold their session IDs. Sender identity is always derived from
    the executing tool context, never from model-supplied arguments.
@@ -242,11 +243,14 @@ permissions:
     "parent": allow     # the agent that delegated me
     "sibling": ask      # other children of my parent
     "*": deny           # any other same-tree peer (grandparent, uncle, ...)
+    "other_tree": ask   # a session in another tree (default: root as `delegate`, subagent ask)
 ```
 
 - The permission resource label is the **recipient's relationship to the
-  sender**: `parent`, `child`, `sibling`, or `*` (catch-all for any other
-  same-tree peer). The label is derived from stored `SessionOrigin` metadata
+  sender**: `parent`, `child`, `sibling`, `*` (catch-all for any other
+  same-tree peer), or `other_tree` (a session in another tree). A rule with
+  the pattern `*` also matches `other_tree`, but a rule for `other_tree`
+  outranks it as the more specific pattern. The label is derived from stored `SessionOrigin` metadata
   at send time and matched by the existing `PermissionPipeline` +
   `WildcardPattern`. This is purely a labeling step — there is **no
   relationship-based authority check** anywhere; permissions alone decide.
@@ -321,14 +325,47 @@ messaging rollout.
    `PROTOCOL_VERSION` was bumped and the TS/JSON-schema bindings regenerated in
    the same change, per the repo's version-bump ritual.
 
+## Cross-tree messaging
+
+Amendment of 2026-11-14 (user decisions): `send_message` reaches sessions
+outside the sender's tree.
+
+- **Addressing: full UUID only.** A handle resolves in the sender's own tree
+  and nowhere else, so a cross-tree recipient takes its full session UUID. No
+  listing or discovery tool is added.
+- **Scope: any session the daemon owns**, in any project. A recipient whose
+  tree is not loaded is loaded for the send. `send_message:not_tree_peer` is
+  removed; a UUID that names no session still fails with
+  `send_message:unknown_session`.
+- **Permission: the `other_tree` label, following `delegate`.** The daemon's
+  default `message` rules for an agent whose document names no `message` key
+  are `*` (allow for a delegated run; a root run follows its `delegate`
+  rules) and `other_tree`, which follows a root run's `delegate` rules
+  (allowed when one of them allows, asking when one asks, and denied when the
+  run may delegate to nobody) and asks for a delegated run. With the default
+  `delegate: deny`, a root run therefore mails no other tree and still does
+  not see the tool, while a subagent asks before mailing another tree. A
+  document that declares `message` replaces both defaults; its `*` rule then
+  covers other trees unless it names `other_tree`.
+- **Reply hint.** The envelope a cross-tree recipient gets names the sender
+  by full UUID, since its handle would not resolve from the recipient's
+  tree.
+- Everything else is shared with in-tree mail: the hop guard, the pair window,
+  the inbox cap, held-session refusal, waking finished sessions, and
+  idempotency.
+
 ## Resolved Decisions
 
-1. **Scope: tree-only, equality check only.** Two sessions are tree peers iff
-   their stored `SessionOrigin.root_session_id` values are equal. No live
-   registry walk, ancestry validation, or taint reconciliation; sessions left
-   over from a reverted branch remain messageable by agents holding their IDs.
-   Any-session addressing is out of scope (it would need a global agent
-   registry and new ownership rules) and conflicts with the no-discovery model.
+1. **Scope: any session the daemon owns; tree membership is an equality
+   check.** Two sessions are tree peers iff their stored
+   `SessionOrigin.root_session_id` values are equal. No live registry walk,
+   ancestry validation, or taint reconciliation; sessions left over from a
+   reverted branch remain messageable by agents holding their IDs. Amended
+   2026-11-14: a session in another tree is messageable too, by full UUID,
+   under the `other_tree` permission label (see
+   [Cross-tree messaging](#cross-tree-messaging)). The no-discovery model is
+   unchanged: an agent learns another tree's session ID only from the user or
+   another agent.
 2. **Permission action: dedicated `Message` action.** Messaging gets its own
    `PermissionAction` variant rather than reusing `Delegate`, so messaging
    permissions are controlled independently of delegation.
@@ -395,8 +432,8 @@ The implementation is correct when all of the following hold, covered by tests:
 3. A message to a finished session wakes it through producer reconcile: the
    session resumes with the message as input; the completed delegation is
    untouched.
-4. Tree authorization: equal `root_session_id` succeeds; mismatched roots fail
-   with `send_message:not_tree_peer`; self-send fails with
+4. Recipient check: equal `root_session_id` labels the send by relationship;
+   mismatched roots label it `other_tree` and deliver; self-send fails with
    `send_message:self_send`.
 5. Result contract: success returns `message_id`, effective `mode`, and
    `recipient_state`; a retried tool call returns the original `message_id`
