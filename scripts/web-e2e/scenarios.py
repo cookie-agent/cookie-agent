@@ -3893,6 +3893,7 @@ def session_schedules(browser):
     browser.wait("the job gone", lambda: count(browser, "[data-session-job]") == 0
                  and count(browser, "#schedule-badge") == 0)
     print("session schedules: deleting the job asks first, and its clock goes")
+    close_sheet(browser)
 
 
 def deleting(browser):
