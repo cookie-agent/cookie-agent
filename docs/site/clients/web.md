@@ -217,12 +217,17 @@ refreshes no longer change). Reset and Replace ask once more.
     plugin or runtime), then the others, each newest first by your last
     message or delegation in it (its own output does not move it, so a busy
     session keeps its place; a session with none goes by its last event).
-    A dot before each title says its state: a pulsing accent while it
-    runs, amber while it waits on you or something that will start its
-    next run (its tooltip says what, such as `waiting on: goal, background
-    call`) or is held (`held: stopped by you`), red when its runs kept
-    failing or its last run failed or was interrupted, and a solid accent
-    when it is unread; the others have none. Unread titles are bold, read
+    A mark before each title says its state, each a shape of its own: a
+    turning accent circle while it runs (still when the system asks for
+    less motion); while it waits for something that will start its next
+    run, what that is: a clock for a scheduled job, an hourglass for a
+    background call, a robot for a subagent, a target for its goal, a plug
+    for a plugin's or runtime's producer (its tooltip lists them all, such
+    as `waiting on: goal, background call`); an amber pause while it is
+    held (`held: stopped by you`), red when its runs kept failing; a red
+    cross when its last run failed, a paused circle when it was
+    interrupted; and with none of these, an accent dot when it is unread.
+    The others have none. Unread titles are bold, read
     ones quieter. The time beside a title is the time the list orders by
     (`22h`, `1d`); its tooltip adds the last event's. On hover the time
     gives way to the row's ⋮, rename, and delete, and the title ends before
@@ -273,9 +278,7 @@ refreshes no longer change). Reset and Replace ask once more.
     eight colours, chosen from its name, so it looks the same in every row
     and every browser; the dots marking runtimes in the bottom bar and on
     the runtime cards take their machine's colour. The badges have the
-    row's second line to themselves, which a row shows only when they say
-    something: in a project, only when they differ from the ones most of
-    its sessions show; a session in no project always shows its own. A machine's name is never cut: when
+    row's second line to themselves, on every row that has them. A machine's name is never cut: when
     the line is too narrow, the workspaces shrink first, down to `…`, then
     give way, and then the last machines give way to a **+N** badge whose tooltip names
     them. The row's tooltip lists every

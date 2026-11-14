@@ -451,3 +451,16 @@ Each phase is looked at in light and dark at desktop and phone sizes
   icons alone on a phone so all seven fit at 360 px. Names left monospace
   for Agents, runtime cards, skills, plugins, providers, projects, and
   onboarding; IDs, paths, `config.toml`, and slash commands keep it.
+
+### Changed after the pass (2026-11-14)
+
+- **State marks, not dots** (the user, 2026-11-14). P1's single dot let an
+  amber "waiting" read as the amber of a machine badge under it. Each
+  state now has a shape: a turning circle while running; while waiting to
+  wake, what it waits on (a clock for a scheduled job, an hourglass for a
+  background call, a robot for a subagent, a target for the goal, a plug
+  for a producer); a pause while held; a cross or a paused circle after a
+  failed or interrupted run; and the dot only for unread.
+- **Badges on every row** (the user, 2026-11-14), reversing Q2: a row
+  shows its machine and folder whether or not they are its project's
+  usual ones, and so does a session in no project.

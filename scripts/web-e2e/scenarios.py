@@ -2379,7 +2379,7 @@ def session_depth(browser):
 
     browser.wait("the background badge", in_background)
     browser.shot("background")
-    # Once its run ends, the session waits on the call: its row has a clock,
+    # Once its run ends, the session waits on the call: its row has an hourglass,
     # and its tooltip says what it waits on.
     waiting_row = "aside [data-session-row] [aria-current=true]"
     browser.wait(
@@ -2389,7 +2389,7 @@ def session_depth(browser):
     )
     tooltip = browser.script("return document.querySelector(arguments[0]).title", waiting_row)
     assert "waiting on: background call" in tooltip, tooltip
-    print("a session waiting on a background call shows a clock:", tooltip.splitlines()[-1])
+    print("a session waiting on a background call shows it:", tooltip.splitlines()[-1])
     menu(browser, "background")
     browser.wait("the background sheet", lambda: count(browser, "#sheet [data-stop]") > 0)
     browser.shot("background-sheet")
@@ -4583,13 +4583,10 @@ def session_badges(browser):
     browser.wait("the session", lambda: count(browser, OPEN_SESSION_ROW) == 1)
     subprocess.run([COOKIE, "machine", "unassign", "alt"], check=True, env=dict(os.environ, HOME=HOME),
                    stdout=subprocess.DEVNULL)
-    # Back on this machine, the session's two runtimes share its badge; in a
-    # project whose sessions mostly run there, the row leaves its usual
-    # badges out (docs/site/specs/web-polish.md, P1).
+    # Back on this machine, the session's two runtimes share its badge.
     browser.wait(
         "alt back on this machine",
-        lambda: badge_kinds(browser, rows["two machines"]) == ["machine", "workspace"]
-        or not shown(browser, rows["two machines"] + " [data-session-badges]"),
+        lambda: badge_kinds(browser, rows["two machines"]) == ["machine", "workspace"],
     )
     # A narrowing sidebar: the workspaces give way first, down to "…";
     # a machine's name is never cut, and the time stays whole.

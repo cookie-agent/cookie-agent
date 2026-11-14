@@ -384,41 +384,6 @@ fn SessionList(workspace: Workspace) -> impl IntoView {
         })
     });
     let nothing_shown = Memo::new(move |_| shown.with(Vec::is_empty));
-    // Each project's usual badges, which its rows leave out
-    // (docs/site/specs/web-polish.md, P1): worked out once for the list.
-    let usual = Memo::new(move |_| {
-        let listed = workspace.lists_attachments.get();
-        workspace.runtime_homes.with(|homes| {
-            workspace.runtimes.with(|listing| {
-                workspace.sessions.with(|sessions| {
-                    let mut by_project: HashMap<
-                        cookie_agent_protocol::ProjectId,
-                        Vec<Vec<cookie_agent_client_state::badges::SessionBadge>>,
-                    > = HashMap::new();
-                    for session in sessions.iter().filter(|session| {
-                        matches!(session.origin, cookie_agent_protocol::SessionOrigin::Root)
-                    }) {
-                        if let Some(project) = &session.project {
-                            by_project
-                                .entry(project.clone())
-                                .or_default()
-                                .push(session_badges(session, listing.as_ref(), homes, listed));
-                        }
-                    }
-                    by_project
-                        .into_iter()
-                        .map(|(project, rows)| {
-                            (
-                                project,
-                                cookie_agent_client_state::badges::usual_badges(rows),
-                            )
-                        })
-                        .collect::<HashMap<_, _>>()
-                })
-            })
-        })
-    });
-    provide_context(UsualBadges(usual));
     // The rows' "5m ago" moves on while the list shows.
     let now = RwSignal::new(jiff::Timestamp::now());
     let ticker = set_interval_with_handle(
@@ -1229,18 +1194,6 @@ impl RowActions {
     }
 }
 
-/// Each project's usual badges, which its rows leave out: the session
-/// list provides them to its rows.
-#[derive(Clone, Copy)]
-struct UsualBadges(
-    Memo<
-        HashMap<
-            cookie_agent_protocol::ProjectId,
-            Vec<cookie_agent_client_state::badges::SessionBadge>,
-        >,
-    >,
-);
-
 /// A root session's row: a click opens it. On hover (or a long press on
 /// a touch screen) its buttons offer to rename it, in place, and to
 /// delete it, behind an inline confirmation. Its second line says where
@@ -1309,40 +1262,16 @@ fn session_row(
     };
     let badge_line = NodeRef::<html::Span>::new();
     crate::badges::keep_fitted(badge_line);
-    // The second line shows only when it says something: the machine or
-    // folder is not the project's usual one, or the session is in none
-    // (docs/site/specs/web-polish.md, P1).
-    let usual = use_context::<UsualBadges>();
-    let project = session.project.clone();
-    let second_line = Memo::new(move |_| {
-        let usual = project.as_ref().and_then(|project| {
-            usual.and_then(|usual| usual.0.with(|map| map.get(project).cloned()))
-        });
-        shown_badges.with(|badges| {
-            cookie_agent_client_state::badges::row_shows_badges(badges, usual.as_deref())
-        })
-    });
-    // The row's state as one dot before the title: amber while it waits on
-    // the user, a pulsing accent while it runs, red when it failed or a
-    // failing run held it, a solid accent when unread.
-    let dot = {
-        use cookie_agent_client_state::activity::SessionActivity;
-        match &activity {
-            SessionActivity::Waiting(_) => Some("bg-warn"),
-            SessionActivity::Running => Some("bg-accent row-live"),
-            SessionActivity::Held(cookie_agent_protocol::Open::Known(
-                cookie_agent_protocol::HeldReason::Failing { .. },
-            ))
-            | SessionActivity::Problem(_)
-                if status_mark.is_some() =>
-            {
-                Some("bg-bad")
-            }
-            SessionActivity::Held(_) => Some("bg-warn"),
-            _ if session.unread => Some("bg-accent"),
-            _ => None,
-        }
-    };
+    // The second line: where the session runs, on every row that has
+    // badges.
+    let second_line = Memo::new(move |_| shown_badges.with(|badges| !badges.is_empty()));
+    // The row's state before the title, a shape for each (its colour only
+    // helps): a turning circle while it runs; while it waits to wake on its
+    // own, what it waits on (its cron job's clock, a background call's
+    // hourglass, a subagent, its goal, a producer's plug); a pause while
+    // held; a mark when its last run failed or was interrupted; and,
+    // with none of those, a dot when unread.
+    let unread_dot = status_mark.is_none() && session.unread;
     let title = {
         let session = session.clone();
         let status = status_text.clone();
@@ -1586,14 +1515,16 @@ fn session_row(
                             <Glyph icon=Signal::derive(move || if picked() { icondata::LuSquareCheck } else { icondata::LuSquare }) />
                         </span>
                     </Show>
-                    // The state's dot, in a slot every row keeps so titles
+                    // The state's mark, in a slot every row keeps so titles
                     // line up.
-                    <span class="inline-flex h-2 w-2 shrink-0 items-center justify-center" aria-hidden="true">
-                        {dot.map(|class| view! {
-                            <span
-                                class=format!("h-2 w-2 rounded-full {class}")
-                                data-session-activity=status_mark.map(|mark| mark.label)
-                            ></span>
+                    <span class="inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center" aria-hidden="true">
+                        {status_mark.map(|mark| view! {
+                            <span class="inline-flex" data-session-activity=mark.label>
+                                <Glyph icon=mark.icon class=mark.class("text-[0.8125rem]") />
+                            </span>
+                        })}
+                        {unread_dot.then(|| view! {
+                            <span class="h-2 w-2 rounded-full bg-accent" data-session-activity="unread"></span>
                         })}
                     </span>
                     <span class="sr-only">{status_text.clone()}</span>
@@ -1639,7 +1570,7 @@ fn session_row(
                     </span>
                 </span>
                 <span
-                    class=format!("w-full min-w-0 items-center gap-1.5 pl-4 {NOTE}")
+                    class=format!("w-full min-w-0 items-center gap-1.5 pl-[1.375rem] {NOTE}")
                     class:flex=move || second_line.get() || tree_root()
                     class:hidden=move || !(second_line.get() || tree_root())
                 >

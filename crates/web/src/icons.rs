@@ -166,6 +166,7 @@ const RUNNING: &str = "text-accent";
 const DONE: &str = "text-ok";
 const FAILED: &str = "text-bad";
 const QUIET: &str = "text-muted";
+const HELD: &str = "text-warn";
 
 /// A tool call's status.
 pub fn tool_status(status: &ToolStatus, backgrounded: bool) -> StatusMark {
@@ -225,12 +226,15 @@ pub fn row_status(activity: &SessionActivity) -> Option<StatusMark> {
                 cookie_agent_protocol::Open::Known(
                     cookie_agent_protocol::HeldReason::Failing { .. },
                 ) => FAILED,
-                _ => RUNNING,
+                _ => HELD,
             },
             spins: false,
         }),
-        SessionActivity::Waiting(_) => Some(StatusMark {
-            icon: icondata::LuClock,
+        // What wakes it, by the first thing the daemon says it waits on:
+        // its cron job, a background call, a subagent, its goal, or a
+        // plugin's or runtime's producer.
+        SessionActivity::Waiting(kinds) => Some(StatusMark {
+            icon: kinds.first().map_or(icondata::LuClock, waiting_icon),
             label: "waiting",
             tone: RUNNING,
             spins: false,
@@ -239,6 +243,20 @@ pub fn row_status(activity: &SessionActivity) -> Option<StatusMark> {
             Some(session_status(*status))
         }
         SessionActivity::Problem(_) | SessionActivity::None => None,
+    }
+}
+
+/// The icon of a thing a session waits on, as the session panel's tabs
+/// and the tool rows draw it.
+pub fn waiting_icon(kind: &cookie_agent_protocol::WaitingOn) -> Icon {
+    use cookie_agent_protocol::WaitingOn;
+    match kind {
+        WaitingOn::ScheduledJob => icondata::LuClock,
+        WaitingOn::BackgroundCall => icondata::LuHourglass,
+        WaitingOn::Subagent => icondata::LuBot,
+        WaitingOn::Goal => icondata::LuTarget,
+        WaitingOn::ExternalProducer => icondata::LuPlug,
+        _ => icondata::LuClock,
     }
 }
 
