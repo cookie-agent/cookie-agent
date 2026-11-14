@@ -156,8 +156,11 @@ refreshes no longer change). Reset and Replace ask once more.
   the session's live badges, and the ⋮ menu of the session's commands.
   The badges show what is live in the session, each only while it is: the
   goal with its checklist done (such as `3/5`), the calls running in the
-  background, the approvals waiting, the prompt cache, and, once a request
-  has measured it, the context's use as a ring. The prompt cache shows as a
+  background, the approvals waiting, the prompt cache, the next fire of a
+  [scheduled prompt](#schedules) into the session (an alarm clock with the
+  time to go, such as `12m`, with `· 2` when two jobs fire into it, and
+  `queued` while a fire waits for the running turn; its tooltip lists the
+  jobs), and, once a request has measured it, the context's use as a ring. The prompt cache shows as a
   flame with the minutes the cache stays warm (`41m`; `~` when the TTL is
   assumed, a dot when a compaction
   [before it expires](../sessions/compaction.md#before-the-cache-expires)
@@ -184,8 +187,19 @@ refreshes no longer change). Reset and Replace ask once more.
   bottom on a phone): approvals, the agent, model, permission mode, and
   preset pickers, compacting, skills, a message's actions, and the ⋮ menu.
   Usage, permission rules, the session's runtimes, the goal, background
-  calls, and the diagnostics filter are the tabs of one sheet, the
-  **session panel**, whose tabs carry the same counts as the badges.
+  calls, the session's schedules and webhooks, and the diagnostics filter
+  are the tabs of one sheet, the **session panel**, whose tabs carry the
+  same counts as the badges. On a phone its tabs scroll sideways, the open
+  one in view.
+  - **Schedules** lists the cron jobs that fire into the session, those an
+    agent made in it that start sessions of their own, and the job that
+    started it, each with when it fires, its next fire, who made it, its
+    switch, and a ⋯ with **Run now**, **Edit** (in Schedules), and
+    **Delete…**, which asks first; then **Schedule a prompt** for this
+    session and **Open Schedules**.
+  - **Webhooks** lists the same three groups of webhooks, each as a row of
+    the [Webhooks](#webhooks) view (a click opens its page there); then
+    **Add a webhook** for this session and **Open Webhooks**.
   Browser Back (a phone's Back gesture too) closes the sheet first.
 - **Right-click.** With a mouse, right-clicking a session's row opens its
   actions at the pointer (rename, pin, move, mark read or unread, delete),
@@ -674,13 +688,16 @@ refreshes no longer change). Reset and Replace ask once more.
   each by name with an icon and a line saying what it does, and each opens
   a sheet with labelled fields and a main button: **Compact context**,
   **Goal**, **Schedule a prompt** (which opens the job form in
-  [Schedules](#schedules) instead), **Skills**, **Background calls**, **Runtimes**, **Permission
-  rules**, **Usage**, **Diagnostics**, and **Agent preset**. The others
+  [Schedules](#schedules) instead), **Add a webhook** (the webhook form, in
+  [Webhooks](#webhooks)), **Skills**, **Background calls**,
+  **Schedules**, **Webhooks**, **Runtimes**, **Permission rules**,
+  **Usage**, **Diagnostics**, and **Agent preset**. The others
   have their place in the page: the bottom bar picks the agent, model, and
   permission mode; the composer attaches, sends, and stops; and the
   sidebar starts and opens sessions and has the daemon's views. **Goal**,
-  **Background calls**, **Runtimes**, **Permission rules**, **Usage**, and
-  **Diagnostics** open the session panel at their tab.
+  **Background calls**, **Schedules**, **Webhooks**, **Runtimes**,
+  **Permission rules**, **Usage**, and **Diagnostics** open the session
+  panel at their tab.
 - **Approvals.** When a tool call needs an answer, the title bar's amber
   badge says how many wait.
   Open it to approve once, approve for the session tree, or reject.

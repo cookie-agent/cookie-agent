@@ -92,6 +92,7 @@ impl App {
         self.refresh_coherent_lists().await;
         self.poll_runtime_homes();
         self.poll_projects();
+        self.poll_crons();
     }
 
     /// Fetches the runtimes' homes in the background, from a daemon that

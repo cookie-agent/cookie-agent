@@ -3,7 +3,8 @@
 //! background, the approvals waiting, and the context's use. A badge comes
 //! when its state starts, follows it, and goes when it ends; a click opens
 //! the session panel at its tab. The context ring always shows once a
-//! request has measured it.
+//! request has measured it. A clock counts down to the next fire of a cron
+//! job into the session (docs/site/specs/session-schedules.md, D1).
 
 use cookie_agent_client_state::{
     cache::{CacheBadge, CacheHeat, badge_text, detail_lines},
@@ -152,6 +153,49 @@ pub fn LiveBadges(workspace: Workspace) -> impl IntoView {
                 .map(|tokens| (tokens, viewed.context_window))
         })
     };
+    // The next fire into the open session, or a fire waiting there.
+    let fire_badge = move || {
+        if workspace.new_session.get() {
+            return None;
+        }
+        let session = workspace.selected.get()?;
+        let next = workspace.crons.with(|_| {
+            cookie_agent_client_state::session_schedules::next_fire(session, &workspace.cron_jobs())
+        })?;
+        let now = now.get();
+        let text = cookie_agent_client_state::session_schedules::next_fire_text(&next, now);
+        let mut lines: Vec<String> = Vec::new();
+        if next.queued {
+            lines.push("A fire waits for the running turn to end.".to_owned());
+        }
+        lines.extend(next.each.iter().map(|(title, at)| match at {
+            Some(at) => format!(
+                "{title}: next fire {}",
+                cookie_agent_client_state::cron::until(*at, now)
+            ),
+            None => format!("{title}: no next fire"),
+        }));
+        lines.push("Click for the session's schedules.".to_owned());
+        let title = lines.join("\n");
+        // Due within the minute, or waiting: in the accent.
+        let soon = next.queued
+            || next
+                .at
+                .is_some_and(|at| at.as_second() - now.as_second() < 60);
+        Some(view! {
+            <button
+                type="button"
+                class=BADGE
+                id="schedule-badge"
+                aria-label=title.clone()
+                title=title
+                on:click=move |_| workspace.run_command(Command::Schedules)
+            >
+                <Glyph icon=icondata::LuAlarmClock class=if soon { "text-sm text-accent" } else { "text-sm text-muted" } />
+                <span class:text-accent=soon data-schedule-next>{text}</span>
+            </button>
+        })
+    };
     let goal_badge = move || {
         goal.get().map(|goal| {
             let paused = goal.status == GoalStatus::Paused;
@@ -219,6 +263,7 @@ pub fn LiveBadges(workspace: Workspace) -> impl IntoView {
                     </span>
                 </button>
             </Show>
+            {fire_badge}
             {move || context().map(|(tokens, window)| {
                 let title = context_title(tokens, window);
                 view! {

@@ -61,6 +61,7 @@ mod questions;
 mod restart;
 mod row_menu;
 mod session_rows;
+mod session_schedules;
 mod shares;
 mod shell;
 mod sidebar;
@@ -4347,7 +4348,7 @@ const fn chip_of(panel: Panel) -> Option<&'static str> {
 /// The session panel's tabs (docs/site/specs/quiet-ink.md, D5): the sheets
 /// about the open session, each opened through its command as the
 /// Session commands sheet opens it, with what it reads.
-const SESSION_TABS: [(Panel, Command, &str, icons::Icon); 7] = [
+const SESSION_TABS: [(Panel, Command, &str, icons::Icon); 9] = [
     (Panel::Usage, Command::Usage, "Usage", icondata::LuCoins),
     (
         Panel::Permissions,
@@ -4375,6 +4376,18 @@ const SESSION_TABS: [(Panel, Command, &str, icons::Icon); 7] = [
         icondata::LuHourglass,
     ),
     (
+        Panel::Schedules,
+        Command::Schedules,
+        "Schedules",
+        icondata::LuAlarmClock,
+    ),
+    (
+        Panel::Webhooks,
+        Command::Webhooks,
+        "Webhooks",
+        icondata::LuWebhook,
+    ),
+    (
         Panel::Events,
         Command::Events,
         "Events",
@@ -4396,6 +4409,34 @@ fn session_tabs(workspace: Workspace) -> impl IntoView {
             })
     });
     let background = Memo::new(move |_| workspace.background_calls().len());
+    // On a phone the strip scrolls sideways: the open tab comes into view.
+    Effect::new(move |_| {
+        if workspace.panel.get().is_some() {
+            crate::browser::reveal("[data-session-tabs] [aria-selected=true]");
+        }
+    });
+    // The jobs and webhooks that fire or deliver into the open session.
+    let owned = Memo::new(move |_| {
+        let Some(id) = workspace.selected.get() else {
+            return (0, 0);
+        };
+        let session = workspace
+            .sessions
+            .with(|sessions| sessions.iter().find(|meta| meta.session_id == id).cloned());
+        let Some(session) = session else {
+            return (0, 0);
+        };
+        let jobs = workspace.crons.with(|_| workspace.cron_jobs());
+        let hooks = workspace.webhooks.with(|_| workspace.webhook_list());
+        (
+            cookie_agent_client_state::session_schedules::session_jobs(&session, &jobs)
+                .into
+                .len(),
+            cookie_agent_client_state::session_schedules::session_webhooks(&session, &hooks)
+                .into
+                .len(),
+        )
+    });
     let tabs = SESSION_TABS
         .into_iter()
         .map(|(panel, command, label, icon)| {
@@ -4407,6 +4448,13 @@ fn session_tabs(workspace: Workspace) -> impl IntoView {
                     .map(|(done, total)| format!("{done}/{total}")),
                 Panel::Background => {
                     Some(background.get()).filter(|count| *count > 0).map(|count| count.to_string())
+                }
+                // What fires or delivers into the session.
+                Panel::Schedules => {
+                    Some(owned.get().0).filter(|count| *count > 0).map(|count| count.to_string())
+                }
+                Panel::Webhooks => {
+                    Some(owned.get().1).filter(|count| *count > 0).map(|count| count.to_string())
                 }
                 // The groups and the skills that are off.
                 Panel::Runtimes | Panel::Skills => workspace.session_tools.with(|tools| {
@@ -4430,9 +4478,20 @@ fn session_tabs(workspace: Workspace) -> impl IntoView {
                 }),
                 _ => None,
             };
+            // A daemon without cron jobs or webhooks has no such tab, and a
+            // guest sees only what it may act on.
+            let offered = move || {
+                crate::commands::offered(
+                    command,
+                    workspace.has_crons.get(),
+                    workspace.has_webhooks.get(),
+                ) && (!workspace.is_guest() || crate::commands::offered_to_guest(command))
+            };
             view! {
-                // An icon each, the label on the current tab only, so the
-                // seven fit on one line (docs/site/specs/web-polish.md, B10).
+                // An icon each, the label on the current tab only; on a
+                // phone the strip scrolls sideways
+                // (docs/site/specs/session-schedules.md, section 3).
+                <Show when=offered>
                 <button
                     type="button"
                     role="tab"
@@ -4457,6 +4516,7 @@ fn session_tabs(workspace: Workspace) -> impl IntoView {
                         aria-hidden="true"
                     ></span>
                 </button>
+                </Show>
             }
         })
         .collect_view();
@@ -4619,6 +4679,8 @@ fn Sheet(workspace: Workspace) -> impl IntoView {
         Some(Panel::AgentCommand) => "The agent's command",
         Some(Panel::Modes) => "Permission mode",
         Some(Panel::Background) => "Background calls",
+        Some(Panel::Schedules) => "Schedules",
+        Some(Panel::Webhooks) => "Webhooks",
         Some(Panel::Skills) => "Skills",
         Some(Panel::Permissions) => "Permissions",
         Some(Panel::Message) => {
@@ -4723,6 +4785,8 @@ fn Sheet(workspace: Workspace) -> impl IntoView {
                             Some(Panel::AgentCommand) => agent_command_sheet(workspace).into_any(),
                             Some(Panel::Modes) => modes_sheet(workspace).into_any(),
                             Some(Panel::Background) => background_sheet(workspace).into_any(),
+                            Some(Panel::Schedules) => session_schedules::schedules_sheet(workspace).into_any(),
+                            Some(Panel::Webhooks) => session_schedules::webhooks_sheet(workspace).into_any(),
                             Some(Panel::Skills) => skills_sheet(workspace).into_any(),
                             Some(Panel::Permissions) => permissions_sheet(workspace).into_any(),
                             Some(Panel::Message) => message_sheet(workspace).into_any(),

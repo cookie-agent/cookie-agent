@@ -508,9 +508,11 @@ impl App {
         }
     }
 
-    /// Fetches `crons.list` for the open panel.
-    pub(super) fn poll_crons(&mut self) {
-        if self.modal != Modal::Cron || !self.cron_panel.refresh.start() {
+    /// Fetches `crons.list`, kept whether or not the panel is open: the
+    /// bottom bar's clock reads it (docs/site/specs/session-schedules.md,
+    /// D4).
+    pub(in crate::ui) fn poll_crons(&mut self) {
+        if !self.daemon_has_crons() || !self.cron_panel.refresh.start() {
             return;
         }
         let client = self.client.clone();
@@ -526,6 +528,17 @@ impl App {
 
     pub(in crate::ui) fn install_cron_listing(&mut self, result: Result<CronsListResult, String>) {
         let again = self.cron_panel.refresh.landed();
+        // The session on screen's own jobs first.
+        let result = match (result, self.selected_session_meta()) {
+            (Ok(mut listing), Some(session)) => {
+                listing.jobs = cookie_agent_client_state::session_schedules::jobs_own_first(
+                    session,
+                    std::mem::take(&mut listing.jobs),
+                );
+                Ok(listing)
+            }
+            (result, _) => result,
+        };
         self.cron_panel.install(result);
         if again {
             self.poll_crons();

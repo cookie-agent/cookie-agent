@@ -533,6 +533,17 @@ impl App {
         result: Result<WebhooksListResult, String>,
     ) {
         let again = self.webhook_panel.refresh.landed();
+        // The session on screen's own webhooks first.
+        let result = match (result, self.selected_session_meta()) {
+            (Ok(mut listing), Some(session)) => {
+                listing.webhooks = cookie_agent_client_state::session_schedules::webhooks_own_first(
+                    session,
+                    std::mem::take(&mut listing.webhooks),
+                );
+                Ok(listing)
+            }
+            (result, _) => result,
+        };
         self.webhook_panel.install(result);
         if again {
             self.poll_webhooks();

@@ -44,6 +44,14 @@ pub struct WebhookRevealed {
     pub created: bool,
 }
 
+/// What a confirmation on a webhook's page asks.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WebhookConfirm {
+    Delete,
+    RotateUrl,
+    RotateSecret,
+}
+
 /// An open webhook's tabs (docs/site/specs/webhooks-view.md, H2).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum WebhookTab {

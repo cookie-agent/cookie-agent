@@ -911,6 +911,14 @@ When pricing is available, the bottom bar also shows the selected session's
 estimated cost between the permission mode and context usage. Click the cost to
 open the `/usage` dashboard. Unpriced sessions omit the segment.
 
+While a [cron job](#scheduled-prompts) fires into the session on screen, the bottom bar
+shows `◷` and the time to its next fire after the permission mode (`◷ 12m`,
+`◷ 3h · 2` for two jobs, `◷ queued` while a fire waits for the running
+turn); it is the first to give way when the bar is narrow. `/cron` and
+`/webhooks` list the session on screen's own jobs and webhooks first: those
+that fire or deliver into it, those an agent made in it, and the one that
+started it.
+
 The left of the bottom bar shows the session's project while no run is
 active (see [Projects](#projects)), then the runtimes the selected session,
 or a new session before its first prompt, attaches besides `global`. With one, it

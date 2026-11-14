@@ -171,6 +171,7 @@ nav:
   - Specs:
       - Status and scope: specs/index.md
       - Implemented:
+          - "A session's schedules and webhooks": specs/session-schedules.md
           - "The Webhooks view, polished, and titles for webhook sessions": specs/webhooks-view.md
           - "Web polish: a second pass after Quiet Ink": specs/web-polish.md
           - Webhooks: specs/webhooks.md

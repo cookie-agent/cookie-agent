@@ -30,6 +30,10 @@ pub enum Command {
     Skills,
     /// The background calls, to stop one.
     Background,
+    /// The session's cron jobs (docs/site/specs/session-schedules.md).
+    Schedules,
+    /// The session's webhooks.
+    Webhooks,
     /// The session's runtimes and the daemon's machines.
     Runtime,
     /// The session's permission overrides.
@@ -112,6 +116,20 @@ pub const MENU: &[MenuEntry] = &[
         description: "The calls running in the background; stop one",
     },
     MenuEntry {
+        command: Command::Schedules,
+        id: "schedules",
+        label: "Schedules",
+        icon: icondata::LuAlarmClock,
+        description: "The cron jobs that fire into this session, and those made here",
+    },
+    MenuEntry {
+        command: Command::Webhooks,
+        id: "webhooks",
+        label: "Webhooks",
+        icon: icondata::LuWebhook,
+        description: "The webhooks that deliver into this session, and those made here",
+    },
+    MenuEntry {
         command: Command::Runtime,
         id: "runtime",
         label: "Runtimes",
@@ -153,8 +171,8 @@ pub const MENU: &[MenuEntry] = &[
 /// (`has_webhooks`, client protocol 1.96.0).
 pub const fn offered(command: Command, has_crons: bool, has_webhooks: bool) -> bool {
     match command {
-        Command::Schedule => has_crons,
-        Command::Webhook => has_webhooks,
+        Command::Schedule | Command::Schedules => has_crons,
+        Command::Webhook | Command::Webhooks => has_webhooks,
         _ => true,
     }
 }
@@ -165,7 +183,13 @@ pub const fn offered(command: Command, has_crons: bool, has_webhooks: bool) -> b
 pub const fn offered_to_guest(command: Command) -> bool {
     !matches!(
         command,
-        Command::Rename | Command::Share | Command::Schedule | Command::Webhook | Command::Preset
+        Command::Rename
+            | Command::Share
+            | Command::Schedule
+            | Command::Schedules
+            | Command::Webhook
+            | Command::Webhooks
+            | Command::Preset
     )
 }
 
@@ -223,6 +247,8 @@ mod tests {
             Command::Goal,
             Command::Schedule,
             Command::Webhook,
+            Command::Schedules,
+            Command::Webhooks,
             Command::Skills,
             Command::Background,
             Command::Runtime,

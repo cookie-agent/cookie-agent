@@ -167,6 +167,65 @@ async fn bottom_bar_renders_cwd_context_and_narrow_degradation_order() {
 }
 
 #[tokio::test]
+async fn bottom_bar_shows_the_next_fire_into_the_session_and_drops_it_first() {
+    let mut app = test_app().await;
+    let session = SessionId::new_v7();
+    app.selected = Some(session);
+    app.sessions = vec![session_meta(session)];
+    app.store.sessions.insert(
+        session,
+        SessionState {
+            context_tokens: Some(48_200),
+            estimated_cost_usd: Some(0.18),
+            runtime_attachments: local_workspace_attachments(),
+            ..SessionState::default()
+        },
+    );
+    let mut descriptor = model_descriptor();
+    descriptor.capabilities.context_tokens = 200_000;
+    app.models = vec![descriptor];
+    app.draft = Some(RunSelection {
+        agent: agent_id(),
+        model: ModelSelection {
+            model: model_key(),
+            variant: None,
+        },
+        preset: None,
+        acp_runtime: None,
+    });
+    let no_job = rendered_row(&mut app, 100, 24, 23);
+    assert!(!no_job.contains('◷'), "{no_job}");
+
+    let next = jiff::Timestamp::now()
+        .checked_add(jiff::SignedDuration::from_mins(210))
+        .expect("a time");
+    let job: cookie_agent_protocol::CronJob = serde_json::from_value(serde_json::json!({
+        "id": "k3v9q2xa",
+        "prompt": "Summarize the day.",
+        "schedule": {"cron": "0 9 * * *"},
+        "max_runs": "unlimited",
+        "target": {"session": session.to_string()},
+        "enabled": true,
+        "created_by": "user",
+        "created_at": "2026-10-22T18:00:00Z",
+        "next_fire": next.to_string(),
+    }))
+    .expect("job");
+    app.install_cron_listing(Ok(cookie_agent_protocol::CronsListResult {
+        jobs: vec![job],
+        firing: true,
+    }));
+    let wide = rendered_row(&mut app, 100, 24, 23);
+    assert!(wide.contains("◷ 3h"), "{wide}");
+    // Narrower, the clock gives way before the cost.
+    let narrow = rendered_row(&mut app, 45, 24, 23);
+    assert!(
+        narrow.contains("$0.18") && !narrow.contains('◷'),
+        "{narrow}"
+    );
+}
+
+#[tokio::test]
 async fn bottom_bar_leads_with_where_the_daemon_runs_and_its_notices_stay_shown() {
     let mut app = test_app().await;
     let session = SessionId::new_v7();

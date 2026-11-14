@@ -50,16 +50,10 @@ const GROUP: &str = "pt-3 text-xs font-semibold tracking-wide text-muted upperca
 /// The ⋯ of a row, kept clear of the row's open button under it.
 const MORE: &str = "relative z-[1] inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-lg text-muted transition-colors hover:bg-hover hover:text-fg active:bg-press lg:min-h-9 lg:min-w-9";
 
-/// What a confirmation on a webhook's page asks.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Confirm {
-    Delete,
-    RotateUrl,
-    RotateSecret,
-}
+use crate::workspace::WebhookConfirm as Confirm;
 
 pub fn webhooks_page(workspace: Workspace) -> impl IntoView {
-    let confirm = RwSignal::new(None::<(WebhookId, Confirm)>);
+    let confirm = workspace.webhook_confirm;
     let menu = RwSignal::new(None::<WebhookId>);
     let context = RwSignal::new(None::<(WebhookId, f64, f64)>);
     // The form renders once per opening: its fields keep what is typed.
@@ -301,8 +295,10 @@ fn menu_items(
             let id = webhook.id.clone();
             Callback::new(move |()| {
                 // The confirmation is on the webhook's page.
-                if workspace.webhook_selected.get_untracked() != Some(id.clone()) {
-                    workspace.show_webhook(id.clone());
+                if workspace.webhook_selected.get_untracked() != Some(id.clone())
+                    || workspace.view.get_untracked() != View::Webhooks
+                {
+                    workspace.open_webhook(id.clone());
                 }
                 confirm.set(Some((id.clone(), what)));
             })
@@ -352,7 +348,7 @@ fn menu_items(
 }
 
 /// A webhook's row (H1): a press opens its page.
-fn webhook_row(
+pub(super) fn webhook_row(
     workspace: Workspace,
     webhook: Webhook,
     confirm: RwSignal<Option<(WebhookId, Confirm)>>,
@@ -367,7 +363,7 @@ fn webhook_row(
     let items = menu_items(workspace, &webhook, confirm);
     let open = {
         let id = id.clone();
-        move |_| workspace.show_webhook(id.clone())
+        move |_| workspace.open_webhook(id.clone())
     };
     let opened_context = {
         let id = id.clone();

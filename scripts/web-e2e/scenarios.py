@@ -3848,6 +3848,53 @@ def webhooks(browser):
     print("webhooks: a GitHub preset fills a new-session webhook, its sessions titled")
 
 
+def session_schedules(browser):
+    """A session's schedules and webhooks
+    (docs/site/specs/session-schedules.md): a job firing into the open
+    session puts a clock in its title bar, which opens the session panel's
+    Schedules tab listing the job; the Webhooks tab lists a webhook that
+    delivers into the session; deleting the job from the tab asks first and
+    takes the clock away."""
+    browser.resize(1280, 900)
+    new_session(browser)
+    send(browser, "a session with schedules")
+    idle(browser)
+    session = open_session_id(browser)
+    cli = lambda *args: subprocess.run([COOKIE, *args], check=True, env=dict(os.environ, HOME=HOME),
+                                       stdout=subprocess.DEVNULL)
+    cli("cron", "create", "--session", session, "--schedule", "0 9 * * *",
+        "--prompt", "Summarize the day.", "--name", "E2E daily")
+    browser.wait("the clock", lambda: count(browser, "#schedule-badge") == 1)
+    assert browser.text("#schedule-badge [data-schedule-next]").strip() != ""
+    browser.click("#schedule-badge")
+    browser.wait("the Schedules tab", lambda: count(browser, "[data-session-schedules] [data-session-job]") == 1)
+    assert "E2E daily" in browser.text("[data-session-schedules]")
+    assert browser.script(
+        "return document.querySelector('[data-session-tab=schedules]').getAttribute('aria-selected')"
+    ) == "true"
+    browser.shot("session-schedules")
+    print("session schedules: a job firing into the session shows its clock and its tab")
+
+    # The Webhooks tab: empty, then the webhook that delivers here.
+    browser.click("[data-session-tab=webhooks]")
+    browser.wait("the empty Webhooks tab", lambda: count(browser, "[data-session-webhooks-empty]") == 1)
+    cli("webhook", "create", "--session", session, "--name", "E2E session hook")
+    browser.wait("its webhook", lambda: count(browser, '[data-session-webhooks] [data-webhook][data-title="E2E session hook"]') == 1)
+    browser.shot("session-webhooks")
+    print("session schedules: the Webhooks tab lists a webhook that delivers here")
+
+    # Deleting the job from its tab asks first; the clock goes with it.
+    browser.click("[data-session-tab=schedules]")
+    browser.wait("the job again", lambda: count(browser, "[data-session-job]") == 1)
+    browser.click("[data-session-job] [data-row-menu]")
+    browser.click("[data-row-menu-list] [data-menu-item='delete']")
+    browser.wait("the confirmation", lambda: count(browser, "[data-job-confirm]") == 1)
+    browser.click("[data-job-delete]")
+    browser.wait("the job gone", lambda: count(browser, "[data-session-job]") == 0
+                 and count(browser, "#schedule-badge") == 0)
+    print("session schedules: deleting the job asks first, and its clock goes")
+
+
 def deleting(browser):
     """Deleting a session from its row: the trash on hover, the inline
     confirmation naming it, a running session refused with the daemon's
@@ -4734,8 +4781,8 @@ def desktop_layout(browser):
     # The session's actions, then what opens in the session panel
     # (docs/site/specs/web-polish.md, P4).
     assert names == [
-        "rename", "compact", "share", "schedule", "webhook", "preset", "goal", "skills", "background", "runtime",
-        "permissions", "usage", "events",
+        "rename", "compact", "share", "schedule", "webhook", "preset", "goal", "skills", "background", "schedules",
+        "webhooks", "runtime", "permissions", "usage", "events",
     ], names
     for name, text, icon in entries:
         assert icon and "/" not in text, (name, text, icon)
@@ -5080,8 +5127,13 @@ for (const element of document.querySelectorAll(
       height: rect.height + reach('top') + reach('bottom'),
     };
   }
-  // Cut off by the edge of the screen, which `overflow: hidden` hides.
-  if (rect.right > innerWidth + 1 || rect.left < -1) {
+  // Cut off by the edge of the screen, which `overflow: hidden` hides; one
+  // in a strip that scrolls sideways (the session panel's tabs) scrolls
+  // into reach.
+  let scroller = element.parentElement;
+  while (scroller && !(['auto', 'scroll'].includes(getComputedStyle(scroller).overflowX)
+      && scroller.scrollWidth > scroller.clientWidth)) scroller = scroller.parentElement;
+  if (!scroller && (rect.right > innerWidth + 1 || rect.left < -1)) {
     small.push('cut off: ' + element.tagName.toLowerCase() + ' "'
       + (element.innerText || element.getAttribute('aria-label') || '').slice(0, 30) + '"');
     continue;
@@ -5115,7 +5167,7 @@ SHEETS = [
     ("modes", ["#permission-mode"]),
 ] + [
     (name, ["main button[aria-label=Commands]", "#sheet [data-command=%s]" % name])
-    for name in ("compact", "goal", "skills", "background", "runtime", "permissions", "usage", "events", "preset")
+    for name in ("compact", "goal", "skills", "background", "schedules", "webhooks", "runtime", "permissions", "usage", "events", "preset")
 ]
 SCRIPTED = [
     ("view-%s" % name, ["#sidebar [data-view=%s]" % name])
@@ -7713,6 +7765,7 @@ SCENARIOS = [
     ("renaming", renaming, "chat", ["basics"]),
     ("cron", cron_jobs, "chat", []),
     ("webhooks", webhooks, "chat", []),
+    ("session_schedules", session_schedules, "chat", []),
     ("deleting", deleting, "chat", []),
     ("projects", projects, "chat", ["basics", "composer"]),
     ("narrow", narrow, "chat", []),

@@ -712,8 +712,23 @@ impl App {
         );
         let mode = mode_label.as_str();
         let hint = "ctrl+p commands";
+        // The next fire of a cron job into the session on screen, or one
+        // waiting there (docs/site/specs/session-schedules.md, D4).
+        let fire = self.viewed_session().and_then(|session| {
+            cookie_agent_client_state::session_schedules::next_fire(session, self.cron_panel.jobs())
+                .map(|next| {
+                    format!(
+                        "◷ {}",
+                        cookie_agent_client_state::session_schedules::next_fire_text(
+                            &next,
+                            jiff::Timestamp::now()
+                        )
+                    )
+                })
+        });
         #[derive(Clone, Copy)]
         struct Candidate<'a> {
+            fire: Option<&'a str>,
             cost: Option<&'a str>,
             cache: Option<&'a str>,
             context: Option<&'a str>,
@@ -721,6 +736,10 @@ impl App {
         }
         let render_candidate = |candidate: Candidate<'_>| {
             let mut rendered = mode.to_owned();
+            if let Some(fire) = candidate.fire {
+                rendered.push_str("    ");
+                rendered.push_str(fire);
+            }
             if let Some(cost) = candidate.cost {
                 rendered.push_str("    ");
                 rendered.push_str(cost);
@@ -739,16 +758,25 @@ impl App {
             }
             rendered
         };
-        // What gives way first: the hint, the cost, the cache, the
-        // context's percentage, then the context.
-        let mut candidates = Vec::with_capacity(6);
+        // What gives way first: the hint, the next fire, the cost, the
+        // cache, the context's percentage, then the context.
+        let mut candidates = Vec::with_capacity(7);
         candidates.push(Candidate {
+            fire: fire.as_deref(),
             cost: cost.as_deref(),
             cache: cache_text,
             context: context_with_percentage.as_deref(),
             hint: true,
         });
         candidates.push(Candidate {
+            fire: fire.as_deref(),
+            cost: cost.as_deref(),
+            cache: cache_text,
+            context: context_with_percentage.as_deref(),
+            hint: false,
+        });
+        candidates.push(Candidate {
+            fire: None,
             cost: cost.as_deref(),
             cache: cache_text,
             context: context_with_percentage.as_deref(),
@@ -756,6 +784,7 @@ impl App {
         });
         if cost.is_some() {
             candidates.push(Candidate {
+                fire: None,
                 cost: None,
                 cache: cache_text,
                 context: context_with_percentage.as_deref(),
@@ -764,6 +793,7 @@ impl App {
         }
         if cache_text.is_some() && context_with_percentage.is_some() {
             candidates.push(Candidate {
+                fire: None,
                 cost: None,
                 cache: None,
                 context: context_with_percentage.as_deref(),
@@ -772,6 +802,7 @@ impl App {
         }
         if context_with_percentage != context {
             candidates.push(Candidate {
+                fire: None,
                 cost: None,
                 cache: None,
                 context: context.as_deref(),
@@ -779,6 +810,7 @@ impl App {
             });
         }
         candidates.push(Candidate {
+            fire: None,
             cost: None,
             cache: None,
             context: None,
@@ -826,6 +858,10 @@ impl App {
         let mut cost_span = None;
         let mut cache_span = None;
         if let Some(candidate) = selected {
+            if let Some(fire) = candidate.fire {
+                spans.push(Span::styled("    ", self.theme.muted()));
+                spans.push(Span::styled(fire.to_owned(), self.theme.muted()));
+            }
             if let Some(cost) = candidate.cost {
                 spans.push(Span::styled("    ", self.theme.muted()));
                 cost_span = Some(spans.len());

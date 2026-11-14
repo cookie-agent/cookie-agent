@@ -79,7 +79,7 @@ pub use projects::{EditorFields, ProjectEditor};
 pub use provider_sign_in::{PASTE_BACK_STEPS, ProviderSignIn, page_on_loopback};
 pub use selection::{PickState, Picked};
 pub use shares::ShareDialog;
-pub use webhook::{WebhookEventOpen, WebhookForm, WebhookRevealed, WebhookTab};
+pub use webhook::{WebhookConfirm, WebhookEventOpen, WebhookForm, WebhookRevealed, WebhookTab};
 
 /// How long usage events settle before the status bar's cost is read again.
 const COST_DEBOUNCE: Duration = Duration::from_millis(250);
@@ -100,6 +100,10 @@ pub enum Panel {
     /// Compacting the context, with an optional focus.
     Compact,
     Background,
+    /// The open session's cron jobs (docs/site/specs/session-schedules.md).
+    Schedules,
+    /// The open session's webhooks.
+    Webhooks,
     Skills,
     Permissions,
     /// The permission mode picker.
@@ -450,6 +454,8 @@ pub struct Workspace {
     pub webhook_selected: RwSignal<Option<cookie_agent_protocol::WebhookId>>,
     /// The open webhook's tab.
     pub webhook_tab: RwSignal<WebhookTab>,
+    /// What a webhook's page asks before acting, from its ⋯ in any list.
+    pub webhook_confirm: RwSignal<Option<(cookie_agent_protocol::WebhookId, WebhookConfirm)>>,
     /// The webhook form, while it is open.
     pub webhook_form: RwSignal<Option<WebhookForm>>,
     /// Why the form was not sent, or a webhook action failed.
@@ -779,6 +785,7 @@ impl Workspace {
             webhooks: RwSignal::new(None),
             webhook_selected: RwSignal::new(None),
             webhook_tab: RwSignal::new(WebhookTab::Setup),
+            webhook_confirm: RwSignal::new(None),
             webhook_form: RwSignal::new(None),
             webhook_error: RwSignal::new(None),
             webhook_revealed: RwSignal::new(None),
@@ -3202,6 +3209,14 @@ impl Workspace {
             Command::Webhook => self.add_webhook(),
             Command::Skills => self.open_skills(String::new()),
             Command::Background => self.open_background(),
+            Command::Schedules => {
+                self.poll_crons();
+                self.panel.set(Some(Panel::Schedules));
+            }
+            Command::Webhooks => {
+                self.poll_webhooks();
+                self.panel.set(Some(Panel::Webhooks));
+            }
             Command::Runtime => self.open_runtimes(),
             Command::Permissions => self.open_permissions(),
             Command::Usage => {
