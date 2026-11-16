@@ -227,11 +227,14 @@ fn settings_page(workspace: Workspace, connection: Connection) -> impl IntoView 
         <div class="flex min-h-0 flex-1">
             // On a desktop the section list is the sidebar: Back to the
             // sessions at its top, the connection at its foot
-            // (docs/site/specs/web-polish.md, P6).
+            // (docs/site/specs/web-polish.md, P6), so the sidebar button
+            // shows and hides it.
             <nav
                 aria-label="Settings sections"
                 class="flex w-full shrink-0 flex-col gap-px overflow-y-auto p-2 sm:w-56 sm:border-r sm:border-line lg:w-64 lg:bg-surface-2"
                 class:hidden=move || workspace.shown_section().is_some() && workspace.narrow.get()
+                class:lg:hidden=move || !workspace.sidebar_pinned.get()
+                data-settings-sections
             >
                 <button
                     type="button"

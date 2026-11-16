@@ -4761,6 +4761,11 @@ def desktop_layout(browser):
             # to the sessions (docs/site/specs/web-polish.md, P6).
             assert not shown(browser, "#sidebar"), "the sidebar beside Settings"
             assert shown(browser, "#page [data-settings-back]"), "no way back from Settings"
+            # There the sidebar button hides and shows the section list.
+            browser.click("#page [data-sidebar-toggle]")
+            browser.wait("the sections hidden", lambda: not shown(browser, "[data-settings-sections]"))
+            browser.click("#page [data-sidebar-toggle]")
+            browser.wait("the sections back", lambda: shown(browser, "[data-settings-sections]"))
         else:
             assert shown(browser, "#sidebar"), "the sidebar left beside %s" % name
         assert not shown(browser, "#composer"), "the composer outside Chat"
