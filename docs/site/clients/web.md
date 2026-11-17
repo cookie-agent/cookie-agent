@@ -244,8 +244,9 @@ refreshes no longer change). Reset and Replace ask once more.
     The others have none. Unread titles are bold, read
     ones quieter. The time beside a title is the time the list orders by
     (`22h`, `1d`); its tooltip adds the last event's. On hover the time
-    gives way to the row's ⋮, rename, and delete, and the title ends before
-    them. A daemon
+    gives way to the row's ⋮, whose menu has every action of the row
+    (Rename first, then pin, move, mark read or unread, share, and
+    Delete… last), and the title ends before it. A daemon
     older than client protocol 1.9 does not say what a session waits on.
     A session a scheduled prompt started has a filled clock before its
     title, which names the job; click it to open the job in
@@ -326,21 +327,21 @@ refreshes no longer change). Reset and Replace ask once more.
   - **Renaming.** Click the title in the title bar, or choose ⋮ ›
     **Rename**, and the title becomes a field holding it: **Enter** saves
     and **Escape** (or clicking elsewhere) keeps the old title. In the
-    list, hover over a row for its pencil, beside the trash, which does
-    the same with the row's title. Empty the field for **Use the automatic
+    list, hover over a row and choose ⋮ › **Rename** (or right-click it),
+    which does the same with the row's title. Empty the field for **Use the automatic
     title**, which goes back to the title the daemon generates (as does
     Enter on an empty field). Every client sees the new title at once.
-  - **Deleting.** Hover over a session's row for its trash button (on a
-    touch screen, press the row for about half a second and let go; the
-    press never opens the session, scrolling cancels it, and it offers
-    the row's **⋮** and **Rename** too). A confirmation in the row
+  - **Deleting.** Hover over a session's row and choose ⋮ › **Delete…**,
+    or right-click it (on a touch screen, press the row for about half a
+    second and let go; the press never opens the session, scrolling
+    cancels it, and it lays out the row's other actions too). A confirmation in the row
     names the session; **Delete** removes it and its subagents from the
     daemon's disk, for good. The daemon refuses while the session tree
     runs, while another cookie process holds it, or when it changed since
     the list showed it; the row then shows the daemon's reason. A deleted
     session leaves every client's list, and a page showing it starts a new
     session. A daemon older than client protocol 1.5 cannot delete, and
-    the page offers no trash.
+    the menu offers no Delete.
   - **Selecting several.** The list's select button (in the tools row)
     turns its header into a selection bar: a click on a root
     session's row selects it or lets it go, **Shift**+click selects the
@@ -381,8 +382,7 @@ refreshes no longer change). Reset and Replace ask once more.
     touch screen, press it for about half a second) for its pencil, which
     opens the project editor, and its trash. **No project** has only its
     **+**. The folder button beside **New session** makes a new project.
-  - **Moving a session.** Hover over its row for its **⋮**, left of its
-    pencil (on a touch screen, press the row for half a second), and choose
+  - **Moving a session.** Hover over its row for its **⋮** (on a touch screen, press the row for half a second), and choose
     **Move to project…**, which lists the projects and **No project**.
     The ⋮ menu holds a row's less frequent actions: it opens under the
     button (a sheet from the bottom on a phone), the arrow keys move

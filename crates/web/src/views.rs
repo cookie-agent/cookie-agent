@@ -116,8 +116,8 @@ const CHIP: &str = "hit-area inline-flex h-8 min-w-0 max-w-[14rem] shrink-0 item
 /// A status bar indicator that does something when clicked.
 /// A small borderless icon button of the sidebar's session tools.
 const SIDEBAR_TOOL: &str = "hit-area inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted transition-colors hover:bg-hover hover:text-fg active:bg-press";
-/// A session row's buttons (move, rename, delete), which show only over
-/// the hovered (or focused) row: side by side, centred on its two lines,
+/// A session row's ⋮, which shows only over the hovered (or focused)
+/// row: centred on its two lines,
 /// laid over the row's right end on the row's hover colour, which fades in
 /// from their left. The row keeps its layout underneath: only the part
 /// they cover is hidden.
@@ -1510,7 +1510,7 @@ fn session_row(
                 // While its buttons show, the title ends before them; the
                 // badges' line keeps its width, so they do not refit on
                 // hover.
-                <span class=move || format!("flex w-full items-center gap-2 {}", if shown() { "pr-32" } else { "" })>
+                <span class=move || format!("flex w-full items-center gap-2 {}", if shown() { "pr-16" } else { "" })>
                     // In select mode, whether the row is selected.
                     <Show when=picking>
                         <span class="inline-flex shrink-0 text-accent" data-pick=move || picked().to_string()>
@@ -1602,9 +1602,9 @@ fn session_row(
                 </span>
             </button>
             // Shown while a mouse is over the row, or the keyboard is in
-            // it; a touch screen's long press offers them below. Their
-            // group grows leftwards: the ⋮ goes before the pencil, and
-            // rarer actions go in its menu.
+            // it; a touch screen's long press offers them below. One ⋮,
+            // whose menu has every action, Rename first and Delete last,
+            // as a right-click's has.
             <div
                 class=move || {
                     let shown = if shown() {
@@ -1616,33 +1616,7 @@ fn session_row(
                 }
                 data-row-actions
             >
-                {row_menu::row_menu(menu, session_id, session_id.to_string(), menu_label.clone(), ROW_ACTION, menu_items(false))}
-                <button
-                    type="button"
-                    class=ROW_ACTION
-                    aria-label="Rename the session"
-                    title="Rename the session"
-                    data-rename=session_id.to_string()
-                    on:click=move |_| actions.begin_rename(workspace, session_id)
-                >
-                    <Glyph icon=icondata::LuPencil />
-                </button>
-                <Show when=move || workspace.can_delete.get()>
-                    <button
-                        type="button"
-                        class=ROW_ACTION
-                        aria-label="Delete the session"
-                        title="Delete the session and its subagents"
-                        data-delete=session_id.to_string()
-                        on:click=move |_| {
-                            menu.set(None);
-                            revealed.set(None);
-                            confirming.set(Some(session_id));
-                        }
-                    >
-                        <Glyph icon=icondata::LuTrash2 />
-                    </button>
-                </Show>
+                {row_menu::row_menu(menu, session_id, session_id.to_string(), menu_label.clone(), ROW_ACTION, move || all_items(false))}
             </div>
             </Show>
         </div>

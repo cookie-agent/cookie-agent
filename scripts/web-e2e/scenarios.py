@@ -3719,13 +3719,22 @@ def long_press(browser, selector, hold=1200, drag=0):
     }])
 
 
-# A session row's middle and its trash's, and the trash's size.
-TRASH_GEOMETRY = """
+# A session row's middle and its ⋮'s, and the ⋮'s size.
+ROW_MENU_GEOMETRY = """
 const row = document.querySelector(arguments[0]);
 const open = row.querySelector('[data-session]').getBoundingClientRect();
-const box = row.querySelector('[data-delete]').getBoundingClientRect();
+const box = row.querySelector('[data-row-actions] [data-row-menu]').getBoundingClientRect();
 return [open.top + open.height / 2, box.top + box.height / 2, box.width, box.height];
 """
+
+
+def row_action(browser, row, item):
+    """Hovers session row `row` and picks `item` from its ⋮'s menu."""
+    hover(browser, row)
+    browser.wait("the ⋮ on hover", lambda: shown(browser, row + " [data-row-actions] [data-row-menu]"))
+    browser.click(row + " [data-row-actions] [data-row-menu]")
+    browser.wait("the row's menu", lambda: count(browser, "[data-row-menu-list] [data-menu-item='%s']" % item) == 1)
+    browser.click("[data-row-menu-list] [data-menu-item='%s']" % item)
 
 
 def webhook_row(name):
@@ -3910,14 +3919,16 @@ def deleting(browser):
     title = browser.text("#session-title")
     # The pointer away from the list: the row it last clicked may be this one.
     hover(browser, "#transcript")
-    assert not shown(browser, row + " [data-delete]"), "the trash shows without a hover"
+    assert not shown(browser, row + " [data-row-actions] [data-row-menu]"), "the ⋮ shows without a hover"
     hover(browser, row)
-    browser.wait("the trash on hover", lambda: shown(browser, row + " [data-delete]"))
-    # It is centred on the row's two lines, and a full touch target.
-    middle, trash_middle, width, height = browser.script(TRASH_GEOMETRY, row)
-    assert abs(middle - trash_middle) <= 1, "the trash is %s px off the row's middle" % (trash_middle - middle)
-    assert width >= 44 and height >= 44, "the trash is %sx%s px" % (width, height)
-    browser.click(row + " [data-delete]")
+    browser.wait("the ⋮ on hover", lambda: shown(browser, row + " [data-row-actions] [data-row-menu]"))
+    # It is the row's one button, centred on its two lines, and a full
+    # touch target.
+    assert count(browser, row + " [data-row-actions] button") == 1, "the row has more buttons than its ⋮"
+    middle, menu_middle, width, height = browser.script(ROW_MENU_GEOMETRY, row)
+    assert abs(middle - menu_middle) <= 1, "the ⋮ is %s px off the row's middle" % (menu_middle - middle)
+    assert width >= 44 and height >= 44, "the ⋮ is %sx%s px" % (width, height)
+    row_action(browser, row, "delete")
     browser.wait("the confirmation", lambda: title in browser.text("aside [data-delete-confirm-box]"))
     browser.shot("delete-confirm")
     browser.click('aside [data-delete-confirm="%s"]' % current)
@@ -3927,8 +3938,7 @@ def deleting(browser):
     assert count(browser, row) == 1
     browser.type("#composer", ESCAPE)
     idle(browser, "the cancelled run")
-    hover(browser, row)
-    browser.click(row + " [data-delete]")
+    row_action(browser, row, "delete")
     browser.click('aside [data-delete-confirm="%s"]' % current)
     browser.wait("the deleted row", lambda: count(browser, row) == 0, timeout=30)
     browser.wait("a new session", lambda: browser.text("#session-title") == "New session")
@@ -4656,22 +4666,11 @@ def session_badges(browser):
     print("badges: none, one machine and its workspaces, two machines; names stay whole")
 
 
-# A row's pencil and trash: the row's middle and the pencil's, its size,
-# and the gap between them.
-ROW_BUTTONS = """
-const row = document.querySelector(arguments[0]);
-const open = row.querySelector('[data-session]').getBoundingClientRect();
-const pencil = row.querySelector('[data-rename]'), trash = row.querySelector('[data-delete]');
-const p = pencil.getBoundingClientRect(), t = trash.getBoundingClientRect();
-return [open.top + open.height / 2, p.top + p.height / 2, p.width, p.height, t.left - p.right];
-"""
-
-
 def renaming(browser):
     """Renaming a session: the title bar's title edits in place (Enter
-    saves, Escape keeps it), ⋮ › Rename does the same, the row's pencil
-    beside its trash turns the row's title into a field, and an emptied
-    field offers the automatic title."""
+    saves, Escape keeps it), ⋮ › Rename does the same, the row's ⋮ ›
+    Rename turns the row's title into a field, and an emptied field offers
+    the automatic title."""
     session = open_session_id(browser)
     row = 'aside [data-session-row="%s"]' % session
     before = browser.text("#session-title")
@@ -4705,17 +4704,10 @@ def renaming(browser):
     browser.wait("the automatic title", lambda: browser.text("#session-title") not in ("Badges and titles", ""))
     print("⋮ › Rename and the automatic title:", browser.text("#session-title"))
 
-    # The row's pencil sits left of its trash, centred.
+    # The row's ⋮ › Rename turns its title into a field.
     hover(browser, "#transcript")
-    assert not shown(browser, row + " [data-rename]"), "the pencil shows without a hover"
-    hover(browser, row)
-    browser.wait("the pencil on hover", lambda: shown(browser, row + " [data-rename]"))
-    middle, pencil_middle, width, height, gap = browser.script(ROW_BUTTONS, row)
-    assert abs(middle - pencil_middle) <= 1, "the pencil is %s px off the row's middle" % (pencil_middle - middle)
-    assert width >= 44 and height >= 44, "the pencil is %sx%s px" % (width, height)
-    assert 0 <= gap <= 8, "the pencil is %s px from the trash" % gap
     original = browser.text(row + " [data-session-title]")
-    browser.click(row + " [data-rename]")
+    row_action(browser, row, "rename")
     field = row + " [data-rename-field]"
     browser.wait("the row's field", lambda: count(browser, field) == 1)
     browser.wait("the field's focus", lambda: browser.script(
@@ -4723,9 +4715,7 @@ def renaming(browser):
     browser.type(field, "Nope" + ESCAPE)
     browser.wait("the row again", lambda: count(browser, field) == 0)
     assert browser.text(row + " [data-session-title]") == original
-    hover(browser, row)
-    browser.wait("the pencil on hover", lambda: shown(browser, row + " [data-rename]"))
-    browser.click(row + " [data-rename]")
+    row_action(browser, row, "rename")
     browser.wait("the row's field", lambda: count(browser, field) == 1)
     set_text(browser, field, "Renamed from its row")
     browser.shot("rename-row")
@@ -4733,16 +4723,14 @@ def renaming(browser):
     browser.wait("the row's new title", lambda: browser.text(row + " [data-session-title]") == "Renamed from its row")
     browser.wait("the title bar's", lambda: browser.text("#session-title") == "Renamed from its row")
     # Emptied, the row offers the automatic title.
-    hover(browser, row)
-    browser.wait("the pencil on hover", lambda: shown(browser, row + " [data-rename]"))
-    browser.click(row + " [data-rename]")
+    row_action(browser, row, "rename")
     browser.wait("the row's field", lambda: count(browser, field) == 1)
     set_text(browser, field, "")
     browser.wait("the automatic title button", lambda: count(browser, row + " [data-rename-reset]") == 1)
     browser.shot("rename-row-empty")
     browser.click(row + " [data-rename-reset]")
     browser.wait("the automatic title", lambda: browser.text(row + " [data-session-title]") != "Renamed from its row")
-    print("renamed the session from its row's pencil, and back to its automatic title")
+    print("renamed the session from its row's ⋮, and back to its automatic title")
 
 
 def desktop_layout(browser):
@@ -5019,7 +5007,8 @@ def phone_layout():
         phone.click("main [data-sidebar-toggle]")
         row = '#sidebar [data-session="%s"]' % doomed
         phone.wait("the sessions", lambda: count(phone, row) == 1)
-        assert not shown(phone, '#sidebar [data-delete="%s"]' % doomed), "the hover trash shows on a phone"
+        assert not shown(phone, '#sidebar [data-session-row="%s"] [data-row-actions] [data-row-menu]' % doomed), \
+            "the hover ⋮ shows on a phone"
         long_press(phone, row, drag=40)
         time.sleep(0.3)
         assert count(phone, "#sidebar [data-delete-actions]") == 0, "a scroll still revealed the delete"
