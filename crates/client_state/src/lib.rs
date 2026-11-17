@@ -32,6 +32,7 @@ pub mod mcp;
 pub mod memory;
 pub mod model_draft;
 pub mod model_input;
+pub mod model_menu;
 mod model_names;
 pub mod onboarding;
 pub mod ownership;

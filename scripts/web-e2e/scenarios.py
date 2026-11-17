@@ -4865,6 +4865,21 @@ def desktop_layout(browser):
     click_row_button(browser, "#sheet .flex.flex-col", "Scripted Model", "button")
     browser.wait("the picked model", lambda: count(browser, "#sheet") == 0)
     assert "Scripted Model" in browser.text("#model-chip"), browser.text("#model-chip")
+    # The model menu's search takes the keys at once on a desktop, filters
+    # the list, and Enter chooses the first match.
+    browser.click("#model-chip")
+    browser.wait("the search field", lambda: browser.script(
+        "return document.activeElement && document.activeElement.hasAttribute('data-model-search')"
+    ))
+    set_text(browser, "#sheet [data-model-search]", "no such model")
+    browser.wait("no match", lambda: count(browser, "#sheet [data-model-none]") == 1)
+    set_text(browser, "#sheet [data-model-search]", "scripted")
+    browser.wait("the match", lambda: count(browser, "#sheet [data-model-list] [data-model]") >= 1
+                 and count(browser, "#sheet [data-model-none]") == 0)
+    assert count(browser, "#sheet [data-model-list] mark") >= 1, "the match is not marked"
+    browser.type("#sheet [data-model-search]", ENTER)
+    browser.wait("Enter chooses it", lambda: count(browser, "#sheet") == 0)
+    assert "Scripted Model" in browser.text("#model-chip"), browser.text("#model-chip")
     # The mode chip opens a picker of every mode; a click sets one.
     assert count(browser, "#permission-mode svg") == 2, "the mode chip has no chevron"
     for mode in ("auto-approve-n", "auto-approve-y", "ask", "yolo", "auto-approve"):

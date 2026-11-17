@@ -789,8 +789,13 @@ refreshes no longer change). Reset and Replace ask once more.
     offers it, two do, or its runtime is away) is dimmed with why and
     cannot be picked. The model chip names the model and its level
     (`Opus 5.5 · High`) and opens a menu of the models, each with the ID an
-    agent document's `models` writes in its tooltip, and at its foot the
-    **effort**: a sliding pill of the levels the model or agent offers
+    agent document's `models` writes in its tooltip. A search field at its
+    top filters them by name, provider, and ID as you type, marking the
+    match (on a desktop it takes the keys as the menu opens; ↑ ↓ move
+    through the matches and Enter chooses); the models scroll in a list of
+    their own, opened at the current one, a cookie agent's grouped under
+    their providers when there are several. Pinned at the foot, always in
+    view, is the **effort**: a sliding pill of the levels the model or agent offers
     (an ACP agent's effort option, or a model's variants in their order),
     which you drag, click, or step with the arrow keys; it warms in colour
     as the level rises, marks the default, and offers **Reset**. A model
@@ -798,9 +803,12 @@ refreshes no longer change). Reset and Replace ask once more.
     a list. Choosing another model keeps the level when it offers it. For
     an ACP agent a choice changes it on the agent (on a new session's
     draft, the values its session starts with; a draft offers what the
-    agent last started a session with); **All agent options** there lists
-    every option the agent offers (model, mode, effort) with its values,
-    the current one pressed. On a phone the agent, model, and mode are one
+    agent last started a session with). Above an ACP agent's effort, a
+    row of chips holds its other options (not its model, effort, or mode,
+    which have their places): a switch, such as *Fast mode*, lights when
+    on; a choice shows its value and opens its values above the row. The
+    row ends with **All options**, which lists every option the agent
+    offers with its values and what each does, the current one pressed. On a phone the agent, model, and mode are one
     chip, which opens one sheet with all three;
   - the approvals waiting, when there are any (click to answer them); each
     card shows the call and, when the approval reviewer passed it to you,

@@ -464,3 +464,13 @@ Each phase is looked at in light and dark at desktop and phone sizes
 - **Badges on every row** (the user, 2026-11-14), reversing Q2: a row
   shows its machine and folder whether or not they are its project's
   usual ones, and so does a session in no project.
+- **The model menu's search, built late** (the user, 2026-11-16). P4's
+  search field was missed in phase 2 and the notes did not say so. The
+  menu now has it, with its models in a scrolling list of their own,
+  grouped by provider when there are several, and its foot pinned: the
+  effort control, unchanged, and for an ACP agent a row of chips for its
+  other options (switches and choices; model, effort, and mode keep their
+  places) ending in **All options**, which replaces the "All agent
+  options" row. The field takes the keys on open on a desktop, not on a
+  phone; the phone's one composer sheet gets the same menu.
+

@@ -54,6 +54,7 @@ mod machines;
 mod manage;
 mod media_viewer;
 mod memory;
+mod model_menu;
 mod notifications;
 mod onboarding;
 mod projects;
@@ -5114,65 +5115,8 @@ fn acp_models_sheet(workspace: Workspace) -> impl IntoView {
             let options = workspace.acp_options();
             let model = cookie_agent_client_state::acp::model_option(&options).cloned();
             let effort = cookie_agent_client_state::acp::effort_option(&options).cloned();
-            let choose =
-                move |option: &cookie_agent_protocol::AcpConfigOption,
-                      value: &cookie_agent_protocol::AcpConfigValue| {
-                    let (option_id, value_id) = (option.id.clone(), value.value.clone());
-                    let label = format!("{}: {}", option.name, value.name);
-                    move |_| {
-                        workspace.choose_agent_option(
-                            option_id.clone(),
-                            value_id.clone(),
-                            label.clone(),
-                        );
-                        workspace.panel.set(None);
-                    }
-                };
-            let models = model.map(|option| {
-                option
-                    .values
-                    .iter()
-                    .map(|value| {
-                        let chosen = value.value == option.current_value;
-                        view! {
-                            <button
-                                type="button"
-                                class=ROW
-                                class:bg-sel=chosen
-                                title=value.value.clone()
-                                data-acp-model=value.value.clone()
-                                on:click=choose(&option, value)
-                            >
-                                {choice_line(value.name.clone(), chosen, "text-sm font-semibold")}
-                                {value.description.clone().map(|description| view! { <span class=NOTE>{description}</span> })}
-                            </button>
-                        }
-                    })
-                    .collect_view()
-            });
-            // The agent's effort as the effort control, in its order
-            // (docs/site/specs/web-polish.md, section 6); a level stays
-            // chosen without closing the menu.
-            let efforts = effort.map(|option| {
-                let levels = cookie_agent_client_state::effort::acp(&option);
-                let current = Some(option.current_value.clone());
-                let on_choose = Callback::new(move |id: String| {
-                    let Some(value) = option.values.iter().find(|value| value.value == id) else {
-                        return;
-                    };
-                    workspace.choose_agent_option(
-                        option.id.clone(),
-                        value.value.clone(),
-                        format!("{}: {}", option.name, value.name),
-                    );
-                });
-                view! {
-                    <div class="px-1 pt-2 pb-1">
-                        <effort::EffortControl levels current on_choose large=workspace.narrow.get_untracked() />
-                    </div>
-                }
-            });
-            if models.is_none() && efforts.is_none() {
+            let mode = cookie_agent_client_state::acp::mode_option(&options).cloned();
+            if model.is_none() && effort.is_none() {
                 let message = if options.is_empty() {
                     NO_AGENT_OPTIONS
                 } else {
@@ -5193,22 +5137,192 @@ fn acp_models_sheet(workspace: Workspace) -> impl IntoView {
                 }
                 .into_any();
             }
-            view! {
-                <div class="flex flex-col gap-0.5 border-b border-line pb-2">{models}</div>
+            let rows = model
+                .as_ref()
+                .map(|option| {
+                    option
+                        .values
+                        .iter()
+                        .map(|value| {
+                            let (option_id, value_id) = (option.id.clone(), value.value.clone());
+                            let label = format!("{}: {}", option.name, value.name);
+                            model_menu::MenuModel {
+                                id: value.value.clone(),
+                                name: value.name.clone(),
+                                provider: String::new(),
+                                description: value.description.clone(),
+                                chosen: value.value == option.current_value,
+                                pick: Callback::new(move |()| {
+                                    workspace.choose_agent_option(
+                                        option_id.clone(),
+                                        value_id.clone(),
+                                        label.clone(),
+                                    );
+                                    workspace.panel.set(None);
+                                }),
+                            }
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            // The agent's other options, as chips above the effort control;
+            // mode keeps the composer's chip.
+            let own = [&model, &effort, &mode]
+                .into_iter()
+                .flatten()
+                .map(|option| option.id.clone())
+                .collect::<Vec<_>>();
+            let others = options
+                .iter()
+                .filter(|option| !own.contains(&option.id))
+                .cloned()
+                .collect::<Vec<_>>();
+            // The agent's effort as the effort control, in its order
+            // (docs/site/specs/web-polish.md, section 6); a level stays
+            // chosen without closing the menu.
+            let efforts = effort.map(|option| {
+                let levels = cookie_agent_client_state::effort::acp(&option);
+                let current = Some(option.current_value.clone());
+                let on_choose = Callback::new(move |id: String| {
+                    let Some(value) = option.values.iter().find(|value| value.value == id) else {
+                        return;
+                    };
+                    workspace.choose_agent_option(
+                        option.id.clone(),
+                        value.value.clone(),
+                        format!("{}: {}", option.name, value.name),
+                    );
+                });
+                view! {
+                    <div class="px-1 pt-1">
+                        <effort::EffortControl levels current on_choose large=workspace.narrow.get_untracked() />
+                    </div>
+                }
+            });
+            let foot = view! {
+                {agent_option_chips(workspace, others)}
                 {efforts}
+            }
+            .into_any();
+            model_menu::model_menu(workspace, rows, true, Some(foot)).into_any()
+        },
+    )
+}
+
+/// An ACP agent's options other than its model, effort, and mode, as a
+/// row of chips pinned above the effort control: a switch lights when on,
+/// a choice shows its value and opens its values above the row, and **All
+/// options** opens the full sheet.
+fn agent_option_chips(
+    workspace: Workspace,
+    options: Vec<cookie_agent_protocol::AcpConfigOption>,
+) -> impl IntoView {
+    const CHIP: &str = "hit-area inline-flex h-7 shrink-0 items-center gap-1 rounded-full px-2.5 text-xs whitespace-nowrap text-fg-2 shadow-[inset_0_0_0_1px_var(--color-line-2)] transition-colors hover:bg-hover hover:text-fg aria-pressed:bg-accent-soft aria-pressed:text-accent aria-pressed:shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--color-accent)_45%,transparent)] aria-expanded:bg-hover";
+    // The choice whose values show above the row.
+    let open = RwSignal::new(None::<String>);
+    let choices = StoredValue::new(options.clone());
+    let values = move || {
+        let id = open.get()?;
+        let option =
+            choices.with_value(|options| options.iter().find(|option| option.id == id).cloned())?;
+        Some(view! {
+            <div class="mb-1.5 flex flex-col gap-0.5 rounded-lg bg-raised p-1 shadow-[0_0_0_1px_var(--color-line-2),0_6px_16px_rgb(0_0_0/0.12)]" role="menu" data-agent-option-values=option.id.clone()>
+                {option.values.iter().map(|value| {
+                    let chosen = value.value == option.current_value;
+                    let (option_id, value_id) = (option.id.clone(), value.value.clone());
+                    let label = format!("{}: {}", option.name, value.name);
+                    view! {
+                        <button
+                            type="button"
+                            role="menuitemradio"
+                            class=MENU_ROW
+                            class:bg-sel=chosen
+                            aria-checked=chosen.to_string()
+                            title=value.description.clone().unwrap_or_default()
+                            data-option-value=value.value.clone()
+                            on:click=move |_| {
+                                open.set(None);
+                                if !chosen {
+                                    workspace.choose_agent_option(option_id.clone(), value_id.clone(), label.clone());
+                                }
+                            }
+                        >
+                            {choice_line(value.name.clone(), chosen, "text-[0.8125rem]")}
+                        </button>
+                    }
+                }).collect_view()}
+            </div>
+        })
+    };
+    let chips = options
+        .into_iter()
+        .map(|option| {
+            let title = option.description.clone().unwrap_or_else(|| option.name.clone());
+            if option.kind == cookie_agent_protocol::AcpConfigOptionKind::Boolean {
+                let on = option.current_value == "true";
+                let (option_id, label) = (
+                    option.id.clone(),
+                    format!("{}: {}", option.name, if on { "off" } else { "on" }),
+                );
+                return view! {
+                    <button
+                        type="button"
+                        class=CHIP
+                        aria-pressed=on.to_string()
+                        title=title
+                        data-agent-option-chip=option.id.clone()
+                        on:click=move |_| workspace.set_agent_option(option_id.clone(), (!on).to_string(), label.clone())
+                    >
+                        {option.name.clone()}
+                    </button>
+                }
+                .into_any();
+            }
+            let current = option
+                .values
+                .iter()
+                .find(|value| value.value == option.current_value)
+                .map_or_else(|| option.current_value.clone(), |value| value.name.clone());
+            let id = option.id.clone();
+            let shown = {
+                let id = id.clone();
+                move || open.with(|open| open.as_deref() == Some(id.as_str()))
+            };
+            view! {
                 <button
                     type="button"
-                    class=ROW
-                    id="agent-options-more"
-                    on:click=move |_| workspace.panel.set(Some(Panel::AgentOptions))
+                    class=CHIP
+                    aria-expanded=move || shown().to_string()
+                    aria-haspopup="menu"
+                    title=title
+                    data-agent-option-chip=option.id.clone()
+                    on:click=move |_| open.update(|open| {
+                        *open = if open.as_deref() == Some(id.as_str()) { None } else { Some(id.clone()) };
+                    })
                 >
-                    {choice_line("All agent options".to_owned(), false, "text-sm")}
-                    <span class=NOTE>"Mode and the agent's other settings"</span>
+                    {format!("{}: {current}", option.name)}
+                    <Glyph icon=icondata::LuChevronUp class="text-[0.625rem] opacity-60" />
                 </button>
             }
             .into_any()
-        },
-    )
+        })
+        .collect_view();
+    view! {
+        {values}
+        <div class="mb-2 flex gap-1.5 overflow-x-auto px-1 py-1 [scrollbar-width:none] [mask-image:linear-gradient(to_right,#000_calc(100%-1.5rem),transparent)]" data-agent-option-chips>
+            {chips}
+            <button
+                type="button"
+                class=format!("{CHIP} text-muted")
+                id="agent-options-more"
+                title="Every option the agent offers, with what each does"
+                on:click=move |_| workspace.panel.set(Some(Panel::AgentOptions))
+            >
+                <Glyph icon=icondata::LuSlidersHorizontal class="text-xs" />
+                "All options"
+            </button>
+        </div>
+    }
 }
 
 /// The models to start the session with, built again as they change.
@@ -5276,24 +5390,20 @@ fn models_sheet_rows(workspace: Workspace) -> impl IntoView {
                     .carried(current_level.as_deref())
                     .and_then(|id| cookie_agent_protocol::VariantId::new(id).ok()),
             };
-            view! {
-                <button
-                    type="button"
-                    class=ROW
-                    class:bg-sel=chosen
-                    title=key.to_string()
-                    data-model=key.to_string()
-                    on:click=move |_| {
-                        workspace.pick_model(selection.clone());
-                        workspace.panel.set(None);
-                    }
-                >
-                    {choice_line(model.display_name.to_string(), chosen, "text-sm font-semibold")}
-                </button>
+            model_menu::MenuModel {
+                id: key.to_string(),
+                name: model.display_name.to_string(),
+                provider: key.provider_id().to_string(),
+                description: None,
+                chosen,
+                pick: Callback::new(move |()| {
+                    workspace.pick_model(selection.clone());
+                    workspace.panel.set(None);
+                }),
             }
         })
-        .collect_view();
-    // The current model's levels, at the foot.
+        .collect();
+    // The current model's levels, pinned at the foot.
     let foot = current.and_then(|current| {
         let model = models.iter().find(|model| model.key == current.model)?;
         let levels = cookie_agent_client_state::effort::native(model);
@@ -5308,17 +5418,16 @@ fn models_sheet_rows(workspace: Workspace) -> impl IntoView {
                 });
             }
         });
-        Some(view! {
-            <div class="mt-1 border-t border-line px-1 pt-3 pb-1">
-                <effort::EffortControl levels current=current_level.clone() on_choose large=workspace.narrow.get_untracked() />
-            </div>
-        })
+        Some(
+            view! {
+                <div class="px-1 pt-1">
+                    <effort::EffortControl levels current=current_level.clone() on_choose large=workspace.narrow.get_untracked() />
+                </div>
+            }
+            .into_any(),
+        )
     });
-    view! {
-        <div class="flex flex-col gap-0.5">{rows}</div>
-        {foot}
-    }
-    .into_any()
+    model_menu::model_menu(workspace, rows, false, foot).into_any()
 }
 
 /// The presets to start the session with, built again as they change.
