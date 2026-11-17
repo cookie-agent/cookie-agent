@@ -6117,7 +6117,8 @@ def projects(browser):
         "return [...document.querySelectorAll(arguments[0] + ' [data-row-actions] button')].map((b) => b.getAttribute('aria-label'))",
         row,
     )
-    assert order[:2] == ["More actions", "Rename the session"], order
+    # One button: the ⋮, whose menu holds Rename and Delete too.
+    assert order == ["More actions"], order
     browser.shot("project-row-buttons")
     opened = open_session_id(browser)
     menu = "aside [data-row-menu-list]"
@@ -6128,10 +6129,11 @@ def projects(browser):
     items = browser.script(
         "return [...document.querySelectorAll(arguments[0] + ' [role=menuitem]')].map((b) => b.innerText.trim())", menu
     )
-    # Pinning it, moving it, then marking it read or unread (whichever it
-    # is not).
-    assert items[:2] == ["Pin", "Move to project…"] and items[3:] == ["Share conversation…"], items
-    assert items[2] in ("Mark read", "Mark unread"), items
+    # Renaming it, pinning it, moving it, marking it read or unread
+    # (whichever it is not), sharing it, and deleting it last.
+    assert items[:3] == ["Rename", "Pin", "Move to project…"], items
+    assert items[4:] == ["Share conversation…", "Delete…"], items
+    assert items[3] in ("Mark read", "Mark unread"), items
     trigger, box = browser.script(
         "const r = (s) => document.querySelector(s).getBoundingClientRect();"
         "const t = r(arguments[0]), m = r(arguments[1]);"
@@ -6141,7 +6143,7 @@ def projects(browser):
     # By the ⋮ (under it, or over it near the window's foot), reaching at
     # least to its right edge, and on the screen.
     assert box[1] >= trigger[1] - 1 and box[2] >= 0, (trigger, box)
-    assert browser.script("return document.activeElement.dataset.menuItem") == "pin"
+    assert browser.script("return document.activeElement.dataset.menuItem") == "rename"
     assert browser.script("return document.querySelector(arguments[0]).getAttribute('aria-expanded')", row + " [data-row-menu]") == "true"
     browser.shot("project-row-menu")
     browser.type(menu + " [data-menu-item=move]", ESCAPE)
