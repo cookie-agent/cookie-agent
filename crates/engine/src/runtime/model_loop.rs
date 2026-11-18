@@ -397,8 +397,6 @@ impl Engine {
         // admit files for, reads its own context files, and composes its
         // own prompt.
         let acp = run_policy.acp_agent().is_some();
-        // It runs on the one attached runtime that offers it; a session
-        // with none or more than one is refused before the run starts.
         if let Some(offers) = run_policy.acp_agent() {
             self.place_acp_agent(params.session_id, offers)?;
         }
