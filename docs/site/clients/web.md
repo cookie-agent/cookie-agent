@@ -153,7 +153,18 @@ refreshes no longer change). Reset and Replace ask once more.
   Choosing a session (or New session) returns to the conversation, and so
   does browser Back from another view.
 - **Chat.** The title bar has the sidebar button, the session's title,
-  the session's live badges, and the ⋮ menu of the session's commands.
+  the session's ID, the session's live badges, and the ⋮ menu of the
+  session's commands.
+  The **ID** is the one other sessions and the CLI reach a session by
+  (`cookie cron create --session <id>`), small and muted after the title;
+  a click copies it, and it shows a check for a moment. A subagent's has
+  its handle before it, the name agents in its tree message it by, which a
+  click copies too. When the bar is narrow the ID gives way in its middle
+  (`01a1e57f…dfaf8acc`) before the title is cut, and still copies whole;
+  on a phone it is beside the session panel's heading instead, where it
+  also is on a desktop. ⋮ › **Copy session ID** copies it too, and a
+  session row's ⋮ and right-click menus have **Copy session ID** as well,
+  to copy a session's ID without opening it.
   The badges show what is live in the session, each only while it is: the
   goal with its checklist done (such as `3/5`), the calls running in the
   background, the approvals waiting, the prompt cache, the next fire of a

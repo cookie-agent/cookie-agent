@@ -1282,6 +1282,15 @@ impl App {
                 self.modal = Modal::Usage;
                 self.load_usage();
             }
+            SlashCommand::CopyId => match self.viewed_session() {
+                Some(session) => {
+                    self.copy_to_clipboard(session.to_string());
+                    if !self.status.starts_with("clipboard write failed") {
+                        self.status = format!("copied the session ID {session}");
+                    }
+                }
+                None => self.status = "open a session to copy its ID".into(),
+            },
             SlashCommand::About => {
                 self.modal = Modal::About;
                 self.about_panel.scroll = 0;

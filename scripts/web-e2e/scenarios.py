@@ -2103,6 +2103,11 @@ def session_depth(browser):
     browser.click(chevron)
     browser.wait("the unfolded tree", lambda: tree_state(browser) == "expanded")
     assert "helper" in browser.text("#session-title"), "the chevron left the open subagent"
+    # A subagent's title bar has its handle and its full ID, each to copy.
+    browser.wait("the subagent's handle", lambda: count(browser, "main [data-session-ids] [data-copy-id=handle]") == 1)
+    assert re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", browser.script(
+        "return document.querySelector('main [data-session-ids] [data-copy-id=session]').textContent"
+    ).strip()), "the subagent's ID is not a full ID"
     browser.shot("subagent")
     browser.click("main [data-crumb]")
     browser.wait("back at the root", lambda: browser.text("#session-title") == root_title)
@@ -4775,7 +4780,7 @@ def desktop_layout(browser):
     # The session's actions, then what opens in the session panel
     # (docs/site/specs/web-polish.md, P4).
     assert names == [
-        "rename", "compact", "share", "schedule", "webhook", "preset", "goal", "skills", "background", "schedules",
+        "rename", "compact", "share", "copy-id", "schedule", "webhook", "preset", "goal", "skills", "background", "schedules",
         "webhooks", "runtime", "permissions", "usage", "events",
     ], names
     for name, text, icon in entries:
@@ -4790,8 +4795,8 @@ def desktop_layout(browser):
     browser.wait("an open session", lambda: browser.text("#session-title") != "New session")
     # Rename edits the title in place (renaming), Schedule a prompt opens
     # the job form (cron), Add a webhook its form (webhooks), and share its
-    # dialog; the others open sheets.
-    for name in [name for name in names[1:] if name not in ("schedule", "webhook", "share")]:
+    # dialog, and Copy session ID copies; the others open sheets.
+    for name in [name for name in names[1:] if name not in ("schedule", "webhook", "share", "copy-id")]:
         menu(browser, name)
         browser.wait("the %s sheet" % name, lambda: count(browser, "#sheet [data-command]") == 0 and count(browser, "#sheet") == 1)
         assert page_view(browser) == "chat"
@@ -4853,6 +4858,19 @@ def desktop_layout(browser):
     click_row_button(browser, "#sheet .flex.flex-col", "Scripted Model", "button")
     browser.wait("the picked model", lambda: count(browser, "#sheet") == 0)
     assert "Scripted Model" in browser.text("#model-chip"), browser.text("#model-chip")
+    # The title bar shows the session's ID, which copies on a click.
+    session = open_session_id(browser)
+    chip = "main [data-session-ids] [data-copy-id=session]"
+    browser.wait("the session's ID", lambda: count(browser, chip) == 1)
+    assert browser.script("return document.querySelector(arguments[0]).textContent", chip).strip() == session
+    assert count(browser, "main [data-session-ids] [data-copy-id=handle]") == 0, "a root session has a handle"
+    browser.click(chip)
+    browser.wait("the copy said", lambda: "Session ID copied" in browser.text("#status")
+                 or "does not let the page copy" in browser.text("#status"))
+    # The session panel's heading has it too.
+    menu(browser, "usage")
+    browser.wait("the panel's ID", lambda: count(browser, "#sheet [data-session-ids] [data-copy-id=session]") == 1)
+    close_sheet(browser)
     # The model menu's search takes the keys at once on a desktop, filters
     # the list, and Enter chooses the first match.
     browser.click("#model-chip")
@@ -6132,7 +6150,7 @@ def projects(browser):
     # Renaming it, pinning it, moving it, marking it read or unread
     # (whichever it is not), sharing it, and deleting it last.
     assert items[:3] == ["Rename", "Pin", "Move to project…"], items
-    assert items[4:] == ["Share conversation…", "Delete…"], items
+    assert items[4:] == ["Share conversation…", "Copy session ID", "Delete…"], items
     assert items[3] in ("Mark read", "Mark unread"), items
     trigger, box = browser.script(
         "const r = (s) => document.querySelector(s).getBoundingClientRect();"

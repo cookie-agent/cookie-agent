@@ -16,6 +16,8 @@ pub enum Command {
     Rename,
     /// Make a link that lets someone else use the session.
     Share,
+    /// Copy the session's ID, which other sessions and the CLI reach it by.
+    CopyId,
     /// Compact the session's context, with an optional focus.
     Compact,
     /// Set the root session's goal, or pause, resume, or cancel it.
@@ -86,6 +88,13 @@ pub const MENU: &[MenuEntry] = &[
         label: "Share conversation",
         icon: icondata::LuShare2,
         description: "Make a link that lets someone else use this session",
+    },
+    MenuEntry {
+        command: Command::CopyId,
+        id: "copy-id",
+        label: "Copy session ID",
+        icon: icondata::LuCopy,
+        description: "Copy the ID other sessions and the CLI reach this session by",
     },
     MenuEntry {
         command: Command::Schedule,
@@ -243,6 +252,7 @@ mod tests {
         for command in [
             Command::Rename,
             Command::Share,
+            Command::CopyId,
             Command::Compact,
             Command::Goal,
             Command::Schedule,

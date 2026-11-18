@@ -965,3 +965,23 @@ fn transcript_code_blocks_copy_without_markers_or_line_numbers() {
         );
     }
 }
+
+#[tokio::test]
+async fn copy_id_copies_the_session_on_screen_and_says_so() {
+    let mut app = test_app().await;
+    let copied = Arc::new(Mutex::new(Vec::new()));
+    app.clipboard_sink = ClipboardSink::Capture(copied.clone());
+    app.run_command(crate::ui::slash::SlashCommand::CopyId)
+        .await;
+    assert!(
+        copied.lock().expect("clipboard").is_empty(),
+        "copied without a session"
+    );
+    let session = SessionId::new_v7();
+    app.selected = Some(session);
+    app.new_session_draft = None;
+    app.run_command(crate::ui::slash::SlashCommand::CopyId)
+        .await;
+    assert_eq!(*copied.lock().expect("clipboard"), [session.to_string()]);
+    assert!(app.status.contains(&session.to_string()), "{}", app.status);
+}

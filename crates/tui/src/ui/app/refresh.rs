@@ -1929,6 +1929,25 @@ impl App {
         let generation = self.usage_load_generation;
         self.usage_panel.begin_load();
         self.usage_panel.cache = self.cache_detail_lines();
+        // The session's ID, which /copy-id copies, and a subagent's handle.
+        self.usage_panel.ids = match (session_id, self.selected_session_meta()) {
+            (Some(id), meta) => {
+                let mut ids = vec![format!("Session ID  {id}   (/copy-id copies it)")];
+                if let Some(handle) = meta
+                    .filter(|meta| {
+                        matches!(
+                            meta.origin,
+                            cookie_agent_protocol::SessionOrigin::Delegated { .. }
+                        )
+                    })
+                    .and_then(|meta| meta.short_id.clone())
+                {
+                    ids.push(format!("Handle      {handle}"));
+                }
+                ids
+            }
+            (None, _) => Vec::new(),
+        };
         let client = self.client.clone();
         let updates = self.rpc_updates_tx.clone();
         self.spawn_rpc(async move {

@@ -61,6 +61,7 @@ mod projects;
 mod questions;
 mod restart;
 mod row_menu;
+mod session_id;
 mod session_rows;
 mod session_schedules;
 mod shares;
@@ -1375,6 +1376,18 @@ fn session_row(
                     danger: false,
                 });
             }
+            items.push(row_menu::MenuItem {
+                id: "copy-id",
+                label: "Copy session ID",
+                icon: icondata::LuCopy,
+                act: Callback::new(move |()| {
+                    if revealed_row {
+                        revealed.set(None);
+                    }
+                    workspace.copy_session_id(session_id);
+                }),
+                danger: false,
+            });
             items
         }
     };
@@ -2186,6 +2199,9 @@ fn TitleBar(workspace: Workspace) -> impl IntoView {
                         <span class="max-sm:sr-only">"read-only snapshot"</span>
                     </span>
                 </Show>
+                // The session's ID, to copy; a phone has it in the session
+                // panel's heading.
+                {session_id::session_ids(workspace, "max-sm:hidden")}
             </div>
             <shares::LinkBadge workspace=workspace />
             <Show when=move || !workspace.new_session.get()>
@@ -4726,7 +4742,13 @@ fn Sheet(workspace: Workspace) -> impl IntoView {
                     <div class="sticky top-0 z-10 flex flex-col border-b border-line bg-raised" class:border-b-0=anchored>
                         <span class="mx-auto mt-1.5 h-1 w-10 rounded-full bg-line-2 sm:hidden" aria-hidden="true"></span>
                         <div class="flex items-center gap-2 py-1 pr-1 pl-4" class:pl-3=anchored class:py-0=anchored>
-                            <h2 class=move || if anchored() { "flex-1 text-xs font-semibold text-muted" } else { "flex-1 text-[0.9375rem] font-semibold" }>{title}</h2>
+                            <h2 class=move || if anchored() { "shrink-0 text-xs font-semibold text-muted" } else { "shrink-0 text-[0.9375rem] font-semibold" }>{title}</h2>
+                            // The session panel's heading has the session's ID.
+                            <span class="flex min-w-0 flex-1">
+                                <Show when=session_tab>
+                                    {session_id::session_ids(workspace, "")}
+                                </Show>
+                            </span>
                             <button type="button" class=ICON_BUTTON aria-label="Close" title="Close" on:click=close>
                                 <Glyph icon=icondata::LuX class="text-lg" />
                             </button>

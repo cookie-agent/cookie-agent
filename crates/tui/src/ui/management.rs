@@ -356,6 +356,8 @@ pub(super) struct UsagePanel {
     /// The prompt cache's lines, as the status line's tooltip-less part
     /// would say them; empty without a cache clock.
     pub(super) cache: Vec<String>,
+    /// The session's ID and, for a subagent, its handle, at the top.
+    pub(super) ids: Vec<String>,
 }
 
 impl UsagePanel {
@@ -881,6 +883,15 @@ fn usage_panel_lines(panel: &UsagePanel, width: usize, theme: &Theme) -> Vec<Lin
     let stats = StatsWidths::from_usages(usages);
     let table = TableWidths::from_usages(usages);
     let mut lines = Vec::new();
+    if !panel.ids.is_empty() {
+        lines.extend(
+            panel
+                .ids
+                .iter()
+                .map(|line| Line::from(Span::styled(line.clone(), theme.body()))),
+        );
+        lines.push(Line::default());
+    }
     if !panel.cache.is_empty() {
         lines.push(Line::from(Span::styled("Prompt cache", theme.heading())));
         lines.extend(

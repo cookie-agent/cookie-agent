@@ -156,7 +156,8 @@ Esc in a step returns to the command list with the search intact.
 | `/rename` (also `title`) | Rename the selected session: `/rename <title>` sets the title, `/rename --auto` goes back to the generated title, and `/rename` alone asks for the title in a field holding the current one; see [Renaming](#renaming) |
 | `/skills` | Search user-invocable skills, pick one, then enter optional arguments; space switches the highlighted skill on or off for the agent (you can still run it); see [Skills](../extend/skills.md) |
 | `/attach` (also `file`, `image`) | Ask for a file's path and attach it to the next message; listed once a model is selected; see [Attachments](#attachments) |
-| `/usage` | Show selected-session and session-tree usage |
+| `/usage` | Show selected-session and session-tree usage, under the session's ID (and a subagent's handle) |
+| `/copy-id` (also `id`, `uuid`, `session-id`) | Copy the session's ID, which other sessions and the CLI reach it by, to the clipboard (through the terminal, as a selection copies) |
 | `/about` (also `version`, `licenses`, `notices`) | Show this TUI's version and client protocol, cookie's license, and the third-party notices: every crate cookie is built from, with its license and source, and the license texts |
 | `/cancel` | Cancel the active run |
 | `/goal` | Prompt for an objective and set the root session's goal; see [Goal mode](../sessions/goals.md) |

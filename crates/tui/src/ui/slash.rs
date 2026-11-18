@@ -56,6 +56,9 @@ pub(crate) enum SlashCommand {
     WebhooksNew,
     Permissions,
     Usage,
+    /// `/copy-id`: copies the session's ID, which other sessions and the
+    /// CLI reach it by.
+    CopyId,
     /// `/about`: versions, cookie's license, and the third-party notices.
     About,
     Sessions,
@@ -331,6 +334,13 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         aliases: &[],
         description: "show session and global token usage",
         action: PaletteAction::Run(SlashCommand::Usage),
+        writes_session: false,
+    },
+    CommandSpec {
+        name: "copy-id",
+        aliases: &["id", "uuid", "session-id"],
+        description: "copy this session's ID, which other sessions and the CLI reach it by",
+        action: PaletteAction::Run(SlashCommand::CopyId),
         writes_session: false,
     },
     CommandSpec {

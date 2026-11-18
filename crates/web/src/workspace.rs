@@ -3190,12 +3190,28 @@ impl Workspace {
         self.transcript.set(mode);
     }
 
+    /// Copies session `session`'s ID, saying so in the status line.
+    pub fn copy_session_id(self, session: SessionId) {
+        leptos::task::spawn_local(async move {
+            let done = crate::browser::copy_text(&session.to_string()).await;
+            self.status.set(if done {
+                "Session ID copied.".to_owned()
+            } else {
+                format!("This browser does not let the page copy; the session ID is {session}")
+            });
+        });
+    }
+
     /// Opens the sheet of a ⋮ menu entry.
     pub fn run_command(self, command: crate::commands::Command) {
         use crate::commands::Command;
         match command {
             Command::Rename => self.begin_title_edit(),
             Command::Share => self.open_session_share_dialog(),
+            Command::CopyId => match self.selected.get_untracked() {
+                Some(session) if !self.new_session.get_untracked() => self.copy_session_id(session),
+                _ => self.status.set("open a session to copy its ID".into()),
+            },
             Command::Compact => {
                 if self.selected.get_untracked().is_none() || self.new_session.get_untracked() {
                     self.status
