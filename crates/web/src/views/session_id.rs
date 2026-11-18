@@ -98,8 +98,11 @@ fn copy_chip(
 /// The open session's ID (and a subagent's handle before it), each copying
 /// itself; nothing while no session is open. `class` places the group.
 pub(super) fn session_ids(workspace: Workspace, class: &'static str) -> impl IntoView {
+    // Drawn again only when the ID or the handle changes, not on every
+    // change of the tree a running session makes.
+    let ids = Memo::new(move |_| open_ids(workspace));
     move || {
-        open_ids(workspace).map(|(id, handle)| {
+        ids.get().map(|(id, handle)| {
             view! {
                 <span class=format!("flex min-w-0 shrink-[4] items-center gap-0.5 {class}") data-session-ids>
                     {handle.map(|handle| copy_chip(workspace, "Handle", handle, "handle"))}
