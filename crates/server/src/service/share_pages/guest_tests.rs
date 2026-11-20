@@ -419,6 +419,29 @@ async fn get(port: u16, path: &str) -> (u16, String, String) {
     (status, head.to_ascii_lowercase(), body.to_owned())
 }
 
+#[test]
+fn the_guest_page_frames_its_viewers_whatever_its_opaque_origin() {
+    use cookie_agent_web_assets::{PDF_VIEWER_PATH, VIEWER_PATH};
+    for viewer in [VIEWER_PATH, PDF_VIEWER_PATH] {
+        let policy = super::guest_file_policy(viewer);
+        assert!(!policy.contains("frame-ancestors"), "{viewer}: {policy}");
+        // Still the viewer's own policy, sandboxed without the origin.
+        assert_eq!(
+            policy,
+            cookie_agent_web_assets::policy_of(viewer).replace("frame-ancestors 'self'; ", ""),
+        );
+        assert!(
+            policy.contains("sandbox allow-scripts"),
+            "{viewer}: {policy}"
+        );
+        assert!(!policy.contains("allow-same-origin"), "{viewer}: {policy}");
+    }
+    assert_eq!(
+        super::guest_file_policy("app.js"),
+        cookie_agent_web_assets::content_security_policy(),
+    );
+}
+
 #[tokio::test]
 async fn the_guest_page_runs_in_a_sandbox_and_its_files_answer_any_origin() {
     let daemon = daemon().await;

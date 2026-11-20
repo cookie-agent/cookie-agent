@@ -380,7 +380,11 @@ left open, or differs:
   [The machine on a tool call](tool-call-machines.md).)*
 - **Assets:** a guest reads the tree's own assets, and a project's or the
   shared store's by ID, which it cannot list or guess, rather than only those
-  the transcript shows.
+  the transcript shows. The guest page serves `viewer.html` and
+  `pdf-viewer.html` with their own policies minus `frame-ancestors`: the
+  page's origin is opaque, which no `frame-ancestors` source matches, `*`
+  included, so with one a guest's HTML pages and PDFs showed Chrome's error
+  page. The viewers stay sandboxed and hold nothing until the page sends it.
 - **The page reads its link's state from its own address.** A browser gives no
   reason for a socket that failed, so when one does the page fetches its own
   address: 404 shows "This link isn't available", and no answer keeps

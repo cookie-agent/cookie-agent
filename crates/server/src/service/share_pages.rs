@@ -186,18 +186,10 @@ pub(crate) async fn share_pages(State(state): State<WebSocketState>, request: Re
 /// A file of the guest page. Its page has an opaque origin, so every file it
 /// loads is another origin's and answers to any.
 fn app_file(file: &str, headers: &HeaderMap) -> Response {
-    // A frame of `viewer.html` is framed by the guest page, whose opaque
-    // origin is never `'self'`; nothing is in it until the page hands it over.
-    let framed = cookie_agent_web_assets::VIEWER_POLICY
-        .replace("frame-ancestors 'self'", "frame-ancestors *");
-    let policy = if file == cookie_agent_web_assets::VIEWER_PATH {
-        framed.as_str()
-    } else {
-        cookie_agent_web_assets::content_security_policy()
-    };
+    let policy = guest_file_policy(file);
     // `index.html` is the page itself, which is only served in its sandbox.
     let served = (file != "index.html")
-        .then(|| super::page::file(file, headers, policy))
+        .then(|| super::page::file(file, headers, &policy))
         .flatten();
     let Some(mut response) = served else {
         return gone();
@@ -207,6 +199,27 @@ fn app_file(file: &str, headers: &HeaderMap) -> Response {
         HeaderValue::from_static("*"),
     );
     response
+}
+
+/// The policy a file of the guest page is served with: the page's, or a
+/// viewer's own (`viewer.html` for HTML assets, `pdf-viewer.html` for
+/// PDFs) without its `frame-ancestors`. The guest page frames the viewers,
+/// and its origin is opaque, which no source in `frame-ancestors` matches,
+/// `*` included: with one, every page and PDF a guest opens is refused. A
+/// viewer is sandboxed and holds nothing until its page hands it over.
+fn guest_file_policy(file: &str) -> String {
+    let policy = cookie_agent_web_assets::policy_of(file);
+    if file != cookie_agent_web_assets::VIEWER_PATH
+        && file != cookie_agent_web_assets::PDF_VIEWER_PATH
+    {
+        return policy.to_owned();
+    }
+    policy
+        .split(';')
+        .map(str::trim)
+        .filter(|directive| !directive.starts_with("frame-ancestors"))
+        .collect::<Vec<_>>()
+        .join("; ")
 }
 
 /// The guest page: the web client's page, reading its files from

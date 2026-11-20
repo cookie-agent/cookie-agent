@@ -7625,6 +7625,56 @@ def share_link_of(browser, label):
     return '[data-session-link="%s"]' % link
 
 
+def guest_assets(browser):
+    """A guest opens the session's assets as the owner does: an HTML page's
+    card and the side panel frame `viewer.html` from the guest page, whose
+    origin is opaque, and the page runs in them."""
+    choose_transcript(browser, "reduced")
+    new_session(browser)
+    send(browser, "show a figure")
+    idle(browser, "the figure's call")
+    menu(browser, "share")
+    browser.wait("the share panel", lambda: count(browser, "#session-share-form") == 1)
+    browser.type("#session-share-label", "Alice")
+    browser.click("#session-share-create")
+    browser.wait("the link", lambda: count(browser, "[data-session-link]") == 1)
+    url = browser.script(
+        "return document.querySelector(arguments[0]).value",
+        share_link_of(browser, "Alice") + " [data-link-url]",
+    )
+    guest = Browser()
+    try:
+        guest.go(url)
+        guest.wait("the guest page", lambda: count(guest, "#guest-bar") == 1, timeout=40)
+        card = "#transcript [data-attach-row] [data-asset-view='page']"
+        guest.wait("the page's card", lambda: count(guest, card + "[data-shown='yes']") == 1, timeout=60)
+        assert page_runs(guest, card + " iframe[data-asset-frame]"), "the card's page did not run"
+        guest.click(card + " [data-action='asset-panel']")
+        frame = "#asset-panel iframe[data-asset-frame]"
+        guest.wait("the page in the panel", lambda: count(guest, frame) == 1, timeout=30)
+        assert page_runs(guest, frame), "the panel's page did not run"
+        print("a guest's HTML asset runs in its card and in the side panel")
+    finally:
+        guest.close()
+
+
+def page_runs(browser, frame):
+    """Whether the figure's page runs in the viewer frame `frame`: its
+    script writes `#state`. A viewer the page may not frame shows Chrome's
+    error page instead, and never does."""
+    element = browser.find(frame)
+    call("POST", browser.path("/frame"), {"id": {ELEMENT: element}})
+    try:
+        inner = call("POST", browser.path("/element"), {"using": "css selector", "value": "iframe"})[ELEMENT]
+        call("POST", browser.path("/frame"), {"id": {ELEMENT: inner}})
+        browser.wait("the page's script", lambda: browser.text("#state").startswith("ran"), timeout=20)
+        return True
+    except (RuntimeError, KeyError):
+        return False
+    finally:
+        call("POST", browser.path("/frame"), {"id": None})
+
+
 def guest_link(browser):
     """A conversation share: the owner makes links in one panel, and whoever
     opens one uses the session in a sandboxed page that cannot reach the
@@ -7811,6 +7861,7 @@ SCENARIOS = [
     ("sheet_stays_put", sheet_stays_put, "chat", []),
     ("reduced_transcript", reduced_transcript, "chat", []),
     ("asset_figures", asset_figures, "chat", []),
+    ("guest_assets", guest_assets, "chat", []),
     ("assets_tab", assets_tab, "chat", []),
     ("open_tool_header", open_tool_header, "chat", []),
     ("session_badges", session_badges, "chat", ["management", "runtime_cards"]),
