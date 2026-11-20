@@ -54,7 +54,7 @@ pub const RUNTIMES_POLL: Duration = Duration::from_secs(10);
 
 /// Sets `signal` to `value` only when that changes it: a poll that reads
 /// the same listing again wakes none of its readers.
-fn set_changed<T: PartialEq + Send + Sync + 'static>(signal: RwSignal<T>, value: T) {
+pub(super) fn set_changed<T: PartialEq + Send + Sync + 'static>(signal: RwSignal<T>, value: T) {
     if signal.with_untracked(|shown| *shown != value) {
         signal.set(value);
     }

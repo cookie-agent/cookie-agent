@@ -4513,6 +4513,28 @@ def sheet_stays_put(browser):
     assert kept == ["1", "goal"], "the streaming reply built the sheet again: %s" % kept
     print("the session menu kept its rows and its filter through the stream")
     close_sheet(browser)
+
+    # The Runtimes tab keeps a group's menu open and its folded groups
+    # unfolded through the stream.
+    menu(browser, "runtime")
+    tools = '#sheet .runtime-row[data-attachment="global"] [data-tools-row]'
+    browser.wait("the global row's tools", lambda: count(browser, tools) == 1, timeout=30)
+    browser.script("const more = document.querySelector(arguments[0] + ' [data-tool-group-more]'); if (more) more.click();", tools)
+    browser.wait("the groups unfolded", lambda: count(browser, tools + " [data-tool-group-more]") == 0)
+    browser.script("document.querySelector(arguments[0] + ' [data-tool-group]').click()", tools)
+    browser.wait("a group's menu", lambda: count(browser, "#sheet [data-tool-group-menu]") == 1)
+    browser.script("document.querySelector('#sheet [data-tool-group-menu]').dataset.marked = '1'")
+    before = len(browser.text("#transcript"))
+    time.sleep(1.5)
+    assert len(browser.text("#transcript")) > before, "the reply stopped streaming"
+    kept = browser.script(
+        "const menu = document.querySelector('#sheet [data-tool-group-menu]');"
+        "return [menu && menu.dataset.marked, document.querySelectorAll(arguments[0] + ' [data-tool-group-more]').length]",
+        tools,
+    )
+    assert kept == ["1", 0], "the streaming reply built the Runtimes tab again: %s" % kept
+    print("the Runtimes tab kept a group's menu open and its groups unfolded through the stream")
+    close_sheet(browser)
     idle(browser, "the reply's end", text="gamma 599 ")
 
 

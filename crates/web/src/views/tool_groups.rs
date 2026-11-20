@@ -148,11 +148,64 @@ pub fn tools_summary(workspace: Workspace) -> impl IntoView {
     }
 }
 
+/// What the user opened among the Runtimes tab's chips: the group whose
+/// menu shows, by attachment, and the attachments whose folded groups
+/// show. The tab owns it, not a row: a row is built again when its
+/// runtime's state changes, and what was open stays open.
+#[derive(Clone, Copy)]
+pub struct ChipsOpen {
+    menu: RwSignal<Option<(String, String)>>,
+    unfolded: RwSignal<Vec<String>>,
+}
+
+impl ChipsOpen {
+    pub fn new() -> Self {
+        Self {
+            menu: RwSignal::new(None),
+            unfolded: RwSignal::new(Vec::new()),
+        }
+    }
+
+    /// The selector of the group whose menu shows on `attachment`'s row.
+    fn menu_on(self, attachment: &str) -> Option<String> {
+        self.menu.with(|menu| {
+            menu.as_ref()
+                .filter(|(on, _)| on == attachment)
+                .map(|(_, selector)| selector.clone())
+        })
+    }
+
+    /// Opens the menu of `selector` on `attachment`'s row, or closes it
+    /// when it shows.
+    fn toggle(self, attachment: &str, selector: &str) {
+        self.menu.update(|menu| {
+            let shown = menu
+                .as_ref()
+                .is_some_and(|(on, open)| on == attachment && open == selector);
+            *menu = (!shown).then(|| (attachment.to_owned(), selector.to_owned()));
+        });
+    }
+
+    fn close(self) {
+        self.menu.set(None);
+    }
+
+    fn unfolded(self, attachment: &str) -> bool {
+        self.unfolded
+            .with(|unfolded| unfolded.iter().any(|on| on == attachment))
+    }
+
+    fn unfold(self, attachment: &str) {
+        if !self.unfolded(attachment) {
+            self.unfolded
+                .update(|unfolded| unfolded.push(attachment.to_owned()));
+        }
+    }
+}
+
 /// The Tools row of the attachment `attachment`: its groups as chips, the
 /// untouched ones folded, and the menu of the one opened.
-pub fn group_chips(workspace: Workspace, attachment: String) -> impl IntoView {
-    let open = RwSignal::new(None::<String>);
-    let unfolded = RwSignal::new(false);
+pub fn group_chips(workspace: Workspace, attachment: String, open: ChipsOpen) -> impl IntoView {
     move || {
         let groups = workspace.session_tools.with(|tools| match tools {
             Some(Ok(SessionToolsGetResult { groups, .. })) => groups
@@ -167,7 +220,7 @@ pub fn group_chips(workspace: Workspace, attachment: String) -> impl IntoView {
         }
         // Groups that are on and untouched fold into one chip.
         let (folded, shown): (Vec<_>, Vec<_>) = groups.iter().cloned().partition(|group| {
-            !unfolded.get()
+            !open.unfolded(&attachment)
                 && group.state == ToolGroupState::On
                 && group.layer == ExposureLayer::Default
                 && !group.hidden_by_permissions
@@ -199,10 +252,9 @@ pub fn group_chips(workspace: Workspace, attachment: String) -> impl IntoView {
                         data-tool-state=state_word(group.state)
                         title=title
                         disabled=hidden || workspace.is_guest()
-                        on:click=move |_| {
-                            open.update(|open| {
-                                *open = (open.as_deref() != Some(toggled.as_str())).then(|| toggled.clone());
-                            });
+                        on:click={
+                            let attachment = attachment.clone();
+                            move |_| open.toggle(&attachment, &toggled)
                         }
                     >
                         {kind_glyph(group.kind)}
@@ -218,13 +270,16 @@ pub fn group_chips(workspace: Workspace, attachment: String) -> impl IntoView {
                     type="button"
                     class="group-chip hit-area inline-flex min-h-7 items-center rounded-md border border-dotted border-line-2 px-2 text-xs text-muted hover:bg-hover"
                     data-tool-group-more=""
-                    on:click=move |_| unfolded.set(true)
+                    on:click={
+                        let attachment = attachment.clone();
+                        move |_| open.unfold(&attachment)
+                    }
                 >
                     {format!("+{}", folded.len())}
                 </button>
             }
         });
-        let menu = open.get().and_then(|selector| {
+        let menu = open.menu_on(&attachment).and_then(|selector| {
             groups
                 .iter()
                 .find(|group| group.selector.to_string() == selector)
@@ -242,18 +297,14 @@ pub fn group_chips(workspace: Workspace, attachment: String) -> impl IntoView {
 }
 
 /// A group's menu: its states, Reset to the layer below, and its tools.
-fn group_menu(
-    workspace: Workspace,
-    group: SessionToolGroup,
-    open: RwSignal<Option<String>>,
-) -> impl IntoView {
+fn group_menu(workspace: Workspace, group: SessionToolGroup, open: ChipsOpen) -> impl IntoView {
     let chosen = group.selector.clone();
     let below = group.below;
     let choice = move |state: Option<ToolGroupState>| {
         let selector = chosen.clone();
         move |_| {
             workspace.choose_tool_group(selector.clone(), state, below);
-            open.set(None);
+            open.close();
         }
     };
     let option = |label: &'static str, note: &'static str, state: ToolGroupState| {

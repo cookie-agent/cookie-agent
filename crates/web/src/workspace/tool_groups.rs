@@ -48,8 +48,10 @@ impl Workspace {
                 .get_session_tools(SessionToolsGetParams { session_id })
                 .await
                 .map_err(|error| crate::errors::describe_full(&error));
+            // Set only when it changed: the Runtimes tab reads it again
+            // every few seconds, and each set builds its chips again.
             if self.read_is_current(|reads| &mut reads.session_tools, read) {
-                self.session_tools.set(Some(result));
+                super::manage::set_changed(self.session_tools, Some(result));
             }
         });
     }

@@ -23,6 +23,17 @@ use crate::{
 /// One badge: a quiet pill that tints on hover and settles in as it comes.
 const BADGE: &str = "badge-in inline-flex h-11 lg:h-7 items-center gap-1.5 rounded-md px-2 text-xs font-medium tabular-nums text-fg-2 transition-colors hover:bg-hover hover:text-fg active:bg-press";
 
+/// What the cache badge shows: a value, so the badge's button is built once
+/// while it shows and only its parts follow the clock.
+#[derive(Clone, PartialEq)]
+struct CacheLook {
+    title: String,
+    glyph: (icondata::Icon, &'static str, bool),
+    text: String,
+    planned: bool,
+    cooling: bool,
+}
+
 /// How much of `window` `tokens` fill, from 0 to 1.
 fn filled(tokens: u64, window: Option<u64>) -> Option<f64> {
     let window = window.filter(|window| *window > 0)?;
@@ -100,7 +111,12 @@ pub fn LiveBadges(workspace: Workspace) -> impl IntoView {
             ticker.clear();
         }
     });
-    let cache_badge = move || {
+    // Each badge's look is a value, and its button is built once while it
+    // shows: the clock ticks every second and the session's state with each
+    // event, and a button built again with them would replay its entrance,
+    // drop its hover and tooltip, and could lose a click pressed across a
+    // tick.
+    let cache = Memo::new(move |_| {
         let viewed = workspace.viewed.get();
         let clock = viewed.cache_clock?;
         let session = workspace.selected.get()?;
@@ -115,46 +131,64 @@ pub fn LiveBadges(workspace: Workspace) -> impl IntoView {
         let zone = crate::cron::zone_at(now);
         let title = detail_lines(&clock, &badge, plan.as_ref(), now, &zone).join("\n");
         let (icon, class, spins) = cache_icon(&badge);
-        let text = badge_text(&badge);
-        let planned = matches!(badge, CacheBadge::Counting { planned: true, .. });
-        let cooling = matches!(
-            badge,
-            CacheBadge::Counting {
-                heat: CacheHeat::Cooling,
-                ..
-            }
-        );
-        Some(view! {
+        Some(CacheLook {
+            title,
+            glyph: (icon, class, spins),
+            text: badge_text(&badge),
+            planned: matches!(badge, CacheBadge::Counting { planned: true, .. }),
+            cooling: matches!(
+                badge,
+                CacheBadge::Counting {
+                    heat: CacheHeat::Cooling,
+                    ..
+                }
+            ),
+        })
+    });
+    let cache_on =
+        move |read: fn(&CacheLook) -> bool| cache.with(|look| look.as_ref().is_some_and(read));
+    let cache_glyph = Memo::new(move |_| cache.with(|look| look.as_ref().map(|look| look.glyph)));
+    let cache_badge = view! {
+        <Show when=move || cache_on(|_| true)>
             <button
                 type="button"
                 class=format!("{BADGE} relative")
                 id="cache-badge"
-                aria-label=title.clone()
-                title=title
+                aria-label=move || cache.with(|look| look.as_ref().map(|look| look.title.clone()))
+                title=move || cache.with(|look| look.as_ref().map(|look| look.title.clone()))
                 on:click=move |_| workspace.run_command(Command::Usage)
             >
-                <Glyph icon=icon class=if spins { format!("{class} animate-spin") } else { class.to_owned() } />
-                {(!text.is_empty()).then(|| view! {
-                    <span class=if cooling { "text-warn" } else { "text-muted" }>{text}</span>
+                {move || cache_glyph.get().map(|(icon, class, spins)| view! {
+                    <Glyph icon=icon class=if spins { format!("{class} animate-spin") } else { class.to_owned() } />
                 })}
-                {planned.then(|| view! {
+                <Show when=move || cache_on(|look| !look.text.is_empty())>
+                    <span class=move || if cache_on(|look| look.cooling) { "text-warn" } else { "text-muted" }>
+                        {move || cache.with(|look| look.as_ref().map(|look| look.text.clone()))}
+                    </span>
+                </Show>
+                <Show when=move || cache_on(|look| look.planned)>
                     <span class="absolute right-1 top-1 h-1.5 w-1.5 rounded-full bg-accent" data-cache-planned></span>
-                })}
+                </Show>
             </button>
-        })
+        </Show>
     };
     let goal = Memo::new(move |_| workspace.goal().filter(|goal| goal_bar_shows(goal.status)));
     let background = Memo::new(move |_| workspace.background_calls().len());
     let approvals = Memo::new(move |_| workspace.approvals().len());
-    let context = move || {
+    let context = Memo::new(move |_| {
         workspace.viewed.with(|viewed| {
             viewed
                 .context_tokens
                 .map(|tokens| (tokens, viewed.context_window))
         })
+    });
+    let context_title_now = move || {
+        context
+            .get()
+            .map(|(tokens, window)| context_title(tokens, window))
     };
     // The next fire into the open session, or a fire waiting there.
-    let fire_badge = move || {
+    let fire = Memo::new(move |_| {
         if workspace.new_session.get() {
             return None;
         }
@@ -182,19 +216,27 @@ pub fn LiveBadges(workspace: Workspace) -> impl IntoView {
             || next
                 .at
                 .is_some_and(|at| at.as_second() - now.as_second() < 60);
-        Some(view! {
+        Some((title, text, soon))
+    });
+    let fire_soon = Memo::new(move |_| fire.with(|fire| fire.as_ref().is_some_and(|fire| fire.2)));
+    let fire_badge = view! {
+        <Show when=move || fire.with(Option::is_some)>
             <button
                 type="button"
                 class=BADGE
                 id="schedule-badge"
-                aria-label=title.clone()
-                title=title
+                aria-label=move || fire.with(|fire| fire.as_ref().map(|fire| fire.0.clone()))
+                title=move || fire.with(|fire| fire.as_ref().map(|fire| fire.0.clone()))
                 on:click=move |_| workspace.run_command(Command::Schedules)
             >
-                <Glyph icon=icondata::LuAlarmClock class=if soon { "text-sm text-accent" } else { "text-sm text-muted" } />
-                <span class:text-accent=soon data-schedule-next>{text}</span>
+                {move || view! {
+                    <Glyph icon=icondata::LuAlarmClock class=if fire_soon.get() { "text-sm text-accent" } else { "text-sm text-muted" } />
+                }}
+                <span class:text-accent=move || fire_soon.get() data-schedule-next>
+                    {move || fire.with(|fire| fire.as_ref().map(|fire| fire.1.clone()))}
+                </span>
             </button>
-        })
+        </Show>
     };
     let goal_badge = move || {
         goal.get().map(|goal| {
@@ -264,27 +306,24 @@ pub fn LiveBadges(workspace: Workspace) -> impl IntoView {
                 </button>
             </Show>
             {fire_badge}
-            {move || context().map(|(tokens, window)| {
-                let title = context_title(tokens, window);
-                view! {
-                    <button
-                        type="button"
-                        class=BADGE
-                        id="context"
-                        aria-label=title.clone()
-                        title=title
-                        on:click=move |_| workspace.run_command(Command::Usage)
-                    >
-                        {ring(filled(tokens, window).unwrap_or(0.0))}
-                        <span class="text-muted">
-                            {match filled(tokens, window) {
-                                Some(fraction) => format!("{:.0}%", fraction * 100.0),
-                                None => compact_count(tokens),
-                            }}
-                        </span>
-                    </button>
-                }
-            })}
+            <Show when=move || context.with(Option::is_some)>
+                <button
+                    type="button"
+                    class=BADGE
+                    id="context"
+                    aria-label=context_title_now
+                    title=context_title_now
+                    on:click=move |_| workspace.run_command(Command::Usage)
+                >
+                    {move || context.get().map(|(tokens, window)| ring(filled(tokens, window).unwrap_or(0.0)))}
+                    <span class="text-muted">
+                        {move || context.get().map(|(tokens, window)| match filled(tokens, window) {
+                            Some(fraction) => format!("{:.0}%", fraction * 100.0),
+                            None => compact_count(tokens),
+                        })}
+                    </span>
+                </button>
+            </Show>
         </div>
     }
 }

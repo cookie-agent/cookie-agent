@@ -5458,17 +5458,36 @@ fn presets_sheet_rows(workspace: Workspace) -> impl IntoView {
         .collect_view()
 }
 
+/// Which approval a card shows: a card is built again only for another
+/// one, not with each event of the store it reads, so a note being typed
+/// into it stays.
+type ApprovalKey = (
+    cookie_agent_protocol::SessionId,
+    cookie_agent_protocol::ApprovalId,
+    u64,
+);
+
+fn approval_key(approval: &cookie_agent_client_state::ApprovalState) -> ApprovalKey {
+    (
+        approval.session_id,
+        approval.approval_id,
+        approval.request_revision,
+    )
+}
+
 fn approvals_sheet(workspace: Workspace) -> impl IntoView {
-    move || {
-        let approvals = workspace.approvals();
-        if approvals.is_empty() {
-            return empty_state(icondata::LuCircleCheck, "No approval is waiting.").into_any();
-        }
-        approvals
-            .into_iter()
-            .map(|approval| approval_card(workspace, approval))
-            .collect_view()
-            .into_any()
+    let none = Memo::new(move |_| workspace.approvals().is_empty());
+    view! {
+        <Show
+            when=move || !none.get()
+            fallback=|| empty_state(icondata::LuCircleCheck, "No approval is waiting.")
+        >
+            <For
+                each=move || workspace.approvals()
+                key=approval_key
+                children=move |approval| untrack(|| approval_card(workspace, approval))
+            />
+        </Show>
     }
 }
 
@@ -5574,14 +5593,22 @@ fn approval_card(
             .collect_view()
             .into_any()
     };
-    let machine = approval_machine(workspace, &approval).map(|label| {
+    // The card is built once for its approval; its machine follows the
+    // runtimes' listing, which may come after it.
+    let machine = {
+        let approval = approval.clone();
+        Memo::new(move |_| approval_machine(workspace, &approval))
+    };
+    let machine = move || {
+        machine.get().map(|label| {
             view! {
                 <span class="inline-flex shrink-0 items-center gap-1.5 rounded-full bg-sunken px-2 py-0.5 text-xs font-normal" title=label.name.clone() data-approval-machine>
                     <span class=format!("inline-block size-2 shrink-0 rounded-full {}", crate::badges::dot_class(label.hue)) aria-hidden="true"></span>
                     {label.name.clone()}
                 </span>
             }
-        });
+        })
+    };
     let source = approval_source(workspace, &approval).map(|source| {
             view! {
                 <span class="inline-flex shrink-0 items-center rounded-full bg-sunken px-2 py-0.5 text-xs font-normal" data-approval-source>
@@ -5619,27 +5646,30 @@ fn approval_card(
 /// how many more wait behind it, which the approvals sheet lists.
 #[component]
 fn ApprovalDock(workspace: Workspace) -> impl IntoView {
+    let more = Memo::new(move |_| workspace.approvals().len().saturating_sub(1));
     view! {
         <div class="px-3 pt-1 pb-3 sm:px-6" id="approval-dock">
             <div class="mx-auto flex max-w-[45rem] flex-col gap-1.5">
-                {move || {
-                    let waiting = workspace.approvals();
-                    let more = waiting.len().saturating_sub(1);
-                    let first = waiting.into_iter().next();
-                    view! {
-                        {first.map(|approval| approval_card(workspace, approval))}
-                        {(more > 0).then(|| view! {
-                            <button
-                                type="button"
-                                class="self-start rounded-md px-2 py-1 text-xs text-muted hover:bg-hover hover:text-fg"
-                                data-approvals-more
-                                on:click=move |_| workspace.panel.set(Some(Panel::Approvals))
-                            >
-                                {format!("{more} more waiting")}
-                            </button>
-                        })}
-                    }
-                }}
+                {built_on(
+                    move || workspace.approvals().first().map(approval_key),
+                    move || {
+                        workspace
+                            .approvals()
+                            .into_iter()
+                            .next()
+                            .map(|approval| approval_card(workspace, approval))
+                    },
+                )}
+                <Show when=move || { more.get() > 0 }>
+                    <button
+                        type="button"
+                        class="self-start rounded-md px-2 py-1 text-xs text-muted hover:bg-hover hover:text-fg"
+                        data-approvals-more
+                        on:click=move |_| workspace.panel.set(Some(Panel::Approvals))
+                    >
+                        {move || format!("{} more waiting", more.get())}
+                    </button>
+                </Show>
             </div>
         </div>
     }

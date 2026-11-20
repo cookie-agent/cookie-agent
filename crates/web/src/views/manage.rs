@@ -114,6 +114,18 @@ fn attachments_view(workspace: Workspace) -> impl IntoView {
     let search = RwSignal::new(String::new());
     let chosen = RwSignal::new(None::<RuntimeChoice>);
     let attaching = RwSignal::new(false);
+    let chips_open = super::tool_groups::ChipsOpen::new();
+    // Built again only when what a row shows changes: the rows read the
+    // session store, which changes with every event of a working session,
+    // and each build would start them over, closing what was open and
+    // blinking the hover.
+    let rows_key = move || {
+        (
+            workspace.runtime_rows(),
+            workspace.mcp_servers.get(),
+            workspace.homes(),
+        )
+    };
     let rows = move || {
         workspace
             .runtime_rows()
@@ -131,7 +143,11 @@ fn attachments_view(workspace: Workspace) -> impl IntoView {
                 });
                 let detach_name = row.attachment.name.clone();
                 let retry_row = row.clone();
-                let chips = super::tool_groups::group_chips(workspace, row.attachment.name.to_string());
+                let chips = super::tool_groups::group_chips(
+                    workspace,
+                    row.attachment.name.to_string(),
+                    chips_open,
+                );
                 view! {
                     <div class="runtime-row flex flex-col gap-1 border-b border-line py-2" data-attachment=row.attachment.name.to_string()>
                         <div class="flex items-center gap-2">
@@ -198,7 +214,7 @@ fn attachments_view(workspace: Workspace) -> impl IntoView {
         Err(error) => workspace.status.set(error),
     };
     view! {
-        {rows}
+        {super::built_on(rows_key, rows)}
         <Show when=move || !workspace.is_guest()>
         <Show
             when=move || attaching.get()

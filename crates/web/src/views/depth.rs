@@ -354,55 +354,64 @@ pub fn background_sheet(workspace: Workspace) -> impl IntoView {
             ticker.clear();
         }
     });
-    move || {
-        let calls = workspace.background_calls();
-        if calls.is_empty() {
-            return empty_state(
-                icondata::LuHourglass,
-                "No calls are running in the background.",
-            )
-            .into_any();
-        }
-        calls
-            .into_iter()
-            .map(|call| {
-                let job = call.job.clone();
-                let elapsed = u64::try_from(now.get().duration_since(call.detached_at).as_secs()).unwrap_or(0);
+    // A row is built once for its call: only its time ticks, so neither
+    // the clock nor the store, which changes with every event of a working
+    // session, starts it over under the pointer about to press its Stop.
+    let none = Memo::new(move |_| workspace.background_calls().is_empty());
+    view! {
+        <Show
+            when=move || !none.get()
+            fallback=|| empty_state(icondata::LuHourglass, "No calls are running in the background.")
+        >
+            <For
+                each=move || workspace.background_calls()
+                key=|call| (call.job.clone(), call.display.clone(), call.agent_task)
+                children=move |call| untrack(|| background_row(workspace, call, now))
+            />
+        </Show>
+    }
+}
+
+fn background_row(
+    workspace: Workspace,
+    call: cookie_agent_protocol::BackgroundCall,
+    now: RwSignal<jiff::Timestamp>,
+) -> impl IntoView {
+    let job = call.job.clone();
+    let detached_at = call.detached_at;
+    let elapsed =
+        move || u64::try_from(now.get().duration_since(detached_at).as_secs()).unwrap_or(0);
+    view! {
+        <div class="background-call flex items-center gap-2 border-b border-line py-2">
+            <div class="min-w-0 flex-1">
+                <p class="truncate font-mono text-sm">{format!("{} · {}", call.job, call.tool)}</p>
+                <p class=format!("truncate {NOTE}")>
+                    {call.display.clone().unwrap_or_default()}
+                    {move || format!(" · {}", format_clock_elapsed(elapsed()))}
+                </p>
+            </div>
+            // An ACP agent's own command: the agent runs it, and
+            // only the agent can stop it.
+            {if call.agent_task {
                 view! {
-                    <div class="background-call flex items-center gap-2 border-b border-line py-2">
-                        <div class="min-w-0 flex-1">
-                            <p class="truncate font-mono text-sm">{format!("{} · {}", call.job, call.tool)}</p>
-                            <p class=format!("truncate {NOTE}")>
-                                {call.display.clone().unwrap_or_default()}
-                                {format!(" · {}", format_clock_elapsed(elapsed))}
-                            </p>
-                        </div>
-                        // An ACP agent's own command: the agent runs it, and
-                        // only the agent can stop it.
-                        {if call.agent_task {
-                            view! {
-                                <span class=NOTE data-agent-task=call.job.clone()>"run by the agent"</span>
-                            }
-                            .into_any()
-                        } else {
-                            view! {
-                                <button
-                                    type="button"
-                                    class=BUTTON
-                                    data-stop=call.job.clone()
-                                    on:click=move |_| workspace.stop_background(job.clone())
-                                >
-                                    <Glyph icon=icondata::LuCircleStop />
-                                    "Stop"
-                                </button>
-                            }
-                            .into_any()
-                        }}
-                    </div>
+                    <span class=NOTE data-agent-task=call.job.clone()>"run by the agent"</span>
                 }
-            })
-            .collect_view()
-            .into_any()
+                .into_any()
+            } else {
+                view! {
+                    <button
+                        type="button"
+                        class=BUTTON
+                        data-stop=call.job.clone()
+                        on:click=move |_| workspace.stop_background(job.clone())
+                    >
+                        <Glyph icon=icondata::LuCircleStop />
+                        "Stop"
+                    </button>
+                }
+                .into_any()
+            }}
+        </div>
     }
 }
 
