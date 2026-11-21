@@ -7656,6 +7656,11 @@ def guest_assets(browser):
         print("a guest's HTML asset runs in its card and in the side panel")
     finally:
         guest.close()
+    # The owner's share panel is still open over the page.
+    browser.click('#session-share-dialog [aria-label="Close"]')
+    browser.wait("the share panel closed", lambda: count(browser, "#session-share-dialog") == 0)
+    # The scenarios after it read tool rows of the full transcript.
+    choose_transcript(browser, "full")
 
 
 def page_runs(browser, frame):
