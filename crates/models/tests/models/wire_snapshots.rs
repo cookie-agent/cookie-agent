@@ -1033,3 +1033,54 @@ async fn adapter_wire_requests_match_golden_snapshots() {
             .unwrap_or_default()
     );
 }
+
+#[test]
+fn a_transcription_target_uses_the_providers_url_and_credentials() {
+    use cookie_agent_models::transcription::TranscriptionError;
+    let base = "http://127.0.0.1:9";
+    let specs = managed_providers();
+    let temporary = TempDir::new().unwrap();
+    let manager = ModelManager::new(
+        specs
+            .iter()
+            .map(|spec| {
+                (
+                    ProviderId::new(spec.provider).unwrap(),
+                    managed_definition(base, spec),
+                )
+            })
+            .collect(),
+        catalog(base, &specs),
+        store(&temporary),
+    )
+    .unwrap();
+    let runtime = manager.current();
+    for provider in ["openai", "deepseek"] {
+        let target = runtime
+            .transcription_target(&ProviderId::new(provider).unwrap(), &BTreeMap::new())
+            .unwrap();
+        assert_eq!(target.url(), format!("{base}/v1/audio/transcriptions"));
+        assert!(
+            format!("{target:?}").contains("authorization"),
+            "{provider}"
+        );
+    }
+    assert_eq!(
+        runtime
+            .transcription_target(&ProviderId::new("absent").unwrap(), &BTreeMap::new())
+            .unwrap_err(),
+        TranscriptionError::NotConfigured("absent".to_owned())
+    );
+
+    // In the catalog, but neither authored nor connected.
+    let temporary = TempDir::new().unwrap();
+    let unconnected =
+        ModelManager::new(BTreeMap::new(), catalog(base, &specs), store(&temporary)).unwrap();
+    assert_eq!(
+        unconnected
+            .current()
+            .transcription_target(&ProviderId::new("openai").unwrap(), &BTreeMap::new())
+            .unwrap_err(),
+        TranscriptionError::NoCredentials("openai".to_owned())
+    );
+}

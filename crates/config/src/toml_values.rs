@@ -228,6 +228,8 @@ fn interpolation_allowed(path: &[String]) -> bool {
         || matches!(path, [providers, _, api_key] if providers == "providers" && api_key == "api_key")
         || matches!(path, [providers, _, auth_override, values, _] if providers == "providers" && auth_override == "auth_override" && values == "values")
         || matches!(path, [providers, _, auth, values, _] if providers == "providers" && auth == "auth" && values == "values")
+        || matches!(path, [speech, backends, _, endpoint] if speech == "speech" && backends == "backends" && endpoint == "endpoint")
+        || matches!(path, [speech, backends, _, auth, values, _] if speech == "speech" && backends == "backends" && auth == "auth" && values == "values")
         || header_interpolation_path(path)
 }
 
@@ -238,6 +240,8 @@ fn header_interpolation_path(path: &[String]) -> bool {
             if providers == "providers" && models == "models" && headers == "headers")
         || matches!(path, [providers, _, models, _, variants, _, headers, _]
             if providers == "providers" && models == "models" && variants == "variants" && headers == "headers")
+        || matches!(path, [speech, backends, _, headers, _]
+            if speech == "speech" && backends == "backends" && headers == "headers")
 }
 
 fn interpolate(value: &str, path: &[String]) -> Result<String, ConfigError> {

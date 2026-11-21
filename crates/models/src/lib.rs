@@ -19,6 +19,7 @@ pub mod manifests;
 pub mod provider_store;
 pub mod recipes;
 pub mod secure_store;
+pub mod transcription;
 
 #[cfg(any(test, feature = "test-support"))]
 mod test_support;

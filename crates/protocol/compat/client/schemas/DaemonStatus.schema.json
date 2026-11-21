@@ -87,6 +87,30 @@
       ],
       "type": "object"
     },
+    "SpeechStatus": {
+      "description": "Voice input's limits, in [`crate::DaemonStatus::speech`] while the\ndaemon has `[speech]` backends.",
+      "properties": {
+        "max_bytes": {
+          "description": "The largest recording the daemon takes, in bytes; absent: no limit.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "max_seconds": {
+          "description": "The longest recording a client makes, in seconds; absent: no limit.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
     "TaskProgress": {
       "description": "How far a task is.",
       "properties": {
@@ -138,6 +162,17 @@
     "restart": {
       "description": "In phase `stopping`: the daemon relaunches.",
       "type": "boolean"
+    },
+    "speech": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/SpeechStatus"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Voice input's limits while the daemon has `[speech]` backends\n(client protocol 1.98.0); absent, clients show no microphone."
     },
     "tasks": {
       "description": "What the daemon is doing that a user would want to see, oldest\nfirst. Free-form: clients show any task the same way.",

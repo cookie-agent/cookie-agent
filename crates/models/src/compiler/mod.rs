@@ -14,7 +14,9 @@ pub use dynamic::{
 pub use executable::CompatibleThinkingToggle;
 pub use variants::{CompiledVariant, CompiledVariantOrigin};
 
-pub(crate) use dynamic::{managed_provider_adapter, validate_managed_cache};
+pub(crate) use dynamic::{
+    global_header_base, managed_provider_adapter, merge_headers_onto, validate_managed_cache,
+};
 pub(crate) use executable::{
     ExecutableBehaviorInput, ExecutableCredentialMaterial, compile_executable,
     executable_provider_id, google_cached_content_parent,

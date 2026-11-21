@@ -128,6 +128,10 @@ pub struct DaemonStatus {
     /// In phase `failed`: why, as a registry error.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<crate::JsonRpcError>,
+    /// Voice input's limits while the daemon has `[speech]` backends
+    /// (client protocol 1.98.0); absent, clients show no microphone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub speech: Option<crate::SpeechStatus>,
 }
 
 impl DaemonStatus {

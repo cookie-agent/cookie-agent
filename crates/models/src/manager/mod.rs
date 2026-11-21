@@ -816,6 +816,78 @@ impl CompiledModelRuntime {
         &self.runtime_revision
     }
 
+    /// Where a transcription through `provider_id` goes: the provider's API
+    /// URL and the credentials its models use, chosen as for them (authored
+    /// `api_key` or `auth_override`, else the stored connection, else no
+    /// auth for a local server), with the global, provider, and `headers`
+    /// headers.
+    /// Whether the provider offers `/audio/transcriptions` is not known
+    /// here; the request tells (`docs/site/specs/voice-input.md` 5.2).
+    pub fn transcription_target(
+        &self,
+        provider_id: &ProviderId,
+        headers: &BTreeMap<crate::HeaderName, crate::SafeStaticHeaderValue>,
+    ) -> Result<crate::transcription::TranscriptionTarget, crate::transcription::TranscriptionError>
+    {
+        use crate::transcription::{TranscriptionError, TranscriptionTarget};
+        let not_configured = || TranscriptionError::NotConfigured(provider_id.to_string());
+        if let Some(ProviderDefinition::Custom(custom)) = self.authored.get(provider_id) {
+            let header_name = custom
+                .auth
+                .parameters
+                .iter()
+                .find(|(id, _)| id.as_str() == "header_name")
+                .map(|(_, value)| value.as_str().to_owned());
+            let material = ExecutableCredentialMaterial {
+                method: custom.auth.method.as_str().to_owned(),
+                values: custom
+                    .auth
+                    .values
+                    .iter()
+                    .map(|(field, value)| (field.clone(), value.expose().to_owned()))
+                    .collect(),
+                token_source: None,
+            };
+            return TranscriptionTarget::from_parts(
+                custom.endpoint.as_str(),
+                &material,
+                header_name.as_deref(),
+                &self.global_headers,
+                &[&custom.headers, headers],
+            );
+        }
+        let authored = self
+            .authored
+            .get(provider_id)
+            .and_then(ProviderDefinition::managed);
+        let record = self
+            .catalog
+            .provider(provider_id)
+            .and_then(|entry| entry.record.as_ref())
+            .ok_or_else(not_configured)?;
+        let recipe = family_registry()
+            .classify(record)
+            .ok_or_else(not_configured)?;
+        let stored = self.store.provider(provider_id);
+        let effective = effective_managed(provider_id, record, recipe, authored, stored)
+            .map_err(|_| not_configured())?;
+        if effective.credential_source == EffectiveCredentialSource::Unavailable {
+            return Err(TranscriptionError::NoCredentials(provider_id.to_string()));
+        }
+        let base = match authored.and_then(|provider| provider.base_url.as_ref()) {
+            Some(url) => url.as_str().to_owned(),
+            None => resolved_provider_endpoint(record, recipe, &effective.setup_values)
+                .map_err(|_| not_configured())?,
+        };
+        TranscriptionTarget::from_parts(
+            &base,
+            &effective.credentials,
+            None,
+            &self.global_headers,
+            &[&effective.provider.headers, headers],
+        )
+    }
+
     /// The built-in ChatGPT provider's signed-in account.
     #[must_use]
     pub fn chatgpt_account(&self) -> Option<&crate::chatgpt::AccountSummary> {

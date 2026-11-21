@@ -61,6 +61,7 @@ pub(crate) mod message_attachments;
 pub(crate) mod messaging;
 pub(crate) mod official;
 pub(crate) mod shares;
+pub(crate) mod speech;
 pub(crate) use background_tasks::{BackgroundActor, Stopped};
 mod blocking_io;
 pub(crate) mod compaction;
@@ -370,6 +371,8 @@ pub enum EngineError {
     /// An upload, an artifact read, or an input's media was refused.
     #[error("{0}")]
     Media(artifacts::uploads::MediaError),
+    #[error(transparent)]
+    Speech(speech::SpeechError),
 }
 
 /// Atomic, secret-safe rejection details produced by the serialized approval transaction.
@@ -1120,6 +1123,8 @@ pub(crate) struct Inner {
     pub(crate) push: push_signals::PushSignalState,
     pub(crate) compaction: CompactionState,
     pub(crate) uploads: artifacts::uploads::UploadState,
+    /// Voice recordings in progress and transcriptions running.
+    pub(crate) speech: speech::SpeechState,
     pub(crate) onboarding: official::onboarding::OnboardingRuntimeState,
     pub(crate) official_skills: official::skills::OfficialSkillsState,
     pub(crate) official_agents: official::agents::OfficialAgentsState,
@@ -1479,6 +1484,7 @@ impl Engine {
                 push: push_signals::PushSignalState::default(),
                 compaction: CompactionState::default(),
                 uploads: artifacts::uploads::UploadState::default(),
+                speech: speech::SpeechState::default(),
                 onboarding: official::onboarding::OnboardingRuntimeState::new(initial_onboarding),
                 official_skills: official::skills::OfficialSkillsState::new(&options.data_dir),
                 official_agents: official::agents::OfficialAgentsState::new(&options.data_dir),
@@ -1550,6 +1556,7 @@ impl Engine {
         engine.start_webhooks();
         engine.start_cache_expiry_scheduler();
         engine.install_acp();
+        engine.publish_speech_status();
         Ok(engine)
     }
 

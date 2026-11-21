@@ -191,6 +191,7 @@ fn harness_built(
             public: cookie_agent_config::PublicConfig::default(),
             share: cookie_agent_config::ShareConfig::default(),
             webhooks: cookie_agent_config::WebhooksConfig::default(),
+            speech: None,
             utility_model: None,
             shell_environment: cookie_agent_config::ShellEnvironmentConfig {
                 capture: cookie_agent_protocol::runtime_protocol::ShellCapture::Off,
@@ -472,6 +473,7 @@ fn harness_with_catalog_and_mcp(
             public: cookie_agent_config::PublicConfig::default(),
             share: cookie_agent_config::ShareConfig::default(),
             webhooks: cookie_agent_config::WebhooksConfig::default(),
+            speech: None,
             utility_model: None,
             shell_environment: cookie_agent_config::ShellEnvironmentConfig {
                 capture: cookie_agent_protocol::runtime_protocol::ShellCapture::Off,

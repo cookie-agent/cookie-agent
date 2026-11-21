@@ -13,7 +13,7 @@ A client must call `handshake` before any other method:
 
 ```json
 { "jsonrpc": "2.0", "id": 1, "method": "handshake", "params": {
-    "protocol_version": "1.97.0",
+    "protocol_version": "1.98.0",
     "client": { "kind": "web", "instance_id": "<uuid>" },
     "token": "<the daemon's token>",
     "features": [] } }
@@ -22,7 +22,7 @@ A client must call `handshake` before any other method:
 The reply:
 
 ```json
-{ "protocol_version": "1.97.0", "engine_version": "0.3.0",
+{ "protocol_version": "1.98.0", "engine_version": "0.3.0",
   "origin": "client:web-<id>", "machine_id": "<opaque>", "features": [],
   "status": { "phase": "ready" } }
 ```
@@ -351,6 +351,10 @@ Idempotent redelivery resolves against the state preceding the original run.
 | `artifact.upload.chunk` | `upload_id`, `offset`, base64 `data` of at most `chunk_bytes` bytes | Empty object |
 | `artifact.upload.finish` | `upload_id`, `sha256` of every byte sent | The stored `artifact` (`ArtifactRef`), and `image` `{ width, height }` for an image |
 | `artifact.upload.cancel` | `upload_id` | Empty object |
+| `speech.transcribe.begin` | `byte_length`, `media_type` (an `audio/` type), optional session ID (since 1.98.0; see [Voice input](#voice-input)) | `transcription_id`, `chunk_bytes` |
+| `speech.transcribe.chunk` | `transcription_id`, `offset`, base64 `data` of at most `chunk_bytes` bytes | Empty object |
+| `speech.transcribe.finish` | `transcription_id`, `sha256` of every byte sent | `text`, the `backend` that answered, `duration_ms` |
+| `speech.transcribe.cancel` | `transcription_id` | Empty object |
 | `artifact.read` | Session ID, `sha256`, `offset`, `length` (at most 1 MiB) | Base64 `data`, `total_bytes`, `media_type` |
 | `assets.list` | `store` (since 1.67.0; see [Assets](#assets)) | The store's `assets`, newest first |
 | `assets.search` | `project?`, `scope?` (since 1.71.0; see [Assets](#assets)) | The `assets` of many stores, newest first, and the `sessions` whose own they list |
@@ -498,6 +502,41 @@ on the governing run policy and session overlay. `session.list` returns root
 sessions only: a delegated child is selected as part of its root's tree, not as
 a top-level entry, and stays reachable via `session.tree`, `session.children`,
 `session.get`, and `session.resume`.
+
+### Voice input
+
+Since 1.98.0 a client can dictate: it records the microphone, sends the
+recording in chunks, and gets the words back to put in its composer
+([voice input spec](../specs/voice-input.md)). The daemon offers it only
+while its configuration has [`[speech]`](../engine/speech.md) backends, and
+says so in the [daemon status](#daemon-status)'s `speech`, with the limits
+`max_seconds` (the longest recording to make) and `max_bytes`; either is
+absent when there is no limit. A client shows no microphone while `speech`
+is absent.
+
+1. **`speech.transcribe.begin`** `{ byte_length, media_type, session_id? }`
+   returns `{ transcription_id, chunk_bytes }`. It is refused with
+   `speech_unavailable` while voice input is off, `speech_too_large` above
+   `max_bytes`, `speech_unsupported_media` for a type other than `audio/*`,
+   and `too_many_uploads` past two recordings on the connection.
+   `session_id` only labels the daemon's log line.
+2. **`speech.transcribe.chunk`** sends the bytes as `artifact.upload.chunk`
+   does, one chunk at a time.
+3. **`speech.transcribe.finish`** `{ transcription_id, sha256 }` checks the
+   digest, recognizes the recording (WebM or Ogg, MP4 audio, MP3, WAV, or
+   FLAC; else `speech_unsupported_media`), and sends it to each backend in
+   order until one answers. It returns `{ text, backend, duration_ms }`;
+   `text` is empty when the backend heard no speech. When every backend
+   fails, it is refused with `speech_failed`, whose `reason` lists each
+   backend's failure.
+4. **`speech.transcribe.cancel`** `{ transcription_id }` drops a recording,
+   or abandons its transcription: the waiting `finish` is refused with
+   `speech_cancelled`.
+
+The daemon keeps no recording: each lives in its memory until `finish`
+answers, `cancel` drops it, its connection closes, or it waits two minutes
+for its next chunk. An unknown or another connection's `transcription_id` is
+`upload_not_found`. Share guests may dictate when their link lets them send.
 
 ### Listing recent sessions
 
@@ -1107,6 +1146,10 @@ in the handshake's `status`, the `daemon.status` method, and the
   non-blocking one, such as a restart waiting for idle, changes nothing a
   client may send. Tasks are free-form: clients show any task the same way
   and never branch on its `id` or `label`.
+- **`speech`** (since 1.98.0) is present while the daemon offers
+  [voice input](#voice-input): `max_seconds` and `max_bytes`, each absent
+  when there is no limit. A configuration reload that adds or removes
+  `[speech]` changes it.
 - **The notification** carries the whole status. It goes out at most once
   every 250 ms, so a task that starts and ends within that window may
   never be seen, but a phase change goes out at once.

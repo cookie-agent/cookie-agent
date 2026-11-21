@@ -1322,6 +1322,38 @@
       "result": "SkillsUpdateResult"
     },
     {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "speech.transcribe.begin",
+      "params": "SpeechTranscribeBeginParams",
+      "params_role": "command",
+      "result": "SpeechTranscribeBeginResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "speech.transcribe.cancel",
+      "params": "SpeechTranscribeCancelParams",
+      "params_role": "command",
+      "result": "SpeechTranscribeCancelResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "speech.transcribe.chunk",
+      "params": "SpeechTranscribeChunkParams",
+      "params_role": "command",
+      "result": "SpeechTranscribeChunkResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "speech.transcribe.finish",
+      "params": "SpeechTranscribeFinishParams",
+      "params_role": "command",
+      "result": "SpeechTranscribeFinishResult"
+    },
+    {
       "direction": "from_daemon",
       "kind": "notification",
       "method": "webhooks.changed",

@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "`speech.transcribe.cancel`: drops a recording, or abandons its\ntranscription while `finish` waits.",
+  "properties": {
+    "transcription_id": {
+      "description": "An upload in progress on this connection.",
+      "pattern": "^[A-Za-z0-9_-]{1,64}$",
+      "type": "string"
+    }
+  },
+  "required": [
+    "transcription_id"
+  ],
+  "title": "SpeechTranscribeCancelParams",
+  "type": "object"
+}

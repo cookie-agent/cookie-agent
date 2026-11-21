@@ -5,6 +5,20 @@ The client protocol's version is `MAJOR.MINOR.PATCH`
 adds and a major breaks; before it, every minor could break the wire (see the
 [compatibility spec](../specs/compatibility-v1.md) section 3).
 
+## 1.98.0
+
+- Voice input ([voice input spec](../specs/voice-input.md) section 7):
+  `speech.transcribe.begin`, `speech.transcribe.chunk`,
+  `speech.transcribe.finish`, and `speech.transcribe.cancel`, a recording
+  sent in chunks and transcribed by the daemon's `[speech]` backends, with
+  `SpeechTranscribeBeginParams`, `SpeechTranscribeChunkParams`,
+  `SpeechTranscribeFinishParams`, `SpeechTranscribeCancelParams`, and their
+  results; `DaemonStatus.speech` (`SpeechStatus { max_seconds, max_bytes }`),
+  present while voice input is on; the errors `speech_unavailable`,
+  `speech_too_large`, `speech_unsupported_media`, `speech_failed`, and
+  `speech_cancelled`. Share guests whose link lets them send may call the
+  methods.
+
 ## 1.97.0
 
 - Titles for the sessions webhooks and cron jobs start

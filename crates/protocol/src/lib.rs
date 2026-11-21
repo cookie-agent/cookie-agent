@@ -225,6 +225,7 @@ mod semver;
 mod session_model;
 mod setup_value;
 mod share;
+mod speech;
 #[cfg(not(target_arch = "wasm32"))]
 mod stop;
 mod stored_display;
@@ -280,6 +281,7 @@ pub use semver::*;
 pub use session_model::*;
 pub use setup_value::*;
 pub use share::*;
+pub use speech::*;
 #[cfg(not(target_arch = "wasm32"))]
 pub use stop::StopSignals;
 pub use threads::*;

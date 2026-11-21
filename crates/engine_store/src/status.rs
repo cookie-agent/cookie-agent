@@ -156,6 +156,18 @@ impl StatusBoard {
         });
     }
 
+    /// Voice input's limits, `None` while it is off
+    /// (`docs/site/specs/voice-input.md` section 7.1).
+    pub fn set_speech(&self, speech: Option<cookie_agent_protocol::SpeechStatus>) {
+        self.modify(|status| {
+            if status.speech == speech {
+                return false;
+            }
+            status.speech = speech;
+            true
+        });
+    }
+
     fn set_phase(&self, phase: DaemonPhase, restart: bool) {
         self.modify(|status| {
             if status.phase == phase && status.restart == restart {

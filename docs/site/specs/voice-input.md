@@ -142,7 +142,7 @@ max_seconds = 300   # the longest recording the web client makes
 
 | Key | Type | Meaning |
 |---|---|---|
-| `backends` | table or array of 1 to 8 tables | The backends, tried in order (section 6.3). |
+| `backends` | array of 1 to 8 tables | The backends, tried in order (section 6.3). |
 | `language` | string | Sent as `language`. Omitted: not sent, and the backend detects the language. |
 | `prompt` | string, at most 1,000 characters | Sent as `prompt`: names and terms the model should spell as written. |
 | `max_seconds` | integer | The longest recording; the web client stops there. 0 or less means no limit (the user's rule for limits), bounded only by `max_bytes`. |
@@ -169,8 +169,8 @@ models for some providers but not others (its `openai` entry has no
 exists, so it cannot tell. A provider without the route fails its request
 and the next backend is tried (section 6.3). A provider whose endpoint is
 computed from setup (Vertex, Bedrock) has no OpenAI-compatible route and
-always fails; it is allowed all the same. Only a provider that is not
-configured at all is refused when the configuration loads.
+always fails; it is allowed all the same, as is a provider that is not
+configured at all, which fails at request time (section 13).
 
 ### 5.3 A local Whisper
 
@@ -256,9 +256,7 @@ backend:
 ```
 
 The web client shows the microphone while it is present, and learns of
-changes from the `daemon.status` notification it already handles. The
-handshake's `features` list (empty so far) also names `speech`, for
-clients that read only the handshake.
+changes from the `daemon.status` notification it already handles.
 
 ### 7.2 Sending the recording
 
@@ -374,3 +372,35 @@ The user agreed with the draft's recommendations except where noted.
    recording.
 10. **`Ctrl+Shift+Space`** in the composer starts dictation (approved with
     the preview).
+
+## 13. Implementation notes
+
+Where the code differs from the sections above:
+
+- **No handshake feature** (7.1): the handshake already carries the daemon
+  status, so `DaemonStatus.speech` alone says voice input is on; the
+  `features` list stays empty.
+- **`backends` is always an array** (5.1), `[[speech.backends]]` or
+  `backends = [...]`; a single table is refused.
+- **A backend may have a `name`** (5.2), what errors and the log call it;
+  without one, the provider, else the endpoint's host and port.
+- **An unknown provider fails at request time** (5.2), not when the
+  configuration loads: the provider store and the catalog are the models
+  layer's, not the configuration's. Like every other failure, it falls
+  through to the next backend.
+- **Provider credentials** come from the models layer's own precedence
+  (`CompiledModelRuntime::transcription_target`): authored `api_key` or
+  `auth_override`, else the stored connection, else no auth for a local
+  server. Bearer, API-key-header, Anthropic, Google, Azure, and OAuth
+  access-token methods become one header; ChatGPT sign-in and AWS SigV4
+  cannot, and fail over. Headers are the global ones, then the provider's,
+  then the backend's.
+- **Recordings are recognized by `recording_media_type`**: the generic
+  sniffer takes WebM and MP4 for video, so a recording's container is read
+  as audio (WebM, Ogg, MP4, WAV, FLAC, MP3) and its extension names the
+  file the service sees.
+- **Errors** (7.2): chunk-protocol refusals reuse the upload codes
+  (`upload_not_found`, `upload_offset_mismatch`, `upload_size_mismatch`,
+  `digest_mismatch`, `too_many_uploads`, at two recordings per
+  connection); a `finish` abandoned by `cancel` or a closed connection is
+  `speech_cancelled`. An idle recording is dropped after two minutes.

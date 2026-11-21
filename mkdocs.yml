@@ -144,6 +144,7 @@ nav:
       - 'Transfers [transfer]': engine/transfer.md
       - 'Public Address [public]': engine/public.md
       - 'Share links [share]': engine/share.md
+      - 'Voice input [speech]': engine/speech.md
       - 'Webhooks [webhooks]': engine/webhooks.md
       - 'Request Header [headers]': engine/headers.md
       - tui.toml:

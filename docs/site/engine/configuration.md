@@ -63,6 +63,7 @@ Every key is optional. Unknown keys, including removed top-level `pricing`, fail
 | `public` | [Public address](public.md): `url`, the public address share links and webhook URLs use, and `listen`, a port that serves only those paths |
 | `share` | [Share links](share.md): `enabled` |
 | `webhooks` | [Webhooks](webhooks.md): whether webhooks are accepted, body sizes, rate, failure, backlog, and history limits |
+| `speech` | [Voice input](speech.md): the transcription backends the web client's microphone uses, a language and spelling hint, and the recording limits |
 | `skills` | [Official skills](../extend/skills.md#official-skills): `official`, whether the daemon keeps the official skills up to date and offers them |
 | `agents` | [Official agents](../extend/agents.md#official-agents): `official`, whether the daemon keeps the official agents up to date and offers them, and `default`, the agent new sessions start with |
 | `headers` | [Request Header](headers.md) |

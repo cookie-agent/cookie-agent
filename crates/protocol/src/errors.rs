@@ -1223,6 +1223,46 @@ error_codes! {
         hint: Some("Finish or cancel an upload first."),
         description: "`artifact.upload.begin` on a connection already at its upload limit.",
     }
+    SPEECH_UNAVAILABLE {
+        code: "speech_unavailable",
+        rpc: APPLICATION_ERROR,
+        fields: [],
+        message: "Voice input is off on this daemon.",
+        hint: Some("Add transcription backends to `[speech]` in the daemon's config.toml."),
+        description: "`speech.transcribe.*` while the daemon's configuration has no `[speech]` table.",
+    }
+    SPEECH_TOO_LARGE {
+        code: "speech_too_large",
+        rpc: APPLICATION_ERROR,
+        fields: [required("max_bytes", "The largest recording the daemon takes, in bytes.")],
+        message: "The recording is larger than the {max_bytes} bytes the daemon takes.",
+        hint: Some("Record a shorter message."),
+        description: "`speech.transcribe.begin` with a recording above `[speech] max_bytes`.",
+    }
+    SPEECH_UNSUPPORTED_MEDIA {
+        code: "speech_unsupported_media",
+        rpc: APPLICATION_ERROR,
+        fields: [required("media_type", "The media type the recording was declared or recognized as.")],
+        message: "A recording of type {media_type} cannot be transcribed.",
+        hint: Some("Record WebM or Ogg Opus, MP4 audio, MP3, WAV, or FLAC."),
+        description: "A recording that is not audio, by its declared type or its content.",
+    }
+    SPEECH_FAILED {
+        code: "speech_failed",
+        rpc: APPLICATION_ERROR,
+        fields: [required("reason", "Each backend's failure, in order, separated by ` · `.")],
+        message: "Transcription failed: {reason}.",
+        hint: Some("Try again, or check the `[speech]` backends."),
+        description: "`speech.transcribe.finish` when every backend failed.",
+    }
+    SPEECH_CANCELLED {
+        code: "speech_cancelled",
+        rpc: APPLICATION_ERROR,
+        fields: [],
+        message: "The transcription was cancelled.",
+        hint: None,
+        description: "`speech.transcribe.finish` whose transcription `speech.transcribe.cancel` abandoned.",
+    }
 
     // --- runtime and plugin protocols ------------------------------------------
     ALREADY_INITIALIZED {

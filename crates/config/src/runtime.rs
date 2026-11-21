@@ -3,8 +3,8 @@ use std::{collections::BTreeMap, time::Duration};
 use cookie_agent_identity::{ConfiguredVariantRef, ModelKey, ProviderId};
 pub use cookie_agent_models::catalog::PicoUsdPerMillion;
 use cookie_agent_models::{
-    HeaderName, ProviderDefinition, SafeStaticHeaderValue, deserialize_headers,
-    validate_header_limits, validate_header_ownership,
+    AuthDefinition, EndpointUrl, HeaderName, ProviderDefinition, SafeStaticHeaderValue,
+    deserialize_headers, validate_header_limits, validate_header_ownership,
 };
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
@@ -793,6 +793,10 @@ pub struct EngineConfig {
     /// `[webhooks]`: incoming webhooks.
     #[serde(default)]
     pub webhooks: WebhooksConfig,
+    /// `[speech]`: voice input's transcription backends; absent, voice
+    /// input is off.
+    #[serde(default)]
+    pub speech: Option<SpeechConfig>,
     #[serde(skip)]
     pub pricing: PricingConfig,
     /// Each model's authored `cache_ttl`: zero is a cache that never
@@ -847,6 +851,7 @@ pub(crate) struct RawRuntimeLayer {
     pub(crate) public: Option<PublicConfig>,
     pub(crate) share: Option<ShareConfig>,
     pub(crate) webhooks: Option<WebhooksConfig>,
+    pub(crate) speech: Option<SpeechConfig>,
     #[serde(default)]
     #[serde(deserialize_with = "deserialize_optional_headers")]
     pub(crate) headers: Option<BTreeMap<HeaderName, SafeStaticHeaderValue>>,
@@ -1661,6 +1666,181 @@ impl TransferConfig {
     }
 }
 
+/// `[speech]`: voice input's transcription backends
+/// (`docs/site/specs/voice-input.md` section 5).
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SpeechConfig {
+    /// The backends, tried in order: 1 to [`SpeechConfig::MAX_BACKENDS`].
+    pub backends: Vec<SpeechBackend>,
+    /// A language hint (ISO 639-1); `None` lets the backend detect it.
+    #[serde(default)]
+    pub language: Option<String>,
+    /// Names and terms the backend should spell as written.
+    #[serde(default)]
+    pub prompt: Option<String>,
+    /// The longest recording the web client makes, in seconds; 0 or less
+    /// means no limit.
+    #[serde(default = "default_speech_max_seconds")]
+    pub max_seconds: i64,
+    /// The largest recording the daemon accepts, in bytes; 0 or less means
+    /// no limit.
+    #[serde(default = "default_speech_max_bytes")]
+    pub max_bytes: i64,
+}
+
+/// One transcription backend of `[speech]`: a configured provider, or an
+/// OpenAI-compatible endpoint with its own auth.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SpeechBackend {
+    /// What errors and the log call it; `None`: the provider, else the
+    /// endpoint's host.
+    #[serde(default)]
+    pub name: Option<String>,
+    /// A configured provider whose URL and credentials the backend uses.
+    #[serde(default)]
+    pub provider: Option<ProviderId>,
+    /// An OpenAI-compatible base URL, `<endpoint>/audio/transcriptions`.
+    #[serde(default)]
+    pub endpoint: Option<EndpointUrl>,
+    /// With `endpoint`: its auth; `None` is `no-auth-v1`.
+    #[serde(default)]
+    pub auth: Option<AuthDefinition>,
+    /// The model the request names.
+    pub model: String,
+    /// Request headers, after the global ones.
+    #[serde(default, deserialize_with = "deserialize_headers")]
+    pub headers: BTreeMap<HeaderName, SafeStaticHeaderValue>,
+    /// How long one request may take, in seconds; 0 or less means no
+    /// limit.
+    #[serde(default)]
+    pub timeout_secs: i64,
+}
+
+fn default_speech_max_seconds() -> i64 {
+    300
+}
+
+fn default_speech_max_bytes() -> i64 {
+    24 * 1024 * 1024
+}
+
+/// The auth methods an `endpoint` backend may use.
+pub const SPEECH_AUTH_METHODS: &[&str] = &["no-auth-v1", "bearer-api-key-v1", "api-key-header-v1"];
+
+impl SpeechConfig {
+    pub const MAX_BACKENDS: usize = 8;
+    pub const MAX_PROMPT_CHARS: usize = 1_000;
+    pub const MAX_NAME_CHARS: usize = 64;
+    pub const MAX_MODEL_BYTES: usize = 256;
+
+    /// The recording limit in seconds, `None` when there is none.
+    #[must_use]
+    pub fn seconds_limit(&self) -> Option<u64> {
+        u64::try_from(self.max_seconds)
+            .ok()
+            .filter(|value| *value > 0)
+    }
+
+    /// The size limit in bytes, `None` when there is none.
+    #[must_use]
+    pub fn bytes_limit(&self) -> Option<u64> {
+        u64::try_from(self.max_bytes)
+            .ok()
+            .filter(|value| *value > 0)
+    }
+
+    #[must_use]
+    pub fn invalid_reason(&self) -> Option<&'static str> {
+        if self.backends.is_empty() || self.backends.len() > Self::MAX_BACKENDS {
+            return Some("`[speech] backends` holds 1 to 8 backends");
+        }
+        if let Some(language) = &self.language
+            && (language.is_empty()
+                || language.len() > 16
+                || !language
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-'))
+        {
+            return Some("`[speech] language` is a language code such as `en`");
+        }
+        if let Some(prompt) = &self.prompt
+            && (prompt.trim().is_empty() || prompt.chars().count() > Self::MAX_PROMPT_CHARS)
+        {
+            return Some("`[speech] prompt` is 1 to 1000 characters");
+        }
+        self.backends.iter().find_map(SpeechBackend::invalid_reason)
+    }
+}
+
+impl SpeechBackend {
+    /// What errors and the log call the backend.
+    #[must_use]
+    pub fn label(&self) -> String {
+        if let Some(name) = &self.name {
+            return name.clone();
+        }
+        if let Some(provider) = &self.provider {
+            return provider.to_string();
+        }
+        self.endpoint
+            .as_ref()
+            .and_then(|endpoint| url::Url::parse(endpoint.as_str()).ok())
+            .and_then(|url| {
+                let host = url.host_str()?.to_owned();
+                Some(
+                    url.port()
+                        .map_or(host.clone(), |port| format!("{host}:{port}")),
+                )
+            })
+            .unwrap_or_else(|| "speech backend".to_owned())
+    }
+
+    /// How long one request may take, `None` when there is no limit.
+    #[must_use]
+    pub fn timeout(&self) -> Option<Duration> {
+        u64::try_from(self.timeout_secs)
+            .ok()
+            .filter(|value| *value > 0)
+            .map(Duration::from_secs)
+    }
+
+    fn invalid_reason(&self) -> Option<&'static str> {
+        match (&self.provider, &self.endpoint) {
+            (Some(_), Some(_)) | (None, None) => {
+                return Some("a `[speech]` backend names a `provider` or an `endpoint`, not both");
+            }
+            (Some(_), None) if self.auth.is_some() => {
+                return Some(
+                    "a `[speech]` backend with a `provider` uses its credentials; remove `auth`",
+                );
+            }
+            _ => {}
+        }
+        if self.model.trim().is_empty() || self.model.len() > SpeechConfig::MAX_MODEL_BYTES {
+            return Some("a `[speech]` backend's `model` is 1 to 256 bytes");
+        }
+        if let Some(name) = &self.name
+            && (name.trim().is_empty() || name.chars().count() > SpeechConfig::MAX_NAME_CHARS)
+        {
+            return Some("a `[speech]` backend's `name` is 1 to 64 characters");
+        }
+        if let Some(auth) = &self.auth
+            && cookie_agent_models::recipes::validate_auth_definition(auth, SPEECH_AUTH_METHODS)
+                .is_err()
+        {
+            return Some(
+                "a `[speech]` backend's `auth` is `no-auth-v1`, `bearer-api-key-v1` with `api_key`, or `api-key-header-v1` with `api_key` and a `header_name`",
+            );
+        }
+        if validate_header_ownership(&self.headers, "speech backend").is_err() {
+            return Some("a `[speech]` backend's `headers` cannot set a header the request owns");
+        }
+        None
+    }
+}
+
 /// `[public]`: the daemon's public address and its public-only listener
 /// (`docs/site/specs/share-links.md` section 6, renamed from `[share]` by
 /// `docs/site/specs/webhooks.md` decision 5).
@@ -2314,6 +2494,9 @@ pub(crate) fn apply_settings(runtime: &mut EngineConfig, layer: &RawRuntimeLayer
     if let Some(value) = layer.transfer {
         runtime.transfer = value;
     }
+    if let Some(value) = &layer.speech {
+        runtime.speech = Some(value.clone());
+    }
     if let Some(value) = layer.mcp.as_ref().and_then(|mcp| mcp.idle_stop_after) {
         runtime.mcp_idle_stop_after = value;
     }
@@ -2536,6 +2719,13 @@ pub(crate) fn validate_runtime(runtime: &EngineConfig) -> Result<(), ConfigError
         return Err(ConfigError::InvalidRuntime(reason));
     }
     if let Some(reason) = runtime.webhooks.invalid_reason() {
+        return Err(ConfigError::InvalidRuntime(reason));
+    }
+    if let Some(reason) = runtime
+        .speech
+        .as_ref()
+        .and_then(SpeechConfig::invalid_reason)
+    {
         return Err(ConfigError::InvalidRuntime(reason));
     }
     if let Some(reason) = runtime.acp.invalid_reason() {

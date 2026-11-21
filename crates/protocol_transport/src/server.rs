@@ -1164,6 +1164,48 @@ pub trait ServerProtocol: Send + Sync + 'static {
         params: cookie_agent_protocol::ArtifactUploadCancelParams,
         context: &ServerContext,
     ) -> Result<cookie_agent_protocol::ArtifactUploadCancelResult, ServerFault>;
+    /// Begins a voice recording on this connection, to transcribe once it
+    /// arrives (`docs/site/specs/voice-input.md` section 7.2).
+    async fn begin_transcription(
+        &self,
+        _params: cookie_agent_protocol::SpeechTranscribeBeginParams,
+        _context: &ServerContext,
+    ) -> Result<cookie_agent_protocol::SpeechTranscribeBeginResult, ServerFault> {
+        Err(ServerFault::method_not_found(
+            cookie_agent_protocol::SPEECH_TRANSCRIBE_BEGIN_METHOD,
+        ))
+    }
+    /// Appends the next chunk of one of this connection's recordings.
+    async fn transcription_chunk(
+        &self,
+        _params: cookie_agent_protocol::SpeechTranscribeChunkParams,
+        _context: &ServerContext,
+    ) -> Result<cookie_agent_protocol::SpeechTranscribeChunkResult, ServerFault> {
+        Err(ServerFault::method_not_found(
+            cookie_agent_protocol::SPEECH_TRANSCRIBE_CHUNK_METHOD,
+        ))
+    }
+    /// Checks and transcribes one of this connection's recordings.
+    async fn finish_transcription(
+        &self,
+        _params: cookie_agent_protocol::SpeechTranscribeFinishParams,
+        _context: &ServerContext,
+    ) -> Result<cookie_agent_protocol::SpeechTranscribeFinishResult, ServerFault> {
+        Err(ServerFault::method_not_found(
+            cookie_agent_protocol::SPEECH_TRANSCRIBE_FINISH_METHOD,
+        ))
+    }
+    /// Drops one of this connection's recordings, or abandons its
+    /// transcription.
+    async fn cancel_transcription(
+        &self,
+        _params: cookie_agent_protocol::SpeechTranscribeCancelParams,
+        _context: &ServerContext,
+    ) -> Result<cookie_agent_protocol::SpeechTranscribeCancelResult, ServerFault> {
+        Err(ServerFault::method_not_found(
+            cookie_agent_protocol::SPEECH_TRANSCRIBE_CANCEL_METHOD,
+        ))
+    }
     /// A store's assets, newest first.
     async fn list_assets(
         &self,
@@ -2314,6 +2356,22 @@ async fn dispatch<S: ServerProtocol>(
         cookie_agent_protocol::ARTIFACT_UPLOAD_CANCEL_METHOD => {
             value(server.cancel_upload(decode(params)?, context).await?)
         }
+        cookie_agent_protocol::SPEECH_TRANSCRIBE_BEGIN_METHOD => {
+            value(server.begin_transcription(decode(params)?, context).await?)
+        }
+        cookie_agent_protocol::SPEECH_TRANSCRIBE_CHUNK_METHOD => {
+            value(server.transcription_chunk(decode(params)?, context).await?)
+        }
+        cookie_agent_protocol::SPEECH_TRANSCRIBE_FINISH_METHOD => value(
+            server
+                .finish_transcription(decode(params)?, context)
+                .await?,
+        ),
+        cookie_agent_protocol::SPEECH_TRANSCRIBE_CANCEL_METHOD => value(
+            server
+                .cancel_transcription(decode(params)?, context)
+                .await?,
+        ),
         cookie_agent_protocol::ARTIFACT_READ_METHOD => {
             value(server.read_artifact(decode(params)?).await?)
         }

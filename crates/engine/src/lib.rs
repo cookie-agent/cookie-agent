@@ -108,6 +108,7 @@ pub use runtime::push_signals::{
 };
 pub use runtime::restart::{RestartHook, RestartScheduled, RestartStatus};
 pub use runtime::shares::{GuestLink, GuestPresence, OpenShare, OpenedLink};
+pub use runtime::speech::{MAX_TRANSCRIPTIONS_PER_CONNECTION, SpeechError};
 pub use runtime::webhook::receive::WebhookReply;
 pub use runtime::{
     AgentMessageHandle, AgentMessageInvocation, AgentRecipientState, ApprovalRespondFailure,

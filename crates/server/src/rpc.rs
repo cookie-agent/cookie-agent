@@ -321,6 +321,7 @@ pub(crate) fn engine_fault(error: EngineError) -> RpcFault {
     }
     let builder = match &error {
         EngineError::Media(error) => media_error(error),
+        EngineError::Speech(error) => speech_error(error),
         EngineError::PluginHookFailed(failure) => errors::PLUGIN_HOOK_FAILED
             .error()
             .field("plugin", &failure.plugin)
@@ -469,6 +470,37 @@ pub(crate) fn engine_fault(error: EngineError) -> RpcFault {
 }
 
 /// The registry error of a refused upload, read, or input media.
+fn speech_error(error: &cookie_agent_engine::SpeechError) -> ErrorBuilder {
+    use cookie_agent_engine::SpeechError;
+    match error {
+        SpeechError::Unavailable => errors::SPEECH_UNAVAILABLE.error(),
+        SpeechError::TooLarge { max_bytes, .. } => errors::SPEECH_TOO_LARGE
+            .error()
+            .field("max_bytes", max_bytes),
+        SpeechError::UnsupportedMedia { media_type } => errors::SPEECH_UNSUPPORTED_MEDIA
+            .error()
+            .field("media_type", media_type),
+        SpeechError::NotFound => errors::UPLOAD_NOT_FOUND.error(),
+        SpeechError::OffsetMismatch {
+            expected_offset, ..
+        } => errors::UPLOAD_OFFSET_MISMATCH
+            .error()
+            .field("expected_offset", expected_offset),
+        SpeechError::SizeMismatch {
+            byte_length,
+            received,
+        } => errors::UPLOAD_SIZE_MISMATCH
+            .error()
+            .field("byte_length", byte_length)
+            .field("received", received),
+        SpeechError::DigestMismatch { .. } => errors::DIGEST_MISMATCH.error(),
+        SpeechError::TooMany { max } => errors::TOO_MANY_UPLOADS.error().field("max_uploads", max),
+        SpeechError::InvalidRequest(_) => errors::BAD_PARAMS.error(),
+        SpeechError::Failed { reason } => errors::SPEECH_FAILED.error().field("reason", reason),
+        SpeechError::Cancelled => errors::SPEECH_CANCELLED.error(),
+    }
+}
+
 fn media_error(error: &MediaError) -> ErrorBuilder {
     match error {
         MediaError::UploadNotFound => errors::UPLOAD_NOT_FOUND.error(),

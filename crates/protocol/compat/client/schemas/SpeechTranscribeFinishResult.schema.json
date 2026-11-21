@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "backend": {
+      "description": "The backend that answered, as the daemon's log names it.",
+      "type": "string"
+    },
+    "duration_ms": {
+      "description": "How long that backend's request took, in milliseconds.",
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "text": {
+      "description": "The words, trimmed; empty when the backend heard none.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "text",
+    "backend",
+    "duration_ms"
+  ],
+  "title": "SpeechTranscribeFinishResult",
+  "type": "object"
+}

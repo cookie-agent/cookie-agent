@@ -1056,6 +1056,56 @@ impl Client {
         .await
     }
 
+    /// Begin a voice recording to transcribe (`speech.transcribe.begin`).
+    pub async fn begin_transcription(
+        &self,
+        params: cookie_agent_protocol::SpeechTranscribeBeginParams,
+    ) -> Result<cookie_agent_protocol::SpeechTranscribeBeginResult, ClientError> {
+        self.call(
+            cookie_agent_protocol::SPEECH_TRANSCRIBE_BEGIN_METHOD,
+            &params,
+        )
+        .await
+    }
+
+    /// Send a recording's next chunk (`speech.transcribe.chunk`).
+    pub async fn transcription_chunk(
+        &self,
+        params: cookie_agent_protocol::SpeechTranscribeChunkParams,
+    ) -> Result<cookie_agent_protocol::SpeechTranscribeChunkResult, ClientError> {
+        self.call(
+            cookie_agent_protocol::SPEECH_TRANSCRIBE_CHUNK_METHOD,
+            &params,
+        )
+        .await
+    }
+
+    /// Transcribe a complete recording (`speech.transcribe.finish`); it
+    /// answers once a backend has, however long that takes.
+    pub async fn finish_transcription(
+        &self,
+        params: cookie_agent_protocol::SpeechTranscribeFinishParams,
+    ) -> Result<cookie_agent_protocol::SpeechTranscribeFinishResult, ClientError> {
+        self.call(
+            cookie_agent_protocol::SPEECH_TRANSCRIBE_FINISH_METHOD,
+            &params,
+        )
+        .await
+    }
+
+    /// Drop a recording, or abandon its transcription
+    /// (`speech.transcribe.cancel`).
+    pub async fn cancel_transcription(
+        &self,
+        params: cookie_agent_protocol::SpeechTranscribeCancelParams,
+    ) -> Result<cookie_agent_protocol::SpeechTranscribeCancelResult, ClientError> {
+        self.call(
+            cookie_agent_protocol::SPEECH_TRANSCRIBE_CANCEL_METHOD,
+            &params,
+        )
+        .await
+    }
+
     /// Drop an upload in progress (`artifact.upload.cancel`).
     pub async fn cancel_upload(
         &self,

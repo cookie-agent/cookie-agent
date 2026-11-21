@@ -1900,6 +1900,72 @@ impl ServerProtocol for Server {
             .map_err(protocol_fault)
     }
 
+    async fn begin_transcription(
+        &self,
+        params: cookie_agent_protocol::SpeechTranscribeBeginParams,
+        context: &ServerContext,
+    ) -> Result<cookie_agent_protocol::SpeechTranscribeBeginResult> {
+        let transcription_id = self
+            .engine
+            .begin_transcription(
+                context.connection_id(),
+                params.byte_length,
+                &params.media_type,
+                params.session_id,
+            )
+            .map_err(protocol_fault)?;
+        Ok(cookie_agent_protocol::SpeechTranscribeBeginResult {
+            transcription_id,
+            chunk_bytes: cookie_agent_protocol::ARTIFACT_CHUNK_BYTES,
+        })
+    }
+
+    async fn transcription_chunk(
+        &self,
+        params: cookie_agent_protocol::SpeechTranscribeChunkParams,
+        context: &ServerContext,
+    ) -> Result<cookie_agent_protocol::SpeechTranscribeChunkResult> {
+        use base64::Engine as _;
+        let data = base64::engine::general_purpose::STANDARD
+            .decode(params.data.as_bytes())
+            .map_err(|error| ServerFault::invalid_params(format!("data is not base64: {error}")))?;
+        self.engine
+            .transcription_chunk(
+                context.connection_id(),
+                &params.transcription_id,
+                params.offset,
+                &data,
+            )
+            .map_err(protocol_fault)?;
+        Ok(cookie_agent_protocol::SpeechTranscribeChunkResult {})
+    }
+
+    async fn finish_transcription(
+        &self,
+        params: cookie_agent_protocol::SpeechTranscribeFinishParams,
+        context: &ServerContext,
+    ) -> Result<cookie_agent_protocol::SpeechTranscribeFinishResult> {
+        self.engine
+            .finish_transcription(
+                context.connection_id(),
+                &params.transcription_id,
+                &params.sha256,
+            )
+            .await
+            .map_err(protocol_fault)
+    }
+
+    async fn cancel_transcription(
+        &self,
+        params: cookie_agent_protocol::SpeechTranscribeCancelParams,
+        context: &ServerContext,
+    ) -> Result<cookie_agent_protocol::SpeechTranscribeCancelResult> {
+        self.engine
+            .cancel_transcription(context.connection_id(), &params.transcription_id)
+            .map_err(protocol_fault)?;
+        Ok(cookie_agent_protocol::SpeechTranscribeCancelResult {})
+    }
+
     async fn cancel_upload(
         &self,
         params: cookie_agent_protocol::ArtifactUploadCancelParams,
@@ -2041,6 +2107,7 @@ impl Server {
         tokio::spawn(async move {
             shutdown.cancelled().await;
             engine.drop_connection_uploads(connection);
+            engine.drop_connection_transcriptions(connection);
         });
     }
 }

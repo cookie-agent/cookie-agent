@@ -510,6 +510,7 @@ impl Engine {
                 },
             )?;
             engine.inner.config.store(Arc::clone(&applied));
+            engine.publish_speech_status();
             engine.publish(publication);
             engine.inner.runtimes.update_settings(&applied);
             Ok(())

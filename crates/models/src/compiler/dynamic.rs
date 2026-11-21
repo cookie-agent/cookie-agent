@@ -1199,7 +1199,7 @@ fn split_origin(url: &str) -> (&str, Vec<&str>) {
 }
 
 /// The global headers as the base every model composes onto.
-fn global_header_base(
+pub(crate) fn global_header_base(
     global: &BTreeMap<HeaderName, SafeStaticHeaderValue>,
 ) -> Result<SharedHeaders, DynamicCompileError> {
     merge_headers_onto(&SharedHeaders::default(), [(global, "global".to_owned())])
@@ -1207,7 +1207,7 @@ fn global_header_base(
 
 /// Composes `base`, already composed, with `layers` in order. With nothing to
 /// add, the result is `base` itself.
-fn merge_headers_onto<'a>(
+pub(crate) fn merge_headers_onto<'a>(
     base: &SharedHeaders,
     layers: impl IntoIterator<Item = (&'a BTreeMap<HeaderName, SafeStaticHeaderValue>, String)>,
 ) -> Result<SharedHeaders, DynamicCompileError> {

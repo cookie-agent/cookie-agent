@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "`speech.transcribe.begin`: a recording of `byte_length` bytes follows.",
+  "properties": {
+    "byte_length": {
+      "description": "The recording's size; at most [`SpeechStatus::max_bytes`].",
+      "format": "uint64",
+      "minimum": 1,
+      "type": "integer"
+    },
+    "media_type": {
+      "description": "The recorder's media type, such as `audio/webm;codecs=opus`; an\n`audio/` type.",
+      "maxLength": 255,
+      "minLength": 1,
+      "type": "string"
+    },
+    "session_id": {
+      "description": "The session dictated into, for the daemon's log only.",
+      "format": "uuid",
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "byte_length",
+    "media_type"
+  ],
+  "title": "SpeechTranscribeBeginParams",
+  "type": "object"
+}

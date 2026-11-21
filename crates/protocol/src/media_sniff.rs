@@ -137,6 +137,32 @@ pub fn recognize_media_type(head: &[u8], len: u64) -> Option<&'static str> {
     recognize(Path::new(""), head, len).map(|(media_type, _)| media_type)
 }
 
+/// A voice recording's media type and file extension, recognized from its
+/// content: the containers browsers record (WebM and Ogg with Opus, MP4
+/// audio) and the common audio files. Unlike [`recognize`], a WebM or MP4
+/// file is taken as audio, since a recorder made it
+/// (`docs/site/specs/voice-input.md` section 7.2).
+#[must_use]
+pub fn recording_media_type(bytes: &[u8]) -> Option<(&'static str, &'static str)> {
+    if bytes.starts_with(&[0x1a, 0x45, 0xdf, 0xa3]) {
+        Some(("audio/webm", "webm"))
+    } else if bytes.starts_with(b"OggS") {
+        Some(("audio/ogg", "ogg"))
+    } else if bytes.len() >= 12 && &bytes[4..8] == b"ftyp" {
+        Some(("audio/mp4", "m4a"))
+    } else if bytes.len() >= 12 && bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WAVE" {
+        Some(("audio/wav", "wav"))
+    } else if bytes.starts_with(b"fLaC") {
+        Some(("audio/flac", "flac"))
+    } else if bytes.starts_with(b"ID3")
+        || (bytes.len() >= 2 && bytes[0] == 0xff && bytes[1] & 0xe0 == 0xe0)
+    {
+        Some(("audio/mpeg", "mp3"))
+    } else {
+        None
+    }
+}
+
 /// What a client's upload is, recognized from its content alone and
 /// validated as a tool attachment is.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -774,4 +800,34 @@ pub fn media_extension_matches(path: &Path, mime: &str) -> bool {
                     | ("3gp", "video/3gpp")
             ) || !known_media_extension(path)
         })
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod recording_tests {
+    use super::recording_media_type;
+
+    #[test]
+    fn browser_recordings_and_audio_files_are_recognized_as_audio() {
+        let mut mp4 = vec![0, 0, 0, 0x20];
+        mp4.extend_from_slice(b"ftypM4A \0\0\0\0");
+        let mut wav = b"RIFF\0\0\0\0WAVE".to_vec();
+        wav.extend_from_slice(b"fmt ");
+        for (bytes, expected) in [
+            (
+                &b"\x1a\x45\xdf\xa3\x9f\x42\x86\x81"[..],
+                ("audio/webm", "webm"),
+            ),
+            (b"OggS\0\x02", ("audio/ogg", "ogg")),
+            (&mp4, ("audio/mp4", "m4a")),
+            (&wav, ("audio/wav", "wav")),
+            (b"fLaC\0\0\0\x22", ("audio/flac", "flac")),
+            (b"ID3\x04\0\0", ("audio/mpeg", "mp3")),
+            (b"\xff\xfb\x90\x64", ("audio/mpeg", "mp3")),
+        ] {
+            assert_eq!(recording_media_type(bytes), Some(expected));
+        }
+        for bytes in [&b"plain text"[..], b"%PDF-1.7", b"\x89PNG\r\n\x1a\n", b""] {
+            assert_eq!(recording_media_type(bytes), None);
+        }
+    }
 }

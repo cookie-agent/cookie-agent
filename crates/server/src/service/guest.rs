@@ -99,7 +99,13 @@ fn access(method: &str) -> Access {
         "run.steer" | "run.cancel" | protocol::RUN_TOOL_BACKGROUND_METHOD => Access::ActOnRun,
         protocol::ARTIFACT_UPLOAD_CHUNK_METHOD
         | protocol::ARTIFACT_UPLOAD_FINISH_METHOD
-        | protocol::ARTIFACT_UPLOAD_CANCEL_METHOD => Access::ActOnUpload,
+        | protocol::ARTIFACT_UPLOAD_CANCEL_METHOD
+        // Dictation, which only a guest who may send has
+        // (`docs/site/specs/voice-input.md` section 8).
+        | protocol::SPEECH_TRANSCRIBE_BEGIN_METHOD
+        | protocol::SPEECH_TRANSCRIBE_CHUNK_METHOD
+        | protocol::SPEECH_TRANSCRIBE_FINISH_METHOD
+        | protocol::SPEECH_TRANSCRIBE_CANCEL_METHOD => Access::ActOnUpload,
         _ => Access::Refused,
     }
 }
