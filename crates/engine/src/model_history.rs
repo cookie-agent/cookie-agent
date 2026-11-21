@@ -283,8 +283,8 @@ struct AssistantRecord<'a> {
     calls: Vec<CallRecord<'a>>,
     /// The turn an interrupt cut off. The marker that annotates it is injected
     /// only when the restored turn actually survives as assistant content, so a
-    /// reasoning-only salvage that restore drops does not leave a dangling
-    /// user-role marker.
+    /// reasoning-only salvage, whose reasoning is never replayed, does not
+    /// leave a dangling user-role marker.
     interrupted: bool,
     /// The turn is at or before a `native_replay_cut`: its reasoning is not
     /// replayed.
@@ -1651,6 +1651,26 @@ fn assemble_history_with_replay(
                     turn.content
                         .retain(|part| !matches!(part, PersistedAssistantPart::Reasoning { .. }));
                 }
+                // An interrupt's salvage has no native artifact, so its
+                // reasoning never carries the provider's state (Anthropic's
+                // signature arrives only when the block ends). An adapter that
+                // replays reasoning from the artifact would drop it with a
+                // warning on every later request, so it goes here. The durable
+                // event keeps it for the transcript.
+                if assistant.interrupted
+                    && assistant.turn.native_replay.is_none()
+                    && assistant
+                        .turn
+                        .content
+                        .iter()
+                        .any(|part| matches!(part, PersistedAssistantPart::Reasoning { .. }))
+                {
+                    assistant
+                        .turn
+                        .to_mut()
+                        .content
+                        .retain(|part| !matches!(part, PersistedAssistantPart::Reasoning { .. }));
+                }
                 // A cut turn is sent as its normalized history; the cut's
                 // own row said why, so later requests do not warn again
                 // (frozen context spec, section 7.1).
@@ -1679,9 +1699,10 @@ fn assemble_history_with_replay(
                     )?)
                 };
                 // `restore_turn_with_store` drops provider reasoning the target
-                // cannot replay, so a reasoning-only salvage can restore to an
-                // empty message. Judge emptiness after restore so neither an
-                // empty assistant turn nor its interrupt marker reaches history.
+                // cannot replay, and a salvage loses its reasoning above, so a
+                // turn can restore to an empty message. Judge emptiness after
+                // restore so neither an empty assistant turn nor its interrupt
+                // marker reaches history.
                 let has_content = restored
                     .as_ref()
                     .is_some_and(|(restored, _)| !restored.message.content.is_empty());

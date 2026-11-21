@@ -2852,6 +2852,79 @@ fn aborted_reasoning_only_turn_is_skipped_without_an_interrupt_marker() {
     assert!(!encoded.contains("hidden reasoning"));
 }
 
+fn aborted_salvage_context(
+    binding: &FrozenModelBinding,
+    content: Vec<PersistedAssistantPart>,
+) -> super::ModelContext {
+    let run = RunId::new_v7();
+    let events = [
+        run_started_event(1, run, binding),
+        event(
+            2,
+            run,
+            EventPayload::ModelTurnCommitted {
+                attempt_id: cookie_agent_protocol::AttemptId::new_v7(),
+                model_turn_seq: 1,
+                resolved_model: wire_model(binding),
+                input_through_seq: 1,
+                turn: PersistedModelTurn {
+                    content,
+                    provider_options: BTreeMap::new(),
+                    finish_reason: ModelFinishReason::Aborted,
+                    usage: Usage::default(),
+                    response_metadata: BTreeMap::new(),
+                    provider_metadata: BTreeMap::new(),
+                    native_replay: None,
+                },
+                warnings: Vec::new(),
+                prefix_fingerprint: None,
+            },
+        ),
+    ];
+    let directory = tempfile::tempdir().expect("tempdir");
+    let store =
+        crate::ArtifactRouter::open_flat(directory.path().join("artifacts")).expect("store");
+    assemble_model_context(&events, &store, binding, "System prompt.").expect("salvage context")
+}
+
+#[test]
+fn aborted_salvage_drops_its_reasoning_even_when_the_target_replays_reasoning() {
+    // An interrupt cut the stream before the provider sealed the reasoning
+    // (Anthropic's signature), so the salvage has no native artifact. A target
+    // that replays reasoning must not receive it: Anthropic would drop it with
+    // a warning on every later request.
+    let binding = reasoning_replay_binding("fallback-zero");
+    let reasoning = || PersistedAssistantPart::Reasoning {
+        text: "unsealed reasoning".into(),
+        metadata: None,
+    };
+
+    let context = aborted_salvage_context(&binding, vec![reasoning(), reasoning()]);
+    assert_eq!(
+        context.history.len(),
+        1,
+        "only the system turn survives: {:?}",
+        context.history
+    );
+    assert!(context.replay_decisions.is_empty());
+
+    let context = aborted_salvage_context(
+        &binding,
+        vec![
+            reasoning(),
+            PersistedAssistantPart::Text {
+                text: "partial answer".into(),
+                metadata: None,
+            },
+        ],
+    );
+    let encoded = serde_json::to_string(&context.history).expect("history JSON");
+    assert!(!encoded.contains("unsealed reasoning"));
+    assert_eq!(encoded.matches("partial answer").count(), 1);
+    assert!(matches!(context.history[1], HistoryTurn::Assistant(_)));
+    assert!(encoded.contains(INTERRUPTED_TURN_MARKER));
+}
+
 #[test]
 fn agent_md_replay_keeps_the_latest_event_per_attachment() {
     let run = RunId::new_v7();
