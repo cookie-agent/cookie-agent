@@ -1,8 +1,9 @@
 # Voice input
 
-Status: **approved** (2026-11-21), with the [preview](voice-input/preview.html);
-the user's decisions are in [section 12](#12-decisions-2026-11-21).
-Being implemented.
+Status: **implemented** (2026-11-21; client protocol 1.98.0), approved with
+the [preview](voice-input/preview.html); the user's decisions are in
+[section 12](#12-decisions-2026-11-21), and where the code differs is in
+[section 13](#13-implementation-notes).
 Related: [message attachments](message-attachments.md) and
 [compatibility v1](compatibility-v1.md) section 11.3 (uploads, media
 input), [engine configuration](engine-configuration.md),
@@ -404,3 +405,11 @@ Where the code differs from the sections above:
   `digest_mismatch`, `too_many_uploads`, at two recordings per
   connection); a `finish` abandoned by `cancel` or a closed connection is
   `speech_cancelled`. An idle recording is dropped after two minutes.
+- **The web client** (phase 2): `crates/web/src/dictation.rs` records with
+  `MediaRecorder` (WebM/Opus where offered, else Ogg, else MP4), meters
+  the level with an `AnalyserNode`, and keeps a failed recording in the
+  page for Retry; leaving the session or the composer abandons a
+  dictation. The "send when done" switch is **Settings › Display ›
+  Dictation**, shown while the daemon has `[speech]`. The mock model of the
+  browser scenarios also transcribes, so the `dictation` scenario goes
+  through a provider backend, with Chrome's fake microphone.

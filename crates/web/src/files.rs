@@ -106,7 +106,7 @@ pub fn encode_image(
         .map_err(|error| error.to_string())
 }
 
-fn describe(error: JsValue) -> String {
+pub(crate) fn describe(error: JsValue) -> String {
     error
         .dyn_ref::<js_sys::Error>()
         .map(|error| String::from(error.message()))

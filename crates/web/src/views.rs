@@ -3874,6 +3874,16 @@ fn Composer(workspace: Workspace, composing: RwSignal<bool>) -> impl IntoView {
     });
     let resize = window_event_listener(ev::resize, move |_| fit());
     on_cleanup(move || resize.remove());
+    // A dictation belongs to the session it started in: leaving it, or the
+    // composer going away, abandons it and releases the microphone.
+    Effect::new(move |previous: Option<Option<SessionId>>| {
+        let selected = workspace.selected.get();
+        if previous.is_some_and(|previous| previous != selected) {
+            workspace.dictation.cancel(workspace);
+        }
+        selected
+    });
+    on_cleanup(move || workspace.dictation.cancel(workspace));
     let insert_newline = move || {
         let Some(textarea) = textarea.get() else {
             return;
@@ -3885,6 +3895,12 @@ fn Composer(workspace: Workspace, composing: RwSignal<bool>) -> impl IntoView {
     };
     let on_keydown = move |event: ev::KeyboardEvent| {
         let key = event.key();
+        // While dictating, Enter and Escape belong to the recording bar.
+        if workspace.dictation.phase.get_untracked() != crate::dictation::Phase::Idle
+            && matches!(key.as_str(), "Enter" | "Escape")
+        {
+            return;
+        }
         let action = composer_action(KeyPress {
             key: &key,
             alt: event.alt_key(),
@@ -3907,6 +3923,10 @@ fn Composer(workspace: Workspace, composing: RwSignal<bool>) -> impl IntoView {
             ComposerAction::Cancel if workspace.panel.get_untracked().is_some() => return,
             ComposerAction::Cancel => workspace.cancel(),
             ComposerAction::Recall => workspace.recall_newest(),
+            ComposerAction::Dictate if workspace.speech.get_untracked().is_some() => {
+                workspace.dictation.start(workspace);
+            }
+            ComposerAction::Dictate => return,
         }
         event.prevent_default();
     };
@@ -3952,7 +3972,13 @@ fn Composer(workspace: Workspace, composing: RwSignal<bool>) -> impl IntoView {
                     // from the first render: padding by which buttons show,
                     // not by measuring them once they have.
                     class="block w-full resize-none appearance-none border-0 bg-transparent px-4 pt-3 pb-2 text-[0.9375rem] leading-6 text-fg shadow-none outline-none placeholder:text-faint focus:outline-none"
-                    placeholder="Ask cookie to…"
+                    placeholder=move || {
+                        if workspace.dictation.phase.get() == crate::dictation::Phase::Recording {
+                            "Listening…"
+                        } else {
+                            "Ask cookie to…"
+                        }
+                    }
                     disabled=disabled
                     prop:value=move || workspace.composer.get()
                     on:input=move |event| {
@@ -3996,7 +4022,13 @@ fn Composer(workspace: Workspace, composing: RwSignal<bool>) -> impl IntoView {
                         }
                     }
                 ></textarea>
-                <div class="flex min-w-0 items-center gap-1 px-1.5 pb-1.5">
+                <Show when=move || workspace.dictation.active()>
+                    <RecordingBar workspace=workspace />
+                </Show>
+                <div
+                    class="flex min-w-0 items-center gap-1 px-1.5 pb-1.5"
+                    class:hidden=move || workspace.dictation.active()
+                >
                 <div class="flex shrink-0 items-center gap-0.5" data-composer-left>
                     <AttachButtons workspace=workspace />
                 </div>
@@ -4006,6 +4038,7 @@ fn Composer(workspace: Workspace, composing: RwSignal<bool>) -> impl IntoView {
                     class="ml-auto flex shrink-0 items-center gap-1.5"
                     data-composer-actions
                 >
+                    <MicButton workspace=workspace />
                     {move || match buttons.get() {
                         ComposerButtons::Send { .. } => button(
                             "send", "Send", "Enter", icondata::LuArrowUp, true,
@@ -4045,6 +4078,160 @@ fn Composer(workspace: Workspace, composing: RwSignal<bool>) -> impl IntoView {
                 </div>
                 </div>
             </div>
+        </div>
+    }
+}
+
+/// The microphone beside the composer's actions, while the daemon has
+/// `[speech]` (`docs/site/specs/voice-input.md` section 3).
+#[component]
+fn MicButton(workspace: Workspace) -> impl IntoView {
+    let dictation = workspace.dictation;
+    let secure = crate::dictation::secure();
+    let label = if secure {
+        "Dictate · Ctrl+Shift+Space"
+    } else {
+        "The microphone needs https or localhost"
+    };
+    view! {
+        <Show when=move || workspace.speech.get().is_some()>
+            <button
+                type="button"
+                id="mic"
+                class=format!("{COMPOSER_BUTTON} text-muted hover:bg-hover hover:text-fg active:bg-press")
+                aria-label=if secure { "Dictate" } else { label }
+                title=label
+                disabled=move || !secure || !workspace.writable()
+                on:click=move |_| dictation.start(workspace)
+            >
+                <Glyph icon=icondata::LuMic class="text-base" />
+            </button>
+        </Show>
+    }
+}
+
+/// The composer's row while a dictation records, transcribes, or failed:
+/// Cancel, the clock, the level meter, and Stop; then a spinner; then why
+/// it failed, with Discard and Retry.
+#[component]
+fn RecordingBar(workspace: Workspace) -> impl IntoView {
+    use crate::dictation::Phase;
+    let dictation = workspace.dictation;
+    let phase = move || dictation.phase.get();
+    // Enter stops and Escape cancels wherever the focus is; a sheet's own
+    // Escape comes first.
+    let keys = window_event_listener(ev::keydown, move |event| {
+        match (event.key().as_str(), dictation.phase.get_untracked()) {
+            ("Enter", Phase::Recording) if !event.shift_key() => {
+                event.prevent_default();
+                dictation.stop();
+            }
+            (
+                "Escape",
+                Phase::Starting | Phase::Recording | Phase::Transcribing | Phase::Failed,
+            ) if workspace.panel.get_untracked().is_none() => {
+                event.prevent_default();
+                dictation.cancel(workspace);
+            }
+            _ => {}
+        }
+    });
+    on_cleanup(move || keys.remove());
+    let limit = move || {
+        workspace
+            .speech
+            .get()
+            .and_then(|status| cookie_agent_client_state::speech::limit_text(&status))
+    };
+    view! {
+        <div class="flex h-[2.625rem] min-w-0 flex-1 items-center gap-2 px-1.5 pb-1.5" data-dictation=move || format!("{:?}", phase()).to_lowercase()>
+            <Show when=move || phase() != Phase::Failed>
+                <button
+                    type="button"
+                    id="dictation-cancel"
+                    class=format!("{COMPOSER_BUTTON} text-muted hover:bg-hover hover:text-fg active:bg-press")
+                    aria-label="Cancel"
+                    title="Cancel · Esc"
+                    on:click=move |_| dictation.cancel(workspace)
+                >
+                    <Glyph icon=icondata::LuX class="text-base" />
+                </button>
+            </Show>
+            {move || match phase() {
+                Phase::Starting => view! {
+                    <span class="flex min-w-0 flex-1 items-center gap-2 text-[0.8125rem] text-muted">
+                        <Glyph icon=icondata::LuLoaderCircle class="animate-spin" />
+                        "Waiting for the microphone…"
+                    </span>
+                }
+                .into_any(),
+                Phase::Recording | Phase::Transcribing => view! {
+                    <span class="inline-flex shrink-0 items-center gap-1.5 text-[0.8125rem] text-fg-2 tabular-nums">
+                        <Show when=move || phase() == Phase::Recording>
+                            <span class="size-2 animate-pulse rounded-full bg-bad" aria-hidden="true"></span>
+                        </Show>
+                        <span data-dictation-clock>{move || cookie_agent_client_state::speech::clock(dictation.elapsed.get())}</span>
+                        <span class="text-faint">{limit}</span>
+                    </span>
+                    <Show
+                        when=move || phase() == Phase::Recording
+                        fallback=|| view! {
+                            <span class="flex min-w-0 flex-1 items-center gap-2 text-[0.8125rem] text-muted" role="status">
+                                <Glyph icon=icondata::LuLoaderCircle class="animate-spin" />
+                                "Transcribing…"
+                            </span>
+                        }
+                    >
+                        <canvas id="dictation-meter" class="block h-7 min-w-0 flex-1 text-fg-2" aria-hidden="true"></canvas>
+                    </Show>
+                }
+                .into_any(),
+                Phase::Failed => view! {
+                    <span class="flex min-w-0 flex-1 items-center gap-2 pl-1.5 text-[0.8125rem]" role="alert">
+                        <Glyph icon=icondata::LuTriangleAlert class="shrink-0 text-bad" />
+                        <span class="shrink-0 font-medium text-bad">"Transcription failed"</span>
+                        <span class="min-w-0 truncate text-muted" title=move || dictation.failure.get()>
+                            {move || dictation.failure.get()}
+                        </span>
+                    </span>
+                    <button
+                        type="button"
+                        id="dictation-discard"
+                        class="inline-flex h-8 shrink-0 items-center rounded-full px-3 text-[0.8125rem] text-fg-2 hover:bg-hover hover:text-fg active:bg-press"
+                        on:click=move |_| dictation.cancel(workspace)
+                    >
+                        "Discard"
+                    </button>
+                    <button
+                        type="button"
+                        id="dictation-retry"
+                        class=format!("inline-flex h-8 shrink-0 items-center gap-1.5 rounded-full px-3 text-[0.8125rem] {COMPOSER_PRIMARY}")
+                        on:click=move |_| dictation.retry(workspace)
+                    >
+                        <Glyph icon=icondata::LuRotateCcw class="text-sm" />
+                        "Retry"
+                    </button>
+                }
+                .into_any(),
+                Phase::Idle => ().into_any(),
+            }}
+            <Show when=move || matches!(phase(), Phase::Recording | Phase::Transcribing)>
+                <button
+                    type="button"
+                    id="dictation-stop"
+                    class=format!("{COMPOSER_BUTTON} {COMPOSER_PRIMARY}")
+                    aria-label="Stop and transcribe"
+                    title="Stop and transcribe · Enter"
+                    disabled=move || phase() != Phase::Recording
+                    on:click=move |_| dictation.stop()
+                >
+                    {move || if phase() == Phase::Recording {
+                        view! { <Glyph icon=icondata::LuCheck class="text-sm" /> }.into_any()
+                    } else {
+                        view! { <Glyph icon=icondata::LuLoaderCircle class="animate-spin text-sm" /> }.into_any()
+                    }}
+                </button>
+            </Show>
         </div>
     }
 }

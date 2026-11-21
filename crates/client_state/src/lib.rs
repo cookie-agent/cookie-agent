@@ -60,6 +60,7 @@ pub mod session_schedules;
 pub mod session_window;
 pub mod shares;
 pub mod skills;
+pub mod speech;
 pub mod subscriptions;
 pub mod tool_header;
 pub mod transcript_mode;

@@ -251,6 +251,11 @@ pub struct Workspace {
     /// session, not a reload.
     pub expanded: RwSignal<HashMap<SessionId, crate::render::transcript::Expanded>>,
     pub composer: RwSignal<String>,
+    /// Voice input's limits while the daemon has `[speech]` backends, from
+    /// its status; `None` hides the microphone.
+    pub speech: RwSignal<Option<cookie_agent_protocol::SpeechStatus>>,
+    /// The composer's dictation.
+    pub dictation: crate::dictation::Dictation,
     pub status: RwSignal<String>,
     /// Whether the page shows `status` now (`views::follow_status`).
     pub status_live: RwSignal<bool>,
@@ -687,6 +692,8 @@ impl Workspace {
             )),
             expanded: RwSignal::new(HashMap::new()),
             composer: RwSignal::new(String::new()),
+            speech: RwSignal::new(None),
+            dictation: crate::dictation::Dictation::new(),
             status: RwSignal::new(String::new()),
             status_live: RwSignal::new(false),
             panel: RwSignal::new(None),
@@ -847,7 +854,7 @@ impl Workspace {
     /// then does nothing (the reconnecting banner says why), and a redial
     /// reads again what is open ([`Workspace::reread_open`]), rather
     /// than a read failing on the closed connection and its error staying.
-    fn client(self) -> Option<Client> {
+    pub(crate) fn client(self) -> Option<Client> {
         self.client.get_value()
     }
 

@@ -7826,6 +7826,110 @@ def guest_link(browser):
     browser.click("#session-share-close")
 
 
+MODEL_SERVER = os.environ.get("MODEL_SERVER", "")
+FAKE_MICROPHONE = ("--use-fake-ui-for-media-stream", "--use-fake-device-for-media-stream")
+
+
+def dictation_phase(browser):
+    return browser.script(
+        "const b = document.querySelector('[data-dictation]'); return b ? b.dataset.dictation : 'idle'"
+    )
+
+
+def dictate(browser, then="#dictation-stop"):
+    """Records a second of Chrome's fake microphone, then clicks `then`."""
+    browser.click("#mic")
+    browser.wait("the recording", lambda: dictation_phase(browser) == "recording", timeout=20)
+    time.sleep(1.2)
+    browser.click(then)
+
+
+def dictation():
+    """The composer's microphone (voice input spec section 3), through
+    Chrome's fake microphone: the words land at the end of the draft, a
+    failure keeps the recording for Retry, Escape abandons a recording, and
+    the Settings switch sends the words at once. The daemon's first backend
+    is the mock model's provider; its second is never there."""
+    mic = Browser(switches=FAKE_MICROPHONE)
+    try:
+        mic.go(LINK)
+        mic.wait("the connection", lambda: mic.text("#connected") != "")
+        new_session(mic)
+        mic.wait("the microphone", lambda: count(mic, "#mic") == 1)
+        set_text(mic, "#composer", "Fix it")
+        dictate(mic)
+        mic.wait("the words", lambda: composer_text(mic).startswith("Fix it and add a test ("), timeout=30)
+        recorded = composer_text(mic)
+        assert recorded in ("Fix it and add a test (webm)", "Fix it and add a test (ogg)"), recorded
+        assert dictation_phase(mic) == "idle"
+        assert mic.script("return document.activeElement.id") == "composer"
+        print("dictated words join the draft:", recorded)
+
+        # Every backend fails once: the bar says why, and Retry sends the
+        # same recording again.
+        urllib.request.urlopen(urllib.request.Request(MODEL_SERVER + "/v1/audio/fail-next", data=b"{}"), timeout=10)
+        set_text(mic, "#composer", "")
+        dictate(mic)
+        mic.wait("the failure", lambda: dictation_phase(mic) == "failed", timeout=30)
+        reason = mic.text("[data-dictation] [role=alert]")
+        assert "custom.local" in reason and "nowhere" in reason, reason
+        mic.click("#dictation-retry")
+        mic.wait("the retried words", lambda: composer_text(mic).startswith("and add a test ("), timeout=30)
+        print("a failure names each backend, and Retry transcribes the kept recording")
+
+        # Escape abandons a recording and leaves the draft alone.
+        set_text(mic, "#composer", "keep this")
+        mic.click("#mic")
+        mic.wait("the recording", lambda: dictation_phase(mic) == "recording", timeout=20)
+        mic.script("window.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape', bubbles: true}))")
+        mic.wait("the composer's row", lambda: dictation_phase(mic) == "idle")
+        time.sleep(1.5)
+        assert composer_text(mic) == "keep this", composer_text(mic)
+        print("Escape abandons a recording")
+
+        # Sent at once, with the Settings switch.
+        open_section(mic, "settings", "display")
+        mic.click('[data-dictation-send="true"]')
+        view(mic, "chat")
+        mic.wait("the microphone", lambda: count(mic, "#mic") == 1)
+        set_text(mic, "#composer", "")
+        dictate(mic)
+        mic.wait("the sent message", lambda: "and add a test (" in mic.text("#transcript"), timeout=30)
+        assert composer_text(mic) == "", composer_text(mic)
+        open_section(mic, "settings", "display")
+        mic.click('[data-dictation-send="false"]')
+        print("the switch sends dictated words at once")
+        if SCREENSHOTS:
+            dictation_shots(mic)
+    finally:
+        mic.close()
+
+
+def dictation_shots(mic):
+    """The bar's states in both themes, at desktop and phone sizes, for
+    looking at (SCREENSHOT_DIR)."""
+    for theme in ("light", "dark"):
+        mic.script("localStorage.setItem('cookie.theme', arguments[0])", theme)
+        mic.go(LINK.split("#")[0])
+        mic.wait("the connection", lambda: mic.text("#connected") != "")
+        for size, (width, height) in (("desktop", (1280, 800)), ("phone", (390, 844))):
+            mic.phone(width, height)
+            view(mic, "chat")
+            mic.wait("the microphone", lambda: count(mic, "#mic") == 1)
+            set_text(mic, "#composer", "Also add a test for an empty name")
+            mic.shot("dictation-%s-idle-%s" % (size, theme))
+            mic.click("#mic")
+            mic.wait("the recording", lambda: dictation_phase(mic) == "recording", timeout=20)
+            time.sleep(2)
+            mic.shot("dictation-%s-recording-%s" % (size, theme))
+            urllib.request.urlopen(urllib.request.Request(MODEL_SERVER + "/v1/audio/fail-next", data=b"{}"), timeout=10)
+            mic.click("#dictation-stop")
+            mic.wait("the failure", lambda: dictation_phase(mic) == "failed", timeout=30)
+            mic.shot("dictation-%s-failed-%s" % (size, theme))
+            mic.click("#dictation-discard")
+            mic.wait("the composer's row", lambda: dictation_phase(mic) == "idle")
+
+
 SCENARIOS = [
     ("basics", basics, "chat", []),
     ("torn_down", torn_down, "chat", ["basics"]),
@@ -7895,6 +7999,9 @@ SCENARIOS = [
     # It restarts its daemon.
     # It has a browser of its own for the guest, in its own group's load.
     ("guest_link", guest_link, "guest", []),
+    # Its daemon has `[speech]` backends (test-web-page.sh), and it
+    # records with a fake microphone.
+    ("dictation", dictation, "dictation", []),
     ("session_restart", session_restart, "session_restart", []),
     # It restarts its daemon.
     ("restart_daemon", restart_daemon, "restart", []),

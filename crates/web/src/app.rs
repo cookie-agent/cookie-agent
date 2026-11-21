@@ -274,6 +274,9 @@ impl Connection {
         }
         self.workspace.share_url.set(hello.share_url.clone());
         self.workspace
+            .speech
+            .set(hello.status.as_ref().and_then(|status| status.speech));
+        self.workspace
             .share_page_base
             .set(cookie_agent_client_state::shares::page_base(url).unwrap_or_default());
         // The page waited for the daemon to be ready; what it is busy with
@@ -332,6 +335,7 @@ impl Connection {
                                 return;
                             }
                             ClientDelivery::DaemonStatus(status) if self.is_current(generation) => {
+                                self.workspace.speech.set(status.speech);
                                 self.daemon.set(Some(status));
                             }
                             delivery if self.is_current(generation) => {

@@ -172,6 +172,7 @@ nav:
   - Specs:
       - Status and scope: specs/index.md
       - Implemented:
+          - Voice input: specs/voice-input.md
           - "A session's schedules and webhooks": specs/session-schedules.md
           - "The Webhooks view, polished, and titles for webhook sessions": specs/webhooks-view.md
           - "Web polish: a second pass after Quiet Ink": specs/web-polish.md
@@ -220,7 +221,6 @@ nav:
           - Tree-local sessions: specs/tree-local-sessions.md
           - Store lock retention: specs/store-lock-retention.md
       - Drafts and records:
-          - Voice input: specs/voice-input.md
           - Session tool groups and skills: specs/session-tool-groups.md
           - Responsive session loading and storage v3: specs/session-storage-v3.md
           - Session store locks and durability: specs/store-locks-and-durability.md

@@ -19,6 +19,7 @@ pub mod config_toml;
 pub mod connect;
 pub mod connection;
 pub mod cron;
+pub mod dictation;
 pub mod emoji;
 pub mod errors;
 mod files;

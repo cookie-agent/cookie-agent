@@ -739,6 +739,19 @@ refreshes no longer change). Reset and Replace ask once more.
   background, a bar above the composer lists them. Click it, or use
   **Background calls**, to see how long each has run and stop one; a stopped call
   still reports to the model.
+- **Dictation.** When the daemon has [voice input](../engine/speech.md)
+  backends, a microphone sits beside Send; **Ctrl+Shift+Space** in the
+  composer starts it too. The first time, the browser asks for the
+  microphone. While it records, the composer's row becomes a recording bar:
+  × (or Escape) cancels, the clock runs against the daemon's limit, a meter
+  shows what it hears, and ✓ (or Enter) stops. The daemon transcribes the
+  recording and the words join the end of the draft, to edit and send; or,
+  with **Settings › Display › Dictation** set to send them, they go as the
+  message at once. When every backend fails, the bar says why each did,
+  with **Retry** and **Discard**. The recording is never kept. The browser
+  offers the microphone only over https or on localhost; on a plain-http
+  page the microphone is disabled and says so. A guest of a shared
+  conversation who may send can dictate too.
 - **Files.** Attach files with the paperclip (the file picker), by dropping them on the page, or by pasting them; on a phone,
   the camera button takes a photo. They upload at once and wait on the
   draft as chips; the × on a chip removes it. A new session's files wait

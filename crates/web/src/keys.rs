@@ -1,8 +1,8 @@
 //! What a key does in the composer, as in the TUI: Enter steers, Alt+Enter
 //! queues, Shift+Enter, Ctrl+Enter, and Ctrl+J insert a newline, Escape
 //! cancels, and Up in an empty composer recalls this client's newest
-//! pending or queued message. Also which buttons the composer shows, and
-//! how tall its text grows.
+//! pending or queued message, and Ctrl+Shift+Space starts dictation. Also
+//! which buttons the composer shows, and how tall its text grows.
 
 /// One key press in the composer: the `KeyboardEvent.key` and modifiers.
 #[derive(Clone, Copy, Debug, Default)]
@@ -29,6 +29,8 @@ pub enum ComposerAction {
     Cancel,
     /// Take back this client's newest pending or queued message.
     Recall,
+    /// Start dictating (`docs/site/specs/voice-input.md` decision 10).
+    Dictate,
     /// The browser handles the key.
     Type,
 }
@@ -41,6 +43,7 @@ pub fn composer_action(press: KeyPress<'_>) -> ComposerAction {
         "Enter" => ComposerAction::Steer,
         "j" | "J" if press.ctrl && !press.alt && !press.meta => ComposerAction::Newline,
         "Escape" => ComposerAction::Cancel,
+        " " if press.ctrl && press.shift && !press.alt && !press.meta => ComposerAction::Dictate,
         "ArrowUp" if press.empty && !press.alt && !press.shift && !press.ctrl => {
             ComposerAction::Recall
         }
@@ -135,6 +138,30 @@ mod tests {
         KeyPress {
             key,
             ..KeyPress::default()
+        }
+    }
+
+    #[test]
+    fn ctrl_shift_space_dictates() {
+        let space = KeyPress {
+            ctrl: true,
+            shift: true,
+            ..press(" ")
+        };
+        assert_eq!(composer_action(space), ComposerAction::Dictate);
+        for other in [
+            press(" "),
+            KeyPress {
+                ctrl: true,
+                ..press(" ")
+            },
+            KeyPress {
+                shift: true,
+                ..press(" ")
+            },
+            KeyPress { alt: true, ..space },
+        ] {
+            assert_eq!(composer_action(other), ComposerAction::Type);
         }
     }
 

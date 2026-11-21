@@ -287,6 +287,25 @@ scope = \"runtime\""
     fi
     # The acp group's `local` runtime hosts the scripted ACP agent, and a
     # disabled one the agent picker shows dimmed.
+    # The dictation group's daemon transcribes through the mock model's
+    # provider (voice input spec section 5), and a local endpoint that is
+    # never there, which it falls back from.
+    speech_config=""
+    if [[ " $* " == *" dictation "* ]]; then
+        speech_config="
+[speech]
+max_seconds = 30
+
+[[speech.backends]]
+provider = \"custom.local\"
+model = \"whisper-test\"
+
+[[speech.backends]]
+name = \"nowhere\"
+endpoint = \"http://127.0.0.1:9/v1\"
+model = \"whisper-test\"
+"
+    fi
     acp_agents=""
     if [[ " $* " == *" acp_agents "* || " $* " == *" acp_questions "* || " $* " == *" acp_reconnect "* || " $* " == *" acp_restart "* ]]; then
         acp_agents="
@@ -342,6 +361,7 @@ url = "http://127.0.0.1:$oauth_port/mcp"
 $runtime_mcp
 $acp_agents
 $memory_config
+$speech_config
 TOML
     # A session made before the daemon starts, by another process: the daemon
     # lists it but has not loaded it, so the scenarios can hold its owner lock
@@ -400,7 +420,7 @@ TOML
     start_chromedriver "$driver_port" "$browsers" "$scratch/chromedriver.log"
     pids+=("$!")
 
-    COOKIE="$cookie" OAUTH_SERVER="http://127.0.0.1:$oauth_port" python3 -I scripts/web-e2e/scenarios.py "$driver_port" "$allowing_link" "$other_link" \
+    COOKIE="$cookie" OAUTH_SERVER="http://127.0.0.1:$oauth_port" MODEL_SERVER="http://127.0.0.1:$model_port" python3 -I scripts/web-e2e/scenarios.py "$driver_port" "$allowing_link" "$other_link" \
         "$other_port" "$allowing" "$held_session" "${SCREENSHOT_DIR:-}" "$@"
 }
 

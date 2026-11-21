@@ -300,7 +300,38 @@ fn display_section(workspace: Workspace) -> impl IntoView {
         <h2 class="mt-4 text-sm font-bold">"Diagnostics in the transcript"</h2>
         <p class=NOTE>"The same choice as Diagnostics in the session's ⋮ menu; it stays in this browser."</p>
         {events_sheet(workspace)}
+        <Show when=move || workspace.speech.get().is_some()>
+            <h2 class="mt-4 text-sm font-bold">"Dictation"</h2>
+            <p class=NOTE>"What the microphone does with the words once they arrive; it stays in this browser."</p>
+            {dictation_choices(workspace)}
+        </Show>
     }
+}
+
+/// Whether dictated words wait in the composer or are sent at once
+/// (`docs/site/specs/voice-input.md` section 3).
+fn dictation_choices(workspace: Workspace) -> impl IntoView {
+    [
+        (false, "Put them in the composer, to edit and send"),
+        (true, "Send them as the message"),
+    ]
+    .into_iter()
+    .map(|(send, label)| {
+        let chosen = move || workspace.dictation.send_when_done.get() == send;
+        view! {
+            <button
+                type="button"
+                class=super::ROW
+                class:bg-sel=chosen
+                aria-pressed=move || chosen().to_string()
+                data-dictation-send=send.to_string()
+                on:click=move |_| workspace.dictation.set_send_when_done(send)
+            >
+                {move || super::choice_line(label.to_owned(), chosen(), "text-sm")}
+            </button>
+        }
+    })
+    .collect_view()
 }
 
 /// This browser: installing the page as an app, and the daemon's token it

@@ -1,5 +1,10 @@
 """A scripted OpenAI-compatible model for the web client's browser scenarios.
 
+It also transcribes: `POST /v1/audio/transcriptions` answers "and add a
+test", with the recording's file extension in brackets, so a scenario sees
+which format the browser recorded; `POST /v1/audio/fail-next` makes the
+next transcription fail with 500.
+
 It answers `POST /v1/chat/completions` with a streamed reply chosen by the
 last message: a tool result gets a short final answer, a request without
 tools (a compaction) a summary, and a background call's report "ok";
@@ -61,6 +66,9 @@ import re
 import sys
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+# Transcriptions to fail before answering again (`/v1/audio/fail-next`).
+TRANSCRIPTION_FAILURES = [0]
 
 # Every reply's usage: a prompt mostly read from the cache, as the usage
 # panel's hit rate shows it (`prompt_tokens` counts the cached tokens too).
@@ -297,6 +305,14 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         length = int(self.headers.get("content-length", "0"))
+        if self.path.endswith("/audio/fail-next"):
+            self.rfile.read(length)
+            TRANSCRIPTION_FAILURES[0] += 1
+            self.answer(200, b"{}")
+            return
+        if self.path.endswith("/audio/transcriptions"):
+            self.transcribe(self.rfile.read(length))
+            return
         request = json.loads(self.rfile.read(length) or b"{}")
         self.send_response(200)
         self.send_header("content-type", "text/event-stream")
@@ -311,6 +327,25 @@ class Handler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError):
             pass
         self.close_connection = True
+
+    def answer(self, status, body):
+        self.send_response(status)
+        self.send_header("content-type", "application/json")
+        self.send_header("content-length", str(len(body)))
+        self.send_header("connection", "close")
+        self.end_headers()
+        self.wfile.write(body)
+        self.close_connection = True
+
+    def transcribe(self, body):
+        if TRANSCRIPTION_FAILURES[0] > 0:
+            TRANSCRIPTION_FAILURES[0] -= 1
+            self.answer(500, json.dumps({"error": {"message": "the mock is overloaded"}}).encode())
+            return
+        found = re.search(rb'name="file"; filename="[^".]*\.([a-z0-9]+)"', body)
+        extension = found.group(1).decode() if found else "unknown"
+        text = "and add a test (%s)" % extension
+        self.answer(200, json.dumps({"text": text}).encode())
 
     def log_message(self, *_):
         pass
