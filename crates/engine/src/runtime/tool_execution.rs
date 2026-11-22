@@ -364,12 +364,13 @@ impl Engine {
         // on its own.
         let mut groups: Vec<CallGroup> = Vec::new();
         for (index, (call, published)) in calls.iter().enumerate() {
-            // A routed call finds its machine's tool by its composed name.
-            let composed =
-                published.map_or(call.name.as_str(), |published| published.composed.as_str());
+            // A routed call finds its machine's tool as it is composed now.
             let Some(tool) = composition
                 .as_ref()
-                .and_then(|composition| composition.get(composed))
+                .and_then(|composition| match published {
+                    Some(published) => current_tool(composition, published),
+                    None => composition.get(&call.name),
+                })
                 .filter(|tool| {
                     tool.source.provider.provider_id() != crate::base_tools::LOADER_PROVIDER_ID
                 })
@@ -514,7 +515,7 @@ impl Engine {
                         composed.as_ref()
                     }
                 }
-                .and_then(|composition| composition.get(&published.composed));
+                .and_then(|composition| current_tool(composition, published));
                 if current.is_some_and(|current| {
                     current.source.attachment == published.source.attachment
                         && current.source.generation == published.source.generation
@@ -1884,6 +1885,32 @@ impl Drop for DetachRegistration<'_> {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .remove(&self.call);
     }
+}
+
+/// The tool `published` is in `composition`: by the name composition gave
+/// it or, when composition has renamed it since, by its source and the name
+/// its source knows it by, which one composition holds once. A routed tool's
+/// machines are not pinned for the round, so another machine offering the
+/// tool attaching or leaving moves them between bare and prefixed names. A
+/// routed tool itself, which a call whose machine did not resolve keeps, is
+/// found by its name alone.
+fn current_tool<'a>(
+    composition: &'a Composition,
+    published: &PublishedTool,
+) -> Option<&'a ComposedTool> {
+    if published.routes.is_some() {
+        return composition.get(&published.composed);
+    }
+    let label = crate::runtimes::composition_source(&published.source);
+    let same_source = |tool: &&ComposedTool| {
+        tool.source.attachment == published.source.attachment
+            && tool.spec.name == published.spec.name
+            && crate::runtimes::composition_source(&tool.source) == label
+    };
+    composition
+        .get(&published.composed)
+        .filter(same_source)
+        .or_else(|| composition.tools.iter().find(same_source))
 }
 
 /// The host-owned argument a routed tool takes

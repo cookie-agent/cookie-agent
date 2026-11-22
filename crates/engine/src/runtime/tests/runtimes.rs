@@ -499,6 +499,40 @@ async fn several_machines_publish_one_tool_routed_by_machine() {
         .detach_runtime(session, attached.name.clone(), origin())
         .await
         .expect("detach labpc");
+    // A call published while labpc was attached still runs on the default
+    // machine once labpc has left, though composition now names its tool
+    // bare rather than by its attachment's prefix.
+    let (stale_default, arguments) = routed(None).expect("the default machine");
+    let prepared = fixture
+        .engine
+        .prepare_published_tool_calls(
+            session,
+            RunId::new_v7(),
+            vec![(
+                ToolCall {
+                    id: ToolCallId::new_v7(),
+                    name: "write".into(),
+                    arguments,
+                },
+                Some(stale_default),
+            )],
+            &policy,
+            test_turn_context(&policy),
+        )
+        .await;
+    assert!(
+        prepared[0].prepared.is_ok(),
+        "{:?}",
+        prepared[0]
+            .prepared
+            .as_ref()
+            .err()
+            .map(|failure| &failure.message)
+    );
+    assert_eq!(
+        prepared[0].attachment().map(|name| name.as_str()),
+        Some(local_name.as_str())
+    );
     assert_eq!(published_names(&fixture, session, &policy), ["write"]);
     let published = fixture
         .engine
