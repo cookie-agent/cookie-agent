@@ -129,14 +129,15 @@ async fn the_status_shows_voice_inputs_limits_only_while_it_is_configured() {
     let (_directory, off) = engine(None);
     assert_eq!(off.status_board().status().speech, None);
     let (_directory, on) = engine(Some(&format!(
-        "max_seconds = 90\nmax_bytes = 0\n{}",
+        "max_seconds = 90\nmax_bytes = 0\nrecording = \"wav\"\n{}",
         backends(&[("local", "http://127.0.0.1:9/v1")])
     )));
     assert_eq!(
         on.status_board().status().speech,
         Some(SpeechStatus {
             max_seconds: Some(90),
-            max_bytes: None
+            max_bytes: None,
+            recording: SpeechRecording::Wav,
         })
     );
 }

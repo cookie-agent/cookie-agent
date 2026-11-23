@@ -56,15 +56,46 @@ pub struct Dictation {
 /// The microphone while it records.
 struct Recorder {
     stream: web_sys::MediaStream,
-    recorder: web_sys::MediaRecorder,
+    capture: Capture,
     context: Option<web_sys::AudioContext>,
     analyser: Option<web_sys::AnalyserNode>,
     ticker: Option<gloo_timers::callback::Interval>,
-    _on_data: Closure<dyn FnMut(web_sys::BlobEvent)>,
-    _on_stop: Closure<dyn FnMut(web_sys::Event)>,
-    /// What `stop` does once the recorder has handed over its data: send
-    /// it, or drop it.
-    keep: Rc<RefCell<bool>>,
+}
+
+/// How the recording is made (`[speech] recording`).
+enum Capture {
+    /// The browser's own compressed recording.
+    Compressed {
+        recorder: web_sys::MediaRecorder,
+        _on_data: Closure<dyn FnMut(web_sys::BlobEvent)>,
+        _on_stop: Closure<dyn FnMut(web_sys::Event)>,
+        /// What `stop` does once the recorder has handed over its data:
+        /// send it, or drop it.
+        keep: Rc<RefCell<bool>>,
+    },
+    /// The samples themselves, made into WAV on Stop.
+    Wav {
+        processor: web_sys::ScriptProcessorNode,
+        samples: Rc<RefCell<Vec<f32>>>,
+        rate: f32,
+        _on_audio: Closure<dyn FnMut(web_sys::AudioProcessingEvent)>,
+    },
+}
+
+impl Capture {
+    /// Detaches its handlers: none may run once it is dropped.
+    fn detach(&self) {
+        match self {
+            Self::Compressed { recorder, .. } => {
+                recorder.set_ondataavailable(None);
+                recorder.set_onstop(None);
+            }
+            Self::Wav { processor, .. } => {
+                processor.set_onaudioprocess(None);
+                let _ = processor.disconnect();
+            }
+        }
+    }
 }
 
 impl Recorder {
@@ -201,13 +232,50 @@ impl Dictation {
         stream: web_sys::MediaStream,
         generation: u64,
     ) -> Result<(), String> {
+        let wav = workspace.speech.get_untracked().is_none_or(|status| {
+            status.recording != cookie_agent_protocol::SpeechRecording::Compressed
+        });
+        let (context, analyser, source) = level_meter(&stream);
+        let capture = if wav {
+            let (Some(context), Some(source)) = (&context, &source) else {
+                return Err("This browser cannot record audio here.".to_owned());
+            };
+            pcm_capture(context, source)?
+        } else {
+            self.compressed_capture(workspace, &stream, generation)?
+        };
+        let started = now();
+        self.levels.set_value(Vec::new());
+        let max_seconds = workspace
+            .speech
+            .get_untracked()
+            .and_then(|status| status.max_seconds);
+        let ticker = gloo_timers::callback::Interval::new(TICK_MS, move || {
+            self.tick(workspace, started, max_seconds);
+        });
+        self.recorder.set_value(Some(Recorder {
+            stream,
+            capture,
+            context,
+            analyser,
+            ticker: Some(ticker),
+        }));
+        Ok(())
+    }
+
+    fn compressed_capture(
+        self,
+        workspace: Workspace,
+        stream: &web_sys::MediaStream,
+        generation: u64,
+    ) -> Result<Capture, String> {
         let chosen = speech::recorder_type(web_sys::MediaRecorder::is_type_supported);
         let options = web_sys::MediaRecorderOptions::new();
         if let Some(kind) = chosen {
             options.set_mime_type(kind);
         }
         let recorder = web_sys::MediaRecorder::new_with_media_stream_and_media_recorder_options(
-            &stream, &options,
+            stream, &options,
         )
         .map_err(|error| refusal(&error))?;
         let chunks: Rc<RefCell<Vec<web_sys::Blob>>> = Rc::default();
@@ -243,10 +311,7 @@ impl Dictation {
                         Ok(bytes) if !bytes.is_empty() => {
                             self.transcribe(workspace, bytes, media_type, generation);
                         }
-                        Ok(_) => {
-                            self.phase.set(Phase::Idle);
-                            workspace.status.set("Nothing was recorded.".into());
-                        }
+                        Ok(_) => self.nothing_recorded(workspace),
                         Err(message) => {
                             self.phase.set(Phase::Idle);
                             workspace.status.set(message);
@@ -260,32 +325,22 @@ impl Dictation {
         recorder
             .start_with_time_slice(1000)
             .map_err(|error| refusal(&error))?;
-        let (context, analyser) = level_meter(&stream);
-        let started = now();
-        self.levels.set_value(Vec::new());
-        let max_seconds = workspace
-            .speech
-            .get_untracked()
-            .and_then(|status| status.max_seconds);
-        let ticker = gloo_timers::callback::Interval::new(TICK_MS, move || {
-            self.tick(started, max_seconds);
-        });
-        self.recorder.set_value(Some(Recorder {
-            stream,
+        Ok(Capture::Compressed {
             recorder,
-            context,
-            analyser,
-            ticker: Some(ticker),
             _on_data: on_data,
             _on_stop: on_stop,
             keep,
-        }));
-        Ok(())
+        })
+    }
+
+    fn nothing_recorded(self, workspace: Workspace) {
+        self.phase.set(Phase::Idle);
+        workspace.status.set("Nothing was recorded.".into());
     }
 
     /// One tick of the clock and the meter; it stops the recording at the
     /// daemon's limit.
-    fn tick(self, started: f64, max_seconds: Option<u64>) {
+    fn tick(self, workspace: Workspace, started: f64, max_seconds: Option<u64>) {
         let seconds = ((now() - started) / 1000.0).max(0.0) as u64;
         if self.elapsed.get_untracked() != seconds {
             self.elapsed.set(seconds);
@@ -306,30 +361,58 @@ impl Dictation {
         });
         self.levels.with_value(|levels| draw_meter(levels));
         if max_seconds.is_some_and(|max| seconds >= max) {
-            self.stop();
+            self.stop(workspace);
         }
     }
 
     /// Stops recording and transcribes what it has.
-    pub fn stop(self) {
+    pub fn stop(self, workspace: Workspace) {
         if self.phase.get_untracked() != Phase::Recording {
             return;
         }
         self.phase.set(Phase::Transcribing);
-        self.recorder.update_value(|recorder| {
-            if let Some(recorder) = recorder.as_mut() {
-                let _ = recorder.recorder.stop();
-                recorder.release();
+        let generation = self.generation.get_value();
+        let mut taken = None;
+        self.recorder
+            .update_value(|recorder| match recorder.as_mut() {
+                Some(Recorder {
+                    capture:
+                        Capture::Compressed {
+                            recorder: media, ..
+                        },
+                    ..
+                }) => {
+                    // Its `stop` handler sends what it recorded.
+                    let _ = media.stop();
+                    if let Some(recorder) = recorder.as_mut() {
+                        recorder.release();
+                    }
+                }
+                Some(_) => taken = recorder.take(),
+                None => {}
+            });
+        if let Some(mut recorder) = taken {
+            recorder.capture.detach();
+            recorder.release();
+            if let Capture::Wav { samples, rate, .. } = &recorder.capture {
+                let samples = std::mem::take(&mut *samples.borrow_mut());
+                let resampled =
+                    speech::resample(&samples, f64::from(*rate), speech::WAV_SAMPLE_RATE);
+                if resampled.is_empty() {
+                    self.nothing_recorded(workspace);
+                    return;
+                }
+                let wav = speech::encode_wav(&resampled, speech::WAV_SAMPLE_RATE);
+                self.transcribe(workspace, wav, "audio/wav".to_owned(), generation);
             }
-        });
+        }
     }
 
     fn transcribe(self, workspace: Workspace, bytes: Vec<u8>, media_type: String, generation: u64) {
         self.phase.set(Phase::Transcribing);
         self.recorder.update_value(|recorder| {
             if let Some(recorder) = recorder.take() {
-                recorder.recorder.set_ondataavailable(None);
-                recorder.recorder.set_onstop(None);
+                recorder.capture.detach();
             }
         });
         let Some(client) = workspace.client() else {
@@ -398,12 +481,17 @@ impl Dictation {
         self.next_generation();
         self.recorder.update_value(|recorder| {
             if let Some(mut recorder) = recorder.take() {
-                *recorder.keep.borrow_mut() = false;
-                // Its handlers go with it: none may run once it is dropped.
-                recorder.recorder.set_ondataavailable(None);
-                recorder.recorder.set_onstop(None);
-                if recorder.recorder.state() != web_sys::RecordingState::Inactive {
-                    let _ = recorder.recorder.stop();
+                recorder.capture.detach();
+                if let Capture::Compressed {
+                    recorder: media,
+                    keep,
+                    ..
+                } = &recorder.capture
+                {
+                    *keep.borrow_mut() = false;
+                    if media.state() != web_sys::RecordingState::Inactive {
+                        let _ = media.stop();
+                    }
                 }
                 recorder.release();
             }
@@ -451,16 +539,59 @@ async fn open_microphone() -> Result<web_sys::MediaStream, String> {
 /// gives no audio context, and then the meter stays flat.
 fn level_meter(
     stream: &web_sys::MediaStream,
-) -> (Option<web_sys::AudioContext>, Option<web_sys::AnalyserNode>) {
+) -> (
+    Option<web_sys::AudioContext>,
+    Option<web_sys::AnalyserNode>,
+    Option<web_sys::MediaStreamAudioSourceNode>,
+) {
     let Ok(context) = web_sys::AudioContext::new() else {
-        return (None, None);
+        return (None, None, None);
     };
+    let source = context.create_media_stream_source(stream).ok();
     let analyser = context.create_analyser().ok();
-    if let (Ok(source), Some(analyser)) = (context.create_media_stream_source(stream), &analyser) {
+    if let (Some(source), Some(analyser)) = (&source, &analyser) {
         analyser.set_fft_size(512);
         let _ = source.connect_with_audio_node(analyser);
     }
-    (Some(context), analyser)
+    (Some(context), analyser, source)
+}
+
+/// Collects the microphone's samples, mono, at the context's rate, for a
+/// WAV recording. The processor writes no output; it is connected to the
+/// destination only because browsers run it no other way.
+fn pcm_capture(
+    context: &web_sys::AudioContext,
+    source: &web_sys::MediaStreamAudioSourceNode,
+) -> Result<Capture, String> {
+    let processor = context
+        .create_script_processor_with_buffer_size_and_number_of_input_channels_and_number_of_output_channels(4096, 1, 1)
+        .map_err(crate::files::describe)?;
+    let samples: Rc<RefCell<Vec<f32>>> = Rc::default();
+    let on_audio = {
+        let samples = Rc::clone(&samples);
+        Closure::<dyn FnMut(web_sys::AudioProcessingEvent)>::new(
+            move |event: web_sys::AudioProcessingEvent| {
+                if let Ok(buffer) = event.input_buffer()
+                    && let Ok(channel) = buffer.get_channel_data(0)
+                {
+                    samples.borrow_mut().extend_from_slice(&channel);
+                }
+            },
+        )
+    };
+    processor.set_onaudioprocess(Some(on_audio.as_ref().unchecked_ref()));
+    source
+        .connect_with_audio_node(&processor)
+        .map_err(crate::files::describe)?;
+    processor
+        .connect_with_audio_node(&context.destination())
+        .map_err(crate::files::describe)?;
+    Ok(Capture::Wav {
+        processor,
+        samples,
+        rate: context.sample_rate(),
+        _on_audio: on_audio,
+    })
 }
 
 /// The loudness of the last frame, 0 to 1.

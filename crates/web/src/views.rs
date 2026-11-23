@@ -4124,7 +4124,7 @@ fn RecordingBar(workspace: Workspace) -> impl IntoView {
         match (event.key().as_str(), dictation.phase.get_untracked()) {
             ("Enter", Phase::Recording) if !event.shift_key() => {
                 event.prevent_default();
-                dictation.stop();
+                dictation.stop(workspace);
             }
             (
                 "Escape",
@@ -4223,7 +4223,7 @@ fn RecordingBar(workspace: Workspace) -> impl IntoView {
                     aria-label="Stop and transcribe"
                     title="Stop and transcribe · Enter"
                     disabled=move || phase() != Phase::Recording
-                    on:click=move |_| dictation.stop()
+                    on:click=move |_| dictation.stop(workspace)
                 >
                     {move || if phase() == Phase::Recording {
                         view! { <Glyph icon=icondata::LuCheck class="text-sm" /> }.into_any()

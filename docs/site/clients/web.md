@@ -748,7 +748,9 @@ refreshes no longer change). Reset and Replace ask once more.
   recording and the words join the end of the draft, to edit and send; or,
   with **Settings › Display › Dictation** set to send them, they go as the
   message at once. When every backend fails, the bar says why each did,
-  with **Retry** and **Discard**. The recording is never kept. The browser
+  with **Retry** and **Discard**. It records WAV, which every transcription service reads, unless the
+  daemon's `[speech] recording` asks for the browser's compressed format.
+  The recording is never kept. The browser
   offers the microphone only over https or on localhost; on a plain-http
   page the microphone is disabled and says so. A guest of a shared
   conversation who may send can dictate too.

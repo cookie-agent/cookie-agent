@@ -19,6 +19,20 @@ pub const SPEECH_TRANSCRIBE_CANCEL_METHOD: &str = "speech.transcribe.cancel";
 /// The longest base64 text of [`ARTIFACT_CHUNK_BYTES`] bytes.
 const MAX_CHUNK_BASE64_LEN: u64 = ARTIFACT_CHUNK_BYTES.div_ceil(3) * 4;
 
+crate::open_enum! {
+    /// How a client records for transcription (client protocol 1.99.0).
+    #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize)]
+    #[serde(rename_all = "snake_case")]
+    pub enum SpeechRecording {
+        /// Uncompressed 16 kHz mono WAV, which every backend reads.
+        #[default]
+        Wav,
+        /// The browser's own compressed recording: WebM or Ogg with Opus,
+        /// else MP4 audio. Smaller, but some services cannot read WebM.
+        Compressed,
+    }
+}
+
 /// Voice input's limits, in [`crate::DaemonStatus::speech`] while the
 /// daemon has `[speech]` backends.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
@@ -29,6 +43,11 @@ pub struct SpeechStatus {
     /// The largest recording the daemon takes, in bytes; absent: no limit.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_bytes: Option<u64>,
+    /// How to record (client protocol 1.99.0); absent from a 1.98.0
+    /// daemon, which means WAV. A client takes a value it does not know
+    /// as WAV.
+    #[serde(default)]
+    pub recording: SpeechRecording,
 }
 
 /// `speech.transcribe.begin`: a recording of `byte_length` bytes follows.

@@ -13,7 +13,7 @@ A client must call `handshake` before any other method:
 
 ```json
 { "jsonrpc": "2.0", "id": 1, "method": "handshake", "params": {
-    "protocol_version": "1.98.0",
+    "protocol_version": "1.99.0",
     "client": { "kind": "web", "instance_id": "<uuid>" },
     "token": "<the daemon's token>",
     "features": [] } }
@@ -22,7 +22,7 @@ A client must call `handshake` before any other method:
 The reply:
 
 ```json
-{ "protocol_version": "1.98.0", "engine_version": "0.3.0",
+{ "protocol_version": "1.99.0", "engine_version": "0.3.0",
   "origin": "client:web-<id>", "machine_id": "<opaque>", "features": [],
   "status": { "phase": "ready" } }
 ```
@@ -1148,7 +1148,9 @@ in the handshake's `status`, the `daemon.status` method, and the
   and never branch on its `id` or `label`.
 - **`speech`** (since 1.98.0) is present while the daemon offers
   [voice input](#voice-input): `max_seconds` and `max_bytes`, each absent
-  when there is no limit. A configuration reload that adds or removes
+  when there is no limit, and since 1.99.0 `recording`, how to record:
+  `wav` (16 kHz mono WAV) or `compressed` (the browser's own format); absent
+  or unknown, a client records WAV. A configuration reload that adds or removes
   `[speech]` changes it.
 - **The notification** carries the whole status. It goes out at most once
   every 250 ms, so a task that starts and ends within that window may

@@ -160,6 +160,22 @@
       ],
       "type": "object"
     },
+    "SpeechRecording": {
+      "description": "How a client records for transcription (client protocol 1.99.0).",
+      "oneOf": [
+        {
+          "const": "wav",
+          "description": "Uncompressed 16 kHz mono WAV, which every backend reads.",
+          "type": "string"
+        },
+        {
+          "const": "compressed",
+          "description": "The browser's own compressed recording: WebM or Ogg with Opus,\nelse MP4 audio. Smaller, but some services cannot read WebM.",
+          "type": "string"
+        }
+      ],
+      "x-open": true
+    },
     "SpeechStatus": {
       "description": "Voice input's limits, in [`crate::DaemonStatus::speech`] while the\ndaemon has `[speech]` backends.",
       "properties": {
@@ -180,6 +196,11 @@
             "integer",
             "null"
           ]
+        },
+        "recording": {
+          "$ref": "#/$defs/SpeechRecording",
+          "default": "wav",
+          "description": "How to record (client protocol 1.99.0); absent from a 1.98.0\ndaemon, which means WAV. A client takes a value it does not know\nas WAV."
         }
       },
       "type": "object"

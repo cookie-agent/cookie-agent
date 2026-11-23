@@ -24,6 +24,65 @@ pub fn recorder_type(supports: impl Fn(&str) -> bool) -> Option<&'static str> {
     RECORDER_TYPES.iter().copied().find(|kind| supports(kind))
 }
 
+/// The rate a WAV recording is made at: what speech models listen at.
+pub const WAV_SAMPLE_RATE: u32 = 16_000;
+
+/// `samples` at `from` Hz, at `to` Hz: each output sample averages the
+/// input it covers when going down (a crude low-pass, enough for speech),
+/// and interpolates between neighbours when going up.
+#[must_use]
+pub fn resample(samples: &[f32], from: f64, to: u32) -> Vec<f32> {
+    if samples.is_empty() || from <= 0.0 || to == 0 {
+        return Vec::new();
+    }
+    let ratio = from / f64::from(to);
+    if (ratio - 1.0).abs() < 1e-9 {
+        return samples.to_vec();
+    }
+    let count = (samples.len() as f64 / ratio).floor() as usize;
+    (0..count)
+        .map(|index| {
+            let start = index as f64 * ratio;
+            if ratio > 1.0 {
+                let first = start as usize;
+                let last = (((index + 1) as f64 * ratio) as usize).clamp(first + 1, samples.len());
+                let window = &samples[first..last];
+                window.iter().sum::<f32>() / window.len() as f32
+            } else {
+                let first = start as usize;
+                let fraction = (start - first as f64) as f32;
+                let a = samples[first];
+                let b = samples.get(first + 1).copied().unwrap_or(a);
+                a + (b - a) * fraction
+            }
+        })
+        .collect()
+}
+
+/// `samples` (-1 to 1, mono, at `rate` Hz) as a 16-bit PCM WAV file.
+#[must_use]
+pub fn encode_wav(samples: &[f32], rate: u32) -> Vec<u8> {
+    let data_bytes = u32::try_from(samples.len() * 2).unwrap_or(u32::MAX - 36);
+    let mut wav = Vec::with_capacity(44 + samples.len() * 2);
+    wav.extend_from_slice(b"RIFF");
+    wav.extend_from_slice(&(36 + data_bytes).to_le_bytes());
+    wav.extend_from_slice(b"WAVEfmt ");
+    wav.extend_from_slice(&16u32.to_le_bytes());
+    wav.extend_from_slice(&1u16.to_le_bytes()); // PCM
+    wav.extend_from_slice(&1u16.to_le_bytes()); // mono
+    wav.extend_from_slice(&rate.to_le_bytes());
+    wav.extend_from_slice(&(rate * 2).to_le_bytes()); // bytes a second
+    wav.extend_from_slice(&2u16.to_le_bytes()); // bytes a frame
+    wav.extend_from_slice(&16u16.to_le_bytes()); // bits a sample
+    wav.extend_from_slice(b"data");
+    wav.extend_from_slice(&data_bytes.to_le_bytes());
+    for sample in samples {
+        let value = (sample.clamp(-1.0, 1.0) * f32::from(i16::MAX)).round() as i16;
+        wav.extend_from_slice(&value.to_le_bytes());
+    }
+    wav
+}
+
 /// Sends `bytes`, a recording of `media_type`, and waits for its words.
 /// `begun` gets the transcription's ID as soon as it has one, so the
 /// caller can cancel it.
@@ -157,7 +216,7 @@ mod tests {
         assert_eq!(
             limit_text(&SpeechStatus {
                 max_seconds: Some(300),
-                max_bytes: None
+                ..SpeechStatus::default()
             })
             .as_deref(),
             Some("/ 5:00")

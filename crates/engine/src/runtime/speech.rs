@@ -19,8 +19,8 @@ use cookie_agent_models::transcription::{
     self, TranscriptionError, TranscriptionRequest, TranscriptionTarget,
 };
 use cookie_agent_protocol::{
-    ARTIFACT_CHUNK_BYTES, SessionId, SpeechStatus, SpeechTranscribeFinishResult, UploadId,
-    media_sniff::recording_media_type,
+    ARTIFACT_CHUNK_BYTES, SessionId, SpeechRecording, SpeechStatus, SpeechTranscribeFinishResult,
+    UploadId, media_sniff::recording_media_type,
 };
 use sha2::{Digest as _, Sha256};
 use tokio_util::sync::CancellationToken;
@@ -93,6 +93,10 @@ pub fn speech_status(speech: Option<&SpeechConfig>) -> Option<SpeechStatus> {
     speech.map(|speech| SpeechStatus {
         max_seconds: speech.seconds_limit(),
         max_bytes: speech.bytes_limit(),
+        recording: match speech.recording {
+            cookie_agent_config::SpeechRecording::Wav => SpeechRecording::Wav,
+            cookie_agent_config::SpeechRecording::Compressed => SpeechRecording::Compressed,
+        },
     })
 }
 

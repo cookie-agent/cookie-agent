@@ -5,6 +5,13 @@ The client protocol's version is `MAJOR.MINOR.PATCH`
 adds and a major breaks; before it, every minor could break the wire (see the
 [compatibility spec](../specs/compatibility-v1.md) section 3).
 
+## 1.99.0
+
+- `SpeechStatus.recording` ([voice input spec](../specs/voice-input.md)
+  decision 11): `wav` or `compressed`, how a client records for
+  transcription, from `[speech] recording`; absent from a 1.98.0 daemon,
+  which means `wav`.
+
 ## 1.98.0
 
 - Voice input ([voice input spec](../specs/voice-input.md) section 7):

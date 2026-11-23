@@ -34,6 +34,9 @@ wasm-bindgen-futures = "0.4.76"
 web-sys = { version = "0.3.103", features = [
     "AddEventListenerOptions",
     "AnalyserNode",
+    "AudioBuffer",
+    "AudioDestinationNode",
+    "AudioProcessingEvent",
     "AudioContext",
     "AudioNode",
     "BaseAudioContext",
@@ -48,6 +51,7 @@ web-sys = { version = "0.3.103", features = [
     "MediaStreamTrack",
     "Performance",
     "RecordingState",
+    "ScriptProcessorNode",
     "DomRect",
     "Blob",
     "BlobPropertyBag",
