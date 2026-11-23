@@ -831,11 +831,14 @@ refreshes no longer change). Reset and Replace ask once more.
     an ACP agent a choice changes it on the agent (on a new session's
     draft, the values its session starts with; a draft offers what the
     agent last started a session with). Above an ACP agent's effort, a
-    row of chips holds its other options (not its model, effort, or mode,
-    which have their places): a switch, such as *Fast mode*, lights when
-    on; a choice shows its value and opens its values above the row. The
-    row ends with **All options**, which lists every option the agent
-    offers with its values and what each does, the current one pressed. On a phone the agent, model, and mode are one
+    few chips hold its other options (not its model, effort, or mode,
+    which have their places), under an *Agent options* label: a switch,
+    such as *Fast mode*, lights when on; a choice shows its value and
+    opens its values above the chips. They wrap onto a second line rather
+    than run past the menu's edge; an agent with more than eight has the
+    rest behind a **+N** chip. **All options**, at the label's right,
+    lists every option the agent offers with its values and what each
+    does, the current one pressed. On a phone the agent, model, and mode are one
     chip, which opens one sheet with all three;
   - the approvals waiting, when there are any (click to answer them); each
     card shows the call and, when the approval reviewer passed it to you,

@@ -5392,10 +5392,11 @@ fn acp_models_sheet(workspace: Workspace) -> impl IntoView {
     )
 }
 
-/// An ACP agent's options other than its model, effort, and mode, as a
-/// row of chips pinned above the effort control: a switch lights when on,
-/// a choice shows its value and opens its values above the row, and **All
-/// options** opens the full sheet.
+/// An ACP agent's options other than its model, effort, and mode, as chips
+/// pinned above the effort control under an "Agent options" label whose
+/// **All options** opens the full sheet: a switch lights when on, a choice
+/// shows its value and opens its values above them. The chips wrap rather
+/// than run past the menu's edge; past eight, the rest fold into "+N".
 fn agent_option_chips(
     workspace: Workspace,
     options: Vec<cookie_agent_protocol::AcpConfigOption>,
@@ -5437,8 +5438,14 @@ fn agent_option_chips(
             </div>
         })
     };
+    // Two lines' worth at most: past it, the rest are behind All options.
+    const SHOWN: usize = 8;
+    let hidden = options.len().saturating_sub(SHOWN);
+    let shown = if hidden > 0 { SHOWN - 1 } else { SHOWN };
+    let folded = (hidden > 0).then(|| options.len() - shown);
     let chips = options
         .into_iter()
+        .take(shown)
         .map(|option| {
             let title = option.description.clone().unwrap_or_else(|| option.name.clone());
             if option.kind == cookie_agent_protocol::AcpConfigOptionKind::Boolean {
@@ -5490,20 +5497,36 @@ fn agent_option_chips(
             .into_any()
         })
         .collect_view();
+    // A label with All options at its right, always in view, then the
+    // chips, which wrap rather than run past the menu's edge.
     view! {
         {values}
-        <div class="mb-2 flex gap-1.5 overflow-x-auto px-1 py-1 [scrollbar-width:none] [mask-image:linear-gradient(to_right,#000_calc(100%-1.5rem),transparent)]" data-agent-option-chips>
-            {chips}
+        <div class="mb-1 flex items-center px-1 text-[0.6875rem] text-muted">
+            <span>"Agent options"</span>
             <button
                 type="button"
-                class=format!("{CHIP} text-muted")
+                class="hit-area ml-auto inline-flex items-center gap-0.5 rounded-md px-1 font-semibold text-accent hover:underline"
                 id="agent-options-more"
                 title="Every option the agent offers, with what each does"
                 on:click=move |_| workspace.panel.set(Some(Panel::AgentOptions))
             >
-                <Glyph icon=icondata::LuSlidersHorizontal class="text-xs" />
                 "All options"
+                <Glyph icon=icondata::LuChevronRight class="text-[0.625rem]" />
             </button>
+        </div>
+        <div class="mb-2 flex flex-wrap gap-1.5 px-1 py-0.5" data-agent-option-chips>
+            {chips}
+            {folded.map(|count| view! {
+                <button
+                    type="button"
+                    class=format!("{CHIP} text-muted")
+                    title="The agent's other options"
+                    data-agent-options-folded=count.to_string()
+                    on:click=move |_| workspace.panel.set(Some(Panel::AgentOptions))
+                >
+                    {format!("+{count}")}
+                </button>
+            })}
         </div>
     }
 }

@@ -473,4 +473,9 @@ Each phase is looked at in light and dark at desktop and phone sizes
   places) ending in **All options**, which replaces the "All agent
   options" row. The field takes the keys on open on a desktop, not on a
   phone; the phone's one composer sheet gets the same menu.
+- **The ACP options wrap** (the user, 2026-11-23). The options row
+  scrolled sideways, hiding its last chips (often **All options**) past
+  the menu's edge. The chips now wrap under an "Agent options" label
+  whose **All options** is always in view; past eight, the rest fold
+  into a "+N" chip that opens the full sheet.
 
