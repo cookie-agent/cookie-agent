@@ -385,7 +385,29 @@ pub fn latest_request(events: &Events) -> Option<LatestRequest> {
     let mut checkpoint_after = false;
     let mut found = None;
     let mut attempt = None;
+    // Whether a turn with content came between the usage found and the
+    // events before it: an ACP agent's compaction before that is the
+    // usage's own.
+    let mut content_after_found = false;
+    let mut sent_found = false;
+    let agent_compacted = |payload: &Event| {
+        matches!(payload, Event::AcpSessionUpdated { update }
+        if update.compaction.as_ref().is_some_and(|compaction| {
+            compaction.state == cookie_agent_protocol::AcpCompactionState::Completed
+        }))
+    };
     for event in events.iter().rev() {
+        if agent_compacted(&event.payload) {
+            if found.is_none() || !content_after_found {
+                return None;
+            }
+            continue;
+        }
+        if let (Event::ModelTurnCommitted { turn, .. }, Some(_)) = (&event.payload, &found)
+            && !turn.content.is_empty()
+        {
+            content_after_found = true;
+        }
         match (&event.payload, &found) {
             (Event::ContextCheckpointCommitted { .. }, None) => checkpoint_after = true,
             (
@@ -427,13 +449,17 @@ pub fn latest_request(events: &Events) -> Option<LatestRequest> {
             ) if model_turn_seq == turn && attempt.is_none() => attempt = Some(*attempt_id),
             (Event::ModelRequestPrepared { attempt_id, .. }, Some(_))
             | (Event::ModelAttemptStarted { attempt_id, .. }, Some(_))
-                if Some(*attempt_id) == attempt =>
+                if Some(*attempt_id) == attempt && !sent_found =>
             {
-                let (_, mut request) = found.take()?;
-                request.sent_at = event.timestamp;
-                return Some(request);
+                if let Some((_, request)) = &mut found {
+                    request.sent_at = event.timestamp;
+                }
+                sent_found = true;
             }
             _ => {}
+        }
+        if sent_found && content_after_found {
+            break;
         }
     }
     found.map(|(_, request)| request)

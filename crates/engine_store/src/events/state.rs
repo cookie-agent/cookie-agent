@@ -1367,6 +1367,11 @@ struct RequestFold {
     attempts: VecDeque<(AttemptId, Timestamp)>,
     /// When each recently committed turn's request went out, by `model_turn_seq`.
     turns: VecDeque<(u64, Option<Timestamp>)>,
+    /// An ACP agent compacted its conversation and no turn with content
+    /// followed: the usage its run records then is the compaction's, which
+    /// leaves nothing worth compacting again before the cache expires.
+    #[serde(default)]
+    agent_compacted: bool,
 }
 
 impl RequestFold {
@@ -1377,6 +1382,15 @@ impl RequestFold {
     fn observe(&mut self, event: &StoredEvent) {
         match &event.payload {
             EventPayload::ContextCheckpointCommitted { .. } => self.latest = None,
+            // Such as Claude Code's own compaction as its cache nears expiry.
+            EventPayload::AcpSessionUpdated { update }
+                if update.compaction.as_ref().is_some_and(|compaction| {
+                    compaction.state == cookie_agent_protocol::AcpCompactionState::Completed
+                }) =>
+            {
+                self.latest = None;
+                self.agent_compacted = true;
+            }
             EventPayload::ModelRequestPrepared { attempt_id, .. }
             | EventPayload::ModelAttemptStarted { attempt_id, .. } => {
                 remember(&mut self.attempts, (*attempt_id, event.timestamp));
@@ -1384,8 +1398,12 @@ impl RequestFold {
             EventPayload::ModelTurnCommitted {
                 model_turn_seq,
                 attempt_id,
+                turn,
                 ..
             } => {
+                if !turn.content.is_empty() {
+                    self.agent_compacted = false;
+                }
                 let sent = self
                     .attempts
                     .iter()
@@ -1401,6 +1419,10 @@ impl RequestFold {
                 cache_ttl,
                 ..
             } => {
+                if self.agent_compacted {
+                    self.latest = None;
+                    return;
+                }
                 self.latest = cache_ttl.map(|stamp| LatestRequest {
                     usage_seq: event.seq,
                     sent_at: self

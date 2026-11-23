@@ -19,8 +19,8 @@ use crate::session::projection;
 /// Version 10: validation keeps each run's replay base, and the producer fold
 /// records when each message it holds settled.
 const RECORDED_DIGEST: (u32, &str) = (
-    10,
-    "813068d261f7c56ce2f95b36d338dd9ee5dcb6bfa11ca56047fe328e3ba29fba",
+    11,
+    "e9ee2f6add2f71236abcb35ebc1d8233e204ec7df40bd76434826605c4c5c660",
 );
 
 fn golden_root() -> PathBuf {

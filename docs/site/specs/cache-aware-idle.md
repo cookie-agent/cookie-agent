@@ -575,6 +575,18 @@ before expiry (section 4.4).
 | Floor | 150k to 200k tokens | `min_tokens`, default 40k |
 | When it gives up | The timer is more than 60 s late, or the cache has lapsed | Section 4.2 |
 
+**Update (2026-11-23).** Claude Code under the ACP agent now does compact
+on its own while idle. Session logs on yunhao-labserver show it waking
+about 54 minutes after a turn, which is 90% of the one-hour TTL. Cookie
+records that as a run the agent started ("Woke on its own"): the
+`compaction_update`s, then an empty model turn and a usage event of zero
+tokens. That compaction already lands a minute before cookie's own, so
+cookie must not plan another after it. A completed ACP compaction clears
+the session's latest request, like a checkpoint does. A usage event that
+follows it with no turn that has content in between does not set the
+latest request again. So nothing is planned until the session's next real
+turn (`RequestFold::agent_compacted`, state version 11).
+
 ### 11.2 Codex and ChatGPT sign-ins (2026-11-02)
 
 **What Codex sends.** Codex 0.165.0, the build the ACP adapter runs, sends
