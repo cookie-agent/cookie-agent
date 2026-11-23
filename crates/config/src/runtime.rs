@@ -1687,8 +1687,8 @@ pub struct SpeechConfig {
     /// no limit.
     #[serde(default = "default_speech_max_bytes")]
     pub max_bytes: i64,
-    /// How clients record: WAV, which every backend reads, or the browser's
-    /// compressed format.
+    /// How clients record: the browser's compressed format, or WAV, which
+    /// every backend reads.
     #[serde(default)]
     pub recording: SpeechRecording,
 }
@@ -1697,10 +1697,10 @@ pub struct SpeechConfig {
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum SpeechRecording {
-    /// Uncompressed 16 kHz mono WAV.
-    #[default]
+    /// Uncompressed 16 kHz mono WAV, for services that cannot read WebM.
     Wav,
     /// WebM or Ogg with Opus, else MP4 audio, as the browser records.
+    #[default]
     Compressed,
 }
 

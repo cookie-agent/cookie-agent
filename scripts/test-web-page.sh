@@ -295,6 +295,7 @@ scope = \"runtime\""
         speech_config="
 [speech]
 max_seconds = 30
+recording = \"wav\"
 
 [[speech.backends]]
 provider = \"custom.local\"

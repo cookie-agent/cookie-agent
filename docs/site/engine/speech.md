@@ -29,7 +29,7 @@ omitted fields. Unknown fields fail. See [config.toml](configuration.md).
 | `prompt` | string | *(none)* | At most 1,000 characters: names and terms the backend should spell as written. |
 | `max_seconds` | integer | `300` | The longest recording a client makes; it stops recording there and transcribes what it has. `0` or less means no limit. |
 | `max_bytes` | integer | `25165824` | The largest recording the daemon accepts. `0` or less means no limit. |
-| `recording` | string | `"wav"` | How clients record. `"wav"`: uncompressed 16 kHz mono WAV, about 1.9 MB a minute, which every backend reads. `"compressed"`: what the browser records, WebM or Ogg with Opus, else MP4 audio, about 0.25 MB a minute; some services cannot read WebM (a gateway that measures the audio's length may refuse it). |
+| `recording` | string | `"compressed"` | How clients record. `"compressed"`: what the browser records, WebM or Ogg with Opus, else MP4 audio, about 0.25 MB a minute; some services cannot read WebM (a gateway that measures the audio's length may refuse it). `"wav"`: uncompressed 16 kHz mono WAV, about 1.9 MB a minute, which every backend reads. |
 
 ## Backends
 

@@ -7860,7 +7860,7 @@ def dictation():
         dictate(mic)
         mic.wait("the words", lambda: composer_text(mic).startswith("Fix it and add a test ("), timeout=30)
         recorded = composer_text(mic)
-        # `[speech] recording` is WAV unless set otherwise.
+        # Its daemon's `[speech] recording` is WAV (test-web-page.sh).
         assert recorded == "Fix it and add a test (wav)", recorded
         assert dictation_phase(mic) == "idle"
         assert mic.script("return document.activeElement.id") == "composer"

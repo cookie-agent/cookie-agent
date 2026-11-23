@@ -373,15 +373,17 @@ The user agreed with the draft's recommendations except where noted.
    recording.
 10. **`Ctrl+Shift+Space`** in the composer starts dictation (approved with
     the preview).
-11. **`[speech] recording`, WAV by default** (user, 2026-11-23): the
-    user's gateway refused the browser's WebM ("webm duration parsing
+11. **`[speech] recording`, compressed by default** (user, 2026-11-23):
+    the user's gateway refused the browser's WebM ("webm duration parsing
     requires full EBML parser") because it measures each recording's
-    length. With `recording = "wav"`, the default, the page records the
-    samples itself (a `ScriptProcessorNode`) and encodes 16 kHz mono
-    16-bit WAV, which every backend reads, at about 1.9 MB a minute;
-    `"compressed"` keeps the browser's WebM, Ogg, or MP4, about 0.25 MB a
-    minute. It reaches clients as `SpeechStatus.recording` (client protocol
-    1.99.0).
+    length. With `recording = "wav"` the page records the samples itself
+    (a `ScriptProcessorNode`) and encodes 16 kHz mono 16-bit WAV, which
+    every backend reads, at about 1.9 MB a minute; `"compressed"`, the
+    default, keeps the browser's WebM, Ogg, or MP4, about 0.25 MB a minute.
+    WAV was the default at first (0b7601310); the user made compressed the
+    default and set their own daemon to WAV. It reaches clients as
+    `SpeechStatus.recording` (client protocol 1.99.0), which a client
+    reads as WAV when absent or unknown.
 
 ## 13. Implementation notes
 
