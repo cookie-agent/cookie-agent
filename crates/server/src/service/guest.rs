@@ -208,6 +208,7 @@ impl ConnectionGuard for GuestGuard {
         hello.page_url = None;
         hello.page_ticket = None;
         hello.share_url = None;
+        hello.default_permission_mode = None;
         hello.guest = Some(GuestHello {
             session_id: self.root(),
             label: self.link.label.clone(),
@@ -414,6 +415,7 @@ pub(super) async fn guest_upgrade(
                         page_url: None,
                         page_ticket: None,
                         share_url: None,
+                        default_permission_mode: None,
                     },
                     guard: Some(guard),
                 },

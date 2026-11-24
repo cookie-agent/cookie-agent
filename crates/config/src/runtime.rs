@@ -1204,6 +1204,39 @@ pub struct ApprovalConfig {
     /// model's provider (approval reviewer spec section 5).
     #[serde(default)]
     pub cache_ttl: ApprovalCacheTtl,
+    /// The permission mode of a new session tree whose client names none.
+    #[serde(default)]
+    pub default_mode: DefaultPermissionMode,
+}
+
+/// `[approval] default_mode`: the permission mode a new session tree starts
+/// in unless its client names one. Unlike the wire's open
+/// [`PermissionMode`](cookie_agent_protocol::PermissionMode), an unknown
+/// value is an error rather than `ask`.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DefaultPermissionMode {
+    #[default]
+    AutoApprove,
+    AutoApproveN,
+    AutoApproveY,
+    Ask,
+    Yolo,
+}
+
+impl DefaultPermissionMode {
+    /// The mode as the protocol names it.
+    #[must_use]
+    pub const fn mode(self) -> cookie_agent_protocol::PermissionMode {
+        use cookie_agent_protocol::PermissionMode;
+        match self {
+            Self::AutoApprove => PermissionMode::AutoApprove,
+            Self::AutoApproveN => PermissionMode::AutoApproveN,
+            Self::AutoApproveY => PermissionMode::AutoApproveY,
+            Self::Ask => PermissionMode::Ask,
+            Self::Yolo => PermissionMode::Yolo,
+        }
+    }
 }
 
 /// `[approval] cache_ttl`: how long the approval reviewer's conversation

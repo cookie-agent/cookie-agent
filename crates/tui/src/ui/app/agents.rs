@@ -970,7 +970,10 @@ impl App {
     /// open, else the selected session tree's.
     pub(super) fn displayed_permission_mode(&self) -> PermissionMode {
         if self.new_session_draft.is_some() {
-            return self.draft_permissions.mode.unwrap_or_default();
+            return self
+                .draft_permissions
+                .mode
+                .unwrap_or_else(|| self.client.default_permission_mode());
         }
         self.selected
             .map(|session_id| self.permission_mode(session_id))

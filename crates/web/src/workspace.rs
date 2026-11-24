@@ -356,6 +356,9 @@ pub struct Workspace {
     /// The conversation share dialog.
     pub session_share_dialog: RwSignal<Option<shares::SessionShareDialog>>,
     pub share_url: RwSignal<Option<String>>,
+    /// The mode a new session starts in unless one is picked: the
+    /// daemon's `[approval] default_mode`, from the handshake.
+    pub default_permission_mode: RwSignal<PermissionMode>,
     pub share_page_base: RwSignal<String>,
     /// The live links, as `shares.list` last answered.
     pub share_list: RwSignal<Option<Result<cookie_agent_protocol::SharesListResult, String>>>,
@@ -745,6 +748,7 @@ impl Workspace {
             guest: RwSignal::new(None),
             session_share_dialog: RwSignal::new(None),
             share_url: RwSignal::new(None),
+            default_permission_mode: RwSignal::new(PermissionMode::default()),
             share_page_base: RwSignal::new(String::new()),
             share_list: RwSignal::new(None),
             share_dialog: RwSignal::new(None),
@@ -2523,11 +2527,13 @@ impl Workspace {
                 sessions.push(created.session.clone());
             }
         });
-        if let Some(mode) = self.new_session_mode.get_untracked() {
-            self.permission_modes.update(|modes| {
-                modes.insert(session_id, mode);
-            });
-        }
+        let mode = self
+            .new_session_mode
+            .get_untracked()
+            .unwrap_or_else(|| self.default_permission_mode.get_untracked());
+        self.permission_modes.update(|modes| {
+            modes.insert(session_id, mode);
+        });
         self.new_session_mode.set(None);
         self.draft_rules.set(Vec::new());
         self.draft_exposure.set(Default::default());
@@ -2960,7 +2966,10 @@ impl Workspace {
     /// composed, else the viewed session's tree's.
     pub fn permission_mode(self) -> PermissionMode {
         if self.new_session.get() {
-            return self.new_session_mode.get().unwrap_or_default();
+            return self
+                .new_session_mode
+                .get()
+                .unwrap_or_else(|| self.default_permission_mode.get());
         }
         let Some(session_id) = self.selected.get() else {
             return PermissionMode::default();

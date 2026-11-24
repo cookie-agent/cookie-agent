@@ -516,6 +516,9 @@ pub struct Client {
     origin: Arc<StdMutex<Option<EventOrigin>>>,
     /// The daemon's client protocol version, from the handshake response.
     daemon_version: Arc<StdMutex<Option<cookie_agent_protocol::SemVer>>>,
+    /// The mode a new session tree starts in when `session.create` names
+    /// none, from the handshake response.
+    default_permission_mode: Arc<StdMutex<Option<cookie_agent_protocol::PermissionMode>>>,
     /// How replays read history ([`HistoryReading`]'s code).
     history: Arc<std::sync::atomic::AtomicU8>,
     #[cfg(all(test, not(target_arch = "wasm32")))]
@@ -571,6 +574,7 @@ impl Client {
             shutdown,
             origin: Arc::new(StdMutex::new(None)),
             daemon_version: Arc::new(StdMutex::new(None)),
+            default_permission_mode: Arc::new(StdMutex::new(None)),
             history: Arc::new(std::sync::atomic::AtomicU8::new(0)),
             #[cfg(all(test, not(target_arch = "wasm32")))]
             pending_command_count,
@@ -635,7 +639,22 @@ impl Client {
         let hello: ServerHello = serde_json::from_value(raw)?;
         *self.origin.lock().expect("client origin lock") = Some(hello.origin.clone());
         *self.daemon_version.lock().expect("daemon version lock") = Some(hello.protocol_version);
+        *self
+            .default_permission_mode
+            .lock()
+            .expect("default permission mode lock") = hello.default_permission_mode;
         Ok(hello)
+    }
+
+    /// The mode a new session tree starts in when `session.create` names
+    /// none: the daemon's `[approval] default_mode` once the handshake
+    /// said it, else the protocol's default.
+    #[must_use]
+    pub fn default_permission_mode(&self) -> cookie_agent_protocol::PermissionMode {
+        self.default_permission_mode
+            .lock()
+            .expect("default permission mode lock")
+            .unwrap_or_default()
     }
 
     /// The daemon's client protocol version, once the handshake has

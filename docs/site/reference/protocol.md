@@ -69,6 +69,11 @@ The reply:
 - **`share_url`** (since 1.86.0) is the base of the daemon's share links,
   its `[public] url`, else its `[server] page_url`, when either is set
   ([Share links](#share-links)).
+- **`default_permission_mode`** (since 1.100.0) is the mode a new session
+  tree starts in when `session.create` names none, the daemon's
+  `[approval] default_mode`. Clients show it in a new-session draft. It is
+  absent while the daemon starts, from guests, and from older daemons,
+  which mean `auto_approve`.
 
 **Authentication.** A client authenticates with the daemon's bearer token
 (`[server] token`) in one of two places:

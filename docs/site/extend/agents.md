@@ -1572,7 +1572,9 @@ for the output format, HTML rendering, the download cap, and result paging.
 
 ### Live permission modes
 
-Each session tree starts in `auto_approve` unless changed. The mode is keyed
+Each session tree starts in the mode its client picked, else in
+[`[approval] default_mode`](../engine/approval.md) (`auto_approve` unless
+configured). The mode is keyed
 by the tree root and can be changed through any session in the tree; each
 change appends `permission_mode_set` to the root's log, so the mode survives
 a daemon restart and follows revert and fork. Every client connected to the

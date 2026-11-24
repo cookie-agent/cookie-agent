@@ -173,9 +173,10 @@ pub struct RunArgs {
     /// Named model variant, or 'base' for no variant.
     #[arg(long)]
     pub variant: Option<String>,
-    /// Permission handling mode for this session.
-    #[arg(long, value_enum, default_value_t)]
-    pub permission_mode: PermissionModeArg,
+    /// Permission handling mode for this session; `[approval] default_mode`
+    /// when omitted.
+    #[arg(long, value_enum)]
+    pub permission_mode: Option<PermissionModeArg>,
     /// Permission action to allow. May be repeated or comma-delimited.
     #[arg(long, value_delimiter = ',')]
     pub allowed_tools: Vec<AllowedTool>,
@@ -529,7 +530,8 @@ async fn prepare_run(
     engine
         .set_permission_mode(
             session.session_id,
-            args.permission_mode.into(),
+            args.permission_mode
+                .map_or_else(|| engine.default_permission_mode(), Into::into),
             headless_origin(),
         )
         .await

@@ -160,6 +160,18 @@
       ],
       "type": "object"
     },
+    "PermissionMode": {
+      "description": "A value this build does not know reads as `ask`: asking.",
+      "enum": [
+        "auto_approve",
+        "auto_approve_n",
+        "auto_approve_y",
+        "yolo",
+        "ask"
+      ],
+      "type": "string",
+      "x-open": true
+    },
     "SpeechRecording": {
       "description": "How a client records for transcription (client protocol 1.99.0).",
       "oneOf": [
@@ -239,6 +251,17 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "description": "The `handshake` result.",
   "properties": {
+    "default_permission_mode": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/PermissionMode"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "The permission mode a new session tree starts in when\n`session.create` names none (client protocol 1.100.0): its\n`[approval] default_mode`. Absent from older daemons, whose\ndefault is `auto_approve`, and from guests."
+    },
     "engine_version": {
       "description": "The daemon's own version, for display and logs.",
       "type": "string"

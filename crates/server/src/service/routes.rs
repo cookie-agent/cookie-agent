@@ -72,6 +72,10 @@ impl ServerProtocol for Server {
         self.engine.share_base()
     }
 
+    fn default_permission_mode(&self) -> Option<cookie_agent_protocol::PermissionMode> {
+        Some(self.engine.default_permission_mode())
+    }
+
     fn page_ticket(&self) -> Option<String> {
         self.shared
             .page_ticket

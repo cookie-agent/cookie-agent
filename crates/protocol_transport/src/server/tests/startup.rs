@@ -37,6 +37,7 @@ impl Starting {
                     page_url: Some("https://cookie.example/".into()),
                     page_ticket: None,
                     share_url: None,
+                    default_permission_mode: None,
                 },
                 guard: None,
             },

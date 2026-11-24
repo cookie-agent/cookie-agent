@@ -1,17 +1,18 @@
 # Approval [approval]
 
-Set the expiry for pending user approvals and how long the approval
-reviewer's conversation stays in its provider's prompt cache. By default a
-pending approval waits until you answer it. Complete
-`config.toml`:
+Set the permission mode new sessions start in, the expiry for pending user
+approvals, and how long the approval reviewer's conversation stays in its
+provider's prompt cache. By default a new session starts in `auto_approve`
+and a pending approval waits until you answer it. Complete `config.toml`:
 
 ```toml
 [approval]
+default_mode = "auto_approve"
 timeout_ms = 600000
 cache_ttl = "1h"
 ```
 
-This does not select a permission mode or grant tools; those decisions belong to
+This grants no tools; rules belong to
 [Agent permissions](../extend/agents.md#permissions). Expiry leaves an unattended
 request unapproved. The window opens when a call reaches you, after the
 [approval reviewer](../extend/agents.md#the-approval-reviewer) passed it on,
@@ -22,6 +23,7 @@ fields fail; see [config.toml](configuration.md).
 
 | Key | Type | Default | Description |
 |---|---|---|---|
+| `default_mode` | string | `"auto_approve"` | The [permission mode](../extend/agents.md#live-permission-modes) a new session tree starts in when its client picks none: `"auto_approve"`, `"auto_approve_n"`, `"auto_approve_y"`, `"ask"`, or `"yolo"`; any other value is an error. A session keeps the mode it started in when this changes. `cookie run` uses it when `--permission-mode` is omitted; cron jobs and webhooks keep their own default, `auto_approve_n`. Clients show it in a new-session draft, as of their last handshake. |
 | `timeout_ms` | integer | none | How long a user approval stays pending before it expires unattended, counted from when the call reaches you. Absent, `0`, or negative: it never expires, and waits until it is answered, the run is cancelled, or the daemon stops. |
 | `cache_ttl` | string | `"1h"` | The reviewer's prompt-cache lifetime: `"1h"`, `"30m"`, `"12h"`, `"5m"`, `"provider"` (the reviewer model's provider's own `cache` configuration), or `"off"` (no cache writes). See [The reviewer's cache](#the-reviewers-cache). |
 

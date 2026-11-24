@@ -2146,9 +2146,11 @@ impl App {
             Ok(result) => {
                 let session_id = result.session.session_id;
                 self.draft_project = None;
-                if let Some(mode) = self.draft_permissions.mode {
-                    self.permission_modes.insert(session_id, mode);
-                }
+                let mode = self
+                    .draft_permissions
+                    .mode
+                    .unwrap_or_else(|| self.client.default_permission_mode());
+                self.permission_modes.insert(session_id, mode);
                 self.draft_permissions = DraftPermissions::default();
                 self.draft_agent_options.clear();
                 self.draft_runtimes = None;

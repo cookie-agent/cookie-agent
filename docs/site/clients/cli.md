@@ -120,7 +120,7 @@ describes each option.
 | `--preset <PRESET>` | | Agent preset for a new session. |
 | `-m`, `--model <MODEL>` | see [Selection and limits](#selection-and-limits) | `provider/model` to run. |
 | `--variant <VARIANT>` | | Named model variant, or `base` for none. |
-| `--permission-mode <MODE>` | `auto-approve` | `auto-approve`, `auto-approve-n`, `auto-approve-y`, `ask`, or `yolo`; the underscore spellings are aliases. |
+| `--permission-mode <MODE>` | [`[approval] default_mode`](../engine/approval.md) | `auto-approve`, `auto-approve-n`, `auto-approve-y`, `ask`, or `yolo`; the underscore spellings are aliases. |
 | `--allowed-tools <ACTION,...>` | | Permission actions to allow; repeatable and comma-delimited. |
 | `--tool-group <SELECTOR=STATE>` | | A tool group's state in the session: `on`, `deferred`, or `off`, such as `mcp:exa=off` or `coding@labpc=deferred`; repeatable, exact (no patterns). |
 | `--skill-state <NAME=STATE>` | | Whether the agent sees a skill: `on` or `off`; repeatable, exact. |

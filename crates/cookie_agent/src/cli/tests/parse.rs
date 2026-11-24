@@ -277,7 +277,7 @@ fn cli_commands_and_removed_flags_are_exact() {
                 preset: Some("python".into()),
                 model: Some("custom.local/test".parse().unwrap()),
                 variant: Some("base".into()),
-                permission_mode: run::PermissionModeArg::Ask,
+                permission_mode: Some(run::PermissionModeArg::Ask),
                 allowed_tools: vec![
                     run::AllowedTool::Action(cookie_agent_protocol::PermissionAction::READ),
                     run::AllowedTool::Action(cookie_agent_protocol::PermissionAction::BASH)

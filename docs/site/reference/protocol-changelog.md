@@ -5,6 +5,12 @@ The client protocol's version is `MAJOR.MINOR.PATCH`
 adds and a major breaks; before it, every minor could break the wire (see the
 [compatibility spec](../specs/compatibility-v1.md) section 3).
 
+## 1.100.0
+
+- `ServerHello.default_permission_mode`: the mode a new session tree starts
+  in when `session.create` names none, from `[approval] default_mode`;
+  absent from a 1.99.0 daemon, which means `auto_approve`.
+
 ## 1.99.0
 
 - `SpeechStatus.recording` ([voice input spec](../specs/voice-input.md)

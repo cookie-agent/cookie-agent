@@ -266,6 +266,12 @@ impl Engine {
             )
             .await?;
         }
+        // A tree without a record is in the protocol's default mode, so
+        // `[approval] default_mode` is recorded only when it differs: the
+        // tree keeps the mode it started in when the configuration changes.
+        let mode = mode.or_else(|| {
+            Some(self.default_permission_mode()).filter(|mode| *mode != PermissionMode::default())
+        });
         if let Some(mode) = mode {
             // A new tree has no other client to tell: its mode arrives with
             // the session through `session.permission.get`.
@@ -1261,6 +1267,19 @@ impl Engine {
                 .await?;
         }
         Ok(root)
+    }
+
+    /// `[approval] default_mode`: the mode a new tree starts in when its
+    /// creator names none.
+    #[must_use]
+    pub fn default_permission_mode(&self) -> PermissionMode {
+        self.inner
+            .config
+            .load()
+            .runtime
+            .approval
+            .default_mode
+            .mode()
     }
 
     /// The permission mode of `session_id`'s tree: its root's newest

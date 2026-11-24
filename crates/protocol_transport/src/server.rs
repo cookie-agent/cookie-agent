@@ -193,6 +193,7 @@ impl ServerContext {
             page_url: about.page_url.clone(),
             page_ticket: about.page_ticket.clone(),
             share_url: about.share_url.clone(),
+            default_permission_mode: about.default_permission_mode,
             guest: None,
         };
         match &self.guard {
@@ -460,6 +461,12 @@ pub trait ServerProtocol: Send + Sync + 'static {
         None
     }
 
+    /// The mode a new session tree starts in when `session.create` names
+    /// none (client protocol 1.100.0); `None` when the daemon does not say.
+    fn default_permission_mode(&self) -> Option<cookie_agent_protocol::PermissionMode> {
+        None
+    }
+
     /// What the handshake says about the daemon.
     fn about(&self) -> About {
         About {
@@ -467,6 +474,7 @@ pub trait ServerProtocol: Send + Sync + 'static {
             page_url: self.page_url(),
             page_ticket: self.page_ticket(),
             share_url: self.share_url(),
+            default_permission_mode: self.default_permission_mode(),
         }
     }
 
@@ -1493,6 +1501,8 @@ pub struct About {
     pub page_ticket: Option<String>,
     /// The base of its share links, when that is configured.
     pub share_url: Option<String>,
+    /// The mode a new session tree starts in, when the daemon says.
+    pub default_permission_mode: Option<cookie_agent_protocol::PermissionMode>,
 }
 
 /// [`serve`] for a daemon that may still be starting. Until its server is

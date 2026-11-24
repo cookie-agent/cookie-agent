@@ -274,6 +274,9 @@ impl Connection {
         }
         self.workspace.share_url.set(hello.share_url.clone());
         self.workspace
+            .default_permission_mode
+            .set(hello.default_permission_mode.unwrap_or_default());
+        self.workspace
             .speech
             .set(hello.status.as_ref().and_then(|status| status.speech));
         self.workspace

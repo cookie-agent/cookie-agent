@@ -428,6 +428,12 @@ pub struct ServerHello {
     /// before making a link when it looks private.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub share_url: Option<String>,
+    /// The permission mode a new session tree starts in when
+    /// `session.create` names none (client protocol 1.100.0): its
+    /// `[approval] default_mode`. Absent from older daemons, whose
+    /// default is `auto_approve`, and from guests.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_permission_mode: Option<PermissionMode>,
     /// This connection came through a conversation share (client protocol
     /// 1.88.0): it reaches one session and what the link allows.
     #[serde(default, skip_serializing_if = "Option::is_none")]

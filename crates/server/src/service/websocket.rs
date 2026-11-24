@@ -665,6 +665,11 @@ async fn websocket_upgrade(
                 .read()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .clone();
+            // Until the engine is ready, clients assume the protocol's
+            // default.
+            let default_permission_mode = server
+                .get()
+                .map(|server| server.engine.default_permission_mode());
             let _ = cookie_agent_protocol_transport::serve_starting(
                 cookie_agent_protocol_transport::Startup {
                     server,
@@ -674,6 +679,7 @@ async fn websocket_upgrade(
                         page_url,
                         page_ticket: Some(super::plugin_pages::page_ticket(state.token.as_str())),
                         share_url,
+                        default_permission_mode,
                     },
                     guard: None,
                 },

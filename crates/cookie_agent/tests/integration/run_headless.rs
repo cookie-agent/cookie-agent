@@ -621,7 +621,7 @@ async fn cancelled_finalized_opt_out_reads_preserve_pages_without_retention() {
             .enqueue(MockResponse::Sse(final_response("seeded")));
         let mut seed_args = run_args("seed output");
         seed_args.output = Some(OutputMode::Json);
-        seed_args.permission_mode = PermissionModeArg::Yolo;
+        seed_args.permission_mode = Some(PermissionModeArg::Yolo);
         let seed = fixture.run(seed_args, "").await;
         assert_eq!(seed.code, 0, "{}", seed.stderr);
         let seed_events = parse_json_lines(&seed.stdout)
@@ -1240,7 +1240,7 @@ async fn webfetch_admission_visibility_and_fail_closed_permission_pipeline() {
         }
         let mut args = run_args("fetch URL");
         args.resume_session = Some(session_id);
-        args.permission_mode = PermissionModeArg::Ask;
+        args.permission_mode = Some(PermissionModeArg::Ask);
         args.output = Some(OutputMode::Json);
         let result = fixture.run(args, "").await;
         let records = parse_json_lines(&result.stdout);
@@ -1473,7 +1473,7 @@ async fn skill_grant_allows_explicit_ask_bash_for_one_turn_only() {
         .enqueue(MockResponse::Sse(final_response("not granted")));
     let mut second = run_args("next user turn");
     second.resume_session = Some(session_id);
-    second.permission_mode = PermissionModeArg::Ask;
+    second.permission_mode = Some(PermissionModeArg::Ask);
     let second = fixture.run(second, "").await;
     assert_eq!(second.code, 3, "{}", second.stderr);
     assert!(!fixture.workspace.join("leaked-repo").exists());
@@ -1489,7 +1489,7 @@ async fn fork_skill_uses_delegate_approval_and_installs_only_in_child() {
     )));
     let mut denied = run_args("fork requires approval");
     denied.agent = Some("skill-host".parse().expect("agent"));
-    denied.permission_mode = PermissionModeArg::Ask;
+    denied.permission_mode = Some(PermissionModeArg::Ask);
     denied.output = Some(OutputMode::Json);
     let denied = fixture.run(denied, "").await;
     assert_eq!(denied.code, 3, "{}", denied.stderr);
@@ -1690,7 +1690,7 @@ async fn successful_fallback_suffix_survives_runs_restart_and_explicit_resets() 
     )));
     let mut args = run_args("fall back from A to B");
     args.output = Some(OutputMode::Json);
-    args.permission_mode = PermissionModeArg::Yolo;
+    args.permission_mode = Some(PermissionModeArg::Yolo);
     let first = fixture.run(args, "").await;
     assert_eq!(first.code, 0, "{}", first.stderr);
     let records = parse_json_lines(&first.stdout);
@@ -1959,7 +1959,7 @@ async fn nonzero_bash_exit_returns_output_without_a_tool_error() {
             .enqueue(MockResponse::Sse(final_response("reported failure")));
         let mut args = run_args("tool failure fixture");
         args.output = Some(OutputMode::Json);
-        args.permission_mode = PermissionModeArg::Yolo;
+        args.permission_mode = Some(PermissionModeArg::Yolo);
         let result = fixture.run(args, "").await;
         assert_eq!(result.code, 0, "{}", result.stderr);
         assert!(
@@ -2078,7 +2078,7 @@ async fn session_scoped_plugin_diagnostic_is_visible_without_verbose_output() {
     });
     let mut args = run_args("plugin diagnostics");
     args.resume_session = Some(session.session_id);
-    args.permission_mode = PermissionModeArg::Yolo;
+    args.permission_mode = Some(PermissionModeArg::Yolo);
     args.output = Some(OutputMode::None);
     let result = fixture.run(args, "").await;
     observed.await.unwrap();
@@ -2419,7 +2419,7 @@ async fn terminal_events_determine_failure_permission_and_cancellation_codes() {
         r#"{"command":"true"}"#,
     )));
     let mut permission_args = run_args("permission prompt");
-    permission_args.permission_mode = PermissionModeArg::Ask;
+    permission_args.permission_mode = Some(PermissionModeArg::Ask);
     permission_args.output = Some(OutputMode::Json);
     let permission = fixture.run(permission_args, "").await;
     assert_eq!(permission.code, 3, "{}", permission.stderr);
@@ -2437,7 +2437,7 @@ async fn terminal_events_determine_failure_permission_and_cancellation_codes() {
         .server
         .enqueue(MockResponse::Sse(final_response(r#"{"decision":"ask"}"#)));
     let mut auto_n_args = run_args("auto-n permission prompt");
-    auto_n_args.permission_mode = PermissionModeArg::AutoApproveN;
+    auto_n_args.permission_mode = Some(PermissionModeArg::AutoApproveN);
     auto_n_args.output = Some(OutputMode::Json);
     let auto_n = fixture.run(auto_n_args, "").await;
     assert_eq!(auto_n.code, 3, "{}", auto_n.stderr);
@@ -2458,7 +2458,7 @@ async fn terminal_events_determine_failure_permission_and_cancellation_codes() {
         .server
         .enqueue(MockResponse::Sse(final_response("auto-y continued")));
     let mut auto_y_args = run_args("auto-y permission prompt");
-    auto_y_args.permission_mode = PermissionModeArg::AutoApproveY;
+    auto_y_args.permission_mode = Some(PermissionModeArg::AutoApproveY);
     auto_y_args.output = Some(OutputMode::Json);
     let auto_y = fixture.run(auto_y_args, "").await;
     assert_eq!(auto_y.code, 0, "{}", auto_y.stderr);
@@ -2645,7 +2645,7 @@ async fn environment_gap_recovery_and_delegated_approval_are_hermetic() {
         .enqueue(MockResponse::Delay(Duration::from_millis(250)));
     let mut delegated_args = run_args("resumed child approval prompt");
     delegated_args.resume_session = Some(child_session);
-    delegated_args.permission_mode = PermissionModeArg::Ask;
+    delegated_args.permission_mode = Some(PermissionModeArg::Ask);
     delegated_args.output = Some(OutputMode::Json);
     let delegated = fixture.run(delegated_args, "").await;
     assert_eq!(delegated.code, 3, "{}", delegated.stderr);
@@ -2931,7 +2931,7 @@ fn run_args(prompt: &str) -> RunArgs {
         preset: None,
         model: None,
         variant: None,
-        permission_mode: PermissionModeArg::AutoApprove,
+        permission_mode: None,
         allowed_tools: Vec::new(),
         tool_groups: Vec::new(),
         skill_states: Vec::new(),
