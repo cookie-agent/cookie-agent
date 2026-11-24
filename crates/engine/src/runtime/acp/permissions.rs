@@ -189,16 +189,21 @@ fn mcp_tool_of(call: &ToolCallFields) -> Option<(String, String)> {
 /// by any agent's form that [`mcp_tool_of`] reads, or Claude Code's
 /// `claudeCode.toolName` (`mcp__cookie__<tool>`).
 pub(crate) fn bridge_tool_of(call: &ToolCallFields) -> Option<String> {
-    let from_name = || {
+    mcp_tool_or_named(call)
+        .filter(|(server, tool)| server == BRIDGE_SERVER && !tool.is_empty())
+        .map(|(_, tool)| tool)
+}
+
+/// [`mcp_tool_of`], else the server and tool of a tool name of the form
+/// `mcp__<server>__<tool>`: Claude Code's `claudeCode.toolName`, or the
+/// name a v1 agent's call is given (`super::v1`).
+fn mcp_tool_or_named(call: &ToolCallFields) -> Option<(String, String)> {
+    mcp_tool_of(call).or_else(|| {
         call.tool_name()?
             .strip_prefix("mcp__")?
             .split_once("__")
             .map(|(server, tool)| (server.to_owned(), tool.to_owned()))
-    };
-    mcp_tool_of(call)
-        .or_else(from_name)
-        .filter(|(server, tool)| server == BRIDGE_SERVER && !tool.is_empty())
-        .map(|(_, tool)| tool)
+    })
 }
 
 /// A name as cookie publishes an MCP server's tools: ASCII letters,
@@ -243,7 +248,7 @@ pub(crate) fn map_request(
         },
         "think" => MappedRequest::Allow,
         "switch_mode" => ask(kind, &merged),
-        other => match mcp_tool_of(&merged) {
+        other => match mcp_tool_or_named(&merged) {
             Some((server, tool)) if server == BRIDGE_SERVER => MappedRequest::Bridge(tool),
             Some((server, tool)) => MappedRequest::Rules {
                 action: PermissionAction::MCP,
