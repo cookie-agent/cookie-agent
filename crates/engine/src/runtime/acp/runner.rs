@@ -2170,9 +2170,15 @@ impl Turn<'_> {
             return self.progress_or_end(&fields.tool_call_id).await;
         }
         let fields = permissions::merge(None, &update);
-        let mut call_id = fields.tool_call_id.clone();
+        // The ID goes out as a provider's call ID once another agent takes
+        // the session over, so it keeps to the characters every provider
+        // accepts (`[A-Za-z0-9_-]`), a reused one included.
+        let base = crate::model_history::wire_safe_call_id(&fields.tool_call_id);
+        let mut call_id = base.clone();
+        let mut reuse = 1;
         while !self.used_call_ids.insert(call_id.clone()) {
-            call_id.push('\'');
+            reuse += 1;
+            call_id = format!("{base}_{reuse}");
         }
         let model_call_id = ModelCallId::new(call_id).map_err(|error| {
             EngineError::Acp(format!("the agent's tool call ID is unusable: {error}"))
@@ -2653,7 +2659,7 @@ impl Turn<'_> {
         prepared: &super::super::PreparedToolCall,
     ) -> Result<(), EngineError> {
         let tool_call_id = prepared.call.id;
-        let model_call_id = ModelCallId::new(format!("cookie:{tool_call_id}"))
+        let model_call_id = ModelCallId::new(format!("cookie_{tool_call_id}"))
             .map_err(|error| EngineError::Acp(error.to_string()))?;
         let tool_name = SafeCode::new(
             name.to_ascii_lowercase()

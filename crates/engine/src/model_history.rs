@@ -1772,11 +1772,116 @@ fn assemble_history_with_replay(
             }
         }
     }
+    wire_safe_call_ids(&mut history);
     Ok(AssembledHistory {
         history,
         replay_decisions,
         assistant_prefixes,
     })
+}
+
+/// `id` with every character outside `[A-Za-z0-9_-]` replaced by `_`: the
+/// call IDs Anthropic accepts, and so the ones every provider does.
+pub(crate) fn wire_safe_call_id(id: &str) -> String {
+    id.chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '_' | '-') {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+/// Rewrites the call IDs in `history` that a provider would refuse: an ACP
+/// agent's turns keep that agent's IDs, and older sessions hold cookie's own
+/// `cookie:<id>` and `<id>'` ones, which fail Anthropic's
+/// `^[a-zA-Z0-9_-]+$` once another agent takes the session over. A call, its
+/// result and its approval map alike; a rewritten ID that meets one already
+/// in use gets a `_<n>` suffix. IDs that are already safe are left as they
+/// are, so a provider's own turns replay unchanged.
+fn wire_safe_call_ids(history: &mut [HistoryTurn]) {
+    let is_safe = |id: &str| {
+        !id.is_empty()
+            && id.chars().all(|character| {
+                character.is_ascii_alphanumeric() || matches!(character, '_' | '-')
+            })
+    };
+    let mut ids = Vec::<&str>::new();
+    for turn in history.iter() {
+        match turn {
+            HistoryTurn::Assistant(turn) => {
+                for part in &turn.message.content {
+                    match part {
+                        AssistantPart::ToolCall(call) => ids.push(&call.id),
+                        AssistantPart::ToolResult(result) => ids.push(&result.tool_call_id),
+                        AssistantPart::ToolApproval(approval) => ids.push(&approval.tool_call_id),
+                        _ => {}
+                    }
+                }
+            }
+            HistoryTurn::Tool(message) => {
+                ids.extend(
+                    message
+                        .results
+                        .iter()
+                        .map(|result| result.tool_call_id.as_str()),
+                );
+            }
+            HistoryTurn::System(_) | HistoryTurn::User(_) => {}
+        }
+    }
+    if ids.iter().all(|id| is_safe(id)) {
+        return;
+    }
+    let mut taken = ids
+        .iter()
+        .filter(|id| is_safe(id))
+        .map(|id| (*id).to_owned())
+        .collect::<HashSet<_>>();
+    let mut renamed = HashMap::<String, String>::new();
+    for id in ids.iter().filter(|id| !is_safe(id)) {
+        if renamed.contains_key(*id) {
+            continue;
+        }
+        let base = match wire_safe_call_id(id) {
+            base if base.is_empty() => "call".to_owned(),
+            base => base,
+        };
+        let mut candidate = base.clone();
+        let mut reuse = 1;
+        while !taken.insert(candidate.clone()) {
+            reuse += 1;
+            candidate = format!("{base}_{reuse}");
+        }
+        renamed.insert((*id).to_owned(), candidate);
+    }
+    let rename = |id: &mut String| {
+        if let Some(safe) = renamed.get(id.as_str()) {
+            id.clone_from(safe);
+        }
+    };
+    for turn in history.iter_mut() {
+        match turn {
+            HistoryTurn::Assistant(turn) => {
+                for part in &mut turn.message.content {
+                    match part {
+                        AssistantPart::ToolCall(call) => rename(&mut call.id),
+                        AssistantPart::ToolResult(result) => rename(&mut result.tool_call_id),
+                        AssistantPart::ToolApproval(approval) => rename(&mut approval.tool_call_id),
+                        _ => {}
+                    }
+                }
+            }
+            HistoryTurn::Tool(message) => {
+                for result in &mut message.results {
+                    rename(&mut result.tool_call_id);
+                }
+            }
+            HistoryTurn::System(_) | HistoryTurn::User(_) => {}
+        }
+    }
 }
 
 /// The current `AGENTS.md` context: the latest run's `agent_md_loaded`
