@@ -468,7 +468,7 @@ impl Engine {
                 json!({
                     "name": tool.name,
                     "description": tool.description,
-                    "inputSchema": tool.input_schema.as_value(),
+                    "inputSchema": portable_schema(tool.input_schema.as_value().clone()),
                 })
             })
             .collect())
@@ -773,4 +773,33 @@ impl Engine {
             failed("the agent's turn ended before the call finished".to_owned())
         })
     }
+}
+
+/// `schema` without the string `pattern`s that use lookaround, which
+/// regular-expression engines without backtracking reject: Antigravity's
+/// (Go's RE2) refuses a whole toolbox over one of them. Cookie checks the
+/// arguments of a call itself, so the agent loses no check it relies on.
+fn portable_schema(mut schema: Value) -> Value {
+    fn strip(value: &mut Value) {
+        match value {
+            Value::Object(map) => {
+                let lookaround =
+                    map.get("pattern")
+                        .and_then(Value::as_str)
+                        .is_some_and(|pattern| {
+                            ["(?=", "(?!", "(?<=", "(?<!"]
+                                .iter()
+                                .any(|group| pattern.contains(group))
+                        });
+                if lookaround {
+                    map.remove("pattern");
+                }
+                map.values_mut().for_each(strip);
+            }
+            Value::Array(items) => items.iter_mut().for_each(strip),
+            _ => {}
+        }
+    }
+    strip(&mut schema);
+    schema
 }
