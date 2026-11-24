@@ -43,9 +43,10 @@ steps of what you chose:
 4. **Utility model** (optional). A fast, cheap model for approval reviews
    and session titles; its variant picker preselects the model's first
    listed variant, the cheapest. Without it they use the session's model.
-5. **ACP agent.** Claude Code or Codex fills in the command that launches
-   it, with what each machine needs (Node.js and the harness logged in
-   there); another ACP agent takes its own command. It runs **on every
+5. **ACP agent.** Claude Code, Codex, or Antigravity CLI fills in the
+   command that launches it, with what each machine needs (the harness
+   installed and logged in there, and Node.js for Claude Code and Codex);
+   another ACP agent takes its own command. It runs **on every
    machine** or **on this daemon's machine only**. Adding it declares it at
    once, and **Check** starts it to see that it works. It follows the
    official `_acp` [template](extend/agents.md#templates), which tells it

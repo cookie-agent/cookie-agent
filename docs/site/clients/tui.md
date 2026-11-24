@@ -264,7 +264,7 @@ The panel shows its steps as tabs, each done one with a check; ← and →
    titles; the variant list highlights the model's first listed variant,
    its cheapest.
 6. **ACP agent** (the ACP path): `p` moves through the daemon's presets
-   (Claude Code, Codex) and **Another ACP agent**, whose ID, command, and
+   (Claude Code, Codex, Antigravity CLI) and **Another ACP agent**, whose ID, command, and
    environment `e` edits (Tab moves between them, Esc or Enter stops); `w`
    switches between every machine and this daemon's machine only. Enter
    declares the agent at once, and `c` checks each linked agent on each

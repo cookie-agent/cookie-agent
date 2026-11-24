@@ -22,9 +22,9 @@ daemon. The [ACP agents spec](../specs/acp-agents.md) has the design, and
 
 Onboarding (`/onboard` in the TUI, Settings › **Set up Cookie** on the web,
 or [`cookie onboard --acp claude`](../clients/cli.md#cookie-onboard)) links
-Claude Code or Codex in one step: it fills in the command from the
-daemon's presets, declares the agent on every machine or on the daemon's
-machine only, and can start it once to check it works. The sections below
+Claude Code, Codex, or Antigravity CLI in one step: it fills in the command
+from the daemon's presets, declares the agent on every machine or on the
+daemon's machine only, and can start it once to check it works. The sections below
 are what it writes, for setting agents up by hand or changing them later;
 the [agents panel](../clients/tui.md#the-agents-panel) (`/agents` in the
 TUI, the Agents view on the web) customizes, turns off, and resets them.

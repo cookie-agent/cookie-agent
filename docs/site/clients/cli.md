@@ -257,7 +257,7 @@ Sets up the daemon that `--url` and `--token` name, here or on another
 machine, through its onboarding API; `cookie onboard` writes nothing itself.
 It first asks how agents run: on **model providers** you connect (the
 steps below), on an **ACP agent** with its own login (Claude Code, Codex,
-or another), or both. The daemon is set up by either.
+Antigravity CLI, or another), or both. The daemon is set up by either.
 
 The models path's steps, as numbered questions:
 

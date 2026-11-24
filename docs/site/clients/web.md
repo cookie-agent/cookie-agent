@@ -91,7 +91,7 @@ connects. Its steps start from what is already configured, with **Back** and
 5. **Utility model** (optional): the same list, for approvals and session
    titles; its chips start on the model's first listed variant, the
    cheapest.
-6. **ACP agent** (the ACP path): the daemon's presets (Claude Code, Codex)
+6. **ACP agent** (the ACP path): the daemon's presets (Claude Code, Codex, Antigravity CLI)
    with what each machine needs, or **Another ACP agent**; where it runs,
    **on every machine** or **on this daemon's machine only**; and its ID,
    command, environment, and description, filled in from the preset.
