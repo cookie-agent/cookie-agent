@@ -37,6 +37,7 @@ pub(crate) mod prompt;
 pub(crate) mod runner;
 mod subagents;
 mod terminal;
+mod v1;
 mod wakes;
 pub(crate) mod wire;
 

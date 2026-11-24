@@ -1,10 +1,10 @@
 # ACP agents
 
-External coding agents, such as Claude Code and Codex, can take
+External coding agents, such as Claude Code, Codex, and Antigravity CLI, can take
 a session's turns, or a subagent's, as cookie agents. Cookie drives them over
 the [Agent Client Protocol](https://agentclientprotocol.com) (ACP): cookie is
 the ACP client, the external agent the ACP agent. Cookie speaks ACP version
-2 only. The agent keeps its own
+2, and version 1 to an agent that speaks only that. The agent keeps its own
 conversation, model, file tools, and shell; cookie renders its turns, decides
 its permission requests with your rules, offers it cookie's own tools (memory,
 cron, delegation, MCP servers), and keeps the session's history as for any
@@ -34,18 +34,26 @@ TUI, the Agents view on the web) customizes, turns off, and resets them.
 On the machine that runs the agent:
 
 - Install the agent and log in to it there, as you would to use it in a
-  terminal: `claude` and its `/login`, or `codex login`. Cookie runs no
-  login flow; it uses the credentials already on that machine.
+  terminal: `claude` and its `/login`, `codex login`, or `agy` (`agy acp
+  --login` on a machine without a browser). Cookie runs no login flow; it
+  uses the credentials already on that machine.
 - Install its ACP adapter, or let `npx` fetch it: Claude Code speaks ACP
   through `@agentclientprotocol/claude-agent-acp`, and Codex through
   `@agentclientprotocol/codex-acp`. Both speak ACP v2. `npx` needs Node.js on
-  that machine's `PATH`, as the runtime sees it.
-- **ACP v2 only.** An agent that answers `initialize` with version 1 is
-  refused, and its runs fail with `` <agent> speaks ACP v1; cookie needs ACP
-  v2. Update its adapter, or start it in v2 mode ``. Gemini CLI's
-  `gemini --acp` may speak only v1; Claude Code's adapter serves both and
-  can be pinned to v2 with `CLAUDE_AGENT_ACP_PROTOCOL=v2` in the
-  declaration's `env`.
+  that machine's `PATH`, as the runtime sees it. Antigravity CLI needs no
+  adapter: `agy acp` is its ACP server.
+- **ACP v1 agents** work through a translator, such as `agy acp`, which
+  speaks only v1. Cookie offers v2 at `initialize`; an agent that answers
+  v1 is spoken to in v1, and its turns, steering, questions, and
+  cancelling work as with a v2 agent. v1 cannot say when work the agent
+  started on its own (after a background command, say) has ended, so
+  cookie ends that run once the agent has been quiet for 10 seconds (two
+  minutes while one of its calls runs); later updates start a new run. Cookie
+  asks a v1 agent for the extensions v2 made standard (subagent sessions,
+  notices, compaction, command output), so an agent that has them, such as
+  Claude Code's adapter in its v1 mode, shows its subagents and commands as
+  in v2. The [ACP v1 agents spec](../specs/acp-v1-agents.md) has the
+  details.
 - `cookie` must be on that machine: the MCP bridge that offers cookie's tools
   to the agent is `cookie runtime mcp-bridge`. A runtime always has it, since
   it is `cookie runtime`.
@@ -67,9 +75,13 @@ description = "Claude Code"
 [runtimes.local.acp.agents.codex]
 command = ["npx", "-y", "@agentclientprotocol/codex-acp"]
 description = "Codex"
+
+[runtimes.local.acp.agents.agy]
+command = ["agy", "acp"]
+description = "Antigravity CLI"
 ```
 
-The daemon lists them as `claude` and `codex`, the keys of their
+The daemon lists them as `claude`, `codex`, and `agy`, the keys of their
 declarations, as soon as the configuration is applied: a changed `acp`
 table reaches its runtime at once. Pick one in the agent picker of the TUI (`/agent`) or the
 web client (the agent chip) for a new session, and send a message: the daemon starts the
@@ -829,9 +841,9 @@ note.
 - **A steered message arrives after the turn.** The agent took it with its
   next turn: it declined to take it into its running work, or its work had
   already ended when the message reached it.
-- **"speaks ACP v1; cookie needs ACP v2".** The agent's adapter answered
-  `initialize` with version 1. Update the adapter, or start it in its v2
-  mode (Claude Code's: `CLAUDE_AGENT_ACP_PROTOCOL=v2`).
+- **"speaks ACP v3; cookie needs ACP v2 or v1".** The agent answered
+  `initialize` with a version cookie does not speak. Use a version of its
+  adapter that speaks v2 or v1.
 - **"can't rewind its own conversation" or "can't fork its own
   conversation".** The agent cannot fork its conversation where the
   revert or the fork would cut it (see

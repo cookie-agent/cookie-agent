@@ -1,6 +1,6 @@
 //! The Agent Client Protocol messages the engine sends and reads
-//! (`docs/site/specs/acp-v2.md`): version 2, JSON-RPC 2.0. Cookie speaks
-//! no other version.
+//! (`docs/site/specs/acp-v2.md`): version 2, JSON-RPC 2.0. A v1 agent's
+//! messages are translated to and from these (`super::v1`).
 //!
 //! Only what the engine uses is modelled. Everything an agent sends is read
 //! tolerantly: unknown members are ignored, and an unknown update kind,
@@ -11,6 +11,9 @@ use serde_json::Value;
 
 /// The ACP version the engine speaks.
 pub(crate) const PROTOCOL_VERSION: u32 = 2;
+
+/// The older version an agent may answer with, spoken through `super::v1`.
+pub(crate) const V1_PROTOCOL_VERSION: u32 = 1;
 
 pub(crate) mod method {
     pub(crate) const INITIALIZE: &str = "initialize";
@@ -33,6 +36,9 @@ pub(crate) struct InitializeRequest {
     pub protocol_version: u32,
     pub info: Value,
     pub capabilities: Value,
+    /// v1's names for the same, for an agent that answers in v1.
+    pub client_info: Value,
+    pub client_capabilities: Value,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]

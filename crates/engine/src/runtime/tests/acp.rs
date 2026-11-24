@@ -789,14 +789,14 @@ async fn a_stopped_process_and_a_paged_out_session_leave_no_acp_session_behind()
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn an_agent_that_speaks_only_acp_v1_is_refused() {
-    let acp = acp_fixture(&[("ACP_FIXTURE_V1", "1")], &[]).await;
+async fn an_agent_that_speaks_another_acp_version_is_refused() {
+    let acp = acp_fixture(&[("ACP_FIXTURE_VERSION", "3")], &[]).await;
     let engine = acp.engine();
     let session = engine.create_session(selection()).unwrap().session_id;
     let outcome = turn(engine, session, "first", "say one").await;
     assert!(
         matches!(&outcome, RunOutcome::Failed { error, .. }
-            if error.as_str().contains("speaks ACP v1; cookie needs ACP v2")),
+            if error.as_str().contains("speaks ACP v3; cookie needs ACP v2 or v1")),
         "{outcome:?}"
     );
     let initialize = acp

@@ -97,6 +97,8 @@ Both end the agent's background shells.
 Out of scope:
 
 - v1 agents (Gemini CLI unless it adds v2, hand-written v1 agents);
+  since 2026-11-24 they go through a translator under the v2 client
+  ([ACP v1 agents](acp-v1-agents.md));
 - `providers/*`;
 - `auth/logout`.
 

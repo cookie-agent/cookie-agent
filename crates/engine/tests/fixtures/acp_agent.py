@@ -156,7 +156,8 @@ Its config options are `mode`, `model`, `fast` (a boolean), and
 Environment:
 
   ACP_FIXTURE_LOG        a file every message received is appended to
-  ACP_FIXTURE_V1         "1": answers `initialize` with protocol version 1
+  ACP_FIXTURE_VERSION    answers `initialize` with this protocol version
+                         rather than 2
   ACP_FIXTURE_LOST       "1": refuses to resume any session
   ACP_FIXTURE_NO_AUTO    "1": offers no `auto` mode
   ACP_FIXTURE_PID_FILE   a file the process ID is written to
@@ -1046,7 +1047,7 @@ def handle(message):
         if env("ACP_FIXTURE_SYSTEM_PROMPT"):
             session_caps["systemPrompt"] = {}
         respond(request_id, {
-            "protocolVersion": 1 if env("ACP_FIXTURE_V1") else 2,
+            "protocolVersion": int(os.environ.get("ACP_FIXTURE_VERSION") or 2),
             "info": {"name": "fixture-agent", "title": "Fixture Agent", "version": "1.0.0"},
             "capabilities": {"session": session_caps},
             "authMethods": [],

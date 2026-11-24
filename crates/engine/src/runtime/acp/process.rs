@@ -389,12 +389,13 @@ impl Processes {
             })?;
         let (frames, frames_rx) = mpsc::unbounded_channel();
         let closed = CancellationToken::new();
-        let (peer, incoming) = Peer::start(Box::new(RelayTransport {
+        // A v1 agent is spoken to in its version (`super::v1`).
+        let (peer, incoming) = Peer::start(Box::new(super::v1::V1Transport::new(RelayTransport {
             client: client.clone(),
             agent: key.agent.clone(),
             frames: frames_rx,
             closed: closed.clone(),
-        }));
+        })));
         // Registered before `initialize`, so its answer reaches the peer.
         let (barriers, barrier_queue) = mpsc::unbounded_channel();
         let pending = Arc::new(AgentProcess {
@@ -436,6 +437,29 @@ impl Processes {
                     capabilities: serde_json::json!({
                         "elicitation": super::elicitation::capabilities(),
                     }),
+                    // What a v1 agent reads instead, which v2 agents ignore:
+                    // no file system or terminals of the client's.
+                    client_info: serde_json::json!({
+                        "name": "cookie-agent",
+                        "title": "Cookie Agent",
+                        "version": env!("CARGO_PKG_VERSION"),
+                    }),
+                    // The v1 forms of what v2 gives every client: notices,
+                    // compaction, boolean options, and subagent sessions
+                    // (their RFDs), and command output as `_meta` keys of
+                    // the agent's calls (`super::v1` makes them v2's).
+                    client_capabilities: serde_json::json!({
+                        "fs": {"readTextFile": false, "writeTextFile": false},
+                        "terminal": false,
+                        "session": {
+                            "notices": {},
+                            "compaction": {},
+                            "configOptions": {"boolean": {}},
+                        },
+                        "subagents": {},
+                        "_meta": {"terminal_output": true},
+                        "elicitation": super::elicitation::capabilities(),
+                    }),
                 },
             ),
         )
@@ -462,12 +486,14 @@ impl Processes {
                 ));
             }
         };
-        if init.protocol_version != wire::PROTOCOL_VERSION {
+        if init.protocol_version != wire::PROTOCOL_VERSION
+            && init.protocol_version != wire::V1_PROTOCOL_VERSION
+        {
             let reason = format!(
-                "it speaks ACP v{}; cookie needs ACP v{}. Update its adapter, or start it in v{} mode",
+                "it speaks ACP v{}; cookie needs ACP v{} or v{}",
                 init.protocol_version,
                 wire::PROTOCOL_VERSION,
-                wire::PROTOCOL_VERSION
+                wire::V1_PROTOCOL_VERSION
             );
             self.stop(&pending, &reason).await;
             return Err(format!(
