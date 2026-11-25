@@ -695,6 +695,10 @@ spec](../specs/background-tools.md) describes:
   to the tool's `background_default`) to the tool's schema and removes it
   before the tool prepares the call, so the tool never sees it and an
   approval covers the call either way.
+  An ACP agent's own subagent takes no prompts, so no result could reach it
+  from the background: its calls always run in the foreground, and one that
+  asks for `background: true` fails with a note to use its harness's own
+  background tools.
 - **Detaching.** A call the model starts with `background: true`, or one the
   user moves to the background (`run.tool_background`; the TUI's background
   button), detaches once the tool reaches its detach point. A call that
@@ -1657,6 +1661,7 @@ Failures are explicit tool errors with stable codes:
 | `send_message:invalid_body` | Empty body or body over `max_body_bytes` |
 | `send_message:unknown_session` | Well-formed recipient UUID that names no session |
 | `send_message:self_send` | Sender targeted its own session |
+| `send_message:acp_subagent` | The recipient is an ACP agent's own subagent (Claude Code's Agent tool, say), which takes no prompts; the error says what to do instead: its parent agent uses its harness's own tools, anyone else messages that parent |
 | `send_message:inbox_full` | Recipient has `max_pending_per_session` pending agent messages; nothing was admitted |
 | `send_message:max_hops_exceeded` | The message chain exceeded `max_hops` |
 | `send_message:inflight_full` | The directed pair already has `max_inflight_per_pair` unacknowledged messages |

@@ -363,6 +363,12 @@ Guidelines:
 - Keep durable notes in cookie memory (memory_search, memory_read,
   memory_write), not in your harness's own memory or notes files.
 - Schedule follow-ups with cookie's cron tools.
+- Your harness's own subagents (such as Claude Code's Agent tool) can call
+  cookie's tools too, but cookie cannot prompt them once they start. Cookie
+  messages, `<background_result>`s and subagent reports cannot reach them,
+  so their cookie calls run in the foreground only and `send_message`
+  refuses them. Talk to them with your harness's own tools, and when you
+  brief one for long work, have it use its harness's own background tools.
 ```
 
 Save it as `~/.cookie-agent/agents/claude.md`: every runtime that offers
@@ -739,7 +745,11 @@ not in it.
   the agent's name for it; its runs show what it does, starting with the
   task it got; its permission requests and questions are asked in it. It
   takes no messages: it works on what its parent gives it, and the parent
-  agent gets its result. While it works it is in its parent's background
+  agent gets its result. So nothing cookie sends can reach it: `send_message`
+  to it fails with `send_message:acp_subagent`, telling its parent agent to
+  use its harness's own tools and any other sender to message the parent,
+  and a cookie call it makes runs in the foreground, the `background`
+  argument refused with a note to use its harness's own background tools. While it works it is in its parent's background
   calls as a `subagent`, beside cookie's own subagents (`delegate_subagent`);
   Stop there or in its own session stops its work. It lives in the agent's
   process: once that process ends, it takes no more turns.

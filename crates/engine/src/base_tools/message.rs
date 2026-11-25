@@ -191,6 +191,11 @@ impl ToolProvider for MessageToolProvider {
         }
         let args = Self::parse(&call.arguments)?;
         let recipient = Self::resolve_recipient(&self.engine, ctx.session, &args.to)?;
+        // A recipient that can take no mail is refused before anyone is
+        // asked to approve the send.
+        self.engine
+            .ensure_messageable(ctx.session, recipient)
+            .map_err(|error| ToolError::execution(error.to_string()))?;
         let relationship = self
             .engine
             .message_relationship(ctx.session, recipient)

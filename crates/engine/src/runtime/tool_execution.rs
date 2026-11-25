@@ -625,7 +625,27 @@ impl Engine {
             name: tool_spec.name.clone(),
             ..call
         };
+        // The ACP agent's own subagent takes no prompts, so no background
+        // result could reach it: its calls run in the foreground, and one
+        // that asks for the background is refused with what to do instead.
+        let acp_subagent = session.log.is_acp_subagent();
+        let asked_background = acp_subagent
+            && call
+                .arguments
+                .get("background")
+                .is_some_and(|background| background == &Value::Bool(true));
         let background = match take_background(&tool_spec, &mut call) {
+            Ok(_) if asked_background => Err(format!(
+                "`background` is not available here: you are `{}`'s own subagent, started by \
+                 your harness rather than by cookie, and cookie cannot deliver a background \
+                 result to you. Run the call in the foreground (leave out `background`), or \
+                 use your harness's own tools to run work in the background.",
+                session.creation_agent.agent
+            )),
+            Ok(_) if acp_subagent => Ok(None),
+            result => result,
+        };
+        let background = match background {
             Ok(background) => background,
             Err(message) => {
                 return PreparedToolCall {

@@ -39,6 +39,8 @@ pub const MESSAGE_ENGINE_SHUTDOWN: &str = "send_message:engine_shutdown";
 /// The recipient is held (`docs/site/specs/held-sessions.md`) and the sender
 /// is not its parent.
 pub const MESSAGE_RECIPIENT_HELD: &str = "send_message:recipient_held";
+/// The recipient is an ACP agent's own subagent, which takes no prompts.
+pub const MESSAGE_ACP_SUBAGENT: &str = "send_message:acp_subagent";
 
 /// Immutable arguments for one `send_message` tool invocation. The sender
 /// triple is engine-derived tool context, never model arguments.
@@ -266,8 +268,9 @@ impl Engine {
     /// Recipient check: any session the daemon owns takes mail, in the
     /// sender's tree or another (spec Resolved Decision 1, amended
     /// 2026-11-14); whether a send may go is the `message` permission's
-    /// call, on the relationship label. Only a send to oneself and an
-    /// unknown session are refused here.
+    /// call, on the relationship label. Refused here: a send to oneself, an
+    /// unknown session, and an ACP agent's own subagent, which takes no
+    /// prompts, so mail to it could never be delivered.
     pub(crate) fn ensure_messageable(
         &self,
         sender: SessionId,
@@ -277,7 +280,30 @@ impl Engine {
             return Err(messaging_error(MESSAGE_SELF_SEND));
         }
         self.messaging_projection(sender)?;
-        self.messaging_projection(recipient)?;
+        let projection = self.messaging_projection(recipient)?;
+        if projection.log.is_acp_subagent() {
+            let name = |session: SessionId| {
+                self.messaging_projection(session)
+                    .ok()
+                    .and_then(|projection| projection.meta.short_id.clone())
+                    .unwrap_or_else(|| session.to_string())
+            };
+            let agent = &projection.creation_agent.agent;
+            let parent = self.parent_of(recipient);
+            let instead = if parent == Some(sender) {
+                " Reach it with your harness's own tools instead.".to_owned()
+            } else if let Some(parent) = parent {
+                format!(" Message its parent `{}` instead.", name(parent))
+            } else {
+                String::new()
+            };
+            let recipient = name(recipient);
+            return Err(EngineError::Messaging(format!(
+                "{MESSAGE_ACP_SUBAGENT}: `{recipient}` is `{agent}`'s own subagent, started by \
+                 the agent's harness rather than by cookie, and cookie cannot prompt \
+                 it.{instead}"
+            )));
+        }
         Ok(())
     }
 
