@@ -1,6 +1,7 @@
 //! The question an agent asks the user (ACP elicitation), as a card above
-//! the composer: the oldest of the viewed session's waiting questions, who
-//! asks, and its message, then a form to fill in, a page to open, or, for
+//! the composer: the oldest of the viewed session's waiting questions and
+//! its subagents', who asks (and which subagent, for one of theirs), and
+//! its message, then a form to fill in, a page to open, or, for
 //! a kind this client does not know, nothing to fill in. Submit (or Done,
 //! for a page) accepts, Decline says no, and Cancel dismisses it without
 //! choosing. The card leaves once the daemon records the answer.
@@ -137,6 +138,7 @@ fn question_card(
             <p class="flex items-center gap-2 text-sm font-bold">
                 <Glyph icon=icondata::LuCircleHelp class="text-accent" />
                 <span class="min-w-0 flex-1 break-words" data-question-heading>{heading}</span>
+                {super::asked_by_subagent(workspace, question.session_id)}
                 {move || queue_label(count.get()).map(|label| view! { <span class=NOTE>{label}</span> })}
             </p>
             <p class="text-sm whitespace-pre-wrap break-words" data-question-message>{message}</p>

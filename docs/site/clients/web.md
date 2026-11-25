@@ -711,7 +711,10 @@ refreshes no longer change). Reset and Replace ask once more.
   panel at their tab.
 - **Approvals.** When a tool call needs an answer, the title bar's amber
   badge says how many wait.
-  Open it to approve once, approve for the session tree, or reject.
+  Open it to approve once, approve for the session tree, or reject. A
+  session shows its subagents' approvals and questions too, at any depth,
+  so the root shows the whole tree's; a card from a subagent names it, and
+  clicking the name opens the subagent.
 - **Questions.** An [ACP agent's question](../extend/acp-agents.md#questions-from-the-agent)
   shows as a card above the composer, naming who asks (with *1 of N* when
   several wait), and the transcript's last line says *waiting for your

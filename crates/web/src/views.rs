@@ -5836,6 +5836,7 @@ fn approval_card(
                 <span class="min-w-0 font-mono text-[0.8125rem] break-words">{title}</span>
                 {machine}
                 {source}
+                {asked_by_subagent(workspace, approval.session_id)}
             </p>
             <div class="min-w-0" inner_html=preview></div>
             {reviewer}
@@ -5849,6 +5850,28 @@ fn approval_card(
             />
             <div class="flex flex-wrap gap-2">{buttons}</div>
         </div>
+    }
+}
+
+/// Which subagent asks, on an approval or question card the viewed
+/// session shows for one below it: a chip that opens the subagent.
+pub(super) fn asked_by_subagent(workspace: Workspace, session_id: SessionId) -> impl IntoView {
+    move || {
+        workspace.shown_subagent(session_id).map(|label| {
+            let title = format!("Asked by subagent {label}: open it");
+            view! {
+                <button
+                    type="button"
+                    class="inline-flex min-w-0 shrink items-center gap-1 rounded-full bg-sunken px-2 py-0.5 text-xs font-normal text-muted hover:bg-hover hover:text-fg"
+                    title=title
+                    data-asked-by=session_id.to_string()
+                    on:click=move |_| workspace.open_session(session_id)
+                >
+                    <Glyph icon=icondata::LuBot />
+                    <span class="truncate">{label}</span>
+                </button>
+            }
+        })
     }
 }
 

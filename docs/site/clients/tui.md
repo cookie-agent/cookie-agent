@@ -868,7 +868,9 @@ the agent may yet follow up, and an idle restart waits for it.
 ## Approvals
 
 An approval docks above the status bar in place of the composer, leaving the
-conversation visible above it. It shows the call it gates the way you need to
+conversation visible above it. A session shows its subagents' approvals and
+questions as well as its own, at any depth, so the root shows the whole
+tree's; one from a subagent names it in the top border. It shows the call it gates the way you need to
 judge it: its icon and title, its argument blocks (such as a command), and its
 preview (such as an edit's or write's diff as of preparing the call), drawn as
 the transcript draws them; a call that describes neither shows the request's

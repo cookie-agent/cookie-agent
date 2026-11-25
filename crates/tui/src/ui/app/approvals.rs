@@ -1135,13 +1135,43 @@ impl App {
         });
     }
 
+    /// The viewed session and the sessions below it in the shown tree:
+    /// whose waiting approvals and questions the TUI shows, so a
+    /// subagent's reach every session above it.
+    pub(in crate::ui) fn shown_subtree(&self) -> Vec<SessionId> {
+        self.selected.map_or_else(Vec::new, |selected| {
+            cookie_agent_client_state::tree::subtree(self.tree.as_ref(), selected)
+        })
+    }
+
+    /// Which subagent asks, for an approval or question of `session_id`
+    /// shown while a session above it is viewed: its title, else its agent,
+    /// and its handle.
+    pub(in crate::ui) fn asking_subagent(&self, session_id: SessionId) -> Option<String> {
+        if self.selected == Some(session_id) {
+            return None;
+        }
+        let meta = find_session(self.tree.as_ref()?, session_id)?;
+        let name = meta.title.as_ref().map_or_else(
+            || meta.creation_selection.agent.to_string(),
+            ToString::to_string,
+        );
+        Some(format!(
+            "from {name} ({})",
+            crate::ui::pickers::short_id(meta)
+        ))
+    }
+
+    /// The approval on top: the oldest waiting one of the viewed session,
+    /// else of the first session below it that has one.
     pub(in crate::ui) fn current_approval(&self) -> Option<&ApprovalState> {
         if self.pending_approval.is_some() {
             return None;
         }
-        self.selected
-            .and_then(|id| self.store.sessions.get(&id))
-            .and_then(|state| {
+        self.shown_subtree()
+            .into_iter()
+            .filter_map(|id| self.store.sessions.get(&id))
+            .find_map(|state| {
                 state
                     .approvals
                     .iter()
@@ -1361,18 +1391,14 @@ impl App {
         let scroll = self.approval_panel.scroll;
 
         let mut top_right = Vec::new();
-        let queued = self
-            .store
-            .sessions
-            .get(&approval.session_id)
-            .map_or(0, |state| {
-                state
-                    .approvals
-                    .iter()
-                    .filter(|candidate| candidate.is_visible_user_escalation())
-                    .count()
-            });
+        if let Some(asking) = self.asking_subagent(approval.session_id) {
+            top_right.push(Span::styled(asking, theme.muted()));
+        }
+        let queued = self.store.waiting_approvals(&self.shown_subtree()).len();
         if queued > 1 {
+            if !top_right.is_empty() {
+                top_right.push(Span::styled(" · ", theme.muted()));
+            }
             top_right.push(Span::styled(format!("1 of {queued}"), theme.muted()));
         }
         if let Some(seconds) = seconds_left(approval) {

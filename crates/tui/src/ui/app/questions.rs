@@ -400,15 +400,16 @@ fn choice_count(form: &ElicitationForm, index: usize) -> Option<usize> {
 }
 
 impl App {
-    /// The question on top: the viewed session's oldest waiting one, while
-    /// no approval is.
+    /// The question on top, while no approval is: the viewed session's
+    /// oldest waiting one, else the first session's below it that has one.
     pub(in crate::ui) fn current_question(&self) -> Option<&QuestionState> {
         if self.current_approval().is_some() || self.pending_approval.is_some() {
             return None;
         }
-        self.selected
-            .and_then(|id| self.store.sessions.get(&id))
-            .and_then(|state| state.questions.first())
+        self.shown_subtree()
+            .into_iter()
+            .filter_map(|id| self.store.sessions.get(&id))
+            .find_map(|state| state.questions.first())
     }
 
     /// Whether the question on top has been shown for the full grace, so
@@ -748,6 +749,8 @@ impl App {
             content.height.saturating_sub(1 + footer_height),
         );
         let line_count = u16::try_from(rows.len()).unwrap_or(u16::MAX);
+        let queued = self.store.waiting_questions(&self.shown_subtree()).len();
+        let asking = self.asking_subagent(question.session_id);
         let panel = &mut self.question_panel;
         panel.max_scroll = line_count.saturating_sub(body.height);
         // Keep the focused field in view.
@@ -766,10 +769,6 @@ impl App {
         }
         panel.scroll = panel.scroll.min(panel.max_scroll);
         let scroll = panel.scroll;
-        let queued = self
-            .selected
-            .and_then(|id| self.store.sessions.get(&id))
-            .map_or(0, |state| state.questions.len());
         let mut block = crate::ui::panel_block()
             .border_style(theme.warning())
             .title(crate::ui::fitted_panel_title(
@@ -780,9 +779,13 @@ impl App {
                 area.width,
             ))
             .style(theme.panel());
-        if queued > 1 {
+        let top_right = [asking, (queued > 1).then(|| format!("1 of {queued}"))]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>();
+        if !top_right.is_empty() {
             block = block.title(crate::ui::panel_title(
-                Line::from(Span::styled(format!("1 of {queued}"), theme.muted())).right_aligned(),
+                Line::from(Span::styled(top_right.join(" · "), theme.muted())).right_aligned(),
             ));
         }
         if panel.max_scroll > 0 {

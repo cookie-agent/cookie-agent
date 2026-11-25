@@ -2821,39 +2821,41 @@ impl Workspace {
         });
     }
 
-    /// The approvals waiting for an answer in the viewed session.
-    pub fn approvals(self) -> Vec<cookie_agent_client_state::ApprovalState> {
+    /// The viewed session and the sessions below it in the shown tree:
+    /// whose approvals and questions the page shows, so a subagent's reach
+    /// the session that started it.
+    fn shown_subtree(self) -> Vec<SessionId> {
         let Some(session_id) = self.selected.get() else {
             return Vec::new();
         };
-        self.with_store(|store| {
-            store
-                .sessions
-                .get(&session_id)
-                .map(|state| {
-                    state
-                        .approvals
-                        .iter()
-                        .filter(|approval| approval.is_visible_user_escalation())
-                        .cloned()
-                        .collect()
-                })
-                .unwrap_or_default()
+        self.tree
+            .with(|tree| cookie_agent_client_state::tree::subtree(tree.as_ref(), session_id))
+    }
+
+    /// The label of the subagent `session_id` names when it is not the
+    /// viewed session but one below it: whose approval or question the
+    /// viewed session shows.
+    pub fn shown_subagent(self, session_id: SessionId) -> Option<String> {
+        if self.selected.get() == Some(session_id) {
+            return None;
+        }
+        self.tree.with(|tree| {
+            crate::tree::find(tree.as_ref()?, session_id).map(crate::tree::subagent_label)
         })
     }
 
-    /// The agent's questions waiting in the viewed session, oldest first.
+    /// The approvals waiting for an answer in the viewed session and its
+    /// subagents.
+    pub fn approvals(self) -> Vec<cookie_agent_client_state::ApprovalState> {
+        let sessions = self.shown_subtree();
+        self.with_store(|store| store.waiting_approvals(&sessions))
+    }
+
+    /// The agents' questions waiting in the viewed session and its
+    /// subagents, each session's oldest first.
     pub fn questions(self) -> Vec<cookie_agent_client_state::elicitation::QuestionState> {
-        let Some(session_id) = self.selected.get() else {
-            return Vec::new();
-        };
-        self.with_store(|store| {
-            store
-                .sessions
-                .get(&session_id)
-                .map(|state| state.questions.clone())
-                .unwrap_or_default()
-        })
+        let sessions = self.shown_subtree();
+        self.with_store(|store| store.waiting_questions(&sessions))
     }
 
     /// Answers `question` with `action` (and an accepted form's

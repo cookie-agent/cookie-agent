@@ -1,6 +1,7 @@
 //! Client behaviour around a session that every client shares: the
-//! approval queue a list refresh replaces, the permission-mode cycle, and
-//! the complete content of a cut display block.
+//! approval queue a list refresh replaces, the approvals and questions a
+//! shown session waits on, the permission-mode cycle, and the complete
+//! content of a cut display block.
 
 use cookie_agent_protocol::{
     ApprovalListResult, ArtifactReadResult, ArtifactRef, DisplayBlock, Open, PermissionMode,
@@ -8,8 +9,8 @@ use cookie_agent_protocol::{
 };
 
 use crate::{
-    FullContent, FullContentState, MAX_FULL_CONTENT_BYTES, SessionState, StateStore,
-    approval_state_from_record,
+    ApprovalState, FullContent, FullContentState, MAX_FULL_CONTENT_BYTES, SessionState, StateStore,
+    approval_state_from_record, elicitation::QuestionState,
 };
 
 /// The first client protocol whose daemons let any client take back a
@@ -65,6 +66,33 @@ impl StateStore {
                 state.approvals.push(approval);
             }
         }
+    }
+
+    /// The approvals waiting for the user in `sessions`, session by
+    /// session in that order: what a client shows while it shows the first
+    /// of them, with the sessions below it ([`crate::tree::subtree`]), so a
+    /// subagent's approval reaches the session that started it.
+    #[must_use]
+    pub fn waiting_approvals(&self, sessions: &[SessionId]) -> Vec<ApprovalState> {
+        sessions
+            .iter()
+            .filter_map(|session_id| self.sessions.get(session_id))
+            .flat_map(|state| &state.approvals)
+            .filter(|approval| approval.is_visible_user_escalation())
+            .cloned()
+            .collect()
+    }
+
+    /// The agents' questions waiting for the user in `sessions`, as
+    /// [`Self::waiting_approvals`] orders them: each session's oldest
+    /// first.
+    #[must_use]
+    pub fn waiting_questions(&self, sessions: &[SessionId]) -> Vec<QuestionState> {
+        sessions
+            .iter()
+            .filter_map(|session_id| self.sessions.get(session_id))
+            .flat_map(|state| state.questions.iter().cloned())
+            .collect()
     }
 }
 

@@ -19,6 +19,34 @@ pub fn contains(tree: &SessionTree, session_id: SessionId) -> bool {
             .any(|child| contains(child, session_id))
 }
 
+/// `session_id` followed by every session below it in `tree`, depth first:
+/// the sessions whose waiting approvals and questions a client shows while
+/// it shows `session_id`, so a subagent's reach the session that started
+/// it. Just `session_id` when `tree` does not have it.
+#[must_use]
+pub fn subtree(tree: Option<&SessionTree>, session_id: SessionId) -> Vec<SessionId> {
+    fn find(tree: &SessionTree, session_id: SessionId) -> Option<&SessionTree> {
+        if tree.session.session_id == session_id {
+            return Some(tree);
+        }
+        tree.children
+            .iter()
+            .find_map(|child| find(child, session_id))
+    }
+    fn collect(tree: &SessionTree, ids: &mut Vec<SessionId>) {
+        ids.push(tree.session.session_id);
+        for child in &tree.children {
+            collect(child, ids);
+        }
+    }
+    let mut ids = Vec::new();
+    match tree.and_then(|tree| find(tree, session_id)) {
+        Some(node) => collect(node, &mut ids),
+        None => ids.push(session_id),
+    }
+    ids
+}
+
 /// Whether `session`, just announced, is a session of the tree rooted at
 /// `root` that `shown` (that tree as last read) lacks: the tree must be read
 /// again to show it.
