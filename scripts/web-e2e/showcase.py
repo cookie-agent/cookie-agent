@@ -780,11 +780,12 @@ def set_composer(text):
 
 
 def chips_line_up():
-    """The agent, model, and mode chips share their height and their top."""
+    """The agent, model, and mode chips that show (a phone has only the
+    model's) share their height and their top."""
     boxes = browser.script(
         "return ['#agent-chip', '#model-chip', '#permission-mode'].map((s) => {"
         "  const r = document.querySelector(s).getBoundingClientRect();"
-        "  return [Math.round(r.top), Math.round(r.height)]; })"
+        "  return [Math.round(r.top), Math.round(r.height)]; }).filter(([, h]) => h > 0)"
     )
     assert len(set(map(tuple, boxes))) == 1, "the chips do not line up: %s" % boxes
     return boxes[0]
