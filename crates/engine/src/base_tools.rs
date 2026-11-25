@@ -81,7 +81,7 @@ impl Engine {
             Arc::new(DelegateToolProvider::new(self.clone())),
             Arc::new(MessageToolProvider::new(self.clone())),
             Arc::new(SkillTool::new(self.clone())),
-            Arc::new(ReadArtifactTool),
+            Arc::new(ReadArtifactTool::new(self.clone())),
             Arc::new(GoalTools::new(self.clone())),
             Arc::new(StopBackgroundTool::new(self.clone())),
             Arc::new(LoaderTools::new(self.clone())),

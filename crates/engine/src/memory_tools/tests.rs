@@ -8,7 +8,7 @@ use super::{
     MemoryCall, MemoryTools, PART_B, check, edit_diff, memory_diff, near_output, permission_name,
     prompt_section, read_output, search_display, search_output, shown_text,
 };
-use cookie_agent_runtime_api::text_tools::{LineWindow, MAX_LINE_BYTES};
+use cookie_agent_runtime_api::text_tools::{LineRequest, MAX_LINE_BYTES};
 
 use crate::{
     memory::{limits::MemoryLimits, search::SearchHit, similar::NearMemory, url::MemoryUrl},
@@ -395,8 +395,8 @@ keywords: release
     );
 }
 
-fn window(offset: usize, limit: usize) -> LineWindow {
-    LineWindow::new(Some(offset), Some(limit)).unwrap()
+fn window(offset: i64, limit: usize) -> LineRequest {
+    LineRequest::new(Some(offset), Some(limit)).unwrap()
 }
 
 /// `memory_read` pages a memory's body as `read` pages a file: numbered
@@ -456,20 +456,15 @@ fn a_read_pages_the_body_from_a_one_based_offset() {
     );
     assert_eq!(
         error("memory_read", json!({"url": "user://notes", "offset": 0})),
-        "tool failed: offset is 1-based: the first line is offset=1"
+        "tool failed: offset is 1-based: the first line is offset=1, and offset=-1 the last"
     );
     assert!(matches!(
         check(
             "memory_read",
             json!({"url": "user://notes", "offset": 3, "limit": 2})
         ),
-        Ok(MemoryCall::Read {
-            window: LineWindow {
-                offset: 3,
-                limit: 2
-            },
-            ..
-        })
+        Ok(MemoryCall::Read { request, .. })
+            if request == LineRequest::new(Some(3), Some(2)).unwrap()
     ));
 }
 

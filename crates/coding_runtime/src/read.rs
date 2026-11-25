@@ -1,5 +1,5 @@
 use std::{
-    io::{BufRead, BufReader, Read},
+    io::{BufRead, BufReader, Read, Seek},
     path::{Path, PathBuf},
 };
 
@@ -16,7 +16,7 @@ use cookie_agent_runtime_api::{
     media::attachment_gate_error,
     media::gate_attachment,
     media::sniff_media_type,
-    text_tools::{self, LineWindow, MAX_PAGE_BYTES, PageError},
+    text_tools::{self, LineRequest, LineWindow, MAX_PAGE_BYTES, PageError},
     tool_presentation,
 };
 use schemars::JsonSchema;
@@ -47,17 +47,17 @@ struct ReadArgs {
     /// The most lines, or directory entries, to return. Defaults to 2000.
     #[schemars(range(min = 1), extend("default" = text_tools::DEFAULT_LIMIT))]
     limit: Option<usize>,
-    /// The 1-based line, or directory entry, to start at. Defaults to 1.
-    #[schemars(range(min = 1), extend("default" = 1))]
-    offset: Option<usize>,
+    /// The 1-based line, or directory entry, to start at; a negative one counts back from the end, so -50 starts at the 50th line from the end. Defaults to 1.
+    #[schemars(extend("default" = 1))]
+    offset: Option<i64>,
 }
 
 /// What the model reads about `read`.
-const DESCRIPTION: &str = "Read a file or a directory. A text file comes back as numbered lines, `N: text`, counting from 1. `offset` is the 1-based line to start at (default 1) and `limit` the most lines to return (default 2000). A line longer than 4 KiB is cut and ends with `... [line truncated: N more bytes]`, and a page stops before it passes the result size limit (about 2 MiB). A page that leaves lines out ends with a note such as `[120 more lines; continue with offset=2001]`: read again from that offset. An offset past the last line is an error. A directory lists its entries, one per line with `/` after a folder's name, paged by the same 1-based `offset` and `limit`. An image, video, or other media file the model accepts is attached instead.";
+const DESCRIPTION: &str = "Read a file or a directory. A text file comes back as numbered lines, `N: text`, counting from 1. `offset` is the 1-based line to start at (default 1), or, when negative, how many lines before the end to start (-50 reads the last 50 lines), and `limit` the most lines to return (default 2000). A line longer than 4 KiB is cut and ends with `... [line truncated: N more bytes]`, and a page stops before it passes the result size limit (about 2 MiB). A page that leaves lines out ends with a note such as `[120 more lines; continue with offset=2001]`: read again from that offset. An offset past the last line is an error. A directory lists its entries, one per line with `/` after a folder's name, paged by the same 1-based `offset` and `limit`. An image, video, or other media file the model accepts is attached instead.";
 
 struct ReadExecutor {
     target: fs_cap::PreparedExisting,
-    window: LineWindow,
+    request: LineRequest,
     /// The path clients see.
     shown_path: PathBuf,
 }
@@ -184,7 +184,7 @@ impl ToolProvider for ReadTool {
             return Err(ToolError::execution("read provider received another tool"));
         }
         let args: ReadArgs = parse_args("read", call.arguments)?;
-        let window = LineWindow::new(args.offset, args.limit)?;
+        let request = LineRequest::new(args.offset, args.limit)?;
         let workspace = self.workspace.clone();
         let shown_path = self.shown_path(&args);
         crate::blocking(move || {
@@ -192,15 +192,15 @@ impl ToolProvider for ReadTool {
                 fs_cap::prepare_existing(&workspace, std::path::Path::new(&args.file_path))?;
             let normalized_arguments = serde_json::json!({
                 "path": target.display_path,
-                "offset": window.offset,
-                "limit": window.limit,
+                "offset": request.offset(),
+                "limit": request.limit(),
             });
             PreparedTool::declared(
                 normalized_arguments,
                 None,
                 Box::new(ReadExecutor {
                     target,
-                    window,
+                    request,
                     shown_path,
                 }),
             )
@@ -224,9 +224,9 @@ impl PreparedExecutor for ReadExecutor {
             if self.target.directory {
                 let entries = self.target.directory_entries()?;
                 let target = self.target.display_path.display().to_string();
-                self.window
-                    .check_in_range(entries.len(), "entry", &target)?;
-                let page = directory_page(&entries, self.window).collect::<Vec<_>>();
+                let window = self.request.resolve(entries.len());
+                window.check_in_range(entries.len(), "entry", &target)?;
+                let page = directory_page(&entries, window).collect::<Vec<_>>();
                 let mut output =
                     format!("<path>{target}</path>\n<type>directory</type>\n<entries>\n");
                 for (name, directory) in &page {
@@ -237,7 +237,7 @@ impl PreparedExecutor for ReadExecutor {
                     output.push('\n');
                 }
                 output.push_str("</entries>");
-                let marker = self.window.remaining_marker(entries.len(), "entry");
+                let marker = window.remaining_marker(entries.len(), "entry");
                 if let Some(marker) = &marker {
                     output.push('\n');
                     output.push_str(marker);
@@ -263,11 +263,11 @@ impl PreparedExecutor for ReadExecutor {
                     output,
                     metadata: serde_json::json!({
                         "kind": "directory",
-                        "offset": self.window.offset,
-                        "limit": self.window.limit,
+                        "offset": window.offset,
+                        "limit": window.limit,
                         "shown": page.len(),
                         "total_entries": entries.len(),
-                        "next_offset": marker.is_some().then(|| self.window.end_index() + 1),
+                        "next_offset": marker.is_some().then(|| window.end_index() + 1),
                     }),
                     attachments: Vec::new(),
                     additional_messages: Vec::new(),
@@ -299,7 +299,16 @@ impl PreparedExecutor for ReadExecutor {
             if std::str::from_utf8(head).is_err_and(|error| error.error_len().is_some()) {
                 return Err(not_text());
             }
-            text_result(path, &self.shown_path, &mut reader, self.window)
+            let window = self.request.resolve_with(|| {
+                let lines = text_tools::count_reader_lines(&mut reader)?;
+                reader.rewind().map(|()| lines)
+            });
+            text_result(
+                path,
+                &self.shown_path,
+                &mut reader,
+                window.map_err(io_error)?,
+            )
         })
         .await;
         result.map(cookie_agent_runtime_api::ToolCompletion::single)

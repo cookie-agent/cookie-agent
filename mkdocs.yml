@@ -172,6 +172,7 @@ nav:
   - Specs:
       - Status and scope: specs/index.md
       - Implemented:
+          - "Reading a background call's output while it runs": specs/live-tool-output.md
           - ACP v1 agents through a translator: specs/acp-v1-agents.md
           - Voice input: specs/voice-input.md
           - "A session's schedules and webhooks": specs/session-schedules.md

@@ -5,7 +5,9 @@ use std::{
 };
 
 use bytes::Bytes;
-use cookie_agent_runtime_api::text_tools::{LinePager, LineWindow, NumberedPage};
+use cookie_agent_runtime_api::text_tools::{
+    LineCounter, LinePager, LineRequest, LineWindow, NumberedPage,
+};
 use sha2::{Digest, Sha256};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -606,6 +608,23 @@ impl ArtifactStore {
         })
     }
 
+    /// The lines of blob `digest`, as a page counts them.
+    pub(crate) fn count_lines(&self, digest: &str) -> std::io::Result<usize> {
+        self.read_verified_inner(digest, true, |file, verified| {
+            let mut counter = LineCounter::default();
+            read_verified_file(
+                file,
+                digest,
+                verified,
+                || Ok(()),
+                |chunk| {
+                    counter.push(chunk);
+                },
+            )?;
+            Ok(counter.lines())
+        })
+    }
+
     /// Runs `read` on a handle of blob `digest`, and keeps the handle for the
     /// next reader. `read` verifies the blob as it reads unless it is handed
     /// a stamp: the handle was verified when kept, and the file has not changed
@@ -1147,9 +1166,9 @@ impl cookie_agent_runtime_api::ToolArtifacts for ArtifactRouter {
         self: Arc<Self>,
         session: SessionId,
         target: cookie_agent_protocol::ArtifactReadTarget,
-        window: LineWindow,
+        request: LineRequest,
     ) -> Result<cookie_agent_runtime_api::ArtifactReadPage, crate::ToolError> {
-        super::read_artifact_async(self, session, target, window).await
+        super::read_artifact_async(self, session, target, request).await
     }
 
     async fn resolve_artifact(
@@ -1288,6 +1307,20 @@ impl ArtifactRouter {
         self.write_store(session)?.create_capture_file(name)
     }
 
+    /// Opens the capture file `name` for reading, while its writer still
+    /// appends to it.
+    pub(crate) fn open_capture_file(
+        &self,
+        session: SessionId,
+        name: &str,
+    ) -> std::io::Result<File> {
+        self.write_store(session)?
+            .open_existing(name)?
+            .ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::NotFound, "capture file missing")
+            })
+    }
+
     pub(crate) fn commit_capture(
         &self,
         session: SessionId,
@@ -1360,6 +1393,17 @@ impl ArtifactRouter {
     ) -> std::io::Result<NumberedPage> {
         match self.read_store(session)? {
             Some(store) => store.read_numbered(digest, window, budget),
+            None => Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "artifact missing",
+            )),
+        }
+    }
+
+    /// The lines of blob `digest` of `session`'s tree.
+    pub(crate) fn count_lines(&self, session: SessionId, digest: &str) -> std::io::Result<usize> {
+        match self.read_store(session)? {
+            Some(store) => store.count_lines(digest),
             None => Err(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
                 "artifact missing",

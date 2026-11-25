@@ -489,11 +489,15 @@ fn built_in_tool_schemas_keep_one_shape() {
             if schema.get("description").and_then(Value::as_str).is_none() {
                 faults.push(format!("{name}: `{argument}` has no description"));
             }
-            if matches!(argument.as_str(), "offset" | "limit")
+            if argument == "limit"
                 && name != "tool_search"
                 && schema.get("minimum").and_then(Value::as_u64) != Some(1)
             {
                 faults.push(format!("{name}: `{argument}` is not at least 1"));
+            }
+            // A line `offset` counts back from the end when negative.
+            if argument == "offset" && name != "tool_search" && schema.get("minimum").is_some() {
+                faults.push(format!("{name}: `{argument}` refuses negative offsets"));
             }
         }
         let mut objects = Vec::new();

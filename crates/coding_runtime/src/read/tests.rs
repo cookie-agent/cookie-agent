@@ -202,7 +202,7 @@ async fn offsets_are_one_based_and_checked_before_approval() {
     for (arguments, message) in [
         (
             serde_json::json!({"path":"value.txt","offset":0}),
-            "offset is 1-based: the first line is offset=1",
+            "offset is 1-based: the first line is offset=1, and offset=-1 the last",
         ),
         (
             serde_json::json!({"path":"value.txt","limit":0}),
@@ -335,7 +335,7 @@ fn schema_documents_one_based_offset_and_limit_default() {
         .parameters;
     assert_eq!(
         parameters["properties"]["offset"]["description"],
-        "The 1-based line, or directory entry, to start at. Defaults to 1."
+        "The 1-based line, or directory entry, to start at; a negative one counts back from the end, so -50 starts at the 50th line from the end. Defaults to 1."
     );
     assert_eq!(
         parameters["properties"]["limit"]["description"],

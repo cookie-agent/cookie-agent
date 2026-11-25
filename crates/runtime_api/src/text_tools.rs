@@ -97,6 +97,135 @@ impl LineWindow {
     }
 }
 
+/// The page a call asks for, as its `offset` and `limit` give it: from the
+/// 1-based line `offset`, or, for a negative `offset`, from that many lines
+/// before the end (`-50` starts at the 50th line from the end). A request
+/// becomes a [`LineWindow`] once the text's lines are counted, which only a
+/// request from the end needs.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct LineRequest {
+    offset: i64,
+    limit: usize,
+}
+
+impl LineRequest {
+    /// The request a call's `offset` and `limit` give, from line 1 and
+    /// [`DEFAULT_LIMIT`] lines when they are left out. An `offset` of 0 and
+    /// a `limit` of 0 are refused.
+    pub fn new(offset: Option<i64>, limit: Option<usize>) -> Result<Self, ToolError> {
+        let offset = offset.unwrap_or(1);
+        if offset == 0 {
+            return Err(ToolError::execution(
+                "offset is 1-based: the first line is offset=1, and offset=-1 the last",
+            ));
+        }
+        let limit = limit.unwrap_or(DEFAULT_LIMIT);
+        if limit == 0 {
+            return Err(ToolError::execution("limit must be positive"));
+        }
+        Ok(Self { offset, limit })
+    }
+
+    /// The `offset` as the call gave it.
+    #[must_use]
+    pub const fn offset(&self) -> i64 {
+        self.offset
+    }
+
+    /// The most lines the page holds; positive.
+    #[must_use]
+    pub const fn limit(&self) -> usize {
+        self.limit
+    }
+
+    /// The window of a request from the start, which needs no count;
+    /// `None` for a request from the end.
+    #[must_use]
+    pub fn from_start(&self) -> Option<LineWindow> {
+        (self.offset > 0).then(|| LineWindow {
+            offset: usize::try_from(self.offset).unwrap_or(usize::MAX),
+            limit: self.limit,
+        })
+    }
+
+    /// The window of this request over `total` lines. A request from the
+    /// end that reaches back past the first line starts at line 1.
+    #[must_use]
+    pub fn resolve(&self, total: usize) -> LineWindow {
+        self.from_start().unwrap_or_else(|| {
+            let back = usize::try_from(self.offset.unsigned_abs()).unwrap_or(usize::MAX);
+            LineWindow {
+                offset: total.saturating_sub(back).saturating_add(1),
+                limit: self.limit,
+            }
+        })
+    }
+
+    /// The window of this request, counting the lines with `count` only
+    /// when the request is from the end.
+    pub fn resolve_with<E>(
+        &self,
+        count: impl FnOnce() -> Result<usize, E>,
+    ) -> Result<LineWindow, E> {
+        match self.from_start() {
+            Some(window) => Ok(window),
+            None => Ok(self.resolve(count()?)),
+        }
+    }
+
+    /// The window of this request over `text`.
+    #[must_use]
+    pub fn resolve_text(&self, text: &str) -> LineWindow {
+        self.from_start()
+            .unwrap_or_else(|| self.resolve(count_lines(text.as_bytes())))
+    }
+}
+
+/// The lines of `text` as a page counts them: one per newline, and one
+/// more for bytes after the last.
+#[must_use]
+pub fn count_lines(text: &[u8]) -> usize {
+    memchr::memchr_iter(b'\n', text).count() + usize::from(text.last().is_some_and(|&b| b != b'\n'))
+}
+
+/// Counts lines of text fed in chunks of any size, as [`count_lines`]
+/// counts them.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct LineCounter {
+    newlines: usize,
+    partial: bool,
+}
+
+impl LineCounter {
+    /// Feeds the next bytes of the text.
+    pub fn push(&mut self, chunk: &[u8]) {
+        if let Some(&last) = chunk.last() {
+            self.newlines += memchr::memchr_iter(b'\n', chunk).count();
+            self.partial = last != b'\n';
+        }
+    }
+
+    /// The lines of everything fed.
+    #[must_use]
+    pub const fn lines(&self) -> usize {
+        self.newlines + self.partial as usize
+    }
+}
+
+/// The lines of everything `reader` holds, as [`count_lines`] counts them.
+pub fn count_reader_lines(reader: &mut impl BufRead) -> std::io::Result<usize> {
+    let mut counter = LineCounter::default();
+    loop {
+        let chunk = reader.fill_buf()?;
+        if chunk.is_empty() {
+            return Ok(counter.lines());
+        }
+        counter.push(chunk);
+        let consumed = chunk.len();
+        reader.consume(consumed);
+    }
+}
+
 /// `count` followed by `noun` (`line`, `entry`, `byte`, ...), plural unless
 /// `count` is 1.
 #[must_use]

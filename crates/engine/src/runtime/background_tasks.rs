@@ -13,7 +13,7 @@
 //! execution without a report, and so does engine shutdown.
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
     future::Future,
     pin::Pin,
     sync::Mutex,
@@ -40,9 +40,15 @@ const COMPLETION_KEY: &str = "background-completion";
 /// How long a stopped call gets to end before its execution is dropped.
 const STOP_CLEANUP_TIMEOUT: Duration = Duration::from_secs(2);
 
+/// How many ended background calls stay readable by job ID, newest kept.
+const FINISHED_JOBS_KEPT: usize = 64;
+
 /// Live background calls, keyed by the tool call they came from.
 pub(crate) struct BackgroundTaskState {
     jobs: Mutex<HashMap<ToolCallId, Job>>,
+    /// Background calls that ended with their output stored, newest last,
+    /// so their job IDs still read.
+    finished: Mutex<VecDeque<FinishedJob>>,
     /// The sessions whose background calls changed.
     changes: tokio::sync::broadcast::Sender<SessionId>,
 }
@@ -51,6 +57,7 @@ impl Default for BackgroundTaskState {
     fn default() -> Self {
         Self {
             jobs: Mutex::default(),
+            finished: Mutex::default(),
             changes: tokio::sync::broadcast::channel(64).0,
         }
     }
@@ -115,6 +122,50 @@ struct Job {
     ended: CancellationToken,
     /// Released once the immediate result commits as completed.
     arm: Option<oneshot::Sender<()>>,
+    /// The call's output, readable by job ID while it runs.
+    capture: Option<OutputCapture>,
+}
+
+/// A background call that ended, kept so its job ID still reads.
+struct FinishedJob {
+    session: SessionId,
+    job: String,
+    tool: String,
+    display: Option<String>,
+    started_at: jiff::Timestamp,
+    ended_at: jiff::Timestamp,
+    status: &'static str,
+    capture: OutputCapture,
+}
+
+/// What `read_artifact` returns for a background call's job ID.
+pub(crate) struct JobRead {
+    pub(crate) output: String,
+    /// Whether the call is still running.
+    pub(crate) running: bool,
+    /// The page read, when the read named a stream or a window rather
+    /// than asking for the snapshot.
+    pub(crate) page: Option<cookie_agent_runtime_api::text_tools::NumberedPage>,
+}
+
+/// Whether `name` has the shape of a job ID, `job_<8 hex>`.
+pub(crate) fn is_job_id(name: &str) -> bool {
+    name.strip_prefix("job_").is_some_and(|hex| {
+        hex.len() == 8
+            && hex
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    })
+}
+
+/// `seconds` as a short duration: `45s`, `12m 04s`, `3h 02m`.
+fn duration_text(seconds: i64) -> String {
+    let seconds = seconds.max(0);
+    match seconds {
+        0..60 => format!("{seconds}s"),
+        60..3_600 => format!("{}m {:02}s", seconds / 60, seconds % 60),
+        _ => format!("{}h {:02}m", seconds / 3_600, seconds % 3_600 / 60),
+    }
 }
 
 /// The job ID of the background call that came from `tool_call_id`.
@@ -181,10 +232,12 @@ impl Engine {
                     stopped_by: None,
                     ended: ended.clone(),
                     arm: Some(arm_sender),
+                    capture: call.capture.clone(),
                 },
             );
         self.notify_background_changed(call.session);
-        let immediate = immediate_result(&job, call.by, call.note.as_deref());
+        let immediate =
+            immediate_result(&job, call.by, call.note.as_deref(), call.capture.is_some());
         let runtime = self
             .inner
             .runtime
@@ -226,6 +279,7 @@ impl Engine {
             tool_call_id,
             tool,
             display,
+            started_at,
             mut execution,
             mut progress,
             capture,
@@ -304,6 +358,30 @@ impl Engine {
         } else {
             status
         };
+        if let Some(capture) = capture
+            .as_ref()
+            .filter(|capture| capture.finished().is_some())
+        {
+            let mut finished = self
+                .inner
+                .background
+                .finished
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            if finished.len() == FINISHED_JOBS_KEPT {
+                finished.pop_front();
+            }
+            finished.push_back(FinishedJob {
+                session,
+                job: job.clone(),
+                tool: tool.clone(),
+                display: display.clone(),
+                started_at,
+                ended_at: jiff::Timestamp::now(),
+                status,
+                capture: capture.clone(),
+            });
+        }
         let body = render_background_result(
             &job,
             &tool,
@@ -500,6 +578,153 @@ impl Engine {
         self.inner.background.changes.subscribe()
     }
 
+    /// Reads the output of background call `job` of `session`'s tree, as
+    /// `read_artifact` does given a job ID: with neither `stream` nor
+    /// `request`, a snapshot rendered as the call's result would be if it
+    /// ended now; otherwise a page of one stream. A call stays readable
+    /// while it runs and, once it ends with its output stored, among the
+    /// last [`FINISHED_JOBS_KEPT`] that ended, until the daemon restarts.
+    pub(crate) async fn read_job(
+        &self,
+        session: SessionId,
+        job: &str,
+        stream: Option<String>,
+        request: Option<cookie_agent_runtime_api::text_tools::LineRequest>,
+    ) -> Result<JobRead, ToolError> {
+        let root = self
+            .session_root(session)
+            .map_err(|error| ToolError::execution(error.to_string()))?;
+        let same_tree = |owner: SessionId| {
+            self.session_root(owner)
+                .is_ok_and(|owner_root| owner_root == root)
+        };
+        let running = self
+            .inner
+            .background
+            .jobs
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .values()
+            .filter(|candidate| candidate.job == job)
+            .filter_map(|candidate| {
+                Some((
+                    candidate.session,
+                    candidate.capture.clone()?,
+                    candidate.tool.clone(),
+                    candidate.display.clone(),
+                    candidate.started_at,
+                ))
+            })
+            .collect::<Vec<_>>();
+        let found = running
+            .into_iter()
+            .find(|(owner, ..)| same_tree(*owner))
+            .map(|(_, capture, tool, display, started_at)| {
+                (capture, tool, display, started_at, None)
+            });
+        let found = match found {
+            Some(found) => Some(found),
+            None => {
+                let finished = self
+                    .inner
+                    .background
+                    .finished
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .iter()
+                    .rev()
+                    .filter(|candidate| candidate.job == job)
+                    .map(|candidate| {
+                        (
+                            candidate.session,
+                            candidate.capture.clone(),
+                            candidate.tool.clone(),
+                            candidate.display.clone(),
+                            candidate.started_at,
+                            Some((candidate.ended_at, candidate.status)),
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                finished
+                    .into_iter()
+                    .find(|(owner, ..)| same_tree(*owner))
+                    .map(|(_, capture, tool, display, started_at, ended)| {
+                        (capture, tool, display, started_at, ended)
+                    })
+            }
+        };
+        let Some((capture, tool, display, started_at, ended)) = found else {
+            return Err(ToolError::execution(format!(
+                "no background call `{job}` in this session tree to read: a call reads by its \
+                 job ID while it runs and for a while after it ends, until the daemon \
+                 restarts; after that, read the artifact its <background_result> names"
+            )));
+        };
+        let what = match display.as_deref().filter(|display| !display.is_empty()) {
+            Some(display) => format!("{tool} `{}`", display.replace('\n', " ")),
+            None => tool,
+        };
+        if stream.is_none() && request.is_none() {
+            let now = jiff::Timestamp::now();
+            let state = match ended {
+                Some((ended_at, status)) => format!(
+                    "{status} after {}",
+                    duration_text(ended_at.as_second() - started_at.as_second())
+                ),
+                // A call can end between the lookup and the snapshot.
+                None if capture.finished().is_some() => "ended".to_owned(),
+                None => format!(
+                    "running for {}",
+                    duration_text(now.as_second() - started_at.as_second())
+                ),
+            };
+            let running = state.starts_with("running");
+            let body = capture.snapshot(job);
+            let body = if body.trim().is_empty() {
+                if running {
+                    "(no output yet)"
+                } else {
+                    "(no output)"
+                }
+                .to_owned()
+            } else {
+                body
+            };
+            return Ok(JobRead {
+                output: format!("[job {job}: {what}; {state}]\n\n{body}"),
+                running,
+                page: None,
+            });
+        }
+        let request = match request {
+            Some(request) => request,
+            None => cookie_agent_runtime_api::text_tools::LineRequest::new(None, None)?,
+        };
+        let label = match &stream {
+            Some(stream) => format!("job {job}/{stream}"),
+            None => format!("job {job}"),
+        };
+        let read = super::blocking_io::run(move || {
+            capture.read_page_blocking(stream.as_deref(), request, &label)
+        })
+        .await??;
+        let mut output = read.page.text_with_continuation();
+        if !read.finished {
+            if !output.is_empty() && !output.ends_with('\n') {
+                output.push('\n');
+            }
+            output.push_str(&format!(
+                "[job {job} is still running: {} so far]",
+                cookie_agent_runtime_api::text_tools::counted(read.page.total_lines, "line")
+            ));
+        }
+        Ok(JobRead {
+            output,
+            running: !read.finished,
+            page: Some(read.page),
+        })
+    }
+
     /// Stops the background call `job` of `session` as the user; see
     /// `stop_background`.
     pub async fn stop_background_as_user(
@@ -622,16 +847,27 @@ fn tool_authority(tool_call_id: ToolCallId) -> ProducerAuthority {
 }
 
 /// The result committed for a call when it is detached.
-fn immediate_result(job: &str, by: BackgroundActor, note: Option<&str>) -> PersistedToolResult {
+fn immediate_result(
+    job: &str,
+    by: BackgroundActor,
+    note: Option<&str>,
+    readable: bool,
+) -> PersistedToolResult {
     let lead = match by {
         BackgroundActor::Model => format!("Started in the background as job {job}."),
         BackgroundActor::User => format!(
             "User manually moved this call to the background; it is still running as job {job}."
         ),
     };
+    let read = if readable {
+        format!(" Read its output so far with `read_artifact(artifact=\"{job}\")`.")
+    } else {
+        String::new()
+    };
     let mut output = format!(
         "{lead} You will get a <background_result job=\"{job}\"> with its result when it \
-         finishes; do not wait for it or run it again. Stop it with `stop_background(job=\"{job}\")`."
+         finishes; do not wait for it or run it again.{read} Stop it with \
+         `stop_background(job=\"{job}\")`."
     );
     if let Some(note) = note.filter(|note| !note.trim().is_empty()) {
         output.push('\n');
@@ -907,7 +1143,12 @@ mod tests {
 
     #[test]
     fn immediate_results_say_who_moved_the_call_and_keep_the_note() {
-        let model = immediate_result("job_1a2b3c4d", BackgroundActor::Model, Some("Process 42"));
+        let model = immediate_result(
+            "job_1a2b3c4d",
+            BackgroundActor::Model,
+            Some("Process 42"),
+            true,
+        );
         assert!(
             model
                 .output
@@ -926,7 +1167,7 @@ mod tests {
                 job: Some("job_1a2b3c4d".into()),
             })
         );
-        let user = immediate_result("job_1a2b3c4d", BackgroundActor::User, None);
+        let user = immediate_result("job_1a2b3c4d", BackgroundActor::User, None, true);
         assert!(
             user.output
                 .starts_with("User manually moved this call to the background")

@@ -1,7 +1,7 @@
 use std::{
     collections::{HashMap, VecDeque},
     fs::File,
-    io::{Seek, SeekFrom, Write},
+    io::{Read, Seek, SeekFrom, Write},
     sync::{Arc, Mutex},
 };
 
@@ -89,6 +89,88 @@ struct State {
     accepted_deltas: bool,
     finalized: bool,
     error: Option<String>,
+    /// What the capture published, once it finalized successfully.
+    finished: Option<Arc<FinishedOutput>>,
+}
+
+/// A finalized capture's output, kept so a background call's job ID can
+/// still be read after the call ends.
+#[derive(Debug)]
+pub(crate) struct FinishedOutput {
+    /// The output the call's result holds.
+    pub(crate) rendered: String,
+    /// The digest reads name: the single output's artifact, or the
+    /// named streams' manifest; `None` when nothing was stored.
+    digest: Option<String>,
+    /// Each channel's whole text, when its preview held all of it and it
+    /// has no artifact.
+    whole: Vec<Option<String>>,
+}
+
+/// A page of a capture's output, read while the call runs or after.
+#[derive(Debug)]
+pub(crate) struct CapturePage {
+    pub(crate) page: cookie_agent_runtime_api::text_tools::NumberedPage,
+    /// Whether the output is final: the call has ended.
+    pub(crate) finished: bool,
+}
+
+/// Where a read of a capture's stream finds its content.
+enum LiveSource {
+    /// The preview, which holds all of it so far.
+    Text(String),
+    /// The spill file's first `written` bytes, then what is still to be
+    /// written, and what closing an overflowed stream would add.
+    Spilled {
+        file: Option<(File, u64)>,
+        rest: Vec<u8>,
+    },
+    Finished(Arc<FinishedOutput>),
+}
+
+/// One stream's preview as a result renders it.
+struct Section<'a> {
+    name: Option<&'a str>,
+    head: &'a str,
+    tail: &'a str,
+    /// Where to read what the preview leaves out; `None` when the preview
+    /// holds all of it.
+    read_more: Option<String>,
+    newlines: u64,
+    bytes: u64,
+}
+
+/// The output of `sections` as a result shows it: each named stream under
+/// its `[name]` heading, its preview cut by a marker naming what was left
+/// out and how to read it.
+fn render_sections<'a>(sections: impl IntoIterator<Item = Section<'a>>) -> String {
+    let mut rendered = String::new();
+    for section in sections {
+        if let Some(name) = section.name {
+            // One blank line between sections, however the last one ended.
+            if !rendered.is_empty() {
+                rendered.push_str(if rendered.ends_with('\n') {
+                    "\n"
+                } else {
+                    "\n\n"
+                });
+            }
+            rendered.push_str(&format!("[{name}]\n"));
+        }
+        let Some(read_more) = section.read_more else {
+            rendered.push_str(section.head);
+            continue;
+        };
+        rendered.push_str(&preview::render(
+            section.head,
+            &preview::marker(
+                &preview::omitted(section.newlines, section.bytes, section.head, section.tail),
+                &read_more,
+            ),
+            section.tail,
+        ));
+    }
+    rendered
 }
 
 #[derive(Debug, Default)]
@@ -180,6 +262,220 @@ impl OutputCapture {
         publication.guard.take();
     }
 
+    /// What the capture published, once it finalized successfully.
+    pub(crate) fn finished(&self) -> Option<Arc<FinishedOutput>> {
+        self.0
+            .state
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .finished
+            .clone()
+    }
+
+    /// The output so far, rendered as the call's result would render it if
+    /// the call ended now, with read hints that name `job`; once the call
+    /// has ended, the output its result holds.
+    pub(crate) fn snapshot(&self, job: &str) -> String {
+        let state = self.0.state.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(finished) = &state.finished {
+            return finished.rendered.clone();
+        }
+        let limits = self.0.limits;
+        let previews = state
+            .channels
+            .iter()
+            .map(|channel| {
+                if channel.preview.len() as u64 == channel.bytes {
+                    (channel.preview.as_str(), "")
+                } else {
+                    preview::split(
+                        &channel.preview,
+                        &channel.tail,
+                        channel.tail.len() as u64 == channel.bytes,
+                        channel.bytes,
+                        limits,
+                    )
+                }
+            })
+            .collect::<Vec<_>>();
+        render_sections(
+            state
+                .channels
+                .iter()
+                .zip(&previews)
+                .map(|(channel, &(head, tail))| {
+                    let truncated = channel.preview.len() as u64 != channel.bytes;
+                    Section {
+                        name: channel.name.as_deref(),
+                        head,
+                        tail,
+                        read_more: truncated.then(|| {
+                            let mut hint = format!("`read_artifact(artifact=\"{job}\"");
+                            if let Some(name) = &channel.name {
+                                hint.push_str(&format!(", stream=\"{name}\""));
+                            }
+                            hint.push_str(&format!(", offset={})`", preview::newlines(head) + 1));
+                            if channel.overflowed > 0 {
+                                hint.push_str(&format!(
+                                    "; past the {} capture limit only the last {} is kept",
+                                    byte_size(self.0.retain_limit),
+                                    byte_size(self.0.dropped_tail as u64)
+                                ));
+                            }
+                            hint
+                        }),
+                        newlines: channel.newlines,
+                        bytes: channel.bytes,
+                    }
+                }),
+        )
+    }
+
+    /// The declared stream names, in order; `None` for single output.
+    pub(crate) fn stream_names(&self) -> Vec<Option<String>> {
+        self.0.declaration.channels()
+    }
+
+    /// A page of `stream`'s output (`None` for single output): what it
+    /// holds so far while the call runs, its published output once the
+    /// call has ended. Blocks on file reads.
+    pub(crate) fn read_page_blocking(
+        &self,
+        stream: Option<&str>,
+        request: cookie_agent_runtime_api::text_tools::LineRequest,
+        label: &str,
+    ) -> Result<CapturePage, ToolError> {
+        use cookie_agent_runtime_api::text_tools::{self, MAX_PAGE_BYTES};
+
+        let names = self.stream_names();
+        let Some(index) = names.iter().position(|name| name.as_deref() == stream) else {
+            let declared = names.iter().flatten().cloned().collect::<Vec<_>>();
+            return Err(ToolError::execution(match stream {
+                Some(stream) if declared.is_empty() => {
+                    format!("{label} has a single output: leave out `stream` (not {stream})")
+                }
+                Some(stream) => format!(
+                    "{label} has no stream {stream}; its streams are {}",
+                    declared.join(", ")
+                ),
+                None => format!("name a stream of {label}: {}", declared.join(", ")),
+            }));
+        };
+        let finished = || CapturePage {
+            page: text_tools::NumberedPage {
+                text: String::new(),
+                start_line: 1,
+                excerpt: Vec::new(),
+                excerpt_omitted: 0,
+                total_lines: 0,
+                next_offset: None,
+                cut: false,
+            },
+            finished: true,
+        };
+        // What the read needs is taken under the lock; the file is read after.
+        let source = {
+            let state = self.0.state.lock().unwrap_or_else(|p| p.into_inner());
+            if let Some(output) = state.finished.clone() {
+                LiveSource::Finished(output)
+            } else if state.finalized {
+                return Err(ToolError::execution(format!(
+                    "the output of {label} could not be stored"
+                )));
+            } else {
+                let channel = &state.channels[index];
+                if channel.preview.len() as u64 == channel.bytes {
+                    LiveSource::Text(channel.preview.clone())
+                } else {
+                    let file = match &channel.file {
+                        Some(_) => Some((
+                            self.0
+                                .store
+                                .open_capture_file(self.session(), &channel.temporary)
+                                .map_err(|e| ToolError::execution(e.to_string()))?,
+                            channel.written,
+                        )),
+                        None => None,
+                    };
+                    let mut rest = channel.pending.clone();
+                    if let Some((_, closing)) = self.overflow_closing(channel) {
+                        rest.extend_from_slice(closing.as_bytes());
+                    }
+                    LiveSource::Spilled { file, rest }
+                }
+            }
+        };
+        let page = match source {
+            LiveSource::Text(text) => CapturePage {
+                page: text_tools::page_text(&text, request.resolve_text(&text), MAX_PAGE_BYTES),
+                finished: false,
+            },
+            LiveSource::Spilled { mut file, rest } => {
+                let mut feed = |sink: &mut dyn FnMut(&[u8])| -> std::io::Result<()> {
+                    if let Some((file, written)) = &mut file {
+                        use std::io::Read as _;
+                        file.seek(SeekFrom::Start(0))?;
+                        let mut reader = std::io::BufReader::new(Read::by_ref(file).take(*written));
+                        loop {
+                            let chunk = std::io::BufRead::fill_buf(&mut reader)?;
+                            if chunk.is_empty() {
+                                break;
+                            }
+                            sink(chunk);
+                            let consumed = chunk.len();
+                            std::io::BufRead::consume(&mut reader, consumed);
+                        }
+                    }
+                    sink(&rest);
+                    Ok(())
+                };
+                let read = |error: std::io::Error| ToolError::execution(error.to_string());
+                let window = request
+                    .resolve_with(|| {
+                        let mut counter = text_tools::LineCounter::default();
+                        feed(&mut |chunk| counter.push(chunk)).map(|()| counter.lines())
+                    })
+                    .map_err(read)?;
+                let mut pager = text_tools::LinePager::new(window, MAX_PAGE_BYTES).lossy();
+                feed(&mut |chunk| {
+                    pager.push(chunk).expect("a lossy pager takes any bytes");
+                })
+                .map_err(read)?;
+                CapturePage {
+                    page: pager.finish().expect("a lossy pager takes any bytes"),
+                    finished: false,
+                }
+            }
+            LiveSource::Finished(output) => {
+                if let Some(text) = &output.whole[index] {
+                    let mut page = finished();
+                    page.page =
+                        text_tools::page_text(text, request.resolve_text(text), MAX_PAGE_BYTES);
+                    page
+                } else {
+                    let Some(digest) = &output.digest else {
+                        return Err(ToolError::execution(format!(
+                            "the output of {label} could not be stored"
+                        )));
+                    };
+                    let target =
+                        ArtifactReadTarget::parse(digest, stream).map_err(ToolError::execution)?;
+                    let mut page = finished();
+                    page.page = super::artifacts::reads::read_artifact(
+                        &self.0.store,
+                        self.session(),
+                        &target,
+                        request,
+                    )?
+                    .page;
+                    return Ok(page);
+                }
+            }
+        };
+        page.page.check_in_range(label)?;
+        Ok(page)
+    }
+
     /// A capture whose previews keep half of the lines from each end.
     #[cfg(any(test, feature = "test-support"))]
     pub(crate) async fn new(
@@ -228,6 +524,7 @@ impl OutputCapture {
                 accepted_deltas: false,
                 finalized: false,
                 error: None,
+                finished: None,
             }),
             operations: Arc::new(tokio::sync::Semaphore::new(1)),
             publication: Mutex::new(Publication::default()),
@@ -461,8 +758,19 @@ impl OutputCapture {
     /// Ends an overflowed stream's artifact: a marker line saying how much
     /// was dropped, then the kept tail from its first whole line.
     fn close_overflow(&self, channel: &mut Channel) {
+        if let Some((dropped, closing)) = self.overflow_closing(channel) {
+            channel.dropped = dropped;
+            channel.pending.extend_from_slice(closing.as_bytes());
+            channel.overflow = String::new();
+        }
+    }
+
+    /// What closing an overflowed stream appends to its artifact (the
+    /// marker line and the kept tail), and the bytes it drops; `None` for
+    /// a stream within the retain limit.
+    fn overflow_closing(&self, channel: &Channel) -> Option<(u64, String)> {
         if channel.overflowed == 0 {
-            return;
+            return None;
         }
         let mut start = channel.overflow.len().saturating_sub(self.0.dropped_tail);
         while !channel.overflow.is_char_boundary(start) {
@@ -480,7 +788,7 @@ impl OutputCapture {
             start += newline + 1;
         }
         let tail = &channel.overflow[start..];
-        channel.dropped = channel.overflowed - tail.len() as u64;
+        let dropped = channel.overflowed - tail.len() as u64;
         let marker = format!(
             "{}[… {} bytes not retained: the output passed the {} capture limit]\n",
             if channel.retained_ends_with_newline {
@@ -488,12 +796,10 @@ impl OutputCapture {
             } else {
                 "\n"
             },
-            channel.dropped,
+            dropped,
             byte_size(self.0.retain_limit),
         );
-        channel.pending.extend_from_slice(marker.as_bytes());
-        channel.pending.extend_from_slice(tail.as_bytes());
-        channel.overflow = String::new();
+        Some((dropped, marker + tail))
     }
 
     /// Writes out every channel holding at least `threshold` buffered bytes.
@@ -714,48 +1020,40 @@ impl OutputCapture {
         } else {
             (None, None)
         };
-        let mut rendered = String::new();
+        let mut sections = Vec::new();
         for ((channel, stream), &(head, tail)) in state.channels.iter().zip(&streams).zip(&previews)
         {
-            if let Some(name) = &channel.name {
-                // One blank line between sections, however the last one ended.
-                if !rendered.is_empty() {
-                    rendered.push_str(if rendered.ends_with('\n') {
-                        "\n"
-                    } else {
-                        "\n\n"
-                    });
-                }
-                rendered.push_str(&format!("[{name}]\n"));
-            }
-            let Some(offset) = stream.next_offset else {
-                rendered.push_str(head);
-                continue;
+            let read_more = match stream.next_offset {
+                None => None,
+                Some(offset) => Some({
+                    let mut read_more = match (&digest, &stream.reference) {
+                        (Some(digest), Some(_)) => {
+                            ArtifactReadTarget::parse(digest, stream.name.as_deref())
+                                .map_err(ToolError::execution)?
+                                .read_hint(Some(offset))
+                        }
+                        _ => "unavailable, the output could not be stored".to_owned(),
+                    };
+                    if channel.dropped > 0 {
+                        read_more.push_str(&format!(
+                            "; {} bytes past the {} capture limit were not retained",
+                            channel.dropped,
+                            byte_size(self.0.retain_limit)
+                        ));
+                    }
+                    read_more
+                }),
             };
-            let mut read_more = match (&digest, &stream.reference) {
-                (Some(digest), Some(_)) => {
-                    ArtifactReadTarget::parse(digest, stream.name.as_deref())
-                        .map_err(ToolError::execution)?
-                        .read_hint(Some(offset))
-                }
-                _ => "unavailable, the output could not be stored".to_owned(),
-            };
-            if channel.dropped > 0 {
-                read_more.push_str(&format!(
-                    "; {} bytes past the {} capture limit were not retained",
-                    channel.dropped,
-                    byte_size(self.0.retain_limit)
-                ));
-            }
-            rendered.push_str(&preview::render(
+            sections.push(Section {
+                name: channel.name.as_deref(),
                 head,
-                &preview::marker(
-                    &preview::omitted(channel.newlines, channel.bytes, head, tail),
-                    &read_more,
-                ),
                 tail,
-            ));
+                read_more,
+                newlines: channel.newlines,
+                bytes: channel.bytes,
+            });
         }
+        let rendered = render_sections(sections);
         completion.result.output = rendered;
         if let Some(full) = full {
             name_full_output(&mut completion.result.display, &full);
@@ -769,6 +1067,34 @@ impl OutputCapture {
             .result
             .validate()
             .map_err(|e| ToolError::execution(e.to_string()))?;
+        let whole = state
+            .channels
+            .iter()
+            .zip(
+                &completion
+                    .result
+                    .retained_output
+                    .as_ref()
+                    .expect("set above")
+                    .streams,
+            )
+            .map(|(channel, stream)| (!stream.truncated).then(|| channel.preview.clone()))
+            .collect();
+        state.finished = Some(Arc::new(FinishedOutput {
+            rendered: completion.result.output.clone(),
+            digest: digest.clone(),
+            whole,
+        }));
+        // A finished capture serves reads from what it published; its
+        // buffers are no longer needed.
+        for channel in &mut state.channels {
+            channel.preview = String::new();
+            channel.tail = String::new();
+            channel.overflow = String::new();
+            channel.pending = Vec::new();
+            channel.file = None;
+        }
+        drop(state);
         let mut pending = self.0.publication.lock().unwrap_or_else(|p| p.into_inner());
         if !pending.released {
             pending.guard = Some(publication);

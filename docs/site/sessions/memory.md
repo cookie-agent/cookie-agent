@@ -254,7 +254,8 @@ the rubric, which says:
 The memory tools read and change memories the way the file tools read and
 change files ([Memory tools](../reference/tools.md#memory-tools)).
 `memory_read` returns the memory's metadata, then its body as lines numbered
-from 1, a page at a time: `offset` is the 1-based body line to start at and
+from 1, a page at a time: `offset` is the 1-based body line to start at (a
+negative one counts back from the end, so `-20` reads the last 20) and
 `limit` the most lines (2000 by default), and a page that leaves lines out
 ends with the `offset` to read next. `memory_edit` takes `old_string` and
 `new_string`, like `edit`, but matches the body only and has no `replace_all`.

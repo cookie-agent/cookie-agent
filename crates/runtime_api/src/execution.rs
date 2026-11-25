@@ -16,7 +16,7 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     ToolError, ToolOrigin, WorkspaceContext,
     media::validate_attachment,
-    text_tools::{LineWindow, NumberedPage},
+    text_tools::{LineRequest, NumberedPage},
 };
 
 /// Immutable harness context captured for one tool preparation/execution batch:
@@ -98,10 +98,10 @@ impl ToolExecutionContext {
     pub async fn read_artifact(
         &self,
         target: ArtifactReadTarget,
-        window: LineWindow,
+        request: LineRequest,
     ) -> Result<ArtifactReadPage, ToolError> {
         Arc::clone(&self.artifacts)
-            .read_page(self.session, target, window)
+            .read_page(self.session, target, request)
             .await
     }
 
@@ -149,14 +149,14 @@ pub trait ToolArtifacts: std::fmt::Debug + Send + Sync {
         content: &[u8],
     ) -> Result<(ArtifactReference, String), ToolError>;
 
-    /// Reads the lines of `window` of an artifact, or of one stream of a
-    /// named-stream manifest, in `session`'s tree, numbered as `read`
+    /// Reads the lines `request` asks for of an artifact, or of one stream
+    /// of a named-stream manifest, in `session`'s tree, numbered as `read`
     /// numbers a file's ([`crate::text_tools`]).
     async fn read_page(
         self: Arc<Self>,
         session: SessionId,
         target: ArtifactReadTarget,
-        window: LineWindow,
+        request: LineRequest,
     ) -> Result<ArtifactReadPage, ToolError>;
 
     /// The digest of the one artifact of `session`'s tree that `artifact`

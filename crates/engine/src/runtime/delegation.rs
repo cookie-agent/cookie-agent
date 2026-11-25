@@ -2568,14 +2568,14 @@ impl Engine {
     /// Reports **session liveness**, not delegation lifecycle. A running
     /// (including queued/starting, or finished-then-woken) subagent reports
     /// "running"; once it ends, the result is the last assistant message of its
-    /// most recent turn, the lines of `window`, numbered from 1 as `read`
+    /// most recent turn, the lines `request` asks for, numbered from 1 as `read`
     /// numbers a file's.
     pub async fn get_subagent_result(
         &self,
         caller_session_id: SessionId,
         reference: impl std::fmt::Display,
         wait: bool,
-        window: cookie_agent_runtime_api::text_tools::LineWindow,
+        request: cookie_agent_runtime_api::text_tools::LineRequest,
         cancellation: CancellationToken,
     ) -> Result<ToolResult, EngineError> {
         let child_session_id = self.resolve_subagent_target(
@@ -2611,7 +2611,7 @@ impl Engine {
                     (child_session_id, child.meta.short_id.as_deref()),
                     session_status_name(child.status),
                     &text,
-                    window,
+                    request,
                 )
                 .map_err(|error| EngineError::ToolFailed(error.message()));
             }
@@ -2620,7 +2620,7 @@ impl Engine {
                     (child_session_id, child.meta.short_id.as_deref()),
                     "running",
                     "",
-                    window,
+                    request,
                 )
                 .map_err(|error| EngineError::ToolFailed(error.message()));
             }
@@ -3721,7 +3721,7 @@ const fn background_queue_limit_reached(limit: u32, queued: u32) -> bool {
     queued >= limit.saturating_mul(4)
 }
 
-/// The page `window` of a subagent's latest result `text`, numbered from 1
+/// The page `request` asks for of a subagent's latest result `text`, numbered from 1
 /// as `read` numbers a file's lines, with `read`'s line cut, page cap, and
 /// continuation marker. A running subagent has no result to page yet; for a
 /// finished one, a window past its last line is an error.
@@ -3729,13 +3729,13 @@ fn paginated_subagent_result(
     child: (SessionId, Option<&str>),
     status: &str,
     text: &str,
-    window: cookie_agent_runtime_api::text_tools::LineWindow,
+    request: cookie_agent_runtime_api::text_tools::LineRequest,
 ) -> Result<ToolResult, cookie_agent_runtime_api::ToolError> {
     use cookie_agent_runtime_api::text_tools;
     let mut output = format!("<status>{status}</status>\n<content>\n");
     let page = text_tools::page_text(
         text,
-        window,
+        request.resolve_text(text),
         text_tools::MAX_PAGE_BYTES.saturating_sub(output.len()),
     );
     if status != "running" {
@@ -3759,8 +3759,8 @@ fn paginated_subagent_result(
         title: safe_display("Read subagent result"),
         output,
         metadata: serde_json::json!({
-            "offset": window.offset,
-            "limit": window.limit,
+            "offset": page.start_line,
+            "limit": request.limit(),
             "total_lines": page.total_lines,
             "next_offset": page.next_offset,
         }),
@@ -4289,7 +4289,7 @@ second line
             })
         };
         let window = |offset, limit| {
-            cookie_agent_runtime_api::text_tools::LineWindow::new(Some(offset), Some(limit))
+            cookie_agent_runtime_api::text_tools::LineRequest::new(Some(offset), Some(limit))
                 .unwrap()
         };
         let page = paginated_subagent_result(

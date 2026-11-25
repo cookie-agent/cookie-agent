@@ -2446,9 +2446,12 @@ pub(crate) fn resume_sweep_test_request() -> cookie_agent_protocol::ApprovalRequ
 pub(crate) fn page_window(
     offset: usize,
     limit: usize,
-) -> cookie_agent_runtime_api::text_tools::LineWindow {
-    cookie_agent_runtime_api::text_tools::LineWindow::new(Some(offset), Some(limit))
-        .expect("a valid window")
+) -> cookie_agent_runtime_api::text_tools::LineRequest {
+    cookie_agent_runtime_api::text_tools::LineRequest::new(
+        Some(i64::try_from(offset).unwrap_or(i64::MAX)),
+        Some(limit),
+    )
+    .expect("a valid window")
 }
 
 /// An artifact page's lines without their numbers, each ending in a

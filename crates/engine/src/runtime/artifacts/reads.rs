@@ -5,7 +5,7 @@ use std::sync::Arc;
 use crate::runtime::{Engine, artifacts::ArtifactRouter, blocking_io};
 use cookie_agent_runtime_api::{
     ArtifactReadPage,
-    text_tools::{LineWindow, MAX_PAGE_BYTES},
+    text_tools::{LineRequest, MAX_PAGE_BYTES},
 };
 
 use crate::ToolError;
@@ -17,17 +17,17 @@ impl Engine {
     /// API blocks; async tool executors use
     /// [`crate::ToolExecutionContext::read_artifact`].
     ///
-    /// The page is the lines of `window`, numbered from 1 as `read` numbers
-    /// a file's ([`cookie_agent_runtime_api::text_tools`]).
+    /// The page is the lines `request` asks for, numbered from 1 as `read`
+    /// numbers a file's ([`cookie_agent_runtime_api::text_tools`]).
     pub fn read_artifact(
         &self,
         session: SessionId,
         artifact: &str,
         stream: Option<&str>,
-        window: LineWindow,
+        request: LineRequest,
     ) -> Result<ArtifactReadPage, ToolError> {
         let target = ArtifactReadTarget::parse(artifact, stream).map_err(ToolError::execution)?;
-        read_artifact(&self.inner.artifacts, session, &target, window)
+        read_artifact(&self.inner.artifacts, session, &target, request)
     }
 }
 
@@ -35,9 +35,12 @@ pub(crate) fn read_artifact(
     store: &ArtifactRouter,
     session: SessionId,
     target: &ArtifactReadTarget,
-    window: LineWindow,
+    request: LineRequest,
 ) -> Result<ArtifactReadPage, ToolError> {
     let (digest, source) = target_digest(store, session, target)?;
+    let window = request
+        .resolve_with(|| store.count_lines(session, digest.as_str()))
+        .map_err(read_error)?;
     let page = store
         .read_numbered(session, digest.as_str(), window, MAX_PAGE_BYTES)
         .map_err(read_error)?;
@@ -193,9 +196,9 @@ pub(crate) async fn read_artifact_async(
     store: Arc<ArtifactRouter>,
     session: SessionId,
     target: ArtifactReadTarget,
-    window: LineWindow,
+    request: LineRequest,
 ) -> Result<ArtifactReadPage, ToolError> {
-    blocking_io::run(move || read_artifact(&store, session, &target, window)).await?
+    blocking_io::run(move || read_artifact(&store, session, &target, request)).await?
 }
 
 fn read_error(error: std::io::Error) -> ToolError {
@@ -219,8 +222,8 @@ mod tests {
     }
 
     /// The first line.
-    fn line_one() -> LineWindow {
-        LineWindow::new(Some(1), Some(1)).unwrap()
+    fn line_one() -> LineRequest {
+        LineRequest::new(Some(1), Some(1)).unwrap()
     }
 
     #[tokio::test(flavor = "current_thread")]

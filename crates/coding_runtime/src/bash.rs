@@ -559,9 +559,9 @@ fn bash_tool_description() -> &'static str {
 /// The description sent on Windows, where commands run in Git Bash, or on Unix.
 pub fn bash_tool_description_for(windows: bool) -> &'static str {
     if windows {
-        "Run one Git Bash command in the working directory. Single-quote native Windows paths (for example, 'C:\\Users\\name\\file') or use C:/ paths. Long output is cut, and a `read_artifact` hint names the rest. The timeout applies in the background too: pass `timeout` 0 for commands that keep running, such as dev servers."
+        "Run one Git Bash command in the working directory. Single-quote native Windows paths (for example, 'C:\\Users\\name\\file') or use C:/ paths. Long output is cut, and a `read_artifact` hint names the rest. The timeout applies in the background too: pass `timeout` 0 for commands that keep running, such as dev servers. Many programs hold back output written to a pipe: run Python with `-u`, or a command under `stdbuf -oL`, to see its lines as they are printed."
     } else {
-        "Run one shell command in the working directory. Long output is cut, and a `read_artifact` hint names the rest. The timeout applies in the background too: pass `timeout` 0 for commands that keep running, such as dev servers."
+        "Run one shell command in the working directory. Long output is cut, and a `read_artifact` hint names the rest. The timeout applies in the background too: pass `timeout` 0 for commands that keep running, such as dev servers. Many programs hold back output written to a pipe: run Python with `-u`, or a command under `stdbuf -oL`, to see its lines as they are printed."
     }
 }
 

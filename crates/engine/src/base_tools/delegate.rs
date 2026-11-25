@@ -64,10 +64,10 @@ struct GetResultArgs {
     /// The session ID, such as `explore_1a2b3c4d`, or full UUID of one of
     /// your subagents.
     session_id: String,
-    /// The 1-based line of the result to start at. Defaults to 1.
+    /// The 1-based line of the result to start at; a negative one counts back from the end, so -50 starts at the 50th line from the end. Defaults to 1.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(range(min = 1), extend("default" = 1))]
-    offset: Option<u32>,
+    #[schemars(extend("default" = 1))]
+    offset: Option<i64>,
     /// The most lines to return. Defaults to 2000.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(range(min = 1), extend("default" = DEFAULT_RESULT_LIMIT))]
@@ -153,7 +153,7 @@ impl DelegateToolProvider {
             result_truncation: result_truncation_policy("get_subagent_result"),
             name: "get_subagent_result".into(),
             permission_name: Some("delegate".into()),
-            description: "Read the current status and latest result of a subagent you delegated, such as the full output a <subagent_report> cut short. This call returns immediately; it never waits. Name the subagent by its session ID, such as `explore_1a2b3c4d`. Only your own subagents are visible. The result comes back as numbered lines, `N: text`, counting from 1, as `read` returns a file: `offset` is the 1-based line to start at (default 1) and `limit` the most lines to return (default 2000); a line longer than 4 KiB is cut, and a page that leaves lines out ends with a note such as `[120 more lines; continue with offset=2001]`. A <subagent_report> cut short names the offset to continue from.".into(),
+            description: "Read the current status and latest result of a subagent you delegated, such as the full output a <subagent_report> cut short. This call returns immediately; it never waits. Name the subagent by its session ID, such as `explore_1a2b3c4d`. Only your own subagents are visible. The result comes back as numbered lines, `N: text`, counting from 1, as `read` returns a file: `offset` is the 1-based line to start at (default 1), or, when negative, how many lines before the end to start (-50 reads the last 50 lines), and `limit` the most lines to return (default 2000); a line longer than 4 KiB is cut, and a page that leaves lines out ends with a note such as `[120 more lines; continue with offset=2001]`. A <subagent_report> cut short names the offset to continue from.".into(),
             parameters: cookie_agent_runtime_api::authoring::schema::<GetResultArgs>(),
         },
     ]
@@ -445,12 +445,12 @@ impl ToolProvider for DelegateToolProvider {
             }
             "get_subagent_result" => {
                 let mut args = parse_result(&call.arguments)?;
-                let window = cookie_agent_runtime_api::text_tools::LineWindow::new(
-                    args.offset.map(|offset| offset as usize),
+                let request = cookie_agent_runtime_api::text_tools::LineRequest::new(
+                    args.offset,
                     Some(args.limit.unwrap_or(DEFAULT_RESULT_LIMIT) as usize),
                 )?;
-                args.offset = Some(window.offset as u32);
-                args.limit = Some(window.limit as u32);
+                args.offset = Some(args.offset.unwrap_or(1));
+                args.limit = Some(request.limit() as u32);
                 let target = self
                     .engine
                     .resolve_subagent_target(
@@ -548,10 +548,10 @@ impl PreparedExecutor for DelegateExecutor {
                         context.session,
                         &args.session_id,
                         false,
-                        cookie_agent_runtime_api::text_tools::LineWindow {
-                            offset: args.offset.expect("normalized result offset") as usize,
-                            limit: args.limit.expect("normalized result limit") as usize,
-                        },
+                        cookie_agent_runtime_api::text_tools::LineRequest::new(
+                            args.offset,
+                            args.limit.map(|limit| limit as usize),
+                        )?,
                         context.cancellation,
                     )
                     .await

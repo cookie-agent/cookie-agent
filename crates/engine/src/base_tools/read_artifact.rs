@@ -1,8 +1,11 @@
-//! `read_artifact`: pages through output the session tree retained.
+//! `read_artifact`: pages through output the session tree retained, and
+//! through the output of the tree's background calls by job ID, while they
+//! run and after (`docs/site/specs/live-tool-output.md`).
 //!
 //! A base-layer tool: it reads only artifacts stored in the calling session's
-//! own tree, so it needs no permission rule. It is always published and every
-//! call is allowed: the tool declares no permission.
+//! own tree, and only that tree's background calls, so it needs no permission
+//! rule. It is always published and every call is allowed: the tool declares
+//! no permission.
 
 use async_trait::async_trait;
 use cookie_agent_protocol::{
@@ -11,7 +14,7 @@ use cookie_agent_protocol::{
 };
 use cookie_agent_runtime_api::{
     PreparedExecutor, PreparedTool, SessionToolContext, ToolCall, ToolError, ToolExecutionContext,
-    ToolPreparationContext, ToolProvider, ToolSpec, text_tools::LineWindow,
+    ToolPreparationContext, ToolProvider, ToolSpec, text_tools::LineRequest,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -25,39 +28,50 @@ const TOOL_NAME: &str = "read_artifact";
 /// Hex digits of the digest shown in the tool call header.
 const DISPLAY_DIGEST_CHARS: usize = 12;
 
-#[derive(Debug, Default)]
-pub struct ReadArtifactTool;
+/// The `read_artifact` provider. Without an engine (unit tests) it reads
+/// artifacts but no job IDs.
+#[derive(Default)]
+pub struct ReadArtifactTool {
+    engine: Option<crate::Engine>,
+}
 
 #[derive(Debug, Deserialize, JsonSchema, Serialize)]
 #[serde(deny_unknown_fields)]
 struct ReadArtifactArgs {
-    /// The artifact's lowercase hex SHA-256 digest, as a truncation hint names it, or its first 8 or more digits, as a file label shows them.
+    /// The artifact's lowercase hex SHA-256 digest, as a truncation hint names it, or its first 8 or more digits, as a file label shows them; or the job ID of a call in the background, such as `job_1a2b3c4d`.
     artifact: String,
     /// Named stream of a multi-stream output, such as `stdout`, as a truncation hint names it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     stream: Option<String>,
-    /// The 1-based line to start at. Defaults to 1.
-    #[schemars(range(min = 1), extend("default" = 1))]
-    offset: Option<usize>,
+    /// The 1-based line to start at; a negative one counts back from the end, so -50 starts at the 50th line from the end. Defaults to 1.
+    #[schemars(extend("default" = 1))]
+    offset: Option<i64>,
     /// The most lines to return. Defaults to 2000.
     #[schemars(range(min = 1), extend("default" = cookie_agent_runtime_api::text_tools::DEFAULT_LIMIT))]
     limit: Option<usize>,
 }
 
 /// What the model reads about `read_artifact`.
-const DESCRIPTION: &str = "Read retained tool output by line, as `read` reads a file. A truncated result names the artifact (and stream) to read in a `read_artifact` hint, with the 1-based `offset` of the first line it left out: read from there. Elided history names the artifact to read from its first line. `artifact` is the digest a hint names, or its first 8 or more hex digits. Lines come back numbered, `N: text`, counting from 1. `offset` is the 1-based line to start at (default 1) and `limit` the most lines to return (default 2000). A line longer than 4 KiB is cut and ends with `... [line truncated: N more bytes]`, and a page stops before it passes the result size limit (about 2 MiB). A page that leaves lines out ends with a note such as `[120 more lines; continue with offset=2001]`: read again from that offset. An offset past the last line is an error.";
+const DESCRIPTION: &str = "Read retained tool output by line, as `read` reads a file, or the output of a call running in the background. A truncated result names the artifact (and stream) to read in a `read_artifact` hint, with the 1-based `offset` of the first line it left out: read from there. Elided history names the artifact to read from its first line. `artifact` is the digest a hint names, or its first 8 or more hex digits, or a background call's job ID, such as `job_1a2b3c4d`. Given only a job ID, it returns the call's output so far as its result would show it if it ended now; with a `stream`, `offset`, or `limit`, it pages that output as it stands. A job ID keeps reading for a while after the call ends. Lines come back numbered, `N: text`, counting from 1. `offset` is the 1-based line to start at (default 1), or, when negative, how many lines before the end to start (-50 reads the last 50 lines), and `limit` the most lines to return (default 2000). A line longer than 4 KiB is cut and ends with `... [line truncated: N more bytes]`, and a page stops before it passes the result size limit (about 2 MiB). A page that leaves lines out ends with a note such as `[120 more lines; continue with offset=2001]`: read again from that offset. An offset past the last line is an error.";
 
 impl ReadArtifactArgs {
     /// Checks the artifact and stream the call names; the executor finds
     /// the artifact a shortened digest names.
     fn check(&self) -> Result<(), ToolError> {
-        crate::runtime::artifacts::reads::check_artifact_name(&self.artifact)
-            .map_err(ToolError::execution)?;
+        if !self.is_job() {
+            crate::runtime::artifacts::reads::check_artifact_name(&self.artifact)
+                .map_err(ToolError::execution)?;
+        }
         if let Some(stream) = &self.stream {
             cookie_agent_protocol::validate_tool_stream_name(stream)
                 .map_err(ToolError::execution)?;
         }
         Ok(())
+    }
+
+    /// Whether the call names a background call's job ID.
+    fn is_job(&self) -> bool {
+        crate::runtime::background_tasks::is_job_id(&self.artifact)
     }
 
     /// `<digest>` or `<digest>/<stream>`: the permission resource and policy label.
@@ -80,6 +94,12 @@ fn shown(artifact: &str, stream: Option<&str>) -> String {
 }
 
 impl ReadArtifactTool {
+    pub(crate) fn new(engine: crate::Engine) -> Self {
+        Self {
+            engine: Some(engine),
+        }
+    }
+
     #[must_use]
     pub fn spec() -> ToolSpec {
         ToolSpec {
@@ -192,9 +212,15 @@ impl ToolProvider for ReadArtifactTool {
         Self::get_permission_name(&call.name)?;
         let mut args: ReadArtifactArgs = parse_args(TOOL_NAME, call.arguments)?;
         args.check()?;
-        let window = LineWindow::new(args.offset, args.limit)?;
-        args.offset = Some(window.offset);
-        args.limit = Some(window.limit);
+        let request = LineRequest::new(args.offset, args.limit)?;
+        // A job ID read with no window asks for the snapshot, so its
+        // arguments stay as given.
+        let window = (args.stream.is_some() || args.offset.is_some() || args.limit.is_some())
+            .then_some(request);
+        if !args.is_job() {
+            args.offset = Some(request.offset());
+            args.limit = Some(request.limit());
+        }
         let label = args.label();
         let binding = serde_json::to_vec(&args).map_err(tool_error)?;
         let resource = prepared_resource(
@@ -218,8 +244,11 @@ impl ToolProvider for ReadArtifactTool {
             normalized,
             None,
             Box::new(ReadArtifactExecutor {
+                engine: self.engine.clone(),
+                job: args.is_job(),
                 artifact: args.artifact.clone(),
                 stream: args.stream.clone(),
+                request,
                 window,
                 session: ctx.session,
             }),
@@ -229,11 +258,58 @@ impl ToolProvider for ReadArtifactTool {
 }
 
 struct ReadArtifactExecutor {
-    /// The digest, or its start, the call names.
+    engine: Option<crate::Engine>,
+    /// Whether `artifact` is a background call's job ID.
+    job: bool,
+    /// The digest, or its start, the call names; or a job ID.
     artifact: String,
     stream: Option<String>,
-    window: LineWindow,
+    request: LineRequest,
+    /// The request, when the call gave a stream or window: a job ID read
+    /// without one is a snapshot.
+    window: Option<LineRequest>,
     session: SessionId,
+}
+
+impl ReadArtifactExecutor {
+    async fn read_job(self) -> Result<ToolResult, ToolError> {
+        let engine = self
+            .engine
+            .ok_or_else(|| ToolError::execution("job IDs cannot be read here"))?;
+        let job = self.artifact;
+        let read = engine
+            .read_job(self.session, &job, self.stream.clone(), self.window)
+            .await?;
+        let shown = shown(&job, self.stream.as_deref());
+        let display = match &read.page {
+            Some(page) => vec![cookie_agent_protocol::Open::Known(
+                cookie_agent_runtime_api::display::fit_block(
+                    page.excerpt_block(shown.clone(), None),
+                    None,
+                )?,
+            )],
+            None => cookie_agent_runtime_api::bounded_tool_display(&read.output),
+        };
+        Ok(ToolResult {
+            title: safe_title(format!("Read {shown}")),
+            output: read.output,
+            display,
+            background: None,
+            retained_output: None,
+            metadata: serde_json::json!({
+                "job": job,
+                "stream": self.stream,
+                "running": read.running,
+                "offset": read.page.as_ref().map(|page| page.start_line),
+                "limit": read.page.as_ref().map(|_| self.request.limit()),
+                "total_lines": read.page.as_ref().map(|page| page.total_lines),
+                "next_offset": read.page.as_ref().and_then(|page| page.next_offset),
+            }),
+            attachments: Vec::new(),
+            additional_messages: Vec::new(),
+            loaded_tools: Vec::new(),
+        })
+    }
 }
 
 #[async_trait]
@@ -248,6 +324,12 @@ impl PreparedExecutor for ReadArtifactExecutor {
         if context.cancellation.is_cancelled() {
             return Err(ToolError::execution("artifact read cancelled"));
         }
+        if self.job {
+            return self
+                .read_job()
+                .await
+                .map(cookie_agent_runtime_api::ToolCompletion::single);
+        }
         let artifact = std::sync::Arc::clone(&context.artifacts)
             .resolve_artifact(self.session, self.artifact)
             .await?;
@@ -255,8 +337,8 @@ impl PreparedExecutor for ReadArtifactExecutor {
         let target = ArtifactReadTarget::parse(&artifact, stream.as_deref())
             .map_err(ToolError::execution)?;
         let shown = shown(&artifact, stream.as_deref());
-        let window = self.window;
-        let read = context.read_artifact(target, window).await?;
+        let request = self.request;
+        let read = context.read_artifact(target, request).await?;
         let page = read.page;
         let display = cookie_agent_runtime_api::display::fit_block(
             page.excerpt_block(shown.clone(), None),
@@ -272,8 +354,8 @@ impl PreparedExecutor for ReadArtifactExecutor {
                 metadata: serde_json::json!({
                     "artifact": artifact,
                     "stream": stream,
-                    "offset": window.offset,
-                    "limit": window.limit,
+                    "offset": page.start_line,
+                    "limit": request.limit(),
                     "total_lines": page.total_lines,
                     "next_offset": page.next_offset,
                     "source": read.source,
@@ -335,7 +417,7 @@ mod tests {
         )
         .unwrap();
         let digest = artifact.sha256.to_string();
-        let tool = ReadArtifactTool;
+        let tool = ReadArtifactTool::default();
         let args = serde_json::json!({"artifact": digest, "offset": 2, "limit": 1});
         assert_eq!(
             tool.get_permission_resource(TOOL_NAME, &args).unwrap(),
@@ -389,7 +471,7 @@ mod tests {
             crate::base_tools::test_turn_context(),
         )
         .unwrap();
-        ReadArtifactTool
+        ReadArtifactTool::default()
             .prepare(
                 context(reader.session, reader.run),
                 call(serde_json::json!({"artifact": digest, "offset": offset, "limit": limit})),
@@ -443,7 +525,7 @@ mod tests {
                 .await
                 .unwrap_err()
                 .message(),
-            "offset is 1-based: the first line is offset=1"
+            "offset is 1-based: the first line is offset=1, and offset=-1 the last"
         );
     }
 
@@ -461,7 +543,7 @@ mod tests {
             serde_json::json!({"artifact": digest, "path": "x"}),
         ] {
             assert!(
-                ReadArtifactTool
+                ReadArtifactTool::default()
                     .prepare(
                         context(SessionId::new_v7(), RunId::new_v7()),
                         call(arguments.clone())
@@ -476,7 +558,7 @@ mod tests {
     #[tokio::test]
     async fn read_artifact_normalizes_the_window_as_read_does() {
         let digest = "a".repeat(64);
-        let prepared = ReadArtifactTool
+        let prepared = ReadArtifactTool::default()
             .prepare(
                 context(SessionId::new_v7(), RunId::new_v7()),
                 call(serde_json::json!({"artifact": digest, "stream": "stdout", "limit": 5_000})),

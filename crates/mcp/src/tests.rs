@@ -64,7 +64,7 @@ impl ToolArtifacts for MemoryArtifacts {
         self: Arc<Self>,
         _session: SessionId,
         _target: cookie_agent_protocol::ArtifactReadTarget,
-        _window: cookie_agent_runtime_api::text_tools::LineWindow,
+        _request: cookie_agent_runtime_api::text_tools::LineRequest,
     ) -> Result<cookie_agent_runtime_api::ArtifactReadPage, crate::ToolError> {
         Err(crate::ToolError::execution(
             "no artifact reads in MCP tests",

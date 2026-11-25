@@ -177,9 +177,14 @@ preview, and result blocks.
 
 `read` numbers lines from 1, and its `offset` is the 1-based line (or
 directory entry) to start at: `offset=1`, the default, is the first line, and
-an `offset` of 0 is refused. `limit`, 2000 lines or entries when left out,
-must be positive. An `offset` past the last line or entry is an error, except
-that line 1 of an empty file is an empty page. The path is resolved when the
+an `offset` of 0 is refused. A negative `offset` counts back from the end:
+`offset=-50` starts at the 50th line (or entry) from the end, so with the
+default `limit` it reads the last 50, and one reaching back past the first
+line starts at line 1. A file read from the end is read twice, once to count
+its lines. `limit`, 2000 lines or entries when left out, must be positive.
+An `offset` past the last line or entry is an error, except that line 1 of
+an empty file is an empty page. The metadata's `offset` is the line the page
+started at; the arguments keep the `offset` as given. The path is resolved when the
 call is prepared; the content is read when it executes. A text line longer
 than 4 KiB is cut and ends with a `... [line truncated: N more bytes]` marker.
 A page that leaves lines or entries out ends with a continuation marker that
@@ -226,13 +231,13 @@ read(limit?: integer, offset?: integer, path: string)
 Description sent to the model:
 
 ```text
-Read a file or a directory. A text file comes back as numbered lines, `N: text`, counting from 1. `offset` is the 1-based line to start at (default 1) and `limit` the most lines to return (default 2000). A line longer than 4 KiB is cut and ends with `... [line truncated: N more bytes]`, and a page stops before it passes the result size limit (about 2 MiB). A page that leaves lines out ends with a note such as `[120 more lines; continue with offset=2001]`: read again from that offset. An offset past the last line is an error. A directory lists its entries, one per line with `/` after a folder's name, paged by the same 1-based `offset` and `limit`. An image, video, or other media file the model accepts is attached instead.
+Read a file or a directory. A text file comes back as numbered lines, `N: text`, counting from 1. `offset` is the 1-based line to start at (default 1), or, when negative, how many lines before the end to start (-50 reads the last 50 lines), and `limit` the most lines to return (default 2000). A line longer than 4 KiB is cut and ends with `... [line truncated: N more bytes]`, and a page stops before it passes the result size limit (about 2 MiB). A page that leaves lines out ends with a note such as `[120 more lines; continue with offset=2001]`: read again from that offset. An offset past the last line is an error. A directory lists its entries, one per line with `/` after a folder's name, paged by the same 1-based `offset` and `limit`. An image, video, or other media file the model accepts is attached instead.
 ```
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `limit` | `integer` | no | The most lines, or directory entries, to return. Defaults to 2000. Default: `2000`. |
-| `offset` | `integer` | no | The 1-based line, or directory entry, to start at. Defaults to 1. Default: `1`. |
+| `offset` | `integer` | no | The 1-based line, or directory entry, to start at; a negative one counts back from the end, so -50 starts at the 50th line from the end. Defaults to 1. Default: `1`. |
 | `path` | `string` | yes | Path to the file or directory. Relative paths resolve against the session working directory. |
 
 ??? note "Parameters JSON Schema"
@@ -250,9 +255,8 @@ Read a file or a directory. A text file comes back as numbered lines, `N: text`,
         },
         "offset": {
           "default": 1,
-          "description": "The 1-based line, or directory entry, to start at. Defaults to 1.",
-          "format": "uint",
-          "minimum": 1,
+          "description": "The 1-based line, or directory entry, to start at; a negative one counts back from the end, so -50 starts at the 50th line from the end. Defaults to 1.",
+          "format": "int64",
           "type": "integer"
         },
         "path": {
@@ -503,13 +507,13 @@ bash(command: string, timeout?: integer)
 Description sent to the model on Linux and macOS:
 
 ```text
-Run one shell command in the working directory. Long output is cut, and a `read_artifact` hint names the rest. The timeout applies in the background too: pass `timeout` 0 for commands that keep running, such as dev servers.
+Run one shell command in the working directory. Long output is cut, and a `read_artifact` hint names the rest. The timeout applies in the background too: pass `timeout` 0 for commands that keep running, such as dev servers. Many programs hold back output written to a pipe: run Python with `-u`, or a command under `stdbuf -oL`, to see its lines as they are printed.
 ```
 
 Description sent to the model on Windows, where commands run in Git Bash:
 
 ```text
-Run one Git Bash command in the working directory. Single-quote native Windows paths (for example, 'C:\Users\name\file') or use C:/ paths. Long output is cut, and a `read_artifact` hint names the rest. The timeout applies in the background too: pass `timeout` 0 for commands that keep running, such as dev servers.
+Run one Git Bash command in the working directory. Single-quote native Windows paths (for example, 'C:\Users\name\file') or use C:/ paths. Long output is cut, and a `read_artifact` hint names the rest. The timeout applies in the background too: pass `timeout` 0 for commands that keep running, such as dev servers. Many programs hold back output written to a pipe: run Python with `-u`, or a command under `stdbuf -oL`, to see its lines as they are printed.
 ```
 
 | Parameter | Type | Required | Description |
@@ -697,9 +701,24 @@ spec](../specs/background-tools.md) describes:
   finishes first returns as an ordinary result. Detaching commits an
   immediate result for the call, `Started in the background as job
   job_1a2b3c4d. …` or `User manually moved this call to the background; it
-  is still running as job job_1a2b3c4d. …`, ending with ``Stop it with
+  is still running as job job_1a2b3c4d. …`, ending with ``Read its output so
+  far with `read_artifact(artifact="job_1a2b3c4d")`. Stop it with
   `stop_background(job="job_1a2b3c4d")`.`` and followed by the tool's note, and
   the run goes on. Cancelling the run no longer reaches the call.
+- **Reading it while it runs.** `read_artifact` takes the job ID in place of
+  a digest. With nothing else, it returns a snapshot: a line naming the job,
+  the call, and how long it has run, then the output so far rendered as the
+  call's result would render it if it ended now, its omission markers naming
+  the job (`read_artifact(artifact="job_1a2b3c4d", stream="stdout",
+  offset=21)`). With a `stream`, `offset`, or `limit` it pages one stream of
+  the output as it stands, the same content the finished artifact will hold,
+  and a page of a running call ends with `[job job_1a2b3c4d is still running:
+  N lines so far]`; `offset=-50` reads its newest 50 lines. Once the call
+  ends, its job ID reads the output it published, among the last 64 calls to
+  end, until the daemon restarts; after that, the digest its
+  `<background_result>` names still reads. The output is the engine's own
+  capture, so this works for every tool that streams output, on every
+  machine.
 - **Reporting.** When the call ends, the engine accepts one producer message
   owned by `tool { tool_call_id }` that steers into the active run or wakes
   the idle session: `<background_result job="…" tool="…" status="…">`
@@ -877,16 +896,16 @@ read_artifact(artifact: string, limit?: integer, offset?: integer, stream?: stri
 Description sent to the model:
 
 ```text
-Read retained tool output by line, as `read` reads a file. A truncated result names the artifact (and stream) to read in a `read_artifact` hint, with the 1-based `offset` of the first line it left out: read from there. Elided history names the artifact to read from its first line. `artifact` is the digest a hint names, or its first 8 or more hex digits. Lines come back numbered, `N: text`, counting from 1. `offset` is the 1-based line to start at (default 1) and `limit` the most lines to return (default 2000). A line longer than 4 KiB is cut and ends with `... [line truncated: N more bytes]`, and a page stops before it passes the result size limit (about 2 MiB). A page that leaves lines out ends with a note such as `[120 more lines; continue with offset=2001]`: read again from that offset. An offset past the last line is an error.
+Read retained tool output by line, as `read` reads a file, or the output of a call running in the background. A truncated result names the artifact (and stream) to read in a `read_artifact` hint, with the 1-based `offset` of the first line it left out: read from there. Elided history names the artifact to read from its first line. `artifact` is the digest a hint names, or its first 8 or more hex digits, or a background call's job ID, such as `job_1a2b3c4d`. Given only a job ID, it returns the call's output so far as its result would show it if it ended now; with a `stream`, `offset`, or `limit`, it pages that output as it stands. A job ID keeps reading for a while after the call ends. Lines come back numbered, `N: text`, counting from 1. `offset` is the 1-based line to start at (default 1), or, when negative, how many lines before the end to start (-50 reads the last 50 lines), and `limit` the most lines to return (default 2000). A line longer than 4 KiB is cut and ends with `... [line truncated: N more bytes]`, and a page stops before it passes the result size limit (about 2 MiB). A page that leaves lines out ends with a note such as `[120 more lines; continue with offset=2001]`: read again from that offset. An offset past the last line is an error.
 ```
 
 Always, whatever the agent's permission rules: it reads only output retained by the session's own tree.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `artifact` | `string` | yes | The artifact's lowercase hex SHA-256 digest, as a truncation hint names it, or its first 8 or more digits, as a file label shows them. |
+| `artifact` | `string` | yes | The artifact's lowercase hex SHA-256 digest, as a truncation hint names it, or its first 8 or more digits, as a file label shows them; or the job ID of a call in the background, such as `job_1a2b3c4d`. |
 | `limit` | `integer` | no | The most lines to return. Defaults to 2000. Default: `2000`. |
-| `offset` | `integer` | no | The 1-based line to start at. Defaults to 1. Default: `1`. |
+| `offset` | `integer` | no | The 1-based line to start at; a negative one counts back from the end, so -50 starts at the 50th line from the end. Defaults to 1. Default: `1`. |
 | `stream` | `string` | no | Named stream of a multi-stream output, such as `stdout`, as a truncation hint names it. |
 
 ??? note "Parameters JSON Schema"
@@ -896,7 +915,7 @@ Always, whatever the agent's permission rules: it reads only output retained by 
       "additionalProperties": false,
       "properties": {
         "artifact": {
-          "description": "The artifact's lowercase hex SHA-256 digest, as a truncation hint names it, or its first 8 or more digits, as a file label shows them.",
+          "description": "The artifact's lowercase hex SHA-256 digest, as a truncation hint names it, or its first 8 or more digits, as a file label shows them; or the job ID of a call in the background, such as `job_1a2b3c4d`.",
           "type": "string"
         },
         "limit": {
@@ -908,9 +927,8 @@ Always, whatever the agent's permission rules: it reads only output retained by 
         },
         "offset": {
           "default": 1,
-          "description": "The 1-based line to start at. Defaults to 1.",
-          "format": "uint",
-          "minimum": 1,
+          "description": "The 1-based line to start at; a negative one counts back from the end, so -50 starts at the 50th line from the end. Defaults to 1.",
+          "format": "int64",
           "type": "integer"
         },
         "stream": {
@@ -953,8 +971,8 @@ non-manifests are errors. Stored `ArtifactReference` values keep the internal
 `artifact://sha256/<digest>` form, which is not a `read_artifact` argument.
 
 A page reads as a `read` page of a file does, without the `<path>` wrapper:
-lines numbered from 1 (`N: text`), a 1-based `offset` (default 1, and 0 is
-refused), a positive `limit` (default 2000, with no maximum), each line cut
+lines numbered from 1 (`N: text`), a 1-based `offset` (default 1, 0 is
+refused, and a negative one counts back from the end), a positive `limit` (default 2000, with no maximum), each line cut
 after 4 KiB with a `... [line truncated: N more bytes]` marker, the page
 stopped before it passes the result size limit, and a continuation marker
 (`[N more lines; continue with offset=M]`, or `[page cut at the result size
@@ -967,15 +985,27 @@ corrupt artifacts produce tool errors.
 {"artifact":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","stream":"results","offset":1,"limit":200}
 ```
 
+`artifact` may instead be the job ID of a call of the session tree running
+in the [background](#background-calls), or one that ended recently. Without
+`stream`, `offset`, or `limit`, the read is a snapshot of its output so far;
+with any of them, a page of one stream (required for a call with named
+streams, such as `bash`'s `stdout` and `stderr`). The metadata adds `job` and
+`running`. Job reads are artifact reads to compaction: their output is
+omitted from a pruned retry like any other `read_artifact` output.
+
+```json
+{"artifact":"job_1a2b3c4d","stream":"stdout","offset":-50}
+```
+
 ### Display
 
 | | `read_artifact` |
 |---|---|
 | Hint | `file_read` |
-| Title | `Read artifact <12 hex>[/<stream>]` |
+| Title | `Read artifact <12 hex>[/<stream>]`, or `Read <job>[/<stream>]` for a job ID |
 | Arguments | `key_value` of `artifact`, and `stream`, `offset`, and `limit` when given |
 | Preview | – |
-| Result | `file_excerpt` of the page: `path` the title's `<12 hex>[/<stream>]`, no `language`, `start_line` the 1-based `offset`, `total_lines` the artifact's |
+| Result | `file_excerpt` of the page: `path` the title's `<12 hex>[/<stream>]` (or `<job>[/<stream>]`), no `language`, `start_line` the page's first line, `total_lines` the artifact's; a job snapshot as `text` |
 
 ### MCP tools
 
@@ -1464,7 +1494,7 @@ get_subagent_result(limit?: integer, offset?: integer, session_id: string)
 Description sent to the model:
 
 ```text
-Read the current status and latest result of a subagent you delegated, such as the full output a <subagent_report> cut short. This call returns immediately; it never waits. Name the subagent by its session ID, such as `explore_1a2b3c4d`. Only your own subagents are visible. The result comes back as numbered lines, `N: text`, counting from 1, as `read` returns a file: `offset` is the 1-based line to start at (default 1) and `limit` the most lines to return (default 2000); a line longer than 4 KiB is cut, and a page that leaves lines out ends with a note such as `[120 more lines; continue with offset=2001]`. A <subagent_report> cut short names the offset to continue from.
+Read the current status and latest result of a subagent you delegated, such as the full output a <subagent_report> cut short. This call returns immediately; it never waits. Name the subagent by its session ID, such as `explore_1a2b3c4d`. Only your own subagents are visible. The result comes back as numbered lines, `N: text`, counting from 1, as `read` returns a file: `offset` is the 1-based line to start at (default 1), or, when negative, how many lines before the end to start (-50 reads the last 50 lines), and `limit` the most lines to return (default 2000); a line longer than 4 KiB is cut, and a page that leaves lines out ends with a note such as `[120 more lines; continue with offset=2001]`. A <subagent_report> cut short names the offset to continue from.
 ```
 
 Only when the agent can delegate to at least one subagent at this depth.
@@ -1472,7 +1502,7 @@ Only when the agent can delegate to at least one subagent at this depth.
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `limit` | `integer` | no | The most lines to return. Defaults to 2000. Default: `2000`. |
-| `offset` | `integer` | no | The 1-based line of the result to start at. Defaults to 1. Default: `1`. |
+| `offset` | `integer` | no | The 1-based line of the result to start at; a negative one counts back from the end, so -50 starts at the 50th line from the end. Defaults to 1. Default: `1`. |
 | `session_id` | `string` | yes | The session ID, such as `explore_1a2b3c4d`, or full UUID of one of your subagents. |
 
 ??? note "Parameters JSON Schema"
@@ -1490,9 +1520,8 @@ Only when the agent can delegate to at least one subagent at this depth.
         },
         "offset": {
           "default": 1,
-          "description": "The 1-based line of the result to start at. Defaults to 1.",
-          "format": "uint32",
-          "minimum": 1,
+          "description": "The 1-based line of the result to start at; a negative one counts back from the end, so -50 starts at the 50th line from the end. Defaults to 1.",
+          "format": "int64",
           "type": "integer"
         },
         "session_id": {
@@ -1662,7 +1691,7 @@ keeps; see [Memory](../sessions/memory.md).
 They follow the [filesystem tools](#filesystem-tools) where they can.
 `memory_read` pages a memory's body as `read` pages a file: under the
 metadata header, the body's lines numbered from 1, a 1-based `offset`
-(default 1), a `limit` (default 2000), the same 4 KiB line cut, page cap,
+(default 1, a negative one counting back from the end), a `limit` (default 2000), the same 4 KiB line cut, page cap,
 continuation marker, and error for an `offset` past the last body line.
 `memory_write` reports `Created <url> (N bytes).` or `Replaced <url> (N
 bytes).`, `memory_edit` `Edited <url>: 1 replacement.`, and a memory that is
@@ -1756,7 +1785,7 @@ memory_read(limit?: integer, offset?: integer, url: string)
 Description sent to the model:
 
 ```text
-Read one memory by its URL (user://<category>, agent://<agent>, machine://<machine>/<name>, or project://<project>/<name>). Returns whether it is related to this session and whether you may change it, when it was created and modified, its size and its size limit, its description and keywords, and then its body as numbered lines, `N: text`, counting from 1. `offset` is the 1-based body line to start at (default 1) and `limit` the most lines to return (default 2000). A line longer than 4 KiB is cut and ends with `... [line truncated: N more bytes]`, and a page that leaves lines out ends with a note such as `[120 more lines; continue with offset=2001]`: read again from that offset. An offset past the last body line is an error. The line numbers are not part of the memory.
+Read one memory by its URL (user://<category>, agent://<agent>, machine://<machine>/<name>, or project://<project>/<name>). Returns whether it is related to this session and whether you may change it, when it was created and modified, its size and its size limit, its description and keywords, and then its body as numbered lines, `N: text`, counting from 1. `offset` is the 1-based body line to start at (default 1), or, when negative, how many lines before the end to start (-50 reads the last 50 lines), and `limit` the most lines to return (default 2000). A line longer than 4 KiB is cut and ends with `... [line truncated: N more bytes]`, and a page that leaves lines out ends with a note such as `[120 more lines; continue with offset=2001]`: read again from that offset. An offset past the last body line is an error. The line numbers are not part of the memory.
 ```
 
 Only when the session has the `global` runtime attached and no `"*": deny` for `memory` hides them (what no rule matches asks). `memory_search` needs no rule of its own: each result is checked against the `memory` rules for its URL instead.
@@ -1764,7 +1793,7 @@ Only when the session has the `global` runtime attached and no `"*": deny` for `
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `limit` | `integer` | no | The most body lines to return. Defaults to 2000. Default: `2000`. |
-| `offset` | `integer` | no | The 1-based body line to start at. Defaults to 1. Default: `1`. |
+| `offset` | `integer` | no | The 1-based body line to start at; a negative one counts back from the end, so -50 starts at the 50th line from the end. Defaults to 1. Default: `1`. |
 | `url` | `string` | yes | The memory URL. |
 
 ??? note "Parameters JSON Schema"
@@ -1782,9 +1811,8 @@ Only when the session has the `global` runtime attached and no `"*": deny` for `
         },
         "offset": {
           "default": 1,
-          "description": "The 1-based body line to start at. Defaults to 1.",
-          "format": "uint",
-          "minimum": 1,
+          "description": "The 1-based body line to start at; a negative one counts back from the end, so -50 starts at the 50th line from the end. Defaults to 1.",
+          "format": "int64",
           "type": "integer"
         },
         "url": {
@@ -3776,7 +3804,7 @@ read_asset(asset: string, limit?: integer, offset?: integer)
 Description sent to the model:
 
 ```text
-Read an asset's content by its handle, as `read` reads a file: text with `offset` and `limit` in 1-based lines, an image as an image when you take images, and otherwise only the asset's type and size.
+Read an asset's content by its handle, as `read` reads a file: text with `offset` and `limit` in 1-based lines (a negative `offset` counts back from the end), an image as an image when you take images, and otherwise only the asset's type and size.
 ```
 
 Only when the session has the `global` runtime attached and no `"*": deny` for `asset` hides them. A root run of any agent but an internal one is allowed them by default; a delegated run is denied them. `write_asset` also checks its file as `read` on the machine it reads it from.
@@ -3785,7 +3813,7 @@ Only when the session has the `global` runtime attached and no `"*": deny` for `
 |---|---|---|---|
 | `asset` | `string` | yes | The asset's handle |
 | `limit` | `integer` | no | The most lines to return, for text. Defaults to 2000. Default: `2000`. |
-| `offset` | `integer` | no | The 1-based line to start at, for text. Defaults to 1. Default: `1`. |
+| `offset` | `integer` | no | The 1-based line to start at, for text; a negative one counts back from the end, so -50 starts at the 50th line from the end. Defaults to 1. Default: `1`. |
 
 ??? note "Parameters JSON Schema"
 
@@ -3806,9 +3834,8 @@ Only when the session has the `global` runtime attached and no `"*": deny` for `
         },
         "offset": {
           "default": 1,
-          "description": "The 1-based line to start at, for text. Defaults to 1.",
-          "format": "uint",
-          "minimum": 1,
+          "description": "The 1-based line to start at, for text; a negative one counts back from the end, so -50 starts at the 50th line from the end. Defaults to 1.",
+          "format": "int64",
           "type": "integer"
         }
       },

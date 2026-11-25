@@ -38,7 +38,7 @@ use cookie_agent_runtime_api::{
     ToolError, ToolExecutionContext, ToolPreparationContext, ToolProvider, ToolSpec,
     authoring::{parse_args, prepared_operation, prepared_resource, safe_title, schema},
     display::{TextChange, fit_executed_block, text_diff},
-    text_tools::{self, LineWindow, MAX_PAGE_BYTES, NumberedPage},
+    text_tools::{self, LineRequest, MAX_PAGE_BYTES, NumberedPage},
 };
 use jiff::Timestamp;
 use schemars::JsonSchema;
@@ -182,7 +182,7 @@ pub fn memory_tool_specs() -> Vec<ToolSpec> {
 }
 
 const SEARCH_DESCRIPTION: &str = "Search memory: notes saved in earlier sessions about the user, agents, machines, and projects. Terms are matched case-insensitively against each memory's keywords, description, and URL segments (user, agent, machine, or project, then the names after it), never its body; results are ranked by keyword hits first. Each result shows a memory's URL and description, whether it is related to this session, whether you may change it, and its age, then its keywords; a result you need approval to read shows only its first two lines. `layer` narrows the search to `user`, `agent`, `machine`, or `project` memories.";
-const READ_DESCRIPTION: &str = "Read one memory by its URL (user://<category>, agent://<agent>, machine://<machine>/<name>, or project://<project>/<name>). Returns whether it is related to this session and whether you may change it, when it was created and modified, its size and its size limit, its description and keywords, and then its body as numbered lines, `N: text`, counting from 1. `offset` is the 1-based body line to start at (default 1) and `limit` the most lines to return (default 2000). A line longer than 4 KiB is cut and ends with `... [line truncated: N more bytes]`, and a page that leaves lines out ends with a note such as `[120 more lines; continue with offset=2001]`: read again from that offset. An offset past the last body line is an error. The line numbers are not part of the memory.";
+const READ_DESCRIPTION: &str = "Read one memory by its URL (user://<category>, agent://<agent>, machine://<machine>/<name>, or project://<project>/<name>). Returns whether it is related to this session and whether you may change it, when it was created and modified, its size and its size limit, its description and keywords, and then its body as numbered lines, `N: text`, counting from 1. `offset` is the 1-based body line to start at (default 1), or, when negative, how many lines before the end to start (-50 reads the last 50 lines), and `limit` the most lines to return (default 2000). A line longer than 4 KiB is cut and ends with `... [line truncated: N more bytes]`, and a page that leaves lines out ends with a note such as `[120 more lines; continue with offset=2001]`: read again from that offset. An offset past the last body line is an error. The line numbers are not part of the memory.";
 const WRITE_DESCRIPTION: &str = "Create or replace one memory, following the memory instructions you were given. To replace a memory, read it first. A new memory like one that exists is refused with the near ones listed: edit one of those instead, or, if it is new, write it again with `new: true` and a one-line `reason`. Give each memory a one-line description that states its fact (agent:// memories and project overviews keep the daemon's: leave it out there) and the keywords a later search would use. A project:// memory needs a project that exists.";
 const EDIT_DESCRIPTION: &str = "Replace the one occurrence of `old_string` in a memory's body with `new_string`, following the memory instructions you were given. `old_string` is matched exactly against the body only, never the description or keywords, and must occur exactly once: when it occurs zero or several times the edit fails before it is approved and changes nothing, so include more surrounding text to make it unique. There is no replace-all. The line numbers `memory_read` shows are not part of the body.";
 const DELETE_DESCRIPTION: &str = "Delete one memory. Nothing is kept: the deletion is final.";
@@ -258,10 +258,10 @@ struct SearchArgs {
 struct ReadArgs {
     /// The memory URL.
     url: String,
-    /// The 1-based body line to start at. Defaults to 1.
+    /// The 1-based body line to start at; a negative one counts back from the end, so -50 starts at the 50th line from the end. Defaults to 1.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(range(min = 1), extend("default" = 1))]
-    offset: Option<usize>,
+    #[schemars(extend("default" = 1))]
+    offset: Option<i64>,
     /// The most body lines to return. Defaults to 2000.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(range(min = 1), extend("default" = cookie_agent_runtime_api::text_tools::DEFAULT_LIMIT))]
@@ -372,7 +372,7 @@ enum MemoryCall {
     },
     Read {
         url: MemoryUrl,
-        window: LineWindow,
+        request: LineRequest,
     },
     Write {
         url: MemoryUrl,
@@ -438,7 +438,7 @@ fn check(name: &str, arguments: serde_json::Value) -> Result<MemoryCall, ToolErr
             let args: ReadArgs = parse_args(READ, arguments)?;
             Ok(MemoryCall::Read {
                 url: parse_url(&args.url)?,
-                window: LineWindow::new(args.offset, args.limit)?,
+                request: LineRequest::new(args.offset, args.limit)?,
             })
         }
         WRITE => {
@@ -794,7 +794,7 @@ fn call_presentation(
                 entries.extend(
                     call.arguments
                         .get(member)
-                        .and_then(serde_json::Value::as_u64)
+                        .and_then(serde_json::Value::as_i64)
                         .map(|value| (member, value.to_string())),
                 );
             }
@@ -1065,7 +1065,7 @@ impl PreparedExecutor for MemoryExecutor {
                     }),
                 ))
             }
-            MemoryCall::Read { url, window } => {
+            MemoryCall::Read { url, request } => {
                 let read = {
                     let url = url.clone();
                     blocking(move || {
@@ -1081,7 +1081,7 @@ impl PreparedExecutor for MemoryExecutor {
                     .memory_seen
                     .saw(session, url.clone(), read.entry.revision.clone());
                 let (output, page) =
-                    read_output(&url, &read, &caller, &limits, Timestamp::now(), window)?;
+                    read_output(&url, &read, &caller, &limits, Timestamp::now(), request)?;
                 let excerpt = cookie_agent_runtime_api::display::fit_block(
                     page.excerpt_block(url.to_string(), Some("markdown".to_owned())),
                     None,
@@ -1092,8 +1092,8 @@ impl PreparedExecutor for MemoryExecutor {
                     vec![Open::Known(excerpt)],
                     serde_json::json!({
                         "url": url.to_string(),
-                        "offset": window.offset,
-                        "limit": window.limit,
+                        "offset": page.start_line,
+                        "limit": request.limit(),
                         "total_lines": page.total_lines,
                         "next_offset": page.next_offset,
                     }),
@@ -1229,7 +1229,7 @@ fn yes_no(value: bool) -> &'static str {
 
 /// What `memory_read` returns (section 16.9.4): whether the memory is
 /// related and editable, its stamps with their ages, its size and limit,
-/// its description and keywords, then the page `window` of its body,
+/// its description and keywords, then the page of its body `request` asks for,
 /// numbered as `read` numbers a file's lines, and the page itself. No URL
 /// and no revision. Fails when the window starts past the body's last line.
 fn read_output(
@@ -1238,7 +1238,7 @@ fn read_output(
     caller: &MemoryCaller,
     limits: &crate::memory::limits::MemoryLimits,
     now: Timestamp,
-    window: LineWindow,
+    request: LineRequest,
 ) -> Result<(String, NumberedPage), ToolError> {
     let entry = &read.entry;
     let max = limits.max_bytes(url) as u64;
@@ -1278,7 +1278,11 @@ fn read_output(
         }
     };
     let mut output = format!("{}\n\n", lines.join("\n"));
-    let page = text_tools::page_text(body, window, MAX_PAGE_BYTES.saturating_sub(output.len()));
+    let page = text_tools::page_text(
+        body,
+        request.resolve_text(body),
+        MAX_PAGE_BYTES.saturating_sub(output.len()),
+    );
     page.check_in_range(&url.to_string())?;
     output.push_str(&page.text_with_continuation());
     Ok((output, page))

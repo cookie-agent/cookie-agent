@@ -886,8 +886,11 @@ async fn elided_content_pages_to_its_last_line(content: ToolContent, last_line: 
             artifacts.clone(),
             session,
             cookie_agent_protocol::ArtifactReadTarget::parse(artifact, None).unwrap(),
-            cookie_agent_runtime_api::text_tools::LineWindow::new(Some(offset), Some(1_000))
-                .unwrap(),
+            cookie_agent_runtime_api::text_tools::LineRequest::new(
+                Some(offset as i64),
+                Some(1_000),
+            )
+            .unwrap(),
         )
         .await
         .expect("a page");

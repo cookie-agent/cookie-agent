@@ -58,7 +58,7 @@ const LIST_MAX: usize = 100;
 
 const WRITE_DESCRIPTION: &str = "Save a file as an asset, a file you give the user, or replace an asset you saved before. The file is read from a machine of this session: `path` resolves as `read` resolves it, against the machine's working directory or under `~`, and `machine` names the machine as the machines block and `list_runtimes` do; omitted, it is the default machine the machines block marks. Any file up to 25 MiB works. Images, SVG, video, and audio are shown as they are, and a Markdown file (`.md`) as a rendered document, for reports and notes. An HTML page is rendered live, with its scripts and network access, and must be one self-contained file. Anything else is offered as a download. Without `asset` this saves a new asset and returns its handle, such as `asset_3f9a1c2e`. With a handle it replaces that asset's content, and every place it was shown updates, so revise something you saved before by its handle rather than saving it again. `scope` is `session` by default: the asset belongs to this conversation and its subagents, and is deleted with it. Use `project` for something to keep after this conversation, which every session of the project can use. Saving does not show the asset: write `<attach asset=\"asset_3f9a1c2e\"/>` in your reply where it should show.";
 
-const READ_DESCRIPTION: &str = "Read an asset's content by its handle, as `read` reads a file: text with `offset` and `limit` in 1-based lines, an image as an image when you take images, and otherwise only the asset's type and size.";
+const READ_DESCRIPTION: &str = "Read an asset's content by its handle, as `read` reads a file: text with `offset` and `limit` in 1-based lines (a negative `offset` counts back from the end), an image as an image when you take images, and otherwise only the asset's type and size.";
 
 const LIST_DESCRIPTION: &str = "List the assets you can use: this conversation's and the project's, newest first, each with its handle, title, type, size, scope, and which session last saved it and when. At most 100 are listed.";
 
@@ -96,10 +96,10 @@ struct WriteArgs {
 struct ReadArgs {
     /// The asset's handle
     asset: String,
-    /// The 1-based line to start at, for text. Defaults to 1.
+    /// The 1-based line to start at, for text; a negative one counts back from the end, so -50 starts at the 50th line from the end. Defaults to 1.
     #[serde(default)]
-    #[schemars(range(min = 1), extend("default" = 1))]
-    offset: Option<usize>,
+    #[schemars(extend("default" = 1))]
+    offset: Option<i64>,
     /// The most lines to return, for text. Defaults to 2000.
     #[serde(default)]
     #[schemars(range(min = 1), extend("default" = cookie_agent_runtime_api::text_tools::DEFAULT_LIMIT))]
@@ -385,8 +385,7 @@ enum AssetCall {
     Write(Box<WriteCall>),
     Read {
         asset: Asset,
-        offset: Option<usize>,
-        limit: Option<usize>,
+        request: cookie_agent_runtime_api::text_tools::LineRequest,
     },
     List(Option<AssetScope>),
     Delete(Asset),
@@ -620,20 +619,16 @@ impl ToolProvider for AssetTools {
             }
             READ => {
                 let args: ReadArgs = parse_args(READ, call.arguments.clone())?;
-                cookie_agent_runtime_api::text_tools::LineWindow::new(args.offset, args.limit)?;
+                let request = cookie_agent_runtime_api::text_tools::LineRequest::new(
+                    args.offset,
+                    args.limit,
+                )?;
                 let reference = args.asset;
                 let asset = blocking(&engine, session, move |engine, stores| {
                     resolve(engine, stores, &reference)
                 })
                 .await?;
-                (
-                    AssetCall::Read {
-                        asset,
-                        offset: args.offset,
-                        limit: args.limit,
-                    },
-                    None,
-                )
+                (AssetCall::Read { asset, request }, None)
             }
             LIST => {
                 let args: ListArgs = parse_args(LIST, call.arguments.clone())?;
@@ -740,11 +735,9 @@ impl PreparedExecutor for AssetExecutor {
         let session = self.session;
         match self.call {
             AssetCall::Write(write) => execute_write(engine, context, *write).await,
-            AssetCall::Read {
-                asset,
-                offset,
-                limit,
-            } => execute_read(engine, context, asset, offset, limit).await,
+            AssetCall::Read { asset, request } => {
+                execute_read(engine, context, asset, request).await
+            }
             AssetCall::List(scope) => {
                 let assets = blocking(&engine, session, move |engine, stores| {
                     let mut assets = engine.session_assets(stores).map_err(store_failed)?;
@@ -1004,10 +997,9 @@ async fn execute_read(
     engine: Engine,
     context: ToolExecutionContext,
     asset: Asset,
-    offset: Option<usize>,
-    limit: Option<usize>,
+    request: cookie_agent_runtime_api::text_tools::LineRequest,
 ) -> Result<ToolCompletion, ToolError> {
-    use cookie_agent_runtime_api::text_tools::{LineWindow, MAX_PAGE_BYTES, page_text};
+    use cookie_agent_runtime_api::text_tools::{MAX_PAGE_BYTES, page_text};
 
     let header = scoped_summary(&asset);
     let (store, id, total) = (asset.store.clone(), asset.id, asset.byte_length);
@@ -1061,7 +1053,7 @@ async fn execute_read(
             Vec::new(),
         ));
     };
-    let page = page_text(text, LineWindow::new(offset, limit)?, MAX_PAGE_BYTES);
+    let page = page_text(text, request.resolve_text(text), MAX_PAGE_BYTES);
     page.check_in_range(asset.handle.as_str())?;
     let output = format!("{header}\n{}", page.text_with_continuation());
     let display = vec![Open::Known(
