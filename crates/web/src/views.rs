@@ -278,7 +278,7 @@ fn ChatView(workspace: Workspace) -> impl IntoView {
     let composing = RwSignal::new(false);
     view! {
             <main
-                class="flex min-w-0 flex-1 flex-col"
+                class="@container/chat flex min-w-0 flex-1 flex-col"
                 on:dragover=move |event: ev::DragEvent| event.prevent_default()
                 on:drop=move |event: ev::DragEvent| {
                     event.prevent_default();
@@ -2091,7 +2091,7 @@ fn TitleBar(workspace: Workspace) -> impl IntoView {
                 crumbs().last().cloned().map(|(parent, label)| view! {
                     <button
                         type="button"
-                        class=format!("{ICON_BUTTON} sm:hidden")
+                        class=format!("{ICON_BUTTON} @lg/chat:hidden")
                         aria-label=format!("Back to {label}")
                         title=format!("Back to {label}")
                         data-crumb-back
@@ -2119,7 +2119,7 @@ fn TitleBar(workspace: Workspace) -> impl IntoView {
                 Some(view! {
                     <button
                         type="button"
-                        class="hidden min-h-11 max-w-[12rem] min-w-0 shrink-0 items-center gap-1 rounded-md px-2 text-sm text-muted hover:bg-hover hover:text-fg active:bg-press sm:inline-flex"
+                        class="hidden min-h-11 max-w-[12rem] min-w-0 shrink-0 items-center gap-1 rounded-md px-2 text-sm text-muted hover:bg-hover hover:text-fg active:bg-press @lg/chat:inline-flex"
                         title=tip
                         data-project-crumb=project_id.to_string()
                         on:click=move |_| {
@@ -2142,11 +2142,11 @@ fn TitleBar(workspace: Workspace) -> impl IntoView {
                     >
                         <span class="truncate">{label}</span>
                     </button>
-                    <Glyph icon=icondata::LuChevronRight class="hidden shrink-0 text-[0.625rem] opacity-60 sm:inline-flex" />
+                    <Glyph icon=icondata::LuChevronRight class="hidden shrink-0 text-[0.625rem] opacity-60 @lg/chat:inline-flex" />
                 })
             }}
             <Show when=move || !crumbs().is_empty()>
-            <nav aria-label="Path" class="hidden min-w-0 shrink items-center sm:flex">
+            <nav aria-label="Path" class="hidden min-w-0 shrink items-center @lg/chat:flex">
                 {move || {
                     crumbs()
                         .into_iter()
@@ -2196,12 +2196,13 @@ fn TitleBar(workspace: Workspace) -> impl IntoView {
                 <Show when=read_only>
                     <span class="inline-flex shrink-0 items-center gap-1 rounded-full bg-sunken px-2 py-1 text-xs" title="read-only snapshot">
                         <Glyph icon=icondata::LuLock />
-                        <span class="max-sm:sr-only">"read-only snapshot"</span>
+                        <span class="@max-lg/chat:sr-only">"read-only snapshot"</span>
                     </span>
                 </Show>
-                // The session's ID, to copy; a phone has it in the session
-                // panel's heading.
-                {session_id::session_ids(workspace, "max-sm:hidden")}
+                // The session's ID, to copy, while the column is wide enough;
+                // a narrow one (a phone, or beside the side panel) has it in the
+                // session panel's heading.
+                {session_id::session_ids(workspace, "@max-2xl/chat:hidden")}
             </div>
             <shares::LinkBadge workspace=workspace />
             <Show when=move || !workspace.new_session.get()>

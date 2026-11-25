@@ -286,7 +286,7 @@ pub fn LiveBadges(workspace: Workspace) -> impl IntoView {
                     <Glyph icon=icondata::LuLoaderCircle class="animate-spin text-sm text-accent" />
                     // A word beside the count where there is room
                     // (docs/site/specs/web-polish.md, P3).
-                    <span>{move || background.get()}<span class="hidden lg:inline">" running"</span></span>
+                    <span>{move || background.get()}<span class="hidden @3xl/chat:inline">" running"</span></span>
                 </button>
             </Show>
             <Show when=move || { approvals.get() > 0 }>
@@ -301,7 +301,7 @@ pub fn LiveBadges(workspace: Workspace) -> impl IntoView {
                     <Glyph icon=icondata::LuShield class="text-sm" />
                     <span>
                         {move || approvals.get()}
-                        <span class="hidden lg:inline">{move || if approvals.get() == 1 { " approval" } else { " approvals" }}</span>
+                        <span class="hidden @3xl/chat:inline">{move || if approvals.get() == 1 { " approval" } else { " approvals" }}</span>
                     </span>
                 </button>
             </Show>
