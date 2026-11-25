@@ -491,6 +491,9 @@ impl ConfigTree {
         let mut document = text
             .parse::<toml_edit::DocumentMut>()
             .map_err(|error| invalid(&error.to_string()))?;
+        // A table this writes goes after the file's last one, unless it
+        // replaces one, whose place it keeps.
+        let mut next_position = last_position(document.as_item()).map_or(0, |last| last + 1);
         let mut table: &mut dyn toml_edit::TableLike = document.as_table_mut();
         // Within an inline table (or a dotted key) only values fit.
         let mut values_only = false;
@@ -498,6 +501,8 @@ impl ConfigTree {
             let entry = table.entry(name).or_insert_with(|| {
                 let mut created = toml_edit::Table::new();
                 created.set_implicit(true);
+                created.set_position(next_position);
+                next_position += 1;
                 toml_edit::Item::Table(created)
             });
             values_only = values_only
@@ -528,6 +533,15 @@ impl ConfigTree {
                         .map(toml_edit::Item::Value)
                         .unwrap_or_else(|item| item)
                 } else {
+                    // Its tables come numbered from the scratch document
+                    // they were encoded in, which would scatter them among
+                    // the file's own.
+                    let mut item = item;
+                    let position = table
+                        .get(last)
+                        .and_then(first_position)
+                        .unwrap_or(next_position);
+                    for_each_table(&mut item, &mut |table| table.set_position(position));
                     item
                 };
                 table.insert(last, item);
@@ -601,6 +615,48 @@ impl ConfigTree {
         ConfigRevision::new(format!("sha256:{}", hex(&digest.finalize())))
             .expect("a SHA-256 digest is a revision")
     }
+}
+
+/// Calls `visit` on every table at or under `item`, in document order.
+fn for_each_table(item: &mut toml_edit::Item, visit: &mut impl FnMut(&mut toml_edit::Table)) {
+    let mut visit_table = |table: &mut toml_edit::Table| {
+        visit(table);
+        for (_, child) in table.iter_mut() {
+            for_each_table(child, visit);
+        }
+    };
+    match item {
+        toml_edit::Item::Table(table) => visit_table(table),
+        toml_edit::Item::ArrayOfTables(tables) => tables.iter_mut().for_each(visit_table),
+        _ => {}
+    }
+}
+
+/// The position of the first table at or under `item`.
+fn first_position(item: &toml_edit::Item) -> Option<usize> {
+    match item {
+        toml_edit::Item::Table(table) => table
+            .position()
+            .or_else(|| table.iter().find_map(|(_, child)| first_position(child))),
+        toml_edit::Item::ArrayOfTables(tables) => tables.iter().find_map(|table| table.position()),
+        _ => None,
+    }
+}
+
+/// The last position of a table at or under `item`.
+fn last_position(item: &toml_edit::Item) -> Option<usize> {
+    let tables: Box<dyn Iterator<Item = &toml_edit::Table>> = match item {
+        toml_edit::Item::Table(table) => Box::new(std::iter::once(table)),
+        toml_edit::Item::ArrayOfTables(tables) => Box::new(tables.iter()),
+        _ => return None,
+    };
+    tables
+        .flat_map(|table| {
+            std::iter::once(table.position())
+                .chain(table.iter().map(|(_, child)| last_position(child)))
+        })
+        .flatten()
+        .max()
 }
 
 fn hex(bytes: &[u8]) -> String {
