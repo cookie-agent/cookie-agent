@@ -269,7 +269,9 @@ pub struct Workspace {
     /// the running ones.
     pub tree_expanded: RwSignal<bool>,
     pub collapsed: RwSignal<HashSet<SessionId>>,
-    tree_request: StoredValue<u64>,
+    /// The tree read in flight, and whether the tree changed since it was
+    /// sent: one read at a time, and one more after it when it did.
+    tree_refresh: StoredValue<tree::TreeRefresh>,
     /// The reads change notices start, so only the newest one's answer is
     /// installed.
     reads: StoredValue<reads::Reads>,
@@ -705,7 +707,7 @@ impl Workspace {
             tree_root: RwSignal::new(None),
             tree_expanded: RwSignal::new(false),
             collapsed: RwSignal::new(HashSet::new()),
-            tree_request: StoredValue::new(0),
+            tree_refresh: StoredValue::new(tree::TreeRefresh::default()),
             reads: StoredValue::new(reads::Reads::default()),
             session_list: StoredValue::new(Default::default()),
             session_window: StoredValue::new(

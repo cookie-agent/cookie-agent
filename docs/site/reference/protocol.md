@@ -1858,7 +1858,8 @@ background, and who moved it (`model` or `user`). `agent_task: true` (since
 the agent can stop it. The list lives in the daemon, so it
 never shows a call a daemon restart killed. `background.changed` reaches only
 connections subscribed to the session; one that falls behind gets every
-subscribed session's list again.
+subscribed session's list again. Changes within 250 ms of the first go as one
+notification, and a list that ends as it was last sent sends none.
 
 ### Daemon-wide changes
 

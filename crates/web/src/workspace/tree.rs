@@ -14,6 +14,15 @@ use crate::{
     tree::{TreeRow, contains, expanded_from_storage, expanded_key, running_rows, tree_rows},
 };
 
+/// The tree read in flight ([`Workspace::refresh_tree`]).
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct TreeRefresh {
+    /// The root of the read in flight.
+    in_flight: Option<SessionId>,
+    /// Whether the tree changed since that read was sent.
+    again: bool,
+}
+
 impl Workspace {
     /// Whether `session_id` is in the tree of the viewed session.
     pub(super) fn in_viewed_tree(self, session_id: SessionId) -> bool {
@@ -117,20 +126,49 @@ impl Workspace {
         }
     }
 
-    /// Reads the shown tree again; an older answer is dropped.
+    /// Reads the shown tree again. One read is in flight at a time: a
+    /// change meanwhile asks for one more read once it answers, so a burst
+    /// of changes costs two reads, and the answer each brings is shown. A
+    /// read begun for another root is left to answer for nothing.
     pub(super) fn refresh_tree(self) {
         let (Some(client), Some(root)) = (self.client(), self.tree_root.get_untracked()) else {
             return;
         };
-        self.tree_request.update_value(|request| *request += 1);
-        let request = self.tree_request.get_value();
+        let in_flight = self
+            .tree_refresh
+            .try_update_value(|refresh| {
+                if refresh.in_flight == Some(root) {
+                    refresh.again = true;
+                    true
+                } else {
+                    *refresh = TreeRefresh {
+                        in_flight: Some(root),
+                        again: false,
+                    };
+                    false
+                }
+            })
+            .unwrap_or(false);
+        if in_flight {
+            return;
+        }
         spawn_local(async move {
             let result = client
                 .session_tree(SessionTreeParams { session_id: root })
                 .await;
-            if self.tree_request.get_value() != request
-                || self.tree_root.get_untracked() != Some(root)
-            {
+            let again = self
+                .tree_refresh
+                .try_update_value(|refresh| {
+                    (refresh.in_flight == Some(root)).then(|| {
+                        refresh.in_flight = None;
+                        std::mem::take(&mut refresh.again)
+                    })
+                })
+                .flatten();
+            let Some(again) = again else {
+                return;
+            };
+            if self.tree_root.get_untracked() != Some(root) {
                 return;
             }
             match result {
@@ -144,6 +182,9 @@ impl Workspace {
                     "session tree unavailable: {}",
                     crate::errors::describe(&error)
                 )),
+            }
+            if again {
+                self.refresh_tree();
             }
         });
     }

@@ -1,10 +1,15 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::time::Duration;
 
 use cookie_agent_engine::Engine;
 use cookie_agent_protocol::{RuntimeId, SessionId};
 use cookie_agent_protocol_transport::ServerContext;
 
 use super::Server;
+
+/// How long `background.changed` waits after a change for more before it
+/// sends ([`Server::start_background_notifications`]).
+const BACKGROUND_COALESCE: Duration = Duration::from_millis(250);
 
 impl Server {
     pub(super) fn start_runtime_notifications(&self, context: ServerContext) {
@@ -540,9 +545,12 @@ impl Server {
     }
 
     /// Sends the current background calls of a subscribed session whenever
-    /// they change. A change that leaves a session's list as this connection
-    /// was last sent it sends nothing. A connection that falls behind gets
-    /// every subscribed session's list again.
+    /// they change. Changes within [`BACKGROUND_COALESCE`] of the first go
+    /// as one, and a change that leaves a session's list as this connection
+    /// was last sent it sends nothing: a call that starts and ends again and
+    /// again, such as a subagent's turn that keeps failing at once, does not
+    /// make its row flicker. A connection that falls behind gets every
+    /// subscribed session's list again.
     pub(super) fn start_background_notifications(&self, context: ServerContext) {
         let mut receiver = self.engine.subscribe_background_changes();
         let engine = self.engine.clone();
@@ -551,26 +559,46 @@ impl Server {
             // The list last sent for each subscribed session.
             let mut sent = HashMap::<SessionId, Vec<cookie_agent_protocol::BackgroundCall>>::new();
             loop {
-                let sessions = tokio::select! {
+                let mut changed = HashSet::new();
+                let mut lagged = false;
+                tokio::select! {
                     _ = shutdown.cancelled() => return,
-                    changed = receiver.recv() => match changed {
+                    first = receiver.recv() => match first {
                         Ok(session) => {
-                            let subscribed = context.subscribed_sessions();
-                            // A session subscribed again starts from what it
-                            // is sent next.
-                            sent.retain(|session, _| subscribed.contains(session));
-                            subscribed
-                                .into_iter()
-                                .filter(|subscribed| *subscribed == session)
-                                .collect::<Vec<_>>()
+                            changed.insert(session);
                         }
-                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                            sent.clear();
-                            context.subscribed_sessions()
-                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => lagged = true,
                         Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
                     },
-                };
+                }
+                tokio::select! {
+                    _ = shutdown.cancelled() => return,
+                    () = tokio::time::sleep(BACKGROUND_COALESCE) => {}
+                }
+                loop {
+                    match receiver.try_recv() {
+                        Ok(session) => {
+                            changed.insert(session);
+                        }
+                        Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => {
+                            lagged = true;
+                        }
+                        Err(tokio::sync::broadcast::error::TryRecvError::Empty) => break,
+                        Err(tokio::sync::broadcast::error::TryRecvError::Closed) => return,
+                    }
+                }
+                let subscribed = context.subscribed_sessions();
+                if lagged {
+                    sent.clear();
+                } else {
+                    // A session subscribed again starts from what it is sent
+                    // next.
+                    sent.retain(|session, _| subscribed.contains(session));
+                }
+                let sessions = subscribed
+                    .into_iter()
+                    .filter(|session| lagged || changed.contains(session))
+                    .collect::<Vec<_>>();
                 for session_id in sessions {
                     let calls = engine.background_calls(session_id);
                     if sent.get(&session_id) == Some(&calls) {
