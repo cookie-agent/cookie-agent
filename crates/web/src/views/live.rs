@@ -3,12 +3,12 @@
 //! background, the approvals waiting, and the context's use. A badge comes
 //! when its state starts, follows it, and goes when it ends; a click opens
 //! the session panel at its tab. The context ring always shows once a
-//! request has measured it. A clock counts down to the next fire of a cron
+//! request has measured it, with the session's cost beside it. A clock counts down to the next fire of a cron
 //! job into the session (docs/site/specs/session-schedules.md, D1).
 
 use cookie_agent_client_state::{
     cache::{CacheBadge, CacheHeat, badge_text, detail_lines},
-    format::{compact_count, format_count},
+    format::{compact_cost, compact_count, format_count},
     rows::goal_bar_shows,
 };
 use cookie_agent_protocol::GoalStatus;
@@ -182,10 +182,23 @@ pub fn LiveBadges(workspace: Workspace) -> impl IntoView {
                 .map(|tokens| (tokens, viewed.context_window))
         })
     });
-    let context_title_now = move || {
-        context
+    // The session's cost so far, beside its context use.
+    let cost = Memo::new(move |_| {
+        let session = workspace.selected.get()?;
+        workspace.costs.with(|costs| costs.get(&session).copied())
+    });
+    let usage_title = move || {
+        let lines: Vec<String> = context
             .get()
             .map(|(tokens, window)| context_title(tokens, window))
+            .into_iter()
+            .chain(
+                cost.get()
+                    .map(|cost| format!("Session cost: {}", super::cost_label(cost))),
+            )
+            .chain(std::iter::once("Click for usage.".to_owned()))
+            .collect();
+        lines.join("\n")
     };
     // The next fire into the open session, or a fire waiting there.
     let fire = Memo::new(move |_| {
@@ -306,22 +319,32 @@ pub fn LiveBadges(workspace: Workspace) -> impl IntoView {
                 </button>
             </Show>
             {fire_badge}
-            <Show when=move || context.with(Option::is_some)>
+            // The context ring always shows once a request has measured it,
+            // the session's cost once it has one.
+            <Show when=move || context.with(Option::is_some) || cost.with(Option::is_some)>
                 <button
                     type="button"
                     class=BADGE
                     id="context"
-                    aria-label=context_title_now
-                    title=context_title_now
+                    aria-label=usage_title
+                    title=usage_title
                     on:click=move |_| workspace.run_command(Command::Usage)
                 >
-                    {move || context.get().map(|(tokens, window)| ring(filled(tokens, window).unwrap_or(0.0)))}
-                    <span class="text-muted">
-                        {move || context.get().map(|(tokens, window)| match filled(tokens, window) {
-                            Some(fraction) => format!("{:.0}%", fraction * 100.0),
-                            None => compact_count(tokens),
-                        })}
-                    </span>
+                    {move || context.get().map(|(tokens, window)| view! {
+                        {ring(filled(tokens, window).unwrap_or(0.0))}
+                        <span class="text-muted">
+                            {match filled(tokens, window) {
+                                Some(fraction) => format!("{:.0}%", fraction * 100.0),
+                                None => compact_count(tokens),
+                            }}
+                        </span>
+                    })}
+                    <Show when=move || context.with(Option::is_some) && cost.with(Option::is_some)>
+                        <span class="text-muted opacity-60" aria-hidden="true">"·"</span>
+                    </Show>
+                    {move || cost.get().map(|cost| view! {
+                        <span class="text-muted" id="cost">{compact_cost(cost)}</span>
+                    })}
                 </button>
             </Show>
         </div>

@@ -36,7 +36,8 @@ when the panel content exceeds its viewport.
 
 When a request is priced, the assistant block's closing footer includes its
 estimated cost after generation speed and context usage. The bottom bar shows
-the selected session total; clicking it opens `/usage`. Unpriced costs are
+the selected session total in the TUI, and the title bar's context badge in
+the web client; clicking it opens `/usage`. Unpriced costs are
 omitted from both locations.
 
 Cost is always optional. Managed models use the selected models.dev catalog

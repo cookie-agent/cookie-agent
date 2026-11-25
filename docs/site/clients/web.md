@@ -171,7 +171,9 @@ refreshes no longer change). Reset and Replace ask once more.
   [scheduled prompt](#schedules) into the session (an alarm clock with the
   time to go, such as `12m`, with `· 2` when two jobs fire into it, and
   `queued` while a fire waits for the running turn; its tooltip lists the
-  jobs), and, once a request has measured it, the context's use as a ring. The prompt cache shows as a
+  jobs), and, once a request has measured it, the context's use as a ring,
+  with the session's cost to the cent beside it (`42% · $0.31`; its tooltip
+  has the cost to a hundredth of a cent, and a click opens **Usage**). The prompt cache shows as a
   flame with the minutes the cache stays warm (`41m`; `~` when the TTL is
   assumed, a dot when a compaction
   [before it expires](../sessions/compaction.md#before-the-cache-expires)
@@ -850,9 +852,9 @@ refreshes no longer change). Reset and Replace ask once more.
     its reason ("The reviewer asks: …", or that its review failed);
   - where the session works, its workspaces under
     their runtimes' homes, after a dot in each runtime's machine's colour (click for
-    **Runtimes**; not on a phone);
-  - the context size, in tokens, of the last request (also in **Usage**);
-  - the session's cost (click for **Usage**).
+    **Runtimes**; not on a phone).
+
+  The context size and the session's cost are in the title bar's badges.
 - **Diagnostics.** **Diagnostics** picks which diagnostic rows the
   transcript shows; the choice stays in the browser.
 - **Messages from producers** (goal control and reminders, background-call
@@ -1332,9 +1334,7 @@ webhook**. The view reads `webhooks.list` again whenever a webhook changes
   - **Bottom bar:** one row, above the composer and on its background.
     The model chip takes the room left and
     shortens its name first; the agent chip shows only its icon below
-    about 380 px; the permission mode chip shows only its shield; the cost
-    shows to the cent ("$0.02") and opens **Usage**, which also has the
-    context size. Every picker, and every sheet of the ⋮ menu, opens from
+    about 380 px; the permission mode chip shows only its shield. Every picker, and every sheet of the ⋮ menu, opens from
     the bottom.
   - **Status line:** a thin line above the bottom bar, only while
     approvals wait (tap the badge to answer).

@@ -9,7 +9,7 @@ use std::{collections::HashMap, sync::Arc, time::Duration};
 use cookie_agent_client_state::{
     EventLevel, ToolStatus,
     badges::{badges_tooltip, session_badges},
-    format::{compact_cost, format_cost, format_count, relative_time},
+    format::{format_cost, format_count, relative_time},
     permissions::{EFFECTS, effect_label, permission_actions, permission_rows, source_label},
     usage::{CacheHit, models_by_cost},
 };
@@ -4267,21 +4267,14 @@ fn approvals_label(count: usize) -> String {
 /// How long a new status message shows.
 const STATUS_LIVE: Duration = Duration::from_secs(5);
 
-/// The bottom bar: the session's agent, model, permission mode, and cost.
-/// A wide window shows it under the composer and adds the approvals and the
-/// context size; a phone shows it above the composer, on the composer's
-/// background, with the approvals in the status line above it, and hides it
-/// while the composer has focus. A status message shows over the composer
-/// ([`StatusTip`]), not in the bar.
+/// The bottom bar: the session's agent, model, and permission mode; its
+/// context size and cost are a title bar badge ([`live::LiveBadges`]). A
+/// wide window shows it under the composer; a phone shows it above the
+/// composer, on the composer's background, and hides it while the composer
+/// has focus. A status message shows over the composer ([`StatusTip`]), not
+/// in the bar.
 #[component]
 fn ComposerChips(workspace: Workspace, composing: RwSignal<bool>) -> impl IntoView {
-    let cost = move || {
-        workspace.selected.get().and_then(|session_id| {
-            workspace
-                .costs
-                .with(|costs| costs.get(&session_id).copied())
-        })
-    };
     // An ACP agent names where it runs: `claude · on local`.
     let agent = move || {
         let Some(draft) = workspace.draft.get() else {
@@ -4449,20 +4442,6 @@ fn ComposerChips(workspace: Workspace, composing: RwSignal<bool>) -> impl IntoVi
                     <span class="min-w-0 truncate">{crate::places::folder_names(&places)}</span>
                 </button>
             })}
-            <span class="flex-1" aria-hidden="true"></span>
-            {move || cost().map(|cost| view! {
-                <button
-                    type="button"
-                    id="cost"
-                    class=format!("{CHIP} text-muted")
-                    aria-label=format!("Session cost {}: usage", cost_label(cost))
-                    title="Session cost: click for usage"
-                    on:click=move |_| workspace.run_command(Command::Usage)
-                >
-                    <span class="tabular-nums compact:hidden">{cost_label(cost)}</span>
-                    <span class="hidden tabular-nums compact:inline">{compact_cost(cost)}</span>
-                </button>
-            })}
         </div>
     }
 }
@@ -4578,7 +4557,8 @@ fn status_place(workspace: Workspace) -> Option<StatusPlace> {
     })
 }
 
-/// The session's cost as a wide window's bottom bar shows it.
+/// The session's cost to a hundredth of a cent, as its tooltip and the
+/// commands menu show it.
 fn cost_label(cost: f64) -> String {
     format!("${cost:.4}")
 }
