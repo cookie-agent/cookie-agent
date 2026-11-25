@@ -1075,7 +1075,13 @@ setup disabled.
   file's comments and everything else stay; a value that cannot be one blocks
   it, and an edit the daemon refuses, or a file that changed meanwhile, stays
   to be applied again. The default, small, and utility models open the same
-  picker as [Setting up a daemon](#setting-up-a-daemon). Tables with a panel
+  picker as [Setting up a daemon](#setting-up-a-daemon). **Voice input**
+  lists the [transcription backends](../engine/speech.md) in the order they
+  are tried, each a connected provider or an OpenAI-compatible endpoint with
+  its model, name, and time limit; ↑ tries one earlier. A backend's `auth`
+  and `headers` are kept as written and changed in the file. The other voice
+  settings wait for a backend, and removing the last one removes `[speech]`,
+  which turns voice input off. Tables with a panel
   of their own (providers, MCP servers, plugins, runtime templates, and ACP
   agents) are only counted and linked. A key the form has no control for is
   shown read-only in a box, as the file writes it, in its section or under

@@ -4,13 +4,13 @@
 use cookie_agent_client_state::{
     config_form::{
         ConfigField, FieldKind, FormField, FormManaged, FormSection, ManagedPanel, OtherEntry,
-        models_from_value, models_to_value,
+        models_from_value, models_to_value, shown_value,
     },
     onboarding::{ModelChoice, choice_label},
 };
 use cookie_agent_protocol::{ModelKey, VariantId};
 use leptos::prelude::*;
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 use super::{
     BUTTON, ERROR, NOTE, PRIMARY,
@@ -46,6 +46,16 @@ pub(super) fn config_form(workspace: Workspace) -> impl IntoView {
     // Discarding draws every row afresh, closing the open pickers.
     let discarded = RwSignal::new(0_u32);
     let form = Memo::new(move |_| form_of(&text.get()));
+    // The rest of `[speech]` waits for a backend.
+    let speech_on = Signal::derive(move || {
+        form.with(|form| {
+            form.as_ref().is_ok_and(|form| {
+                workspace
+                    .config_form_drafts
+                    .with(|drafts| form.speech_on(drafts))
+            })
+        })
+    });
     let body = move || {
         discarded.track();
         match form.get() {
@@ -56,7 +66,7 @@ pub(super) fn config_form(workspace: Workspace) -> impl IntoView {
             .into_any(),
             Ok(form) => view! {
                 <div class="flex flex-col gap-2.5" id="config-form">
-                    {form.sections.iter().cloned().map(|section| section_card(workspace, section)).collect_view()}
+                    {form.sections.iter().cloned().map(|section| section_card(workspace, section, speech_on)).collect_view()}
                 </div>
                 <h2 class=CAPTION>"In their own panels"</h2>
                 <div class="grid gap-2 sm:grid-cols-2" id="config-managed">
@@ -80,7 +90,10 @@ pub(super) fn config_form(workspace: Workspace) -> impl IntoView {
         let changes = form.changes(&drafts);
         let lines = match &changes {
             Ok(changes) => changes.iter().map(change_line).collect::<Vec<_>>(),
-            Err(_) => Vec::new(),
+            Err(errors) => errors
+                .iter()
+                .map(|(path, error)| format!("{path}: {error}"))
+                .collect(),
         };
         let (count, blocked) = match &changes {
             Ok(changes) => (changes.len(), false),
@@ -138,15 +151,21 @@ fn change_line(change: &cookie_agent_protocol::ConfigChange) -> String {
     let cookie_agent_protocol::ConfigChange::Set { key, value } = change else {
         return String::new();
     };
+    let shown = shown_value(key, value);
     let key = key.join(".");
     if value.is_null() {
         format!("{key} removed")
     } else {
-        format!("{key} = {value}")
+        format!("{key} = {shown}")
     }
 }
 
-fn section_card(workspace: Workspace, section: FormSection) -> impl IntoView {
+fn section_card(
+    workspace: Workspace,
+    section: FormSection,
+    speech_on: Signal<bool>,
+) -> impl IntoView {
+    let waits_for_backends = section.section.id == "speech";
     let authored = section.authored();
     let set = section
         .fields
@@ -166,14 +185,22 @@ fn section_card(workspace: Workspace, section: FormSection) -> impl IntoView {
                 {section.section.title}
                 {(set > 0).then(|| view! { <span class="text-[0.6875rem] font-medium text-muted">{format!("{set} set in the file")}</span> })}
             </summary>
-            {section.fields.iter().cloned().map(|field| field_row(workspace, field)).collect_view()}
+            {section.fields.iter().cloned().map(|field| {
+                let off = if waits_for_backends && field.field.kind != FieldKind::Backends {
+                    Signal::derive(move || !speech_on.get())
+                } else {
+                    Signal::stored(false)
+                };
+                field_row(workspace, field, off)
+            }).collect_view()}
             {other}
         </details>
     }
 }
 
 /// One setting: what it is, its control, and the way back to its default.
-fn field_row(workspace: Workspace, form_field: FormField) -> impl IntoView {
+/// While `off`, it cannot be changed: it waits for another setting.
+fn field_row(workspace: Workspace, form_field: FormField, off: Signal<bool>) -> impl IntoView {
     let field = form_field.field;
     let path = field.path();
     let draft = {
@@ -280,8 +307,10 @@ fn field_row(workspace: Workspace, form_field: FormField) -> impl IntoView {
             })
         }
     });
+    let backends_panel = (field.kind == FieldKind::Backends)
+        .then(|| backends_editor(workspace, form_field.clone(), draft));
     view! {
-        <div data-config-field=row_path>
+        <fieldset class="m-0 min-w-0 border-0 p-0" class:opacity-50=move || off.get() disabled=move || off.get() data-config-field=row_path>
             <div class=ROW_GRID class:bg-sel=highlight>
                 <div class="min-w-0">
                     <div class="flex flex-wrap items-center gap-2 text-[0.8125rem] font-medium">
@@ -307,7 +336,8 @@ fn field_row(workspace: Workspace, form_field: FormField) -> impl IntoView {
                 </div>
             </div>
             {picker_panel}
-        </div>
+            {backends_panel}
+        </fieldset>
     }
 }
 
@@ -528,6 +558,64 @@ fn control(
             }
             .into_any()
         }
+        FieldKind::Backends => {
+            let count = move || backend_rows(&draft.get().unwrap_or_else(|| current.clone())).len();
+            view! {
+                <p class="text-[0.8125rem] text-muted lg:text-right" data-backend-count>
+                    {move || match count() {
+                        0 => "off".to_owned(),
+                        1 => "1 backend".to_owned(),
+                        count => format!("{count} backends"),
+                    }}
+                </p>
+            }
+            .into_any()
+        }
+        FieldKind::Keyed(keys) => {
+            let value = Signal::derive(move || draft.get().unwrap_or_else(|| current.clone()));
+            let default = field.default_text().unwrap_or_default();
+            // The key and number shown: the draft's, else the default's.
+            let parts = move || {
+                let text = value.get();
+                let text = if text.trim().is_empty() {
+                    default.to_owned()
+                } else {
+                    text
+                };
+                let (key, number) = text.split_once('=').unwrap_or((text.as_str(), ""));
+                (key.trim().to_owned(), number.trim().to_owned())
+            };
+            let for_key = for_change.clone();
+            view! {
+                <div class="flex gap-1.5">
+                    <select
+                        class=format!("{FIELD} w-auto shrink-0")
+                        aria-label=format!("{} as", field.label)
+                        on:change=move |event| {
+                            let (_, number) = parts();
+                            set_draft(workspace, &for_key, format!("{}={number}", event_target_value(&event)));
+                        }
+                    >
+                        {keys.iter().map(|&key| {
+                            view! { <option value=key prop:selected=move || parts().0 == key>{key}</option> }
+                        }).collect_view()}
+                    </select>
+                    <input
+                        type="text"
+                        class=format!("{FIELD} min-w-0")
+                        aria-label=field.label
+                        autocomplete="off"
+                        inputmode="numeric"
+                        prop:value=move || parts().1
+                        on:input=move |event| {
+                            let (key, _) = parts();
+                            set_draft(workspace, &for_change, format!("{key}={}", event_target_value(&event).trim()));
+                        }
+                    />
+                </div>
+            }
+            .into_any()
+        }
         FieldKind::Integer | FieldKind::Number | FieldKind::Text => {
             let placeholder = match field.default {
                 cookie_agent_client_state::config_form::FieldDefault::Value(value)
@@ -549,6 +637,226 @@ fn control(
             }
             .into_any()
         }
+    }
+}
+
+/// The backends a [`FieldKind::Backends`] text lists; blank is none.
+fn backend_rows(text: &str) -> Vec<Map<String, Value>> {
+    serde_json::from_str::<Vec<Value>>(text)
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|row| match row {
+            Value::Object(row) => Some(row),
+            _ => None,
+        })
+        .collect()
+}
+
+/// `[speech] backends`, one editable row each, in the order they are tried.
+/// A row's `auth` and `headers` are kept as they are; the file changes them.
+fn backends_editor(
+    workspace: Workspace,
+    form_field: FormField,
+    draft: Signal<Option<String>>,
+) -> impl IntoView {
+    let current = form_field.current_text();
+    let rows = Memo::new(move |_| backend_rows(&draft.get().unwrap_or_else(|| current.clone())));
+    let write = {
+        let form_field = form_field.clone();
+        move |rows: Vec<Map<String, Value>>| {
+            let text = if rows.is_empty() {
+                String::new()
+            } else {
+                Value::Array(rows.into_iter().map(Value::Object).collect()).to_string()
+            };
+            set_draft(workspace, &form_field, text);
+        }
+    };
+    let edit = {
+        let write = write.clone();
+        move |index: usize, change: &dyn Fn(&mut Map<String, Value>)| {
+            let mut all = rows.get_untracked();
+            if let Some(row) = all.get_mut(index) {
+                change(row);
+                write(all);
+            }
+        }
+    };
+    // The providers a backend can use: those with a connection or
+    // configuration.
+    let providers = move || {
+        workspace
+            .providers()
+            .into_iter()
+            .filter(|provider| {
+                provider.presence == cookie_agent_protocol::ProviderPresence::Current
+                    && provider.configuration
+                        != cookie_agent_protocol::ProviderConfigurationState::Unconfigured
+            })
+            .map(|provider| (provider.id.to_string(), provider.display_name.to_string()))
+            .collect::<Vec<_>>()
+    };
+    let add = {
+        let write = write.clone();
+        move |_| {
+            let mut all = rows.get_untracked();
+            let mut row = Map::new();
+            match providers().into_iter().next() {
+                Some((id, _)) => row.insert("provider".into(), Value::String(id)),
+                None => row.insert("endpoint".into(), Value::String(String::new())),
+            };
+            row.insert("model".into(), Value::String(String::new()));
+            all.push(row);
+            write(all);
+        }
+    };
+    let text_of = move |index: usize, key: &'static str| {
+        move || {
+            rows.with(|rows| {
+                rows.get(index)
+                    .and_then(|row| row.get(key))
+                    .map(|value| match value {
+                        Value::String(text) => text.clone(),
+                        other => other.to_string(),
+                    })
+                    .unwrap_or_default()
+            })
+        }
+    };
+    let row_view = move |index: usize| {
+        let has = move |key: &'static str| {
+            rows.with(|rows| rows.get(index).is_some_and(|row| row.contains_key(key)))
+        };
+        let source = {
+            let edit = edit.clone();
+            move |event: leptos::ev::Event| {
+                let chosen = event_target_value(&event);
+                edit(index, &|row| {
+                    if chosen.is_empty() {
+                        row.remove("provider");
+                        row.entry("endpoint")
+                            .or_insert(Value::String(String::new()));
+                    } else {
+                        row.remove("endpoint");
+                        row.remove("auth");
+                        row.insert("provider".into(), Value::String(chosen.clone()));
+                    }
+                });
+            }
+        };
+        // A text key: blank removes an optional one and keeps a required
+        // one, so the row says what it lacks.
+        let typed = {
+            let edit = edit.clone();
+            move |key: &'static str, required: bool| {
+                let edit = edit.clone();
+                move |event: leptos::ev::Event| {
+                    let text = event_target_value(&event);
+                    let text = text.trim();
+                    edit(index, &|row| {
+                        if text.is_empty() && !required {
+                            row.remove(key);
+                        } else if key == "timeout_secs" {
+                            let value = text
+                                .parse::<i64>()
+                                .map_or_else(|_| Value::String(text.to_owned()), Value::from);
+                            row.insert(key.into(), value);
+                        } else {
+                            row.insert(key.into(), Value::String(text.to_owned()));
+                        }
+                    });
+                }
+            }
+        };
+        let remove = {
+            let write = write.clone();
+            move |_| {
+                let mut all = rows.get_untracked();
+                if index < all.len() {
+                    all.remove(index);
+                    write(all);
+                }
+            }
+        };
+        let raise = {
+            let write = write.clone();
+            move |_| {
+                let mut all = rows.get_untracked();
+                if index > 0 && index < all.len() {
+                    all.swap(index - 1, index);
+                    write(all);
+                }
+            }
+        };
+        let on_endpoint = typed("endpoint", true);
+        let provider = text_of(index, "provider");
+        let chosen = text_of(index, "provider");
+        let options = move || {
+            let mut options = providers();
+            let named = chosen();
+            if !named.is_empty() && !options.iter().any(|(id, _)| *id == named) {
+                options.push((named.clone(), named));
+            }
+            options
+        };
+        view! {
+            <li class="flex flex-col gap-1.5 border-t border-line pt-2.5 first:border-t-0 first:pt-0" data-backend=index>
+                <div class="flex items-center gap-2">
+                    <span class="text-[0.6875rem] font-semibold text-muted">{move || if index == 0 { "First".to_owned() } else { format!("Then {}", index + 1) }}</span>
+                    <span class="mr-auto"></span>
+                    {(index > 0).then(|| view! {
+                        <button type="button" class=ROW_ACTION title="Try it earlier" aria-label="Try it earlier" data-backend-raise on:click=raise>
+                            <Glyph icon=icondata::LuArrowUp />
+                        </button>
+                    })}
+                    <button type="button" class=ROW_ACTION title="Remove the backend" aria-label="Remove the backend" data-backend-remove on:click=remove>
+                        <Glyph icon=icondata::LuTrash2 />
+                    </button>
+                </div>
+                <div class="grid gap-1.5 sm:grid-cols-2">
+                    <select class=FIELD aria-label="Service" on:change=source data-backend-source>
+                        {move || options().into_iter().map(|(id, name)| {
+                            let selected = provider() == id;
+                            view! { <option value=id.clone() selected=selected>{format!("{name} ({id})")}</option> }
+                        }).collect_view()}
+                        <option value="" selected=move || !has("provider")>"OpenAI-compatible endpoint"</option>
+                    </select>
+                    <input type="text" class=FIELD aria-label="Model" placeholder="model, such as gpt-4o-mini-transcribe" autocomplete="off" spellcheck="false"
+                        prop:value=text_of(index, "model") on:input=typed("model", true) data-backend-model />
+                    {move || (!has("provider")).then(|| view! {
+                        <input type="text" class=format!("{FIELD} sm:col-span-2") aria-label="Endpoint" placeholder="https://host/v1, or http:// to a loopback address" autocomplete="off" spellcheck="false"
+                            prop:value=text_of(index, "endpoint") on:input=on_endpoint.clone() data-backend-endpoint />
+                    })}
+                    <input type="text" class=FIELD aria-label="Name" placeholder="name: the provider, else the host" autocomplete="off" spellcheck="false"
+                        prop:value=text_of(index, "name") on:input=typed("name", false) />
+                    <input type="text" class=FIELD aria-label="Time limit in seconds" placeholder="time limit, seconds: none" autocomplete="off" inputmode="numeric"
+                        prop:value=text_of(index, "timeout_secs") on:input=typed("timeout_secs", false) />
+                </div>
+                {move || (has("auth") || has("headers")).then(|| view! {
+                    <p class="text-xs text-muted">
+                        "Its auth and headers are kept as they are; "
+                        <button type="button" class="font-medium text-accent hover:underline" on:click=move |_| workspace.edit_config("config.toml")>"change them in the file"</button>
+                        "."
+                    </p>
+                })}
+            </li>
+        }
+    };
+    view! {
+        <div class="flex flex-col gap-2.5 border-t border-line bg-surface-2 px-3 py-3" data-backends>
+            <ol class="flex flex-col gap-2.5">
+                <For each=move || 0..rows.with(Vec::len) key=|index| *index children=row_view.clone() />
+            </ol>
+            {move || rows.with(Vec::is_empty).then(|| view! {
+                <p class=NOTE>"Add a backend to turn voice input on; the settings below wait for one."</p>
+            })}
+            <div>
+                <button type="button" class=BUTTON on:click=add data-backend-add>
+                    <Glyph icon=icondata::LuPlus />
+                    "Add backend"
+                </button>
+            </div>
+        </div>
     }
 }
 

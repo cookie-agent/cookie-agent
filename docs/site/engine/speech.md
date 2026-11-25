@@ -21,6 +21,8 @@ model = "Systran/faster-whisper-large-v3"
 Without a `[speech]` table voice input is off, and clients show no
 microphone. An authored table replaces the lower table and uses defaults for
 omitted fields. Unknown fields fail. See [config.toml](configuration.md).
+The web client's Settings › Configuration edits it under **Voice input**
+(see [the web client](../clients/web.md#managing-the-daemon)).
 
 | Key | Type | Default | Description |
 |---|---|---|---|

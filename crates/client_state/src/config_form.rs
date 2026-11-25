@@ -36,6 +36,12 @@ pub enum FieldKind {
     /// A model or a fallback list of them, edited with the model picker;
     /// its text is the value as JSON.
     Models,
+    /// A table of one whole number under one of these keys, such as
+    /// `{ percent = 70 }`; its text is `key=number`.
+    Keyed(&'static [&'static str]),
+    /// `[speech] backends`: a list of tables, edited row by row; its text is
+    /// the value as JSON, and an empty list removes the key.
+    Backends,
 }
 
 /// What an unset field means.
@@ -69,6 +75,10 @@ impl ConfigField {
         match self.kind {
             FieldKind::Bool => value.is_boolean(),
             FieldKind::Models => models_from_value(value).is_some(),
+            FieldKind::Keyed(keys) => keyed_from_value(keys, value).is_some(),
+            FieldKind::Backends => value
+                .as_array()
+                .is_some_and(|rows| !rows.is_empty() && rows.iter().all(Value::is_object)),
             FieldKind::Integer => value.is_i64() || value.is_u64(),
             FieldKind::Number => value.is_number(),
             FieldKind::Text | FieldKind::Secret => value.is_string(),
@@ -89,7 +99,10 @@ impl ConfigField {
     pub fn text(&self, value: &Value) -> String {
         match self.kind {
             FieldKind::Secret => String::new(),
-            FieldKind::Models => value.to_string(),
+            FieldKind::Models | FieldKind::Backends => value.to_string(),
+            FieldKind::Keyed(keys) => keyed_from_value(keys, value)
+                .map(|(key, number)| format!("{key}={number}"))
+                .unwrap_or_default(),
             FieldKind::Choices(_) => value
                 .as_array()
                 .map(|values| {
@@ -148,6 +161,53 @@ impl ConfigField {
                 .ok()
                 .filter(|value| models_from_value(value).is_some())
                 .ok_or("is not a model list")?,
+            FieldKind::Keyed(keys) => {
+                let (key, number) = text.split_once('=').unwrap_or((text, ""));
+                let key = key.trim();
+                if !keys.contains(&key) {
+                    return Err(format!("must be one of {}", keys.join(", ")));
+                }
+                let number = number
+                    .trim()
+                    .parse::<i64>()
+                    .map_err(|_| "must be a whole number")?;
+                serde_json::json!({ key: number })
+            }
+            FieldKind::Backends => {
+                let rows = serde_json::from_str::<Value>(text)
+                    .ok()
+                    .and_then(|value| match value {
+                        Value::Array(rows) if rows.iter().all(Value::is_object) => Some(rows),
+                        _ => None,
+                    })
+                    .ok_or("is not a list of backends")?;
+                if rows.is_empty() {
+                    return Ok(None);
+                }
+                for (index, row) in rows.iter().enumerate() {
+                    let has = |key: &str| {
+                        row.get(key)
+                            .and_then(Value::as_str)
+                            .is_some_and(|text| !text.trim().is_empty())
+                    };
+                    let number = index + 1;
+                    match (has("provider"), has("endpoint")) {
+                        (true, true) => {
+                            return Err(format!(
+                                "backend {number} names a provider and an endpoint; keep one"
+                            ));
+                        }
+                        (false, false) => {
+                            return Err(format!("backend {number} needs an endpoint"));
+                        }
+                        _ => {}
+                    }
+                    if !has("model") {
+                        return Err(format!("backend {number} needs a model"));
+                    }
+                }
+                Value::Array(rows)
+            }
         };
         Ok(Some(value))
     }
@@ -291,6 +351,10 @@ const fn text(
 ) -> ConfigField {
     field(key, label, help, FieldKind::Text, FieldDefault::Note(unset))
 }
+
+/// `[speech] backends`, which the rest of `[speech]` needs: removing them
+/// removes the table, and its other keys cannot be set without them.
+pub const SPEECH_BACKENDS: &[&str] = &["speech", "backends"];
 
 /// What the form can edit, in the order it shows it.
 pub const SECTIONS: &[ConfigSection] = &[
@@ -437,6 +501,13 @@ pub const SECTIONS: &[ConfigSection] = &[
                 "Summarize a session as its context fills.",
                 true,
             ),
+            field(
+                &["context_compaction", "trigger"],
+                "Compact at",
+                "A percent of the model's input budget (1 to 99), or a number of tokens left free at its end.",
+                FieldKind::Keyed(&["percent", "buffer_tokens"]),
+                FieldDefault::Value("percent=70"),
+            ),
             integer(
                 &["context_compaction", "max_summary_bytes"],
                 "Largest summary",
@@ -526,6 +597,19 @@ pub const SECTIONS: &[ConfigSection] = &[
                 "How long the approval reviewer's conversation stays in its provider's prompt cache.",
                 FieldKind::Choice(&["1h", "30m", "12h", "5m", "provider", "off"]),
                 FieldDefault::Value("1h"),
+            ),
+            field(
+                &["approval", "default_mode"],
+                "New sessions start in",
+                "The permission mode of a new session whose client picks none.",
+                FieldKind::Choice(&[
+                    "auto_approve",
+                    "auto_approve_n",
+                    "auto_approve_y",
+                    "ask",
+                    "yolo",
+                ]),
+                FieldDefault::Value("auto_approve"),
             ),
         ],
     },
@@ -814,6 +898,51 @@ pub const SECTIONS: &[ConfigSection] = &[
                 "Contact",
                 "The https: or mailto: URL push services may reach you at.",
                 "the project's repository",
+            ),
+        ],
+    },
+    ConfigSection {
+        id: "speech",
+        title: "Voice input",
+        tables: &["speech"],
+        fields: &[
+            field(
+                SPEECH_BACKENDS,
+                "Transcription backends",
+                "Tried in order until one answers; with none, voice input is off.",
+                FieldKind::Backends,
+                FieldDefault::Note("voice input off"),
+            ),
+            text(
+                &["speech", "language"],
+                "Language",
+                "A hint such as en.",
+                "detected",
+            ),
+            text(
+                &["speech", "prompt"],
+                "Spelling hints",
+                "Names and terms to spell as written, at most 1,000 characters.",
+                "none",
+            ),
+            field(
+                &["speech", "recording"],
+                "Recording",
+                "Compressed is what the browser records; WAV is larger and every backend reads it.",
+                FieldKind::Choice(&["compressed", "wav"]),
+                FieldDefault::Value("compressed"),
+            ),
+            integer(
+                &["speech", "max_seconds"],
+                "Longest recording",
+                "In seconds; 0 or less means no limit.",
+                "300",
+            ),
+            integer(
+                &["speech", "max_bytes"],
+                "Largest recording",
+                "In bytes, as the daemon accepts it; 0 or less means no limit.",
+                "25165824",
             ),
         ],
     },
@@ -1169,12 +1298,78 @@ impl ConfigForm {
                 Err(error) => errors.push((path, error)),
             }
         }
+        self.speech_needs_backends(drafts, &mut changes, &mut errors);
         if errors.is_empty() {
             Ok(changes)
         } else {
             Err(errors)
         }
     }
+
+    /// Whether `[speech]` has backends once `drafts` apply.
+    #[must_use]
+    pub fn speech_on(&self, drafts: &BTreeMap<String, String>) -> bool {
+        let path = SPEECH_BACKENDS.join(".");
+        let Some(field) = self.field(&path) else {
+            // Backends the form cannot show are in the file.
+            return true;
+        };
+        match drafts.get(&path) {
+            Some(draft) => !matches!(field.field.parse(draft), Ok(None)),
+            None => field.value.is_some(),
+        }
+    }
+
+    /// The rest of `[speech]` needs its backends: removing the last one
+    /// removes the table, and without any no other key can be set.
+    fn speech_needs_backends(
+        &self,
+        drafts: &BTreeMap<String, String>,
+        changes: &mut Vec<ConfigChange>,
+        errors: &mut Vec<(String, String)>,
+    ) {
+        if self.speech_on(drafts) {
+            return;
+        }
+        let in_speech =
+            |key: &[String]| key.first().map(String::as_str) == Some(SPEECH_BACKENDS[0]);
+        let mut touched = false;
+        changes.retain(|change| match change {
+            ConfigChange::Set { key, value } if in_speech(key) => {
+                if !value.is_null() && !same_key(SPEECH_BACKENDS, key) {
+                    errors.push((key.join("."), "add a backend first".to_owned()));
+                }
+                touched = true;
+                false
+            }
+            _ => true,
+        });
+        let authored = self
+            .sections
+            .iter()
+            .find(|section| section.section.tables.contains(&SPEECH_BACKENDS[0]))
+            .is_some_and(FormSection::authored);
+        if touched && authored {
+            changes.push(ConfigChange::Set {
+                key: vec![SPEECH_BACKENDS[0].to_owned()],
+                value: Value::Null,
+            });
+        }
+    }
+}
+
+/// The key and number of a [`FieldKind::Keyed`] value.
+fn keyed_from_value<'value>(keys: &[&str], value: &'value Value) -> Option<(&'value str, i64)> {
+    let table = value.as_object().filter(|table| table.len() == 1)?;
+    let (key, number) = table.iter().next()?;
+    keys.contains(&key.as_str())
+        .then_some((key.as_str(), number.as_i64()?))
+}
+
+/// `value`, set at `key`, as it may be shown: credentials masked.
+#[must_use]
+pub fn shown_value(key: &[String], value: &Value) -> Value {
+    masked(key.last().map_or("", String::as_str), value)
 }
 
 /// The model field an expression such as `${default_model}` names.
@@ -1267,8 +1462,12 @@ fn same_key(path: &[&str], key: &[String]) -> bool {
 /// Whether a key's name says its value is a credential.
 fn is_secret_name(name: &str) -> bool {
     let name = name.to_ascii_lowercase().replace('-', "_");
+    // `token` as a word or ending: `runtime_token` and `accesstoken` are
+    // credentials, `buffer_tokens` a count.
+    if name.ends_with("token") || name.split('_').any(|word| word == "token") {
+        return true;
+    }
     [
-        "token",
         "secret",
         "password",
         "passwd",
@@ -1357,13 +1556,16 @@ mod tests {
     #[test]
     fn a_key_the_form_does_not_know_goes_to_its_sections_box_or_the_last_one() {
         let form = form(json!({
-            "context_compaction": { "trigger": { "percent": 50 } },
+            "context_compaction": { "buffer_tokens": 9000 },
             "headers": { "x-team": "core" },
             "default_model": { "model": "a/b", "extra": 1 },
         }));
         let compaction = section(&form, "context_compaction");
-        assert_eq!(compaction.other[0].key, ["context_compaction", "trigger"]);
-        assert_eq!(compaction.other[0].value, json!({ "percent": 50 }));
+        assert_eq!(
+            compaction.other[0].key,
+            ["context_compaction", "buffer_tokens"]
+        );
+        assert_eq!(compaction.other[0].value, json!(9000));
         assert!(compaction.authored());
         assert_eq!(section(&form, "models").other[0].key, ["default_model"]);
         assert_eq!(form.other[0].key, ["headers"]);
