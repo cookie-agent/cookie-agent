@@ -48,6 +48,22 @@
       ],
       "x-open": true
     },
+    "NeedsYou": {
+      "description": "What waits for the user's answer in a session (client protocol\n1.101.0): what `SessionMeta::needs_you` lists. A value this build\ndoes not know reads as `Unknown`, still something waiting on the\nuser.",
+      "oneOf": [
+        {
+          "const": "approval",
+          "description": "An approval escalated to the user waits for their decision.",
+          "type": "string"
+        },
+        {
+          "const": "question",
+          "description": "An agent's question waits for the user's answer.",
+          "type": "string"
+        }
+      ],
+      "x-open": true
+    },
     "PlannedCacheCompaction": {
       "description": "A compaction the daemon plans before a session's prompt cache expires\n(`docs/site/specs/cache-aware-idle.md` section 4.5), on\n[`SessionMeta::cache_compaction`].",
       "properties": {
@@ -321,6 +337,13 @@
           "minLength": 71,
           "pattern": "^sha256:[0-9a-f]{64}$",
           "type": "string"
+        },
+        "needs_you": {
+          "description": "What waits for the user's answer in the session or in any session\nbelow it, each kind once, in `NeedsYou` order (client protocol\n1.101.0): an approval escalated to the user, an agent's question.\nReported whatever `status` says: a run that asks waits for the\nanswer, and a client shows that over the run going. Live state:\nnever stored; empty from an older daemon.",
+          "items": {
+            "$ref": "#/$defs/NeedsYou"
+          },
+          "type": "array"
         },
         "origin": {
           "$ref": "#/$defs/SessionOrigin"

@@ -313,6 +313,7 @@ mod tests {
     fn meta(id: SessionId, short_id: Option<&str>) -> SessionMeta {
         SessionMeta {
             cache_compaction: None,
+            needs_you: Vec::new(),
             cron: None,
             webhook: None,
             project: None,

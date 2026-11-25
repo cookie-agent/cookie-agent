@@ -1221,6 +1221,9 @@ fn session_row(
     // What the row's tooltip and a screen reader say of it: what it waits
     // on, else its status.
     let status_text = match &activity {
+        cookie_agent_client_state::activity::SessionActivity::NeedsYou(kinds) => {
+            cookie_agent_client_state::activity::needs_you_label(kinds)
+        }
         cookie_agent_client_state::activity::SessionActivity::Waiting(kinds) => {
             cookie_agent_client_state::activity::waiting_label(kinds)
         }
@@ -1269,7 +1272,8 @@ fn session_row(
     // badges.
     let second_line = Memo::new(move |_| shown_badges.with(|badges| !badges.is_empty()));
     // The row's state before the title, a shape for each (its colour only
-    // helps): a turning circle while it runs; while it waits to wake on its
+    // helps): a raised hand while an approval or a question waits for the
+    // user in it or a subagent; a turning circle while it runs; while it waits to wake on its
     // own, what it waits on (its cron job's clock, a background call's
     // hourglass, a subagent, its goal, a producer's plug); a pause while
     // held; a mark when its last run failed or was interrupted; and,

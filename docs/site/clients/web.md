@@ -242,9 +242,11 @@ refreshes no longer change). Reset and Replace ask once more.
     plugin or runtime), then the others, each newest first by your last
     message or delegation in it (its own output does not move it, so a busy
     session keeps its place; a session with none goes by its last event).
-    A mark before each title says its state, each a shape of its own: a
-    turning accent circle while it runs (still when the system asks for
-    less motion); while it waits for something that will start its next
+    A mark before each title says its state, each a shape of its own: an
+    amber raised hand while an approval or a question waits for you in it
+    or one of its subagents (`waiting for your approval`), even while its
+    run goes on; a turning accent circle while it runs (still when the
+    system asks for less motion); while it waits for something that will start its next
     run, what that is: a clock for a scheduled job, an hourglass for a
     background call, a robot for a subagent, a target for its goal, a plug
     for a plugin's or runtime's producer (its tooltip lists them all, such

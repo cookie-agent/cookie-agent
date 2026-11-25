@@ -1,7 +1,10 @@
-//! What a session list shows about each session's activity: running, waiting
-//! on a producer, a problem with its last run, or nothing.
+//! What a session list shows about each session's activity: waiting for the
+//! user's answer, running, waiting on a producer, a problem with its last
+//! run, or nothing.
 
-use cookie_agent_protocol::{HeldReason, Open, SemVer, SessionMeta, SessionStatus, WaitingOn};
+use cookie_agent_protocol::{
+    HeldReason, NeedsYou, Open, SemVer, SessionMeta, SessionStatus, WaitingOn,
+};
 
 /// The client protocol minor from which `SessionMeta` reports `waiting_on`.
 pub const WAITING_ON_MINOR: u32 = 9;
@@ -21,7 +24,12 @@ pub fn daemon_reports_waiting(version: Option<SemVer>) -> bool {
 /// A session's activity as a session row shows it.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SessionActivity {
-    /// A run is going. It takes precedence over everything else: a running
+    /// An approval or an agent's question waits for the user's answer, in
+    /// the session or a session below it (`SessionMeta::needs_you`, in its
+    /// order). It takes precedence over everything else: a run that asks
+    /// goes on only once the user answers.
+    NeedsYou(Vec<NeedsYou>),
+    /// A run is going and nothing waits for the user. It takes precedence over everything else: a running
     /// session shows as running whatever it waits on.
     Running,
     /// No run is going and the session's automatic runs are held
@@ -40,11 +48,15 @@ pub enum SessionActivity {
     None,
 }
 
-/// What a session row shows for `meta`: [`SessionActivity::Running`] over
-/// [`SessionActivity::Waiting`] over [`SessionActivity::Problem`]. A status
-/// this build does not know shows as no activity.
+/// What a session row shows for `meta`: [`SessionActivity::NeedsYou`] over
+/// [`SessionActivity::Running`] over [`SessionActivity::Waiting`] over
+/// [`SessionActivity::Problem`]. A status this build does not know shows as
+/// no activity.
 #[must_use]
 pub fn session_activity(meta: &SessionMeta) -> SessionActivity {
+    if !meta.needs_you.is_empty() {
+        return SessionActivity::NeedsYou(meta.needs_you.clone());
+    }
     if meta.status == SessionStatus::Running {
         return SessionActivity::Running;
     }
@@ -65,15 +77,34 @@ pub fn session_activity(meta: &SessionMeta) -> SessionActivity {
     }
 }
 
-/// Whether a session is at work: running, or waiting on a producer that
-/// will start its next run. A held session waits for the user and is not.
-/// A folded project section still shows these.
+/// Whether a session is at work: running, waiting on a producer that will
+/// start its next run, or waiting for the user's answer to go on. A held
+/// session waits for the user and is not. A folded project section still
+/// shows these.
 #[must_use]
 pub fn session_at_work(meta: &SessionMeta) -> bool {
     matches!(
         session_activity(meta),
-        SessionActivity::Running | SessionActivity::Waiting(_)
+        SessionActivity::NeedsYou(_) | SessionActivity::Running | SessionActivity::Waiting(_)
     )
+}
+
+/// What a row waiting for the user says of it: `waiting for your approval`,
+/// `waiting for your answer`, or both, in `kinds` order.
+#[must_use]
+pub fn needs_you_label(kinds: &[NeedsYou]) -> String {
+    let mut names = Vec::<&str>::new();
+    for kind in kinds {
+        let name = match kind {
+            NeedsYou::Approval => "approval",
+            NeedsYou::Question => "answer",
+            NeedsYou::Unknown => "input",
+        };
+        if !names.contains(&name) {
+            names.push(name);
+        }
+    }
+    format!("waiting for your {}", names.join(" and "))
 }
 
 /// What a waiting row's tooltip says: `waiting on: goal, background call`,

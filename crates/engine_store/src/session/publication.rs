@@ -35,6 +35,9 @@ pub(super) enum Pending {
         upserted: Option<SessionMeta>,
         /// The root whose pending approvals the record changed.
         approvals_of: Option<SessionId>,
+        /// Whether the record changed what waits for the user's answer in
+        /// the session, which it and every session above it report.
+        needs_you_changed: bool,
     },
     /// A revert cut the log after `through_seq`.
     Rewound { through_seq: u64, meta: SessionMeta },
@@ -118,10 +121,13 @@ impl SessionStore {
                     event,
                     upserted,
                     approvals_of,
+                    needs_you_changed,
                     ..
                 } => {
                     self.publish_stored_event(&event);
-                    if let Some(meta) = upserted {
+                    if needs_you_changed {
+                        self.announce_needs_you(id);
+                    } else if let Some(meta) = upserted {
                         self.notify_upserted(&meta);
                     }
                     if let Some(root_session_id) = approvals_of {

@@ -1580,7 +1580,8 @@ not listed: a message to an idle session starts its run at once, and one
 queued behind a running run starts the next.
 
 `waiting_on` is reported whatever `status` says. A session list shows a
-session that is `running` as running, else one that waits on something as
+session the user must answer (`needs_you`, below) as waiting for them, else
+one that is `running` as running, else one that waits on something as
 waiting, else a failed, cancelled, or interrupted last run as a problem, and
 nothing for an idle or completed one; `cookie_agent_client_state::activity`
 implements that order. `sessions.changed` `upserted` announces every change:
@@ -1589,6 +1590,26 @@ call detached or reported; a child's turn started or ended; a delegation or
 external registration made or dropped; a child started or stopped waiting
 on something live. A session the daemon evicted from memory keeps reporting
 what it waits on. A 1.8 daemon sends no `waiting_on`.
+
+### What waits for the user
+
+Since 1.101.0 a `SessionMeta` carries `needs_you`: what waits for the
+user's answer in the session or in any session below it, each kind once and
+in this order, and omitted when nothing does. It is an open enum; a client
+reads a kind it does not know as something waiting for the user.
+
+| Kind | Waits for the user |
+|---|---|
+| `approval` | An approval escalated to the user, from its `escalated` step until a user decision or its finalization |
+| `question` | An agent's question (`elicitation_requested`), until `elicitation_resolved` |
+
+A root therefore reports what waits anywhere in its tree, which is how a
+session list shows a root whose subagent asks. It is reported whatever
+`status` says: a run that asks stays `running` while it waits.
+`sessions.changed` `upserted` announces the session and every session above
+it each time the kinds change. The daemon folds it from the records as they
+are appended and never stores it: a restart ends the runs that asked. A
+1.100 daemon sends no `needs_you`.
 
 ### Unread sessions
 
@@ -1850,7 +1871,7 @@ notification methods they do not know.
 
 | `change` | Fields | Sent when |
 |---|---|---|
-| `upserted` | `session` (`SessionMeta`) | A session, root or delegated, is created, first persisted, or reverted, or its status, title, attachments, delegated attachments, project, what it waits on (`waiting_on`), or whether it is unread (`unread`, since 1.51.0) change |
+| `upserted` | `session` (`SessionMeta`) | A session, root or delegated, is created, first persisted, or reverted, or its status, title, attachments, delegated attachments, project, what it waits on (`waiting_on`), what waits for the user in it or below it (`needs_you`, since 1.101.0), or whether it is unread (`unread`, since 1.51.0) change |
 | `removed` | `session_id` | A revert deleted a delegated session, or `session.delete` deleted a session of a tree; the connection's subscription to it has ended |
 | `approvals_changed` | `root_session_id`, `session_id` | An approval in any session of the tree was requested, escalated, decided, or cancelled; `approval.list` for the root shows the result |
 | `permission_mode_changed` | `root_session_id`, `mode`, `changed_by` | `session.set_permission_mode` changed the tree's mode; `changed_by` is the caller's origin |

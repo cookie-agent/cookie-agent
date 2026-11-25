@@ -2311,6 +2311,7 @@ fn session_meta_serde_round_trip_preserves_last_activity() {
     let last_activity = "2026-08-06T12:34:56Z".parse().expect("timestamp");
     let meta = SessionMeta {
         cache_compaction: None,
+        needs_you: Vec::new(),
         cron: None,
         webhook: None,
         held: None,
@@ -3914,6 +3915,7 @@ fn remembered_runtimes_and_forget_runtime_round_trip() {
 fn meta_fixture() -> SessionMeta {
     SessionMeta {
         cache_compaction: None,
+        needs_you: Vec::new(),
         cron: None,
         webhook: None,
         held: None,

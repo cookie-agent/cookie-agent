@@ -5,6 +5,13 @@ The client protocol's version is `MAJOR.MINOR.PATCH`
 adds and a major breaks; before it, every minor could break the wire (see the
 [compatibility spec](../specs/compatibility-v1.md) section 3).
 
+## 1.101.0
+
+- `SessionMeta.needs_you` ([what waits for the user](protocol.md#what-waits-for-the-user)):
+  `approval` and `question`, what waits for the user's answer in the
+  session or any session below it, announced by `sessions.changed`
+  `upserted` as it changes; live state, empty from a 1.100.0 daemon.
+
 ## 1.100.0
 
 - `ServerHello.default_permission_mode`: the mode a new session tree starts

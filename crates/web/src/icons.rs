@@ -207,15 +207,25 @@ pub fn session_status(status: SessionStatus) -> StatusMark {
     }
 }
 
-/// The mark a session's row shows before its title, if any: a turning
-/// circle while it runs, a pause while it is held, a clock while it waits
+/// The mark a session's row shows before its title, if any: a hand raised
+/// while an approval or a question waits for the user in it or below it, a
+/// turning circle while it runs, a pause while it is held, a clock while it waits
 /// on a producer (an active
 /// goal, a background call, a subagent, or an external producer) to start
 /// its next run, and a mark when its last run failed or was interrupted. A
 /// finished, idle, or cancelled session has none, so its title starts at
-/// the row's edge. Running outranks waiting, which outranks a problem.
+/// the row's edge. Waiting for the user outranks running, which outranks
+/// waiting, which outranks a problem.
 pub fn row_status(activity: &SessionActivity) -> Option<StatusMark> {
     match activity {
+        // Amber, as the approval badge and cards are: the run waits for
+        // the user, so nothing turns.
+        SessionActivity::NeedsYou(_) => Some(StatusMark {
+            icon: icondata::LuHand,
+            label: "waiting for you",
+            tone: HELD,
+            spins: false,
+        }),
         SessionActivity::Running => Some(session_status(SessionStatus::Running)),
         // A pause, as the held line in the transcript shows; red when its
         // runs kept failing.

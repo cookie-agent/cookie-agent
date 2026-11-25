@@ -345,6 +345,10 @@ Enter or click a row to open one.
   projects, then each project oldest first, then the sessions in no
   project, then all again. The picker's title names the project shown.
   Each row names its project, with its emoji, before its agent.
+- After its title a row shows `✋` while an approval or a question waits
+  for you in the session or one of its subagents, else `⏳` while a run
+  goes, `⏸` while it is held, and `⏰` while something will start its next
+  run.
 - A session a [cron job](#scheduled-prompts) started leads with a clock,
   🕒, before its title, and an unread one with `●`: it finished, or waits
   on an approval or a question, while nobody was there to see it

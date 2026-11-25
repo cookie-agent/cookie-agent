@@ -261,14 +261,16 @@ pub(crate) const PINNED_HEADER: &str = "Pinned";
 /// What leads a pinned session's row.
 pub(crate) const PIN_MARK: &str = "📌";
 
-/// The marker a session row carries after its title: `⏳` while a run is
+/// The marker a session row carries after its title: `✋` while an approval
+/// or a question waits for the user in it or below it, `⏳` while a run is
 /// going, `⏸` while its automatic runs are held, `⏰` while nothing runs but
 /// a producer will start the next run (an active goal, a background call, a
-/// subagent, or an external producer), and nothing otherwise. Running takes
-/// precedence, then the hold.
+/// subagent, or an external producer), and nothing otherwise. Waiting for
+/// the user takes precedence, then running, then the hold.
 pub(crate) fn activity_marker(session: &SessionMeta) -> &'static str {
     use cookie_agent_client_state::activity::{SessionActivity, session_activity};
     match session_activity(session) {
+        SessionActivity::NeedsYou(_) => " ✋",
         SessionActivity::Running => " ⏳",
         SessionActivity::Held(_) => " ⏸",
         SessionActivity::Waiting(_) => " ⏰",

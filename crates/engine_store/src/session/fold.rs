@@ -314,6 +314,7 @@ impl ProjectionFolds {
         Some(Self {
             meta: SessionMeta {
                 cache_compaction: None,
+                needs_you: Vec::new(),
                 session_id: creation.session_id,
                 origin: origin.clone(),
                 short_id: Some(short_id.clone()),

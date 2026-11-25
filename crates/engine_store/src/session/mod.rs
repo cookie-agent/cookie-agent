@@ -9,6 +9,7 @@ mod fold;
 mod in_flight;
 mod layout;
 mod marks;
+mod needs_you;
 mod publication;
 mod reviewer;
 mod tree_load;
@@ -507,6 +508,9 @@ pub struct SessionStore {
     /// [`Self::record_live_waiting`]. Never persisted: a daemon restart ends
     /// every one of them.
     live_waiting: Mutex<HashMap<SessionId, Vec<WaitingOn>>>,
+    /// The approvals and questions waiting for the user in each session,
+    /// folded from the records as they are appended. Never persisted.
+    needs_you: needs_you::NeedsYouSessions,
     /// The compaction the engine plans before each session's prompt cache
     /// expires, see [`Self::record_cache_compaction`]. Never persisted.
     cache_compactions: Mutex<HashMap<SessionId, cookie_agent_protocol::PlannedCacheCompaction>>,
@@ -719,8 +723,8 @@ impl SessionStore {
 
     /// `meta` as clients see it: its `waiting_on`, the fold's active goal,
     /// with what the engine's live producers make the session wait on, in
-    /// `WaitingOn` order; and for a root, whether it is unread and whether
-    /// it is pinned.
+    /// `WaitingOn` order; what waits for the user's answer in it or below
+    /// it; and for a root, whether it is unread and whether it is pinned.
     #[must_use]
     pub fn for_clients(&self, mut meta: SessionMeta) -> SessionMeta {
         let root = matches!(meta.origin, SessionOrigin::Root);
@@ -737,6 +741,7 @@ impl SessionStore {
             meta.waiting_on.sort();
             meta.waiting_on.dedup();
         }
+        meta.needs_you = self.needs_you_below(meta.session_id);
         meta.cache_compaction = self
             .cache_compactions
             .lock()
@@ -744,6 +749,50 @@ impl SessionStore {
             .get(&meta.session_id)
             .cloned();
         meta
+    }
+
+    /// What waits for the user's answer in `id` or in any session below
+    /// it, in `NeedsYou` order.
+    fn needs_you_below(&self, id: SessionId) -> Vec<cookie_agent_protocol::NeedsYou> {
+        let mut kinds = std::collections::BTreeSet::new();
+        for (waiting, waiting_kinds) in self.needs_you.waiting() {
+            if waiting_kinds.is_subset(&kinds) {
+                continue;
+            }
+            let mut session = Some(waiting);
+            while let Some(current) = session {
+                if current == id {
+                    kinds.extend(waiting_kinds);
+                    break;
+                }
+                session = self.cached_parent(current);
+            }
+        }
+        kinds.into_iter().collect()
+    }
+
+    /// The direct parent of a delegated `id` this process has seen
+    /// (resident or evicted), never read from disk.
+    fn cached_parent(&self, id: SessionId) -> Option<SessionId> {
+        match self.cached_origin(id)? {
+            SessionOrigin::Delegated {
+                parent_session_id, ..
+            } => Some(parent_session_id),
+            _ => None,
+        }
+    }
+
+    /// Announces `id` and every session above it that this process has
+    /// seen: what waits for the user in `id` changed, which each of them
+    /// reports. Announced from memory, never reloaded for it.
+    fn announce_needs_you(&self, id: SessionId) {
+        let mut session = Some(id);
+        while let Some(current) = session {
+            if let Some(summary) = self.cached_summary(current) {
+                self.notify_upserted(&summary.meta);
+            }
+            session = self.cached_parent(current);
+        }
     }
 
     /// Records the compaction the engine plans before `id`'s prompt cache
@@ -854,6 +903,7 @@ impl SessionStore {
 
     /// Drops what deleted sessions waited on, announcing nothing.
     pub fn forget_live_waiting(&self, deleted: &HashSet<SessionId>) {
+        self.needs_you.forget(deleted);
         self.live_waiting
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -909,6 +959,7 @@ impl SessionStore {
             publications: publication::Publications::default(),
             index_changes: tokio::sync::broadcast::channel(INDEX_CHANGE_CAPACITY).0,
             live_waiting: Mutex::default(),
+            needs_you: needs_you::NeedsYouSessions::default(),
             cache_compactions: Mutex::default(),
             quiet: Mutex::default(),
             unread: marks::MarkedSessions::open(data_root, marks::UNREAD_FILE, "unread sessions"),
@@ -2523,6 +2574,7 @@ impl SessionStore {
                 | EventPayload::ApprovalFinalized { .. }
                 | EventPayload::TreeApprovalGrantCommitted { .. }
         );
+        let needs_you_changed = self.needs_you.observe(id, &envelope.payload);
         let commit = commit.map(|commit| (Arc::clone(&log), commit));
         self.queue_publication(
             id,
@@ -2531,6 +2583,7 @@ impl SessionStore {
                 commit: commit.clone(),
                 upserted,
                 approvals_of: approvals_changed.then(|| self.parent_root_of(id).unwrap_or(id)),
+                needs_you_changed,
             },
         );
         Ok((envelope, commit))
@@ -2582,6 +2635,9 @@ impl SessionStore {
         if log.is_persisted() {
             self.journal_root(&reverted_meta);
         }
+        // A revert closes the approvals and questions it cut along with
+        // their runs, and refuses while a run goes, so none still waits.
+        let needs_you_changed = self.needs_you.clear(id);
         self.queue_publication(
             id,
             publication::Pending::Rewound {
@@ -2589,6 +2645,9 @@ impl SessionStore {
                 meta: reverted_meta,
             },
         );
+        if needs_you_changed {
+            self.announce_needs_you(id);
+        }
         Ok(())
     }
 

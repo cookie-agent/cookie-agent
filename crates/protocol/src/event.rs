@@ -197,6 +197,23 @@ crate::open_enum! {
     }
 }
 
+crate::open_enum! {
+    /// What waits for the user's answer in a session (client protocol
+    /// 1.101.0): what `SessionMeta::needs_you` lists. A value this build
+    /// does not know reads as `Unknown`, still something waiting on the
+    /// user.
+    #[derive(
+        Clone, Copy, Debug, Deserialize, Eq, Hash, JsonSchema, Ord, PartialEq, PartialOrd, Serialize,
+    )]
+    #[serde(rename_all = "snake_case")]
+    pub enum NeedsYou {
+        /// An approval escalated to the user waits for their decision.
+        Approval,
+        /// An agent's question waits for the user's answer.
+        Question,
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 pub struct DelegationReservation {
     pub invocation_id: InvocationId,
@@ -397,6 +414,14 @@ pub struct SessionMeta {
     /// 1.78.0). Live state: never stored, absent from an older daemon.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_compaction: Option<PlannedCacheCompaction>,
+    /// What waits for the user's answer in the session or in any session
+    /// below it, each kind once, in `NeedsYou` order (client protocol
+    /// 1.101.0): an approval escalated to the user, an agent's question.
+    /// Reported whatever `status` says: a run that asks waits for the
+    /// answer, and a client shows that over the run going. Live state:
+    /// never stored; empty from an older daemon.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub needs_you: Vec<NeedsYou>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
@@ -462,6 +487,8 @@ impl<'de> Deserialize<'de> for SessionMeta {
             pinned: bool,
             #[serde(default)]
             cache_compaction: Option<PlannedCacheCompaction>,
+            #[serde(default)]
+            needs_you: Vec<NeedsYou>,
         }
         let w = Wire::deserialize(d)?;
         let value = Self {
@@ -494,6 +521,7 @@ impl<'de> Deserialize<'de> for SessionMeta {
             unread: w.unread,
             pinned: w.pinned,
             cache_compaction: w.cache_compaction,
+            needs_you: w.needs_you,
         };
         value.validate().map_err(serde::de::Error::custom)?;
         Ok(value)
