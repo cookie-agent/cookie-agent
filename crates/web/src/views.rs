@@ -2204,10 +2204,10 @@ fn TitleBar(workspace: Workspace) -> impl IntoView {
                         <span class="@max-lg/chat:sr-only">"read-only snapshot"</span>
                     </span>
                 </Show>
-                // The session's ID, to copy, while the column is wide enough;
-                // a narrow one (a phone, or beside the side panel) has it in the
-                // session panel's heading.
-                {session_id::session_ids(workspace, "@max-2xl/chat:hidden")}
+                // The session's ID, to copy, in the room the title leaves,
+                // where it fits whole; a narrow column (a phone, or beside the
+                // side panel) has it in the session panel's heading.
+                {session_id::fitted_session_ids(workspace, "@max-2xl/chat:hidden")}
             </div>
             <shares::LinkBadge workspace=workspace />
             <Show when=move || !workspace.new_session.get()>

@@ -45,12 +45,14 @@ fn copy(workspace: Workspace, what: &'static str, text: String, done: RwSignal<b
 
 /// One value that copies on a click: mono, muted, a copy icon on hover, and
 /// a check for a moment once copied. A long one gives way in its middle
-/// (`01a1e57f…dfaf8acc`), its ends kept.
+/// (`01a1e57f…dfaf8acc`), its ends kept. `display` is its `display` class,
+/// which may show it only where it fits.
 fn copy_chip(
     workspace: Workspace,
     what: &'static str,
     value: String,
     attr: &'static str,
+    display: &'static str,
 ) -> impl IntoView {
     let done = RwSignal::new(false);
     // The ends stay; the middle shrinks to an ellipsis first.
@@ -68,7 +70,7 @@ fn copy_chip(
     view! {
         <button
             type="button"
-            class="group/id hit-area inline-flex h-6 min-w-0 shrink items-center gap-1 rounded-md px-1.5 font-mono text-[0.6875rem] text-muted transition-colors hover:bg-hover hover:text-fg"
+            class=format!("group/id hit-area {display} h-6 min-w-0 shrink items-center gap-1 rounded-md px-1.5 font-mono text-[0.6875rem] text-muted transition-colors hover:bg-hover hover:text-fg")
             class:text-ok=move || done.get()
             title=format!("Click to copy the {}: {value}", what.to_lowercase())
             aria-label=format!("Copy the {}", what.to_lowercase())
@@ -95,9 +97,42 @@ fn copy_chip(
     }
 }
 
+/// Where an ID chip shows inside a [`fitted_session_ids`] slot: from the
+/// slot width its narrowest form takes (17 characters of 11 px JetBrains
+/// Mono, its padding, and its icon: about 8.8rem), and the handle beside it
+/// from the width both take with a handle of up to 20 characters (about
+/// 18.9rem). The ID gives way before the handle does not, so a slot with
+/// room for one keeps the ID.
+const ID_FITS: &str = "hidden @min-[9rem]:inline-flex";
+const HANDLE_FITS: &str = "hidden @min-[19rem]:inline-flex";
+
 /// The open session's ID (and a subagent's handle before it), each copying
 /// itself; nothing while no session is open. `class` places the group.
 pub(super) fn session_ids(workspace: Workspace, class: &'static str) -> impl IntoView {
+    ids_group(workspace, class, "inline-flex", "inline-flex")
+}
+
+/// [`session_ids`] in a slot of the room a row leaves it (a title bar's,
+/// after the title): each chip shows only where it fits in its narrowest
+/// form, and the slot clips, so the IDs never run under what follows them,
+/// however crowded the row. `class` places the slot.
+pub(super) fn fitted_session_ids(workspace: Workspace, class: &'static str) -> impl IntoView {
+    view! {
+        // A size container: its width comes from the row, not the IDs, and
+        // the chips ask it whether they fit. The vertical padding keeps the
+        // chips' 44 px touch inside what it clips.
+        <div class=format!("@container -my-2.5 flex min-w-0 flex-1 basis-0 items-center overflow-hidden py-2.5 {class}")>
+            {ids_group(workspace, "", HANDLE_FITS, ID_FITS)}
+        </div>
+    }
+}
+
+fn ids_group(
+    workspace: Workspace,
+    class: &'static str,
+    handle_display: &'static str,
+    id_display: &'static str,
+) -> impl IntoView {
     // Drawn again only when the ID or the handle changes, not on every
     // change of the tree a running session makes.
     let ids = Memo::new(move |_| open_ids(workspace));
@@ -105,8 +140,8 @@ pub(super) fn session_ids(workspace: Workspace, class: &'static str) -> impl Int
         ids.get().map(|(id, handle)| {
             view! {
                 <span class=format!("flex min-w-0 shrink-[4] items-center gap-0.5 {class}") data-session-ids>
-                    {handle.map(|handle| copy_chip(workspace, "Handle", handle, "handle"))}
-                    {copy_chip(workspace, "Session ID", id.to_string(), "session")}
+                    {handle.map(|handle| copy_chip(workspace, "Handle", handle, "handle", handle_display))}
+                    {copy_chip(workspace, "Session ID", id.to_string(), "session", id_display)}
                 </span>
             }
         })
