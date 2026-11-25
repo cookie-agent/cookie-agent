@@ -61,8 +61,11 @@ async fn await_job(
     .await
 }
 
-/// Fires job `id` as scheduled at `scheduled`, a time past, and waits for
-/// its `fires`th fire's run to end.
+/// Fires job `id` as scheduled at `scheduled`, ticking the scheduler at
+/// that time, and waits for its `fires`th fire's run to end. `scheduled`
+/// lies ahead: a fire due before the engine opened would be the start's to
+/// settle, as missed while the daemon was down, and the start's pass runs
+/// as a task of its own that a busy machine can hold back until then.
 async fn fire_at(engine: &Engine, id: &CronJobId, scheduled: Timestamp, fires: usize) -> StoredJob {
     let target = id.clone();
     engine
@@ -75,7 +78,7 @@ async fn fire_at(engine: &Engine, id: &CronJobId, scheduled: Timestamp, fires: u
             Ok(())
         })
         .expect("made due");
-    engine.cron_tick(Timestamp::now()).await;
+    engine.cron_tick(scheduled).await;
     await_job(engine, id, "the fire's run", |job| {
         job.history.len() == fires
             && job
@@ -126,34 +129,34 @@ async fn fires_with_one_key_share_a_session_which_gets_the_thread_prompt_once() 
     assert_eq!(job.delivery, Some(ProducerDeliveryMode::Queue));
 
     answer_fire(&responses);
-    let first = fire_at(engine, &job.id, at("2026-01-10T03:00:00Z"), 1).await;
+    let first = fire_at(engine, &job.id, at("2099-01-10T03:00:00Z"), 1).await;
     let thread = first.history[0].session_id.expect("the thread's session");
-    assert_eq!(first.history[0].thread_key.as_deref(), Some("2026-01-10"));
+    assert_eq!(first.history[0].thread_key.as_deref(), Some("2099-01-10"));
     let meta = engine.get_session(thread).unwrap();
     let cron = meta.cron.as_ref().expect("the session records its job");
-    assert_eq!(cron.thread_key.as_deref(), Some("2026-01-10"));
+    assert_eq!(cron.thread_key.as_deref(), Some("2099-01-10"));
     assert!(
         meta.title
             .as_ref()
             .unwrap()
             .to_string()
-            .ends_with("· 2026-01-10")
+            .ends_with("· 2099-01-10")
     );
 
     // A later fire the same day goes into the thread, and the prompt is
     // not sent again.
     answer_fire(&responses);
-    let second = fire_at(engine, &job.id, at("2026-01-10T15:00:00Z"), 2).await;
+    let second = fire_at(engine, &job.id, at("2099-01-10T15:00:00Z"), 2).await;
     assert_eq!(second.history[1].session_id, Some(thread));
     assert_eq!(thread_prompts(engine, thread, &job.id), 1);
 
     // The next day is a thread of its own.
     answer_fire(&responses);
-    let third = fire_at(engine, &job.id, at("2026-01-11T03:00:00Z"), 3).await;
+    let third = fire_at(engine, &job.id, at("2099-01-11T03:00:00Z"), 3).await;
     let next_day = third.history[2].session_id.unwrap();
     assert_ne!(next_day, thread);
-    assert_eq!(third.threads.session("2026-01-10"), Some(thread));
-    assert_eq!(third.threads.session("2026-01-11"), Some(next_day));
+    assert_eq!(third.threads.session("2099-01-10"), Some(thread));
+    assert_eq!(third.threads.session("2099-01-11"), Some(next_day));
     assert_eq!(thread_prompts(engine, next_day, &job.id), 1);
 
     let requests = captured.await.expect("model requests");
@@ -190,7 +193,7 @@ async fn the_thread_prompt_is_sent_again_after_a_compaction() {
         .expect("created");
 
     answer_fire(&responses);
-    let first = fire_at(engine, &job.id, at("2026-01-10T03:00:00Z"), 1).await;
+    let first = fire_at(engine, &job.id, at("2099-01-10T03:00:00Z"), 1).await;
     let thread = first.history[0].session_id.unwrap();
     responses
         .send(MatchedScriptedResponse::last_message_role(
@@ -209,7 +212,7 @@ async fn the_thread_prompt_is_sent_again_after_a_compaction() {
     assert!(compacted.compacted, "{compacted:?}");
 
     answer_fire(&responses);
-    let second = fire_at(engine, &job.id, at("2026-01-11T03:00:00Z"), 2).await;
+    let second = fire_at(engine, &job.id, at("2099-01-11T03:00:00Z"), 2).await;
     assert_eq!(second.history[1].session_id, Some(thread));
     assert_eq!(thread_prompts(engine, thread, &job.id), 2);
     let requests = captured.await.expect("model requests");
@@ -227,7 +230,7 @@ async fn a_deleted_thread_leaves_the_map_and_a_run_now_uses_the_current_thread()
         .expect("created");
 
     answer_fire(&responses);
-    let first = fire_at(engine, &job.id, at("2026-01-10T03:00:00Z"), 1).await;
+    let first = fire_at(engine, &job.id, at("2099-01-10T03:00:00Z"), 1).await;
     let thread = first.history[0].session_id.unwrap();
 
     // A run now goes into the thread of the moment.
@@ -248,7 +251,7 @@ async fn a_deleted_thread_leaves_the_map_and_a_run_now_uses_the_current_thread()
     assert_eq!(forgotten.threads.session("main"), None);
 
     answer_fire(&responses);
-    let third = fire_at(engine, &job.id, at("2026-01-11T03:00:00Z"), 3).await;
+    let third = fire_at(engine, &job.id, at("2099-01-11T03:00:00Z"), 3).await;
     let replacement = third.history[2].session_id.unwrap();
     assert_ne!(replacement, thread);
     assert_eq!(third.threads.session("main"), Some(replacement));
