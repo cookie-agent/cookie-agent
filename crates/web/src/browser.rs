@@ -398,6 +398,44 @@ pub fn on_visible(shown: impl Fn() + 'static) {
     }
 }
 
+/// Calls `resumed` whenever the page may have lost its connection without
+/// being told: the network came back, the page came back from the
+/// back-forward cache, or the machine woke from sleep, which a desktop
+/// app window that stayed in front sees no `visibilitychange` for. A
+/// socket that died across any of them stays open to the page, and what
+/// it sends goes unanswered. Called once, at startup.
+pub fn on_resumed(resumed: impl Fn() + 'static) {
+    /// How often the page notes the time, to see a sleep in.
+    const TICK: std::time::Duration = std::time::Duration::from_secs(5);
+    /// How far past its tick the page wakes before it counts as a sleep.
+    /// A hidden tab's timers run as rarely as once a minute; one check a
+    /// minute there costs a status request.
+    const SLEPT_MS: f64 = 30_000.0;
+    let Some(window) = window() else {
+        return;
+    };
+    let resumed = std::rc::Rc::new(resumed);
+    for event in ["online", "pageshow"] {
+        let resumed = std::rc::Rc::clone(&resumed);
+        if let Some(listener) = Listener::add(window.clone().into(), event, move |_| resumed()) {
+            listener.keep();
+        }
+    }
+    // Timers stop while the machine sleeps, so the first tick after it
+    // comes late.
+    wasm_bindgen_futures::spawn_local(async move {
+        let mut last = now_ms();
+        loop {
+            gloo_timers::future::sleep(TICK).await;
+            let now = now_ms();
+            if now - last > SLEPT_MS {
+                resumed();
+            }
+            last = now;
+        }
+    });
+}
+
 /// Copies `text` with `navigator.clipboard`, which browsers offer only on
 /// a secure page (HTTPS or localhost); `false` when it did not copy.
 pub async fn copy_text(text: &str) -> bool {

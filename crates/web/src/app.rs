@@ -409,7 +409,8 @@ impl Connection {
     }
 
     /// Checks the connection once the tab is visible again, as a phone
-    /// suspends background tabs, and redials when it does not answer.
+    /// suspends background tabs, or the machine woke or its network came
+    /// back, and redials when it does not answer.
     fn check(self) {
         let Some(client) = self.client.get_value() else {
             return;
@@ -516,6 +517,7 @@ pub fn App() -> impl IntoView {
         spawn_local(land(callback, workspace, landing));
     }
     browser::on_visible(move || connection.check());
+    browser::on_resumed(move || connection.check());
     // Push notifications: a click opens its session, and the daemon hears
     // what the page shows, so it does not push that (spec section 8).
     browser::on_open_session_message(move |session| connection.open_notified(session));
