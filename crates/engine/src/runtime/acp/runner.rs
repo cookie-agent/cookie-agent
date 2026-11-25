@@ -3127,6 +3127,15 @@ impl Engine {
                 self.record_attachment_notes(active.session, Some(run_id), note)
                     .await?;
             }
+            // What reached the agent's own subagent meanwhile from anyone but
+            // the agent goes before the round takes it in.
+            if self.inner.store.log(active.session)?.is_acp_subagent() {
+                let session = active.session;
+                self.on_actor(session, move |engine| {
+                    engine.drop_acp_subagent_mail_direct(session)
+                })
+                .await?;
+            }
             let claim = self.prompt_events(active.session, run_id).await?;
             // What the agent reads beyond the conversation is on the record,
             // so the user sees it.

@@ -354,6 +354,110 @@ impl Engine {
         .await
     }
 
+    /// Drops what waits in `session`, when it is the ACP agent's own
+    /// subagent, from anyone but the agent: cookie cannot prompt such a
+    /// subagent, so a background result, a report, or a delivery could only
+    /// fail its runs, and a failed run would leave it waiting for the next.
+    /// Each one dropped is noted in the session. A message a claim holds
+    /// stays; its run releases it first. Called on the session's actor.
+    pub(in crate::runtime) fn drop_acp_subagent_mail_direct(
+        &self,
+        session: SessionId,
+    ) -> Result<(), EngineError> {
+        let projection = self.inner.store.get(session)?;
+        if !projection.log.is_acp_subagent() {
+            return Ok(());
+        }
+        let agent = projection.creation_agent.agent.clone();
+        let producers = self.goal_producer_projection(session)?;
+        let mut dropped = false;
+        for message in producers.messages.iter().filter(|message| {
+            crate::runtime::messaging::producers::pending(message)
+                && message.claims.is_empty()
+                && !matches!(message.producer_owner, ProducerOwner::AcpAgent { .. })
+        }) {
+            self.append_direct(
+                session,
+                None,
+                event_origin("engine:acp"),
+                Event::ProducerMessageDiscarded {
+                    message_id: message.message_id,
+                    reminder: message.reminder,
+                    producer_owner: message.producer_owner.clone(),
+                },
+            )?;
+            self.append_direct(
+                session,
+                None,
+                event_origin("engine:acp"),
+                Event::Diagnostic {
+                    source: cookie_agent_protocol::DiagnosticSource::engine("acp")
+                        .expect("static diagnostic source is valid"),
+                    kind: cookie_agent_protocol::DiagnosticKind::new("acp_agent")
+                        .expect("static diagnostic kind is valid"),
+                    message: format!(
+                        "Dropped \"{}\": this is `{agent}`'s own subagent, which cookie cannot \
+                         prompt.",
+                        message.description.as_str()
+                    ),
+                    count: None,
+                    detail: None,
+                },
+            )?;
+            dropped = true;
+        }
+        if dropped {
+            self.inner.store.persist_buffered_session(session)?;
+        }
+        Ok(())
+    }
+
+    /// Drops the agent's wakes waiting in `session` that a run took and
+    /// failed: a wake shows work the agent was doing, and a run that failed
+    /// to show it would fail again, started at once each time it ends. Work
+    /// the agent starts later brings a wake of its own. Called on the
+    /// session's actor.
+    pub(in crate::runtime) fn drop_failed_acp_wakes_direct(
+        &self,
+        session: SessionId,
+    ) -> Result<(), EngineError> {
+        let projection = self.inner.store.get(session)?;
+        let producers = self.goal_producer_projection(session)?;
+        let mut dropped = false;
+        for message in producers.messages.iter().filter(|message| {
+            crate::runtime::messaging::producers::pending(message)
+                && message.claims.is_empty()
+                && matches!(message.producer_owner, ProducerOwner::AcpAgent { .. })
+        }) {
+            let Some((run, _)) = message.admission else {
+                continue;
+            };
+            let failed = projection
+                .run_outcome(run)
+                .ok()
+                .flatten()
+                .is_some_and(|outcome| outcome.status == SessionStatus::Failed);
+            if !failed {
+                continue;
+            }
+            self.append_direct(
+                session,
+                None,
+                event_origin("engine:acp"),
+                Event::ProducerMessageDiscarded {
+                    message_id: message.message_id,
+                    reminder: None,
+                    producer_owner: message.producer_owner.clone(),
+                },
+            )?;
+            dropped = true;
+        }
+        if dropped {
+            self.inner.store.persist_buffered_session(session)?;
+        }
+        Ok(())
+    }
+
     /// Drops the agent's wakes still waiting when a run of `session` is
     /// stopped: the stop ended that work, so no run starts again to show
     /// it. A wake a claim holds stays; the run releases it first.

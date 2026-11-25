@@ -364,6 +364,9 @@ impl Engine {
         {
             return Ok(());
         }
+        // Nothing that could only fail a run is left to start one.
+        self.drop_acp_subagent_mail_direct(session)?;
+        self.drop_failed_acp_wakes_direct(session)?;
         let state = self.inner.store.log(session)?.state();
         let retry = self.inner.config.load().runtime.model_retry;
         // The ACP agent's own work is shown even while the session is held:
@@ -377,7 +380,14 @@ impl Engine {
                 pending(message) && matches!(message.producer_owner, ProducerOwner::AcpAgent { .. })
             });
         let wake_delay = if acp_wake {
-            None
+            // After failed runs it waits as a retry would, so whatever
+            // fails them cannot start one run after another at once.
+            state.run_streak().failures.checked_sub(1).map(|ordinal| {
+                crate::runtime::model_loop::exponential_retry_delay(
+                    ordinal,
+                    std::time::Duration::from_millis(retry.backoff_ceiling_ms),
+                )
+            })
         } else {
             match after_runs(state.run_streak(), retry.standard_retries) {
                 AfterRuns::Held => return Ok(()),

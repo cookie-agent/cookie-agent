@@ -727,7 +727,9 @@ not in it.
   it does as in any turn: its reply, its tool calls, its permission requests
   and questions, and cookie's tools. Stop stops that work too; a message you
   send meanwhile goes into it. It shows even after you stopped a run, since
-  the agent is already working.
+  the agent is already working. A run showing it that fails is not tried
+  again: that work goes unshown, and the agent's next work brings a run of
+  its own, which waits as a retry would after failed runs.
 - **Commands left running.** A command the agent leaves running when its
   call ends (Claude Code's background commands), or when its turn ends or
   is stopped with the call still open (Codex keeps a command running after
@@ -745,7 +747,9 @@ not in it.
   the agent's name for it; its runs show what it does, starting with the
   task it got; its permission requests and questions are asked in it. It
   takes no messages: it works on what its parent gives it, and the parent
-  agent gets its result. So nothing cookie sends can reach it: `send_message`
+  agent gets its result. So nothing cookie sends can reach it: anything
+  else that arrives for it (a scheduled job's prompt, say) is dropped with
+  a note in its session, and `send_message`
   to it fails with `send_message:acp_subagent`, telling its parent agent to
   use its harness's own tools and any other sender to message the parent,
   and a cookie call it makes runs in the foreground, the `background`
