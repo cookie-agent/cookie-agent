@@ -265,6 +265,7 @@ pub fn WorkspaceView(
             </Show>
             <Sheet workspace=workspace />
             <onboarding::OnboardingSheet workspace=workspace />
+            <StatusTip workspace=workspace />
         </div>
     }
 }
@@ -315,9 +316,9 @@ fn ChatView(workspace: Workspace) -> impl IntoView {
                 </div>
                 <cards::DraftNotice workspace=workspace />
                 // An approval waiting takes the composer's place until it
-                // is answered.
-                <div class="relative">
-                    <StatusTip workspace=workspace />
+                // is answered. A status message shows above it
+                // ([`StatusTip`]).
+                <div id="composer-dock" class="relative">
                     <Show
                         when=move || !workspace.approvals().is_empty()
                         fallback=move || view! { <Composer workspace=workspace composing=composing /> }
@@ -4493,24 +4494,88 @@ pub(crate) fn follow_status(workspace: Workspace) {
     });
 }
 
-/// A new status message, such as an error, as a tooltip over the composer
-/// while [`Workspace::status_live`] says, fading out when it no longer does:
-/// they come rarely, so they take no room of the bottom bar's. It never
-/// takes a click from what it covers.
+/// A new status message, such as an error, as a tooltip over whatever the
+/// page shows while [`Workspace::status_live`] says, fading out when it no
+/// longer does: above the composer in a conversation, at the bottom of any
+/// other page or of a phone's sidebar. They come rarely, so they take no
+/// room of the bottom bar's. It never takes a click from what it covers.
 #[component]
 fn StatusTip(workspace: Workspace) -> impl IntoView {
     let live = move || workspace.status_live.get();
+    // Placed when it shows or what the page shows changes while it does, and
+    // kept while it fades out.
+    let place = RwSignal::new(None::<StatusPlace>);
+    Effect::new(move |_| {
+        let showing = workspace.status_live.get();
+        workspace.view.track();
+        workspace.sidebar_open.track();
+        workspace.narrow.track();
+        if showing && let Some(at) = status_place(workspace) {
+            place.set(Some(at));
+        }
+    });
+    let style = move || {
+        place.get().map_or_else(String::new, |at| {
+            format!(
+                "left: {}px; bottom: {}px; max-width: min(32rem, {}px)",
+                at.left, at.bottom, at.width
+            )
+        })
+    };
     view! {
         <span
             id="status"
             role="status"
             aria-hidden=move || (!live()).then_some("true")
-            class="status-tip pointer-events-none absolute bottom-full left-2 z-10 mb-1 line-clamp-3 max-w-[min(32rem,calc(100%-1rem))] rounded-lg bg-raised px-2.5 py-1.5 text-xs break-words text-muted shadow-menu ring-1 ring-line"
+            class="status-tip pointer-events-none fixed bottom-2 left-2 z-30 line-clamp-3 rounded-lg bg-raised px-2.5 py-1.5 text-xs break-words text-muted shadow-menu ring-1 ring-line"
             class:status-tip-gone=move || !live()
+            style=style
         >
             {move || workspace.status.get()}
         </span>
     }
+}
+
+/// Where [`StatusTip`] sits, in the window's pixels.
+#[derive(Clone, Copy, PartialEq)]
+struct StatusPlace {
+    left: f64,
+    bottom: f64,
+    width: f64,
+}
+
+/// [`StatusPlace`] over what the page shows: just above the composer in a
+/// conversation, else near the bottom of the page or of a phone's sidebar.
+fn status_place(workspace: Workspace) -> Option<StatusPlace> {
+    const INSET: f64 = 8.0;
+    let window = web_sys::window()?;
+    let height = window.inner_height().ok()?.as_f64()?;
+    let paged = workspace.sidebar_open.get_untracked();
+    let (selector, above) = if paged {
+        ("#sidebar", false)
+    } else if workspace.view.get_untracked() == View::Chat {
+        ("#composer-dock", true)
+    } else {
+        ("#page", false)
+    };
+    let frame = window
+        .document()?
+        .query_selector(selector)
+        .ok()??
+        .get_bounding_client_rect();
+    if frame.width() <= 0.0 {
+        return None;
+    }
+    let bottom = if above {
+        height - frame.top() + 4.0
+    } else {
+        height - frame.bottom() + INSET
+    };
+    Some(StatusPlace {
+        left: frame.left() + INSET,
+        bottom,
+        width: (frame.width() - 2.0 * INSET).max(0.0),
+    })
 }
 
 /// The session's cost as a wide window's bottom bar shows it.
