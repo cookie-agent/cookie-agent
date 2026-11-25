@@ -19,7 +19,7 @@ pub fn reason_label(reason: &Open<HeldReason>) -> String {
     }
 }
 
-/// The transcript row a hold adds.
+/// The transcript row a hold adds; it goes when the hold clears.
 pub fn held_row(reason: &Open<HeldReason>) -> String {
     format!(
         "Automatic runs held: {}. Nothing runs on its own until you resume.",

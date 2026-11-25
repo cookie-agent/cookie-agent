@@ -481,7 +481,7 @@ pub(super) fn reduce_event_from(
         }
         EventPayload::UserInputSubmitted { content } => {
             // The user acting clears a hold.
-            state.held = None;
+            clear_hold(state);
             close_open_assistant(state, timestamp);
             state.last_agent_activity = Some(timestamp);
             if run_id.is_some_and(|run_id| !state.initial_input_submitted.insert(run_id)) {
@@ -2062,15 +2062,7 @@ pub(super) fn reduce_event_from(
             );
             state.held = Some(reason.clone());
         }
-        EventPayload::AutomaticRunsResumed {} => {
-            state.held = None;
-            push_event(
-                state,
-                EventLevel::Info,
-                "Automatic runs resumed.".to_owned(),
-                timestamp,
-            );
-        }
+        EventPayload::AutomaticRunsResumed {} => clear_hold(state),
     }
 }
 
@@ -2347,6 +2339,29 @@ fn push_split_item(
     push_item(state, timestamp, item);
     if let Some(index) = relocate {
         move_transcript_item_to_end(state, index);
+    }
+}
+
+/// Clears a hold, and with it the transcript row that said the session is
+/// held: once the user resumed, by Resume or by sending, the row would only
+/// warn of something over.
+fn clear_hold(state: &mut SessionState) {
+    let Some(reason) = state.held.take() else {
+        return;
+    };
+    let row = crate::held::held_row(&reason);
+    let Some(index) = state.transcript.iter().rposition(|item| {
+        matches!(item, TranscriptItem::Event { level: EventLevel::Warning, text, .. } if *text == row)
+    }) else {
+        return;
+    };
+    let removed = state.transcript.remove(index);
+    state.busy.removed(&removed);
+    state.item_times.remove(&removed.id());
+    for message in state.producer_messages.values_mut() {
+        if message.transcript_index > index {
+            message.transcript_index -= 1;
+        }
     }
 }
 

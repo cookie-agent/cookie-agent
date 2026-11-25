@@ -177,8 +177,9 @@ Where the implementation differs from the text above, this section wins.
   child's run end, before the hold is recorded, so it says `failed` or
   `cancelled` as before rather than `held`, and a hold sends no report of
   its own (one would wake the parent, which could undo the user's stop).
-- **Clients.** The transcript records each hold as a warning row and each
-  resume as an info row. The web composer shows **Resume** in place of Send
+- **Clients.** The transcript shows a hold as a warning row while it
+  lasts; a resume, by Resume or by a message, removes the row and adds
+  none of its own (2026-11-25). The web composer shows **Resume** in place of Send
   and Queue, with a *Held — ...* status line after the transcript. The TUI
   draws a banner on the conversation's last row with a *resume* button
   (`PointerTarget::HeldResume`), and Enter in an empty composer resumes.
