@@ -87,6 +87,12 @@ pub(crate) struct LiveSession {
     /// How many rounds have taken `events`, and a wake for the listener
     /// waiting on the next.
     pub rounds: Arc<(std::sync::atomic::AtomicU64, tokio::sync::Notify)>,
+    /// The agent's last reading of its session's cost, in pico-dollars: a
+    /// `usage_update`'s `cost` is the ACP session's running total, so a
+    /// turn costs what it added to the reading before. `None` until the
+    /// first reading of a session the process resumed, loaded or forked,
+    /// whose total may carry the cost recorded before.
+    pub cost_reading: Arc<std::sync::Mutex<Option<u64>>>,
 }
 
 impl LiveSession {
@@ -355,7 +361,17 @@ fn context_of(update: &Value) -> Option<cookie_agent_protocol::AcpContextUsage> 
     })
 }
 
-/// The cost a `usage_update` reports in US dollars, in pico-dollars.
+/// The cost a turn added to the agent's running total `reading`, after
+/// the reading `before` (none: the cost recorded so far, `recorded`). A
+/// reading below it started over (the agent cleared its context), so it is
+/// all the turn's.
+fn cost_increment(reading: u64, before: Option<u64>, recorded: impl FnOnce() -> u64) -> u64 {
+    let before = before.unwrap_or_else(recorded);
+    reading.checked_sub(before).unwrap_or(reading)
+}
+
+/// The session's running total of cost a `usage_update` reports in US
+/// dollars, in pico-dollars.
 fn cost_of(update: Option<&Value>) -> Option<u64> {
     let cost = update?.get("cost")?;
     if cost.get("currency").and_then(Value::as_str)? != "USD" {
@@ -3506,10 +3522,27 @@ impl Engine {
                 agent_id: turn.live.agent.id.clone(),
                 resolved_model: turn.active.policy.agent.fallback_chain[0].resolved.clone(),
                 usage,
-                estimated_cost_pico_usd: cost_of(turn.usage_update.as_ref()),
+                estimated_cost_pico_usd: cost_of(turn.usage_update.as_ref())
+                    .map(|reading| self.acp_turn_cost(&turn.live, reading)),
             },
         )
         .await
+    }
+
+    /// What the turn that left the cost reading `reading` cost, which the
+    /// next turn's is measured from.
+    fn acp_turn_cost(&self, live: &LiveSession, reading: u64) -> u64 {
+        let mut last = super::lock(&live.cost_reading);
+        let cost = cost_increment(reading, *last, || {
+            self.inner
+                .store
+                .session_usage(live.session)
+                .ok()
+                .and_then(|usage| usage.usage.estimated_cost_usd)
+                .map_or(0, |usd| (usd * 1e12).round() as u64)
+        });
+        *last = Some(reading);
+        cost
     }
 
     /// The machines block an ACP agent of `policy` reads, its harness's
@@ -4149,6 +4182,9 @@ impl Engine {
             wanted: Arc::default(),
             waiting: Arc::default(),
             rounds: Arc::default(),
+            cost_reading: Arc::new(std::sync::Mutex::new(
+                matches!(how, AcpSessionStart::New).then_some(0),
+            )),
         };
         if matches!(how, AcpSessionStart::New) {
             self.apply_starting_options(session, run, &mut live, document)

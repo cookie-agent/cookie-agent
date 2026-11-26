@@ -248,6 +248,7 @@ impl Engine {
             carried: Arc::default(),
             wanted: Arc::default(),
             waiting: Arc::default(),
+            cost_reading: Arc::new(std::sync::Mutex::new(Some(0))),
             rounds: Arc::default(),
         };
         // What the agent passes its subagent of what cookie gave it: the

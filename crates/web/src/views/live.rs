@@ -2,9 +2,10 @@
 //! (docs/site/specs/quiet-ink.md, D6): the goal, the calls running in the
 //! background, the approvals waiting, and the context's use. A badge comes
 //! when its state starts, follows it, and goes when it ends; a click opens
-//! the session panel at its tab. The context ring always shows once a
-//! request has measured it, with the session's cost beside it. A clock counts down to the next fire of a cron
-//! job into the session (docs/site/specs/session-schedules.md, D1).
+//! the session panel at its tab. The context ring shows once a request has
+//! measured it, with the session's cost beside it, unless the column is too
+//! narrow to leave the title its room. A clock counts down to the next fire
+//! of a cron job into the session (docs/site/specs/session-schedules.md, D1).
 
 use cookie_agent_client_state::{
     cache::{CacheBadge, CacheHeat, badge_text, detail_lines},
@@ -319,12 +320,14 @@ pub fn LiveBadges(workspace: Workspace) -> impl IntoView {
                 </button>
             </Show>
             {fire_badge}
-            // The context ring always shows once a request has measured it,
-            // the session's cost once it has one.
+            // The context ring shows once a request has measured it, the
+            // session's cost once it has one, where the title keeps its room:
+            // a narrow column (a phone, or beside the side panel) leaves them
+            // to the usage panel.
             <Show when=move || context.with(Option::is_some) || cost.with(Option::is_some)>
                 <button
                     type="button"
-                    class=BADGE
+                    class=format!("{BADGE} @max-lg/chat:hidden")
                     id="context"
                     aria-label=usage_title
                     title=usage_title
