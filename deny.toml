@@ -8,7 +8,9 @@ yanked = "deny"
 # moves to another YAML parser.
 # Leptos (the web client, crates/web) requires paste 1.0; RUSTSEC-2024-0436 is
 # an unmaintained notice for a macro-only crate with no safe upgrade.
-ignore = ["RUSTSEC-2025-0141", "RUSTSEC-2024-0449", "RUSTSEC-2024-0436"]
+# oauth2 5.0 (its latest) and rmcp (MCP's OAuth) require chrono 0.4;
+# RUSTSEC-2026-0543 is an unmaintained notice with no safe upgrade.
+ignore = ["RUSTSEC-2025-0141", "RUSTSEC-2024-0449", "RUSTSEC-2024-0436", "RUSTSEC-2026-0543"]
 
 [bans]
 multiple-versions = "warn"
