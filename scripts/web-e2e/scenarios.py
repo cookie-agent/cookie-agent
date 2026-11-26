@@ -6174,6 +6174,13 @@ def projects(browser):
     assert items[:3] == ["Rename", "Pin", "Move to project…"], items
     assert items[4:] == ["Share conversation…", "Copy session ID", "Delete…"], items
     assert items[3] in ("Mark read", "Mark unread"), items
+    # Measured once it has opened: it grows in from 98 %.
+    browser.wait(
+        "the menu's opening",
+        lambda: browser.script(
+            "return !document.querySelector(arguments[0]).getAnimations().some((a) => a.playState === 'running')", menu
+        ),
+    )
     trigger, box = browser.script(
         "const r = (s) => document.querySelector(s).getBoundingClientRect();"
         "const t = r(arguments[0]), m = r(arguments[1]);"
