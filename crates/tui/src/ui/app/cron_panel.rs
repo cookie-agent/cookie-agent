@@ -210,7 +210,11 @@ fn mode_name(mode: PermissionMode) -> &'static str {
 }
 
 /// The form a job is created or edited as.
-pub(in crate::ui) fn form_text(draft: &CronDraft, session: Option<&str>) -> String {
+pub(in crate::ui) fn form_text(
+    draft: &CronDraft,
+    session: Option<&str>,
+    projects: &[cookie_agent_protocol::ProjectInfo],
+) -> String {
     let target = if draft.target.is_new() {
         "new"
     } else {
@@ -227,9 +231,10 @@ pub(in crate::ui) fn form_text(draft: &CronDraft, session: Option<&str>) -> Stri
          # max_runs: cron schedules only: a whole number, 0 or less for no limit; empty is 1.\n\
          # target: session or new (a new session per fire); {session}.\n\
          # delivery: session targets: queue (after the current turn) or steer (into it).\n\
-         # agent, model, permission_mode: new-session targets. model is provider/model or\n\
-         #   provider/model[variant], empty for the agent's own; permission_mode is empty\n\
-         #   for auto_approve_n, or auto_approve, auto_approve_y, ask, yolo.\n\
+         # agent, model, permission_mode, project: new-session targets. model is\n\
+         #   provider/model or provider/model[variant], empty for the agent's own;\n\
+         #   permission_mode is empty for auto_approve_n, or auto_approve, auto_approve_y,\n\
+         #   ask, yolo; project is a project's name, or `no project`.\n\
          # thread_key: new-session targets: a time format of the fire's local time\n\
          #   (%Y-%m-%d: one session per day, later fires go into it with delivery);\n\
          #   empty for a new session per fire. A thread prompt, sent once to each\n\
@@ -245,6 +250,7 @@ pub(in crate::ui) fn form_text(draft: &CronDraft, session: Option<&str>) -> Stri
          agent: {}\n\
          model: {}\n\
          permission_mode: {}\n\
+         project: {}\n\
          thread_key: {}\n\
          title: {}\n\
          title_auto: {}\n\
@@ -262,6 +268,7 @@ pub(in crate::ui) fn form_text(draft: &CronDraft, session: Option<&str>) -> Stri
         draft.agent,
         draft.model,
         draft.permission_mode.map_or("", mode_name),
+        cookie_agent_client_state::projects::project_text(projects, draft.project.as_ref()),
         draft.thread_key,
         draft.title,
         if draft.title_auto { "yes" } else { "no" },
@@ -281,6 +288,7 @@ const THREAD_PROMPT_LINE: &str = "--- thread prompt";
 pub(in crate::ui) fn parse_form(
     text: &str,
     request: &CronEditRequest,
+    projects: &[cookie_agent_protocol::ProjectInfo],
 ) -> Result<CronDraft, String> {
     let (header, prompt) = match text.split_once("\n---\n") {
         Some((header, prompt)) => (header, prompt),
@@ -316,6 +324,7 @@ pub(in crate::ui) fn parse_form(
                 | "agent"
                 | "model"
                 | "permission_mode"
+                | "project"
                 | "thread_key"
                 | "title"
                 | "title_auto"
@@ -369,6 +378,25 @@ pub(in crate::ui) fn parse_form(
         }
         other => return Err(format!("target is session or new, not `{other}`")),
     };
+    // The project a new-session job's sessions go in: the template's when
+    // the form has no `project` line.
+    let template_project = match &target {
+        CronDraftTarget::New { template } => template.project.clone(),
+        CronDraftTarget::Session { .. } => None,
+    };
+    // A session target ignores it: the form shows what `target: new` would
+    // use.
+    let project = if !target.is_new() {
+        None
+    } else if fields.iter().any(|(key, _)| *key == "project") {
+        cookie_agent_client_state::projects::project_from_text(
+            projects,
+            field("project"),
+            template_project.as_ref(),
+        )?
+    } else {
+        template_project
+    };
     Ok(CronDraft {
         name: field("name").to_owned(),
         prompt: prompt.to_owned(),
@@ -383,6 +411,7 @@ pub(in crate::ui) fn parse_form(
         thread_prompt: thread_prompt.to_owned(),
         title: field("title").to_owned(),
         title_auto: cookie_agent_client_state::cron::parse_title_auto(field("title_auto"))?,
+        project,
     })
 }
 
@@ -617,9 +646,11 @@ impl App {
             && let Some(template) = &template
         {
             draft.agent = template.agent.to_string();
+            // What `target: new` would go in.
+            draft.project.clone_from(&template.project);
         }
         let label = session.map(|session| self.session_target_label(session));
-        let text = form_text(&draft, label.as_deref());
+        let text = form_text(&draft, label.as_deref(), &self.projects);
         self.status = "editing a new cron job".into();
         self.pending_cron_editor = Some(CronEditRequest {
             job: None,
@@ -651,9 +682,11 @@ impl App {
             && let Some(template) = &template
         {
             draft.agent = template.agent.to_string();
+            // What `target: new` would go in.
+            draft.project.clone_from(&template.project);
         }
         let label = session.map(|session| self.session_target_label(session));
-        let text = form_text(&draft, label.as_deref());
+        let text = form_text(&draft, label.as_deref(), &self.projects);
         self.status = format!("editing {}", job_title(&job));
         self.pending_cron_editor = Some(CronEditRequest {
             job: Some(job),
@@ -687,7 +720,7 @@ impl App {
             return;
         }
         let request = CronEditRequest { text, ..request };
-        let draft = match parse_form(&request.text, &request) {
+        let draft = match parse_form(&request.text, &request, &self.projects) {
             Ok(draft) => draft,
             Err(message) => return self.refuse_cron_form(request, message),
         };

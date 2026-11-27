@@ -1261,11 +1261,13 @@ changes (`crons.changed`), from any client or agent.
     session each run**. A job for a session has a **Delivery**: `queue`
     (after the current turn) or `steer` (into the running turn);
   - a new-session job's **Agent**, **Model** (the agent's own models, or
-    a pin), and **Permission mode** (`auto-n` unless you choose another).
+    a pin), **Permission mode** (`auto-n` unless you choose another), and
+    **Project** its sessions go in, which editing the job changes too.
     Only you set the model and the mode; an agent's jobs always start in
     `auto-n`. The template takes the open session's agent, the preset in
     use, and the open session's project (the new session's, with none
-    open); the daemon attaches what `session.create` would;
+    open) until you pick another; the daemon attaches what
+    `session.create` would;
   - a new-session job's **Thread key** (a time format such as `%Y-%m-%d`
     for one session per day, or a fixed word for one session; see
     [threads](../sessions/scheduling.md#threads)), with a line saying which
@@ -1342,7 +1344,9 @@ webhook**. The view reads `webhooks.list` again whenever a webhook changes
   check); a preset only fills fields, which stay editable. Then:
   1. **Name and target**: the **Name**; **Deliver into** the open session
      (or subagent) or **New sessions**, with their **Agent, model, mode**,
-     **One session per** a JSON field, a header, or each event, and the
+     the **Project** they go in (the open session's until you pick
+     another, and editable on an existing webhook), **One session per** a
+     JSON field, a header, or each event, and the
      **Session title**: what the sessions are called in place of the
      webhook's name, the thread key or the time still following it, with a
      line showing how they read, and **Let the model name it after its

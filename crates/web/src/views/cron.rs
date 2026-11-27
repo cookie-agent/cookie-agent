@@ -456,6 +456,13 @@ fn cron_form(workspace: Workspace, form: CronForm) -> impl IntoView {
     let thread_prompt = RwSignal::new(draft.thread_prompt.clone());
     let title = RwSignal::new(draft.title.clone());
     let title_auto = RwSignal::new(draft.title_auto);
+    // A form opened on an in-session target offers the open session's
+    // project for "A new session each run".
+    let project = RwSignal::new(if draft.target.is_new() {
+        draft.project.clone()
+    } else {
+        template.project.clone()
+    });
     let creating = editing.is_none();
     // A new-session job with a thread key: its later fires take a delivery.
     let threaded = move || new.get() && !thread_key.with(|key| key.trim().is_empty());
@@ -528,6 +535,7 @@ fn cron_form(workspace: Workspace, form: CronForm) -> impl IntoView {
                     String::new()
                 },
                 title_auto: new.get_untracked() && title_auto.get_untracked(),
+                project: project.get_untracked(),
                 ..draft.clone()
             };
             if creating {
@@ -718,7 +726,8 @@ fn cron_form(workspace: Workspace, form: CronForm) -> impl IntoView {
                         </select>
                     </label>
                 </div>
-                <p class=NOTE>"Each run starts a session of this agent; only you can choose its model and permission mode, agents' jobs always start in auto-n."</p>
+                {project_field(workspace, "cron-project", project)}
+                <p class=NOTE>"Each run starts a session of this agent in this project; only you can choose its model and permission mode, agents' jobs always start in auto-n."</p>
                 <label class=LABEL>
                     <span class="font-bold">"Thread key"</span>
                     <input
@@ -819,5 +828,89 @@ pub fn clock_mark(workspace: Workspace, cron: cookie_agent_protocol::SessionCron
         >
             <Glyph icon=icondata::LuClock class="text-xs" />
         </span>
+    }
+}
+
+/// [`project_select`] with its label, for the cron form.
+fn project_field(
+    workspace: Workspace,
+    id: &'static str,
+    project: RwSignal<Option<cookie_agent_protocol::ProjectId>>,
+) -> impl IntoView {
+    view! {
+        <label class=LABEL>
+            <span class="font-bold">"Project"</span>
+            {project_select(workspace, id, project)}
+        </label>
+    }
+}
+
+/// The project a new-session job's or webhook's sessions go in: none, or
+/// one of the daemon's projects; one deleted since stays as its ID.
+pub(super) fn project_select(
+    workspace: Workspace,
+    id: &'static str,
+    project: RwSignal<Option<cookie_agent_protocol::ProjectId>>,
+) -> impl IntoView {
+    let choices = move || {
+        let mut choices: Vec<(String, String)> = workspace.projects.with(|projects| {
+            projects
+                .iter()
+                .map(|info| {
+                    (
+                        info.id.as_str().to_owned(),
+                        cookie_agent_client_state::projects::project_label(Some(info)),
+                    )
+                })
+                .collect()
+        });
+        if let Some(current) = project.get_untracked()
+            && !choices.iter().any(|(id, _)| id == current.as_str())
+        {
+            choices.push((
+                current.as_str().to_owned(),
+                format!("{} (deleted)", current.as_str()),
+            ));
+        }
+        choices
+    };
+    view! {
+            <select
+                id=id
+                class=SELECT
+                aria-label="Project"
+                on:change=move |event| {
+                    let value = event_target_value(&event);
+                    let current = project.get_untracked();
+                    project.set(if value.is_empty() {
+                        None
+                    } else {
+                        workspace
+                            .projects
+                            .with_untracked(|projects| {
+                                projects
+                                    .iter()
+                                    .find(|info| info.id.as_str() == value)
+                                    .map(|info| info.id.clone())
+                            })
+                            .or(current.filter(|current| current.as_str() == value))
+                    });
+                }
+            >
+                <option value="" selected=move || project.with(Option::is_none)>
+                    {cookie_agent_client_state::projects::NO_PROJECT}
+                </option>
+                {move || choices().into_iter().map(|(value, label)| {
+                    let chosen = value.clone();
+                    view! {
+                        <option
+                            value=value
+                            selected=move || project.with(|project| project.as_ref().is_some_and(|project| project.as_str() == chosen))
+                        >
+                            {label}
+                        </option>
+                    }
+                }).collect_view()}
+            </select>
     }
 }

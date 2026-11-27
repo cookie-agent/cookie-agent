@@ -612,7 +612,7 @@ impl App {
             },
         };
         let target = self.webhook_target_label(&draft.target.target());
-        let text = draft.form_text(&target);
+        let text = draft.form_text(&target, &self.projects);
         self.status = "editing a new webhook".into();
         self.pending_webhook_editor = Some(WebhookEditRequest {
             webhook: None,
@@ -625,7 +625,7 @@ impl App {
     fn begin_webhook_edit(&mut self, webhook: Webhook) {
         let draft = WebhookDraft::of_webhook(&webhook);
         let target = self.webhook_target_label(&webhook.target);
-        let text = draft.form_text(&target);
+        let text = draft.form_text(&target, &self.projects);
         self.status = format!("editing {}", webhook_title(&webhook));
         self.pending_webhook_editor = Some(WebhookEditRequest {
             webhook: Some(webhook),
@@ -658,7 +658,7 @@ impl App {
         }
         let request = WebhookEditRequest { text, ..request };
         let mut draft = request.draft.clone();
-        if let Err(message) = draft.apply_form(&request.text) {
+        if let Err(message) = draft.apply_form(&request.text, &self.projects) {
             return self.refuse_webhook_form(request, message);
         }
         match &request.webhook {

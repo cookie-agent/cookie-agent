@@ -46,6 +46,71 @@ pub fn project_label(project: Option<&ProjectInfo>) -> String {
     }
 }
 
+/// The project `text` names, as a form's `project:` line gives it: its
+/// name or label, its ID, or the start of its ID; `None` for an empty line
+/// or [`NO_PROJECT`]. A project no longer in `projects` keeps `current`
+/// when `text` names it by ID.
+pub fn project_from_text(
+    projects: &[ProjectInfo],
+    text: &str,
+    current: Option<&ProjectId>,
+) -> Result<Option<ProjectId>, String> {
+    let text = text.trim();
+    if text.is_empty() || text.eq_ignore_ascii_case(NO_PROJECT) || text.eq_ignore_ascii_case("none")
+    {
+        return Ok(None);
+    }
+    if let Some(current) = current.filter(|current| current.as_str() == text) {
+        return Ok(Some(current.clone()));
+    }
+    let named: Vec<&ProjectInfo> = projects
+        .iter()
+        .filter(|project| {
+            project.name.as_str().eq_ignore_ascii_case(text)
+                || project_label(Some(project)) == text
+                || project.id.as_str() == text
+        })
+        .collect();
+    let found = if named.is_empty() {
+        projects
+            .iter()
+            .filter(|project| project.id.as_str().starts_with(text))
+            .collect()
+    } else {
+        named
+    };
+    match found.as_slice() {
+        [project] => Ok(Some(project.id.clone())),
+        [] => Err(format!(
+            "there is no project {text:?}; the projects are {}",
+            if projects.is_empty() {
+                "none yet".to_owned()
+            } else {
+                projects
+                    .iter()
+                    .map(|project| project.name.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            }
+        )),
+        _ => Err(format!(
+            "{text:?} names more than one project; give its name"
+        )),
+    }
+}
+
+/// What a form's `project:` line says for `project`: its name, or
+/// [`NO_PROJECT`]; its ID when `projects` no longer has it.
+pub fn project_text(projects: &[ProjectInfo], project: Option<&ProjectId>) -> String {
+    match project {
+        None => NO_PROJECT.to_owned(),
+        Some(id) => find_project(projects, Some(id)).map_or_else(
+            || id.as_str().to_owned(),
+            |project| project.name.to_string(),
+        ),
+    }
+}
+
 /// The project `id` names among `projects`; `None` for no ID and for a
 /// project that no longer exists, which lists as no project.
 #[must_use]

@@ -607,6 +607,8 @@ pub struct WebhookDraft {
     pub max_concurrent: String,
     /// As [`parse_limit`] reads it.
     pub max_consecutive_failures: String,
+    /// New-session targets only: the project the sessions go in.
+    pub project: Option<cookie_agent_protocol::ProjectId>,
 }
 
 impl WebhookDraft {
@@ -630,6 +632,7 @@ impl WebhookDraft {
             max_per_hour: String::new(),
             max_concurrent: String::new(),
             max_consecutive_failures: String::new(),
+            project: None,
         }
     }
 
@@ -663,6 +666,7 @@ impl WebhookDraft {
         self.thread_prompt = template.thread_prompt.clone().unwrap_or_default();
         self.title = template.title.clone().unwrap_or_default();
         self.title_auto = template.title_auto;
+        self.project.clone_from(&template.project);
     }
 
     /// The form filled from `webhook`, to edit it.
@@ -749,6 +753,7 @@ impl WebhookDraft {
             .then(|| self.thread_prompt.trim_end().to_owned());
         template.title = crate::cron::parse_session_title(&self.title)?;
         template.title_auto = self.title_auto;
+        template.project.clone_from(&self.project);
         Ok(WebhookTarget::New(template))
     }
 
@@ -875,7 +880,7 @@ impl WebhookDraft {
     /// fields, then the prompt after a `---` line and the thread prompt
     /// after a `--- thread prompt` line. The target is fixed when the form
     /// opens; `target` names it in a comment.
-    pub fn form_text(&self, target: &str) -> String {
+    pub fn form_text(&self, target: &str, projects: &[ProjectInfo]) -> String {
         let mut text = format!(
             "# A webhook. Lines starting with # are ignored; the prompt sent with every\n\
              # event follows the --- line, and a thread prompt, sent once to each session\n\
@@ -884,7 +889,8 @@ impl WebhookDraft {
              # Target: {target}.\n\
              # delivery: queue (after the current turn) or steer (into it); for a session\n\
              #   target, or a new-session one with a thread_key.\n\
-             # agent, model, permission_mode, thread_key, max_concurrent: new-session targets.\n\
+             # agent, model, permission_mode, project, thread_key, max_concurrent: new-session\n\
+             #   targets. project is a project's name, or `no project`.\n\
              #   model is provider/model or provider/model[variant], empty for the agent's own;\n\
              #   thread_key is json:/pointer or header:Name; events with the same key share a\n\
              #   session.\n\
@@ -905,10 +911,11 @@ impl WebhookDraft {
         );
         if self.target.is_new() {
             text.push_str(&format!(
-                "agent: {}\nmodel: {}\npermission_mode: {}\nthread_key: {}\ntitle: {}\ntitle_auto: {}\n",
+                "agent: {}\nmodel: {}\npermission_mode: {}\nproject: {}\nthread_key: {}\ntitle: {}\ntitle_auto: {}\n",
                 self.agent,
                 self.model,
                 self.permission_mode.map_or("", permission_mode_code),
+                crate::projects::project_text(projects, self.project.as_ref()),
                 self.thread_key,
                 self.title,
                 if self.title_auto { "yes" } else { "no" },
@@ -949,7 +956,7 @@ impl WebhookDraft {
 
     /// Reads [`Self::form_text`]'s text back into this form, keeping its
     /// target, or says what is wrong.
-    pub fn apply_form(&mut self, text: &str) -> Result<(), String> {
+    pub fn apply_form(&mut self, text: &str, projects: &[ProjectInfo]) -> Result<(), String> {
         let (header, prompts) = match text.split_once("\n---\n") {
             Some((header, prompts)) => (header, prompts),
             None => match text.strip_suffix("\n---") {
@@ -993,6 +1000,7 @@ impl WebhookDraft {
                 "agent"
                     | "model"
                     | "permission_mode"
+                    | "project"
                     | "thread_key"
                     | "title"
                     | "title_auto"
@@ -1027,6 +1035,10 @@ impl WebhookDraft {
                     }
                 }
                 "thread_key" => next.thread_key = value.to_owned(),
+                "project" => {
+                    next.project =
+                        crate::projects::project_from_text(projects, value, self.project.as_ref())?;
+                }
                 "title" => next.title = value.to_owned(),
                 "title_auto" => next.title_auto = crate::cron::parse_title_auto(value)?,
                 "check" => next.verify = value.to_owned(),

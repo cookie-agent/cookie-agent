@@ -725,9 +725,24 @@ fn setup_tab(workspace: Workspace, webhook: Webhook, url: String) -> impl IntoVi
             </div>
         }
     });
+    // The project the new sessions go in, after the first line.
+    let project = match &webhook.target {
+        cookie_agent_protocol::WebhookTarget::New(template) => {
+            Some(workspace.projects.with_untracked(|projects| {
+                cookie_agent_client_state::webhook::template_project(template, projects)
+            }))
+        }
+        _ => None,
+    };
     let happens = what_happens(&webhook, name_of(workspace))
         .into_iter()
-        .map(|line| {
+        .enumerate()
+        .map(|(index, mut line)| {
+            if index == 0
+                && let Some(project) = &project
+            {
+                line.heading = format!("{}, in {project}", line.heading);
+            }
             view! {
                 <li class="flex flex-col gap-0.5 px-3 py-2">
                     <span class="text-sm font-medium">{line.heading}</span>

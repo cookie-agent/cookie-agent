@@ -185,6 +185,13 @@ pub(super) fn webhook_form(workspace: Workspace, form: WebhookForm) -> impl Into
     });
     let model = RwSignal::new(draft.model.clone());
     let mode = RwSignal::new(draft.permission_mode);
+    // A form opened on an in-session target offers the open session's
+    // project for a new session per event.
+    let project = RwSignal::new(if draft.target.is_new() {
+        draft.project.clone()
+    } else {
+        template.project.clone()
+    });
     let preset = RwSignal::new(None::<Preset>);
     let threaded = move || new.get() && thread_by_choice.get() != ThreadBy::Event;
     let target_note = editing.as_ref().map(|webhook| {
@@ -309,6 +316,7 @@ pub(super) fn webhook_form(workspace: Workspace, form: WebhookForm) -> impl Into
                     String::new()
                 },
                 title_auto: is_new && title_auto.get_untracked(),
+                project: project.get_untracked(),
                 delivery: delivery.get_untracked(),
                 verify: verify_text(verify.as_ref()),
                 secret: if own_secret.get_untracked() {
@@ -540,6 +548,8 @@ pub(super) fn webhook_form(workspace: Workspace, form: WebhookForm) -> impl Into
                             }).collect_view()}
                         </select>
                     </div>
+                    <span class=LABEL>"Project"</span>
+                    {super::cron::project_select(workspace, "webhook-project", project)}
                     <span class=LABEL>"One session per"</span>
                     <div class="flex flex-col gap-2 sm:flex-row sm:items-center">
                         <div class=SEGMENTS role="radiogroup" aria-label="One session per">

@@ -7,7 +7,7 @@
 use cookie_agent_protocol::{
     AgentId, CronCreateParams, CronDisabledReason, CronFire, CronFireOutcome, CronJob, CronMaxRuns,
     CronSchedule, CronSkipReason, CronTarget, CronTemplate, CronUpdateParams, ModelSelection, Open,
-    PermissionMode, ProducerDeliveryMode, ProjectInfo, SemVer, SessionId, SessionStatus,
+    PermissionMode, ProducerDeliveryMode, ProjectId, ProjectInfo, SemVer, SessionId, SessionStatus,
 };
 use jiff::{Timestamp, tz::TimeZone};
 
@@ -796,6 +796,8 @@ pub struct CronDraft {
     pub title: String,
     /// For a new-session job: the automatic title names its sessions.
     pub title_auto: bool,
+    /// For a new-session job: the project its sessions go in.
+    pub project: Option<ProjectId>,
 }
 
 impl CronDraft {
@@ -816,6 +818,7 @@ impl CronDraft {
             thread_prompt: String::new(),
             title: String::new(),
             title_auto: false,
+            project: None,
         }
     }
 
@@ -831,6 +834,7 @@ impl CronDraft {
         let thread_prompt = template.thread_prompt.clone().unwrap_or_default();
         let title = template.title.clone().unwrap_or_default();
         let title_auto = template.title_auto;
+        let project = template.project.clone();
         Self {
             name: String::new(),
             prompt: String::new(),
@@ -845,6 +849,7 @@ impl CronDraft {
             thread_prompt,
             title,
             title_auto,
+            project,
         }
     }
 
@@ -883,6 +888,10 @@ impl CronDraft {
             ),
             _ => (String::new(), String::new(), String::new(), false),
         };
+        let project = match &job.target {
+            CronTarget::New(template) => template.project.clone(),
+            _ => None,
+        };
         Self {
             name: job.name.clone().unwrap_or_default(),
             prompt: job.prompt.clone(),
@@ -903,6 +912,7 @@ impl CronDraft {
             thread_prompt,
             title,
             title_auto,
+            project,
         }
     }
 
@@ -955,6 +965,7 @@ impl CronDraft {
                     .then(|| self.thread_prompt.trim_end().to_owned());
                 template.title = parse_session_title(&self.title)?;
                 template.title_auto = self.title_auto;
+                template.project.clone_from(&self.project);
                 Ok(CronTarget::New(template))
             }
             _ if !self.title.trim().is_empty() || self.title_auto => {

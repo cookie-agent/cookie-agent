@@ -285,7 +285,7 @@ fn a_webhook_form_round_trips_and_changes_nothing() {
     // Through the text form too.
     let mut reread = draft.clone();
     reread
-        .apply_form(&draft.form_text("a new session"))
+        .apply_form(&draft.form_text("a new session", &[]), &[])
         .unwrap();
     assert_eq!(reread, draft);
     assert!(!update_changes_anything(
@@ -295,7 +295,9 @@ fn a_webhook_form_round_trips_and_changes_nothing() {
     let in_session = webhook(serde_json::json!({"prompt": "Look at it."}));
     let draft = WebhookDraft::of_webhook(&in_session);
     let mut reread = draft.clone();
-    reread.apply_form(&draft.form_text("this session")).unwrap();
+    reread
+        .apply_form(&draft.form_text("this session", &[]), &[])
+        .unwrap();
     assert_eq!(reread, draft);
     assert!(!update_changes_anything(
         &draft.update_params(&in_session).unwrap()
@@ -409,7 +411,7 @@ fn a_session_title_is_checked_and_round_trips_through_the_text_form() {
     draft.title_auto = true;
     let mut reread = draft.clone();
     reread
-        .apply_form(&draft.form_text("a new session"))
+        .apply_form(&draft.form_text("a new session", &[]), &[])
         .unwrap();
     assert_eq!(reread.title.trim(), "Shop issues");
     assert!(reread.title_auto);
@@ -418,7 +420,7 @@ fn a_session_title_is_checked_and_round_trips_through_the_text_form() {
         draft.title = bad;
         assert!(draft.create_params().is_err(), "{:?}", draft.title);
     }
-    assert!(reread.apply_form("title_auto: maybe\n---\n").is_err());
+    assert!(reread.apply_form("title_auto: maybe\n---\n", &[]).is_err());
 
     let mut in_session = WebhookDraft::for_session(session(1), false);
     in_session.title = "Issues".to_owned();
@@ -442,12 +444,13 @@ fn a_text_form_refuses_what_its_target_cannot_take() {
     ];
     for text in refused {
         let before = in_session.clone();
-        assert!(in_session.apply_form(text).is_err(), "{text:?}");
+        assert!(in_session.apply_form(text, &[]).is_err(), "{text:?}");
         assert_eq!(in_session, before, "a refused form changes nothing");
     }
     in_session
         .apply_form(
             "name: CI\nfilter: header:X-Event=failed\nfilter: json:/branch=main\n---\nLook.\n",
+            &[],
         )
         .unwrap();
     assert_eq!(in_session.name, "CI");
@@ -458,9 +461,13 @@ fn a_text_form_refuses_what_its_target_cannot_take() {
         WebhookDraft::for_new_session(WebhookTemplate::for_agent("builder".parse().unwrap()));
     new.apply_form(
         "permission_mode: ask\nthread_key: json:/n\n---\nEvent.\n--- thread prompt\nOnce.\n",
+        &[],
     )
     .unwrap();
     assert_eq!(new.permission_mode, Some(PermissionMode::Ask));
     assert_eq!(new.thread_prompt, "Once.");
-    assert!(new.apply_form("permission_mode: sometimes\n---\n").is_err());
+    assert!(
+        new.apply_form("permission_mode: sometimes\n---\n", &[])
+            .is_err()
+    );
 }

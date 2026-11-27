@@ -332,6 +332,7 @@ async fn a_subagent_on_screen_is_targeted_as_a_subagent() {
             "Report",
         ),
         &request,
+        &[],
     )
     .expect("the form");
     assert_eq!(
@@ -378,7 +379,7 @@ async fn a_form_names_only_the_fields_of_a_job() {
         text: String::new(),
         original: String::new(),
     };
-    let parse = |text: &str| parse_form(text, &request).map(|_| ());
+    let parse = |text: &str| parse_form(text, &request, &[]).map(|_| ());
     assert_eq!(
         parse("name: a\nschedule: in 5m\n"),
         Err("the form needs the --- line before the prompt".into())
@@ -407,6 +408,7 @@ async fn a_form_names_only_the_fields_of_a_job() {
     let draft = parse_form(
         "# comment\ntarget: new\nagent: builder\nschedule: at 2026-10-23T03:00:00Z\n---\nabove\n---\nbelow\n",
         &request,
+        &[],
     )
     .expect("the form");
     assert_eq!(draft.prompt, "above\n---\nbelow\n");
@@ -415,14 +417,16 @@ async fn a_form_names_only_the_fields_of_a_job() {
     let draft = parse_form(
         "target: new\nagent: builder\nthread_key: %Y-%m-%d\n---\nAdd an entry.\n--- thread prompt\nKeep a log.\n",
         &request,
+        &[],
     )
     .expect("the form");
     assert_eq!(draft.prompt, "Add an entry.");
     assert_eq!(draft.thread_key, "%Y-%m-%d");
     assert_eq!(draft.thread_prompt, "Keep a log.");
     let again = parse_form(
-        &crate::ui::app::cron_panel::form_text(&draft, None),
+        &crate::ui::app::cron_panel::form_text(&draft, None, &[]),
         &request,
+        &[],
     )
     .expect("the form again");
     assert_eq!(again.thread_key, draft.thread_key);
@@ -716,7 +720,7 @@ fn a_keyed_jobs_form_says_which_thread_its_next_fire_goes_to() {
     let mut draft = CronDraft::for_new_session(bare_template("builder".parse().unwrap()));
     draft.schedule = "0 3 * * *".to_owned();
     let preview = |draft: &CronDraft| {
-        crate::ui::app::cron_panel::form_text(draft, None)
+        crate::ui::app::cron_panel::form_text(draft, None, &[])
             .lines()
             .filter(|line| line.starts_with('#') && line.contains("dailythread"))
             .count()

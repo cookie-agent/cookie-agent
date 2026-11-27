@@ -721,6 +721,7 @@ delivery: queue
 agent: builder
 model: deepseek/deepseek-flash[high]
 permission_mode: ask
+project: cookie-agent
 ---
 Check for outdated dependencies and open a summary.
 ```
@@ -732,9 +733,11 @@ Check for outdated dependencies and open a summary.
 - `target: session` fires into the session the form was opened for (or the
   job's own session when editing); `target: new` starts a session per fire.
 - `delivery` (`queue` or `steer`) applies to a session target; `agent`,
-  `model`, and `permission_mode` to a new-session target. `model` pins
-  `provider/model` or `provider/model[variant]`; empty, the agent's own
-  chain runs. `permission_mode` empty means `auto_approve_n`.
+  `model`, `permission_mode`, and `project` to a new-session target. `model`
+  pins `provider/model` or `provider/model[variant]`; empty, the agent's own
+  chain runs. `permission_mode` empty means `auto_approve_n`. `project` is
+  the project the sessions go in, by name, or `no project`; a new form
+  offers the session on screen's project.
 - `thread_key` (new-session targets) is a time format of the fire's local
   time, such as `%Y-%m-%d` for one session per day: later fires with the
   same key go into that session with `delivery`. A constant such as `main`
@@ -812,6 +815,7 @@ delivery: queue
 agent: builder
 model:
 permission_mode:
+project: cookie-agent
 thread_key: json:/issue/number
 title: Shop issues
 title_auto: no
@@ -834,6 +838,8 @@ You look after one GitHub issue. Keep its labels right.
   `secret` empty to have the daemon make one: it is shown once after the
   save, where `c` copies it and Esc hides it. `r` shows it again later.
 - `filter` may repeat; every line must match an event.
+- `project` (new-session webhooks) is the project the sessions go in, by
+  name, or `no project`.
 - `thread_key` is `json:/pointer` or `header:Name`: events with the same key
   share a session, and later ones go into it with `delivery`.
 - `title` is what the sessions are called, at most 96 characters, followed
