@@ -4331,9 +4331,12 @@ fn ComposerChips(workspace: Workspace, composing: RwSignal<bool>) -> impl IntoVi
         )
     };
     view! {
+        // A scroller across, so also down: its padding holds the chips' taller
+        // hit areas (`.hit-area::before`), which would otherwise overflow it
+        // by 6 px and let a wheel or a focus scroll the chips up out of line.
         <div
             id="status-bar"
-            class="flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto [scrollbar-width:none]"
+            class="-my-1.5 flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto overflow-y-hidden py-1.5 [scrollbar-width:none]"
             class:compact:hidden=move || composing.get()
         >
             <span class="mx-1 h-4 w-px shrink-0 bg-line-2" aria-hidden="true"></span>
