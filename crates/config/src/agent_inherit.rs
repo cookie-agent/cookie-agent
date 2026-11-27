@@ -22,7 +22,7 @@ use crate::{ConfigError, ConfigTree, agent_document};
 /// The frontmatter key.
 pub(crate) const INHERIT_KEY: &str = "inherit";
 /// The longest chain of documents inheriting one another.
-const MAX_CHAIN: usize = 8;
+pub(crate) const MAX_CHAIN: usize = 8;
 
 /// What a document of the user's means once its `inherit` is resolved.
 pub(crate) enum Resolved {
@@ -95,7 +95,7 @@ fn parts_of(
             body
         } else {
             match replaced_prompt(tree, path, officials, chain)? {
-                Some(prompt) => crate::prompt_template::replace_default_prompt(&body, &prompt),
+                Some((_, prompt)) => crate::prompt_template::replace_default_prompt(&body, &prompt),
                 None => body,
             }
         };
@@ -176,13 +176,13 @@ fn merge(base: Parts, mapping: serde_yaml::Mapping, body: String) -> Parts {
 /// `{{default_prompt}}` from: the document it replaces, a preset's document
 /// the user's own top-level one, else the official agent of its ID. `None`
 /// when neither exists, which the loader handles (`compaction`'s built-in
-/// prompt, or a diagnostic).
-fn replaced_prompt(
+/// prompt, or a diagnostic). With the tree path it came from.
+pub(crate) fn replaced_prompt(
     tree: &ConfigTree,
     path: &str,
     officials: bool,
     chain: &mut Vec<String>,
-) -> Result<Option<String>, ConfigError> {
+) -> Result<Option<(String, String)>, ConfigError> {
     let Some(rest) = path.strip_prefix("agents/") else {
         return Ok(None);
     };
@@ -203,14 +203,16 @@ fn replaced_prompt(
         let outcome = parts_of(tree, &candidate, &bytes, officials, chain)?;
         chain.pop();
         return Ok(match outcome {
-            Outcome::Parts(parts) => Some(parts.body.trim_end_matches('\n').to_owned()),
+            Outcome::Parts(parts) => {
+                Some((candidate, parts.body.trim_end_matches('\n').to_owned()))
+            }
             Outcome::Missing(_) => None,
         });
     }
     Ok(None)
 }
 
-fn mapping_of(yaml: &str, shown: &Path) -> Result<serde_yaml::Mapping, ConfigError> {
+pub(crate) fn mapping_of(yaml: &str, shown: &Path) -> Result<serde_yaml::Mapping, ConfigError> {
     match agent_document::parse_yaml(yaml, shown)? {
         serde_yaml::Value::Mapping(mapping) => Ok(mapping),
         serde_yaml::Value::Null => Ok(serde_yaml::Mapping::new()),
@@ -223,7 +225,7 @@ fn mapping_of(yaml: &str, shown: &Path) -> Result<serde_yaml::Mapping, ConfigErr
 
 /// `inherit` read relative to the folder of the document at `path`, as a
 /// tree path of an agent document; `None` for anything else.
-fn target_path(path: &str, inherit: &str) -> Option<String> {
+pub(crate) fn target_path(path: &str, inherit: &str) -> Option<String> {
     if inherit.starts_with('/') || inherit.contains('\\') {
         return None;
     }
@@ -259,7 +261,7 @@ fn target_path(path: &str, inherit: &str) -> Option<String> {
 }
 
 /// The content of the agent document at tree path `path`.
-fn lookup(tree: &ConfigTree, path: &str, officials: bool) -> Option<Vec<u8>> {
+pub(crate) fn lookup(tree: &ConfigTree, path: &str, officials: bool) -> Option<Vec<u8>> {
     if let Some(file) = path.strip_prefix(&format!("{}/", crate::OFFICIAL_AGENTS_DIRECTORY)) {
         if !officials {
             return None;
@@ -282,7 +284,7 @@ fn lookup(tree: &ConfigTree, path: &str, officials: bool) -> Option<Vec<u8>> {
 }
 
 /// Where `path` is on disk, for messages.
-fn tree_path(tree: &ConfigTree, path: &str) -> std::path::PathBuf {
+pub(crate) fn tree_path(tree: &ConfigTree, path: &str) -> std::path::PathBuf {
     tree.root()
         .map_or_else(|| std::path::PathBuf::from(path), |root| root.join(path))
 }

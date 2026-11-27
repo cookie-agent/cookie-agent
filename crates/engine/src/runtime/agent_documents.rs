@@ -57,6 +57,16 @@ pub struct AgentDocumentEntry {
     pub disabled: bool,
 }
 
+/// An agent document read whole, as `agents.resolved` returns it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ResolvedAgentView {
+    pub document: cookie_agent_config::ResolvedAgentDocument,
+    /// Whether the document is the user's own for the agent asked for.
+    pub own_document: bool,
+    /// The model variables the document names, with what they resolve to.
+    pub values: Vec<(String, String)>,
+}
+
 /// The `inherit` a document's text names, read leniently.
 fn inherit_of(text: &str) -> Option<String> {
     let rest = text.strip_prefix("---")?;
@@ -421,6 +431,124 @@ impl Engine {
         )
         .await?;
         Ok(path.to_string())
+    }
+
+    /// An agent document after every `inherit`, for reading
+    /// (`docs/site/specs/agent-shortcuts.md` section 4): the document at
+    /// `path`, or the one agent `id` (in `preset`) runs. An agent with no
+    /// document of the user's runs its official document, or, for an ACP
+    /// agent, the `_acp` template it follows.
+    pub async fn resolved_agent(
+        &self,
+        path: Option<&str>,
+        id: Option<&str>,
+        preset: Option<&str>,
+    ) -> Result<ResolvedAgentView, EngineError> {
+        let refused = |message: String| EngineError::ConfigChangeRefused(message);
+        let tree = self.read_tree().await?;
+        let config = self.inner.config.load();
+        let officials = config.runtime.agents.official;
+        let exists = |path: &str| {
+            let official = format!("{}/", cookie_agent_config::OFFICIAL_AGENTS_DIRECTORY);
+            match path.strip_prefix(&official) {
+                Some(_) => officials && self.inherited_text(&tree, path).is_some(),
+                None => ConfigPath::new(path)
+                    .ok()
+                    .is_some_and(|path| tree.get(&path).is_some()),
+            }
+        };
+        let (path, own_document) = match (path, id) {
+            (Some(path), None) => (
+                path.to_owned(),
+                !path.starts_with(&format!(
+                    "{}/",
+                    cookie_agent_config::OFFICIAL_AGENTS_DIRECTORY
+                )),
+            ),
+            (None, Some(id)) => {
+                let official =
+                    format!("{}/{id}.md", cookie_agent_config::OFFICIAL_AGENTS_DIRECTORY);
+                let mut own = Vec::new();
+                if let Some(preset) = preset {
+                    own.push(format!("agents/{preset}/{id}.md"));
+                }
+                own.push(format!("agents/{id}.md"));
+                if let Some(path) = own.into_iter().find(|path| exists(path)) {
+                    (path, true)
+                } else if exists(&official) {
+                    (official, false)
+                } else {
+                    // An ACP agent with no document follows the `_acp`
+                    // template, the nearest one.
+                    let declared = config
+                        .runtime
+                        .acp
+                        .agents
+                        .keys()
+                        .any(|each| each.as_str() == id)
+                        || config.runtimes.values().any(|template| {
+                            template.acp_agents.keys().any(|each| each.as_str() == id)
+                        });
+                    let mut templates = Vec::new();
+                    if let Some(preset) = preset {
+                        templates.push(format!("agents/{preset}/_acp.md"));
+                    }
+                    templates.push("agents/_acp.md".to_owned());
+                    templates.push(format!(
+                        "{}/_acp.md",
+                        cookie_agent_config::OFFICIAL_AGENTS_DIRECTORY
+                    ));
+                    let template = declared
+                        .then(|| templates.into_iter().find(|path| exists(path)))
+                        .flatten()
+                        .ok_or_else(|| refused(format!("`{id}` has no agent document to show")))?;
+                    (template, false)
+                }
+            }
+            _ => {
+                return Err(refused(
+                    "name a document with `path`, or an agent with `id`, not both".to_owned(),
+                ));
+            }
+        };
+        let document = tokio::task::spawn_blocking(move || {
+            cookie_agent_config::resolve_for_reading(&tree, &path, officials)
+        })
+        .await
+        .map_err(|error| EngineError::Runtime(error.to_string()))?
+        .map_err(config_error)?;
+        let values = cookie_agent_config::ModelField::ALL
+            .into_iter()
+            .filter(|field| document.text.contains(field.expression()))
+            .filter_map(|field| {
+                let models = match field {
+                    cookie_agent_config::ModelField::Default => &config.runtime.default_model,
+                    cookie_agent_config::ModelField::Small => &config.runtime.small_model,
+                    cookie_agent_config::ModelField::Utility => &config.runtime.utility_model,
+                };
+                let value = models
+                    .as_ref()?
+                    .entries()
+                    .iter()
+                    .map(|entry| match &entry.variant {
+                        Some(cookie_agent_identity::ConfiguredVariantRef::Named(variant)) => {
+                            format!("{} · {}", entry.model, variant.as_str())
+                        }
+                        Some(cookie_agent_identity::ConfiguredVariantRef::Base) => {
+                            format!("{} · base", entry.model)
+                        }
+                        None => entry.model.to_string(),
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", then ");
+                Some((field.expression().to_owned(), value))
+            })
+            .collect();
+        Ok(ResolvedAgentView {
+            document,
+            own_document,
+            values,
+        })
     }
 
     async fn read_tree(&self) -> Result<ConfigTree, EngineError> {

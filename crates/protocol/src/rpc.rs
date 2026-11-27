@@ -1738,6 +1738,7 @@ pub const AGENTS_CUSTOMIZE_METHOD: &str = "agents.customize";
 pub const AGENTS_SET_ENABLED_METHOD: &str = "agents.set_enabled";
 pub const AGENTS_RESET_METHOD: &str = "agents.reset";
 pub const AGENTS_REPLACE_METHOD: &str = "agents.replace";
+pub const AGENTS_RESOLVED_METHOD: &str = "agents.resolved";
 
 /// `agents.documents` (client protocol 1.75.0): every agent document with
 /// where it comes from, for the agents panel
@@ -1849,6 +1850,98 @@ pub struct AgentsSetEnabledParams {
 pub struct AgentDocumentResult {
     #[schemars(length(min = 1, max = 512))]
     pub path: String,
+}
+
+/// `agents.resolved` (client protocol 1.103.0): an agent document after
+/// every `inherit` and `{{default_prompt}}`, for reading
+/// (`docs/site/specs/agent-shortcuts.md` section 4). Names either a
+/// document of the tree by `path`, or an agent as the agents panel lists it
+/// by `id` and `preset`; exactly one of `path` and `id`.
+#[derive(Clone, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentsResolvedParams {
+    /// A tree path such as `agents/primary.md` or
+    /// `official_agents/_acp.md`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(length(min = 1, max = 512))]
+    pub path: Option<String>,
+    /// An agent's ID, or a template's `_<name>`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(length(min = 1, max = 64))]
+    pub id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Option<crate::agent::AgentPresetNameSchema>")]
+    pub preset: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct AgentsResolvedResult {
+    /// The resolved document, frontmatter and body.
+    #[schemars(length(max = 1048576))]
+    pub text: String,
+    /// Whether `text` keeps the documents' comments; `false` when the
+    /// daemon fell back to the merged frontmatter written out without them.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub comments: bool,
+    /// The tree paths of the documents merged, the agent's own first.
+    #[schemars(length(max = 16))]
+    pub chain: Vec<String>,
+    /// Whether `chain` starts with a document of the user's for the agent
+    /// asked for; `false` for an ACP agent that follows its template, and
+    /// for an official document.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub own_document: bool,
+    /// Where each frontmatter key came from.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[schemars(length(max = 1024))]
+    pub keys: Vec<AgentResolvedKey>,
+    /// The lines the inherited prompt took, when `{{default_prompt}}` (or
+    /// an empty body) brought one in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<AgentResolvedPrompt>,
+    /// The model variables the frontmatter names, with what they resolve
+    /// to.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[schemars(length(max = 64))]
+    pub values: Vec<AgentResolvedValue>,
+}
+
+/// A frontmatter key of a resolved document: a top-level key, or one
+/// permission action as `permissions.<action>`.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct AgentResolvedKey {
+    #[schemars(length(min = 1, max = 256))]
+    pub key: String,
+    /// The tree path of the document of the chain it came from.
+    #[schemars(length(max = 512))]
+    pub source: String,
+    /// Its first and last line in the result's `text`, 1-based.
+    pub first_line: u32,
+    pub last_line: u32,
+    /// The inherited block it replaced, as written.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(length(max = 65536))]
+    pub replaced: Option<String>,
+}
+
+/// The inherited prompt in a resolved document's body.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct AgentResolvedPrompt {
+    /// The tree path of the document whose prompt it is.
+    #[schemars(length(max = 512))]
+    pub source: String,
+    /// Its first and last line in the result's `text`, 1-based.
+    pub first_line: u32,
+    pub last_line: u32,
+}
+
+/// A model variable, such as `${default_model}`, and what it resolves to.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct AgentResolvedValue {
+    #[schemars(length(min = 1, max = 64))]
+    pub name: String,
+    #[schemars(length(max = 512))]
+    pub value: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]

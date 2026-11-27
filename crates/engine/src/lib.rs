@@ -73,7 +73,9 @@ pub use plugin::{
     pages::{PluginPage, PluginPageTarget, percent_decode},
 };
 pub use projects::ProjectError;
-pub use runtime::agent_documents::{AgentDocumentEntry, AgentDocumentKind, AgentDocumentOrigin};
+pub use runtime::agent_documents::{
+    AgentDocumentEntry, AgentDocumentKind, AgentDocumentOrigin, ResolvedAgentView,
+};
 pub use runtime::artifacts::uploads::{MAX_UPLOADS_PER_CONNECTION, MediaError};
 pub use runtime::attachments::{DialInClaim, SessionRuntimeRequest, SessionRuntimes};
 pub use runtime::chatgpt::CHATGPT_MAINTENANCE_INTERVAL;

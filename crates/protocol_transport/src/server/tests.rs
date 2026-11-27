@@ -220,6 +220,12 @@ impl ServerProtocol for StubServer {
     ) -> Result<cookie_agent_protocol::AgentDocumentResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
+    async fn resolved_agent(
+        &self,
+        _: cookie_agent_protocol::AgentsResolvedParams,
+    ) -> Result<cookie_agent_protocol::AgentsResolvedResult, ServerFault> {
+        Err(ServerFault::method_not_found("stub"))
+    }
     async fn compact_session(
         &self,
         _: cookie_agent_protocol::SessionCompactParams,

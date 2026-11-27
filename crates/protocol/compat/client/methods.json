@@ -44,6 +44,14 @@
     {
       "direction": "to_daemon",
       "kind": "request",
+      "method": "agents.resolved",
+      "params": "AgentsResolvedParams",
+      "params_role": "command",
+      "result": "AgentsResolvedResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
       "method": "agents.set_enabled",
       "params": "AgentsSetEnabledParams",
       "params_role": "command",

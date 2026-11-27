@@ -461,6 +461,7 @@ mod tests {
         "agents.set_enabled",
         "agents.reset",
         "agents.replace",
+        "agents.resolved",
         "session.delete",
         "session.fork",
         "session.select_model",

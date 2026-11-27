@@ -1,0 +1,148 @@
+{
+  "$defs": {
+    "AgentResolvedKey": {
+      "description": "A frontmatter key of a resolved document: a top-level key, or one\npermission action as `permissions.<action>`.",
+      "properties": {
+        "first_line": {
+          "description": "Its first and last line in the result's `text`, 1-based.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "key": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "last_line": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "replaced": {
+          "description": "The inherited block it replaced, as written.",
+          "maxLength": 65536,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source": {
+          "description": "The tree path of the document of the chain it came from.",
+          "maxLength": 512,
+          "type": "string"
+        }
+      },
+      "required": [
+        "key",
+        "source",
+        "first_line",
+        "last_line"
+      ],
+      "type": "object"
+    },
+    "AgentResolvedPrompt": {
+      "description": "The inherited prompt in a resolved document's body.",
+      "properties": {
+        "first_line": {
+          "description": "Its first and last line in the result's `text`, 1-based.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "last_line": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "source": {
+          "description": "The tree path of the document whose prompt it is.",
+          "maxLength": 512,
+          "type": "string"
+        }
+      },
+      "required": [
+        "source",
+        "first_line",
+        "last_line"
+      ],
+      "type": "object"
+    },
+    "AgentResolvedValue": {
+      "description": "A model variable, such as `${default_model}`, and what it resolves to.",
+      "properties": {
+        "name": {
+          "maxLength": 64,
+          "minLength": 1,
+          "type": "string"
+        },
+        "value": {
+          "maxLength": 512,
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "value"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "chain": {
+      "description": "The tree paths of the documents merged, the agent's own first.",
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 16,
+      "type": "array"
+    },
+    "comments": {
+      "description": "Whether `text` keeps the documents' comments; `false` when the\ndaemon fell back to the merged frontmatter written out without them.",
+      "type": "boolean"
+    },
+    "keys": {
+      "description": "Where each frontmatter key came from.",
+      "items": {
+        "$ref": "#/$defs/AgentResolvedKey"
+      },
+      "maxItems": 1024,
+      "type": "array"
+    },
+    "own_document": {
+      "description": "Whether `chain` starts with a document of the user's for the agent\nasked for; `false` for an ACP agent that follows its template, and\nfor an official document.",
+      "type": "boolean"
+    },
+    "prompt": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/AgentResolvedPrompt"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "The lines the inherited prompt took, when `{{default_prompt}}` (or\nan empty body) brought one in."
+    },
+    "text": {
+      "description": "The resolved document, frontmatter and body.",
+      "maxLength": 1048576,
+      "type": "string"
+    },
+    "values": {
+      "description": "The model variables the frontmatter names, with what they resolve\nto.",
+      "items": {
+        "$ref": "#/$defs/AgentResolvedValue"
+      },
+      "maxItems": 64,
+      "type": "array"
+    }
+  },
+  "required": [
+    "text",
+    "chain"
+  ],
+  "title": "AgentsResolvedResult",
+  "type": "object"
+}

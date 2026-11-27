@@ -313,6 +313,7 @@ fn client_methods() -> Vec<MethodSpec> {
         request!(AGENTS_SET_ENABLED_METHOD, ToDaemon, AgentsSetEnabledParams => AgentDocumentResult),
         request!(AGENTS_RESET_METHOD, ToDaemon, AgentDocumentParams => AgentDocumentResult),
         request!(AGENTS_REPLACE_METHOD, ToDaemon, AgentDocumentParams => AgentDocumentResult),
+        request!(AGENTS_RESOLVED_METHOD, ToDaemon, AgentsResolvedParams => AgentsResolvedResult),
         request!("session.compact", ToDaemon, SessionCompactParams => SessionCompactResult),
         request!("session.revert", ToDaemon, SessionRevertParams => SessionRevertResult),
         request!(SESSION_DELETE_METHOD, ToDaemon, SessionDeleteParams => SessionDeleteResult),

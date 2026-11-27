@@ -5020,8 +5020,16 @@ fn Sheet(workspace: Workspace) -> impl IntoView {
                             // its own, or through `built_on`.
                             let panel = open_panel.get();
                             untrack(|| match panel {
-                            Some(Panel::Agents) => agents_sheet(workspace).into_any(),
-                            Some(Panel::Models) => models_sheet(workspace).into_any(),
+                            Some(Panel::Agents) => view! {
+                                {agents_sheet(workspace)}
+                                {edit_agents_link(workspace, true)}
+                            }
+                            .into_any(),
+                            Some(Panel::Models) => view! {
+                                {models_sheet(workspace)}
+                                {edit_providers_link(workspace, true)}
+                            }
+                            .into_any(),
                             Some(Panel::Composer) => composer_sheet(workspace).into_any(),
                             Some(Panel::AgentOptions) => agent_options_sheet(workspace).into_any(),
                             Some(Panel::Presets) => presets_sheet(workspace).into_any(),
@@ -5607,10 +5615,81 @@ fn composer_sheet(workspace: Workspace) -> impl IntoView {
     view! {
         {heading("Agent")}
         {agents_sheet(workspace)}
+        {edit_agents_link(workspace, false)}
         {heading("Model")}
         {models_sheet(workspace)}
+        {edit_providers_link(workspace, false)}
         {heading("Permission mode")}
         {modes_sheet(workspace)}
+    }
+}
+
+/// A link row at the foot of a composer menu, to where its choices are
+/// changed (`docs/site/specs/agent-shortcuts.md` section 3.3): pinned
+/// under a menu's list, or a row of a phone's sheet.
+fn menu_link(
+    label: &'static str,
+    icon: icondata::Icon,
+    to: &'static str,
+    pinned: bool,
+    data: &'static str,
+    go: impl Fn() + 'static,
+) -> impl IntoView {
+    view! {
+        <div class=if pinned {
+            "sticky bottom-0 -mx-1.5 -mb-1.5 mt-1 border-t border-line bg-raised px-1.5 pt-1 pb-1.5"
+        } else {
+            "mb-1"
+        }>
+            <button
+                type="button"
+                class=if pinned {
+                    MENU_ROW.to_owned()
+                } else {
+                    format!("{MENU_ROW} bg-surface-2 shadow-[inset_0_0_0_1px_var(--color-line)]")
+                }
+                data-menu-link=data
+                on:click=move |_| go()
+            >
+                <Glyph icon=icon class="text-muted" />
+                <span class="min-w-0 flex-1 truncate">{label}</span>
+                <span class="inline-flex items-center gap-1 text-[0.6875rem] text-faint">
+                    {to}
+                    <Glyph icon=icondata::LuChevronRight />
+                </span>
+            </button>
+        </div>
+    }
+}
+
+/// Edit agents, under the agent menu: the Agents view, with nothing open.
+fn edit_agents_link(workspace: Workspace, pinned: bool) -> impl IntoView {
+    (!workspace.is_guest()).then(|| {
+        menu_link(
+            "Edit agents",
+            icondata::LuSlidersHorizontal,
+            "Agents",
+            pinned,
+            "edit-agents",
+            move || workspace.edit_agents(),
+        )
+    })
+}
+
+/// Edit model providers, under the model menu: Settings › Providers. An
+/// ACP agent's models are its harness's, so its menu has none.
+fn edit_providers_link(workspace: Workspace, pinned: bool) -> impl IntoView {
+    move || {
+        (!workspace.is_guest() && !workspace.draft_is_acp()).then(|| {
+            menu_link(
+                "Edit model providers",
+                icondata::LuPlug,
+                "Settings › Providers",
+                pinned,
+                "edit-providers",
+                move || workspace.edit_providers(),
+            )
+        })
     }
 }
 

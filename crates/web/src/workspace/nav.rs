@@ -155,7 +155,9 @@ impl Workspace {
     pub fn at_list(self) -> bool {
         match self.view.get() {
             View::Chat => self.sidebar_open.get(),
-            View::Agents => self.config_edit.with(Option::is_none),
+            View::Agents => {
+                self.config_edit.with(Option::is_none) && self.agent_open.with(Option::is_none)
+            }
             View::Settings => self.settings_section.get().is_none(),
             View::Memory => {
                 self.memory_edit.with(Option::is_none) && self.memory_pending.with(Option::is_none)
@@ -184,7 +186,9 @@ impl Workspace {
             layers.push(Layer::Item);
         }
         let editing = match view {
-            View::Agents => self.config_edit.with(Option::is_some),
+            View::Agents => {
+                self.config_edit.with(Option::is_some) || self.agent_open.with(Option::is_some)
+            }
             View::Settings => {
                 self.shown_section() == Some(SettingsSection::Configuration)
                     && self.config_edit.with(Option::is_some)
@@ -277,6 +281,7 @@ impl Workspace {
             }
             Layer::Editor => {
                 self.config_edit.set(None);
+                self.agent_open.set(None);
                 self.config_error.set(None);
                 self.memory_edit.set(None);
                 self.memory_pending.set(None);

@@ -1,8 +1,9 @@
 # Agent shortcuts: the resolved document, and links from the composer's menus
 
-Status: **approved** (2026-11-26), with the
-[preview](agent-shortcuts/preview.html). The user's decisions are in
-[section 8](#8-decisions-2026-11-26).
+Status: **implemented** (2026-11-26; client protocol 1.103.0), approved
+with the [preview](agent-shortcuts/preview.html). The user's decisions
+are in [section 8](#8-decisions-2026-11-26), and where the code differs is
+in [section 9](#9-implementation-notes).
 Related: [agents](../extend/agents.md) (inheriting an agent, templates),
 [ACP onboarding](acp-onboarding.md) section 7 (the agents panel),
 [web polish](web-polish.md) P4 and P5 (the model menu and the agent rows).
@@ -116,7 +117,7 @@ width.
 
 ### 4.1 `agents.resolved`
 
-A new read-only request (client protocol 1.102.0):
+A new read-only request (client protocol 1.103.0):
 
 ```text
 agents.resolved
@@ -199,9 +200,9 @@ the model and variant it resolves to in the daemon's configuration.
 
 ## 5. Protocol and versions
 
-- Client protocol **1.102.0**: `agents.resolved`, `AgentsResolvedParams`,
+- Client protocol **1.103.0**: `agents.resolved`, `AgentsResolvedParams`,
   `AgentsResolvedResult`, `AgentResolvedKey`, `AgentResolvedPrompt`, and
-  `AgentResolvedValue`. A 1.101.0 daemon does not know the method. The
+  `AgentResolvedValue`. A 1.102.0 daemon does not know the method. The
   web client then shows "This daemon cannot show resolved documents;
   update it", and the File tab works as before.
 - No configuration, history, plugin, or runtime protocol change.
@@ -231,3 +232,21 @@ check it.
 3. Resolved keeps the documents' comments, through the display-only merge
    of section 4.2 with the check and fallback of section 4.3. The
    loader's merge is unchanged.
+
+## 9. Implementation notes
+
+- **Errors.** `agents.resolved` returns the configuration's own errors (an
+  unknown document, a cycle, an `inherit` with nothing there yet) as the
+  other agents-panel calls do, not as `invalid_params`.
+- **The tag's wording.** A key that replaced a one-line value says
+  "was `<value>`", and a longer block says "replaces N inherited rules"
+  for a permission action and "replaces N inherited lines" for any other
+  key.
+- **The prompt's line.** It reads "The prompt of `<document>`". It marks
+  both a `{{default_prompt}}` that expanded and a body left empty, which
+  takes the inherited body whole. The fold under the prompt's first
+  lines reads "Show N more lines".
+- **The loader's quirk, kept.** A document that writes both `bash` and
+  `bash@<runtime>` keeps only the later of them, because each action
+  removes every key of its kind kept so far, those of the same document
+  among them. Resolved shows what the loader does.

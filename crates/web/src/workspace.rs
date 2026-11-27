@@ -66,6 +66,7 @@ mod webhook;
 
 use drafts::ComposerSlot;
 
+pub use agent_documents::{AgentOpen, AgentTab};
 pub use attachments::{AttachOffer, draft_thumbnail};
 pub use cards::CardSet;
 pub use cron::CronForm;
@@ -443,6 +444,12 @@ pub struct Workspace {
     pub config_form_drafts: RwSignal<std::collections::BTreeMap<String, String>>,
     /// The document open in the editor.
     pub config_edit: RwSignal<Option<ConfigEdit>>,
+    /// The agent the Agents view shows read-only: one with no document of
+    /// the user's, or an official document a chain pill opened
+    /// (`docs/site/specs/agent-shortcuts.md` section 3.1).
+    pub agent_open: RwSignal<Option<AgentOpen>>,
+    /// The tab an open agent document shows.
+    pub agent_tab: RwSignal<AgentTab>,
     pub memory: RwSignal<Option<Result<cookie_agent_protocol::MemoryListResult, String>>>,
     /// The memory open in the editor.
     pub memory_edit: RwSignal<Option<MemoryEdit>>,
@@ -787,6 +794,8 @@ impl Workspace {
             config_error: RwSignal::new(None),
             config_form_drafts: RwSignal::new(std::collections::BTreeMap::new()),
             config_edit: RwSignal::new(None),
+            agent_open: RwSignal::new(None),
+            agent_tab: RwSignal::new(AgentTab::Resolved),
             memory: RwSignal::new(None),
             memory_edit: RwSignal::new(None),
             memory_pending: RwSignal::new(None),

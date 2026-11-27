@@ -947,6 +947,15 @@ impl Client {
             .await
     }
 
+    /// An agent document after every `inherit`, for reading.
+    pub async fn resolved_agent(
+        &self,
+        params: cookie_agent_protocol::AgentsResolvedParams,
+    ) -> Result<cookie_agent_protocol::AgentsResolvedResult, ClientError> {
+        self.call(cookie_agent_protocol::AGENTS_RESOLVED_METHOD, &params)
+            .await
+    }
+
     pub async fn compact_session(
         &self,
         params: SessionCompactParams,

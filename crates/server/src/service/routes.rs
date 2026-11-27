@@ -437,6 +437,51 @@ impl ServerProtocol for Server {
         Ok(cookie_agent_protocol::AgentDocumentResult { path })
     }
 
+    async fn resolved_agent(
+        &self,
+        params: cookie_agent_protocol::AgentsResolvedParams,
+    ) -> Result<cookie_agent_protocol::AgentsResolvedResult> {
+        let view = self
+            .engine
+            .resolved_agent(
+                params.path.as_deref(),
+                params.id.as_deref(),
+                params.preset.as_deref(),
+            )
+            .await
+            .map_err(protocol_fault)?;
+        let document = view.document;
+        Ok(cookie_agent_protocol::AgentsResolvedResult {
+            text: document.text,
+            comments: document.comments,
+            chain: document.chain,
+            own_document: view.own_document,
+            keys: document
+                .keys
+                .into_iter()
+                .map(|key| cookie_agent_protocol::AgentResolvedKey {
+                    key: key.key,
+                    source: key.source,
+                    first_line: key.first_line,
+                    last_line: key.last_line,
+                    replaced: key.replaced,
+                })
+                .collect(),
+            prompt: document
+                .prompt
+                .map(|prompt| cookie_agent_protocol::AgentResolvedPrompt {
+                    source: prompt.source,
+                    first_line: prompt.first_line,
+                    last_line: prompt.last_line,
+                }),
+            values: view
+                .values
+                .into_iter()
+                .map(|(name, value)| cookie_agent_protocol::AgentResolvedValue { name, value })
+                .collect(),
+        })
+    }
+
     async fn update_agents(
         &self,
         _params: cookie_agent_protocol::AgentsUpdateParams,

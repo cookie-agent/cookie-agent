@@ -129,6 +129,21 @@ editor), **Open** (yours), **Turn off** and **Turn on**, **Reset** (deletes
 your document), and **Replace** (copies the official document whole, which
 refreshes no longer change). Reset and Replace ask once more.
 
+Click an agent's name, there or among your documents, to see what it
+runs: it opens on **Resolved**, its document after every `inherit:` and
+`{{default_prompt}}`, read-only ([agent shortcuts](../specs/agent-shortcuts.md)).
+Above it, the documents it inherits are pills you can open, from yours to
+the official one. In the text, a bar beside each key takes the colour of
+the document it came from, and a tag names that document and what the key
+replaced (`was ${default_model}`, `replaces 23 inherited rules`); **Mark
+where each key comes from** turns them off. Model variables are followed
+by what they resolve to, and the inherited prompt is folded to its first
+lines. The documents' comments are kept; when the daemon cannot place
+them, it says **Shown without comments**. A document of yours keeps
+**Form** and **File** beside **Resolved**, and **Apply** saves the file.
+An agent with no document of yours shows **Customize** and **Turn off** as
+buttons.
+
 ## Layout
 
 - **The sidebar.** One column on the left holds the whole page's
@@ -838,7 +853,10 @@ refreshes no longer change). Reset and Replace ask once more.
     a list. Choosing another model keeps the level when it offers it. For
     an ACP agent a choice changes it on the agent (on a new session's
     draft, the values its session starts with; a draft offers what the
-    agent last started a session with). Above an ACP agent's effort, a
+    agent last started a session with). **Edit agents** at the foot of the
+    agent menu opens the Agents view, and **Edit model providers** at the
+    foot of a cookie agent's model menu opens Settings › Providers. Above
+    an ACP agent's effort, a
     few chips hold its other options (not its model, effort, or mode,
     which have their places), under an *Agent options* label: a switch,
     such as *Fast mode*, lights when on; a choice shows its value and
@@ -1118,7 +1136,7 @@ setup disabled.
   agents. Each row has an icon for the agent's mode (a robot for a primary
   agent, a person with a gear for a subagent), its ID, its description,
   and **off** when it is disabled or **not applied** when an edit was
-  refused. Click one to edit it beside the list; **Apply** and **Close**
+  refused. Click one to open it beside the list, on **Resolved**; **Apply** and **Close**
   are at the editor's foot, with **Delete** behind a confirmation. **New
   agent** asks for the document's path (`agents/<id>.md`, or
   `agents/<preset>/<id>.md`), and the ↻ button reloads the documents from

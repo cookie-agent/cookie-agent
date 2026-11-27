@@ -2,6 +2,7 @@
 
 mod agent_document;
 mod agent_inherit;
+mod agent_resolved;
 mod agents;
 mod cache;
 mod error;
@@ -17,6 +18,7 @@ mod wildcard;
 mod writer;
 
 pub use agent_document::{AgentDocument, AgentDocumentSource};
+pub use agent_resolved::{ResolvedAgentDocument, ResolvedKey, ResolvedPrompt, resolve_for_reading};
 pub use agents::{
     AcpDocumentSettings, AcpModelChoice, AgentFrontmatter, AgentLimits, AgentMaterializationInput,
     AgentMode, AgentModelFallback, AgentModelRef, AgentRegistry, BUILT_IN_APPROVAL_AGENT_ID,

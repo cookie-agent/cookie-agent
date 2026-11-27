@@ -1059,6 +1059,9 @@ impl Workspace {
     /// Opens `path` in the editor: a refused edit's text when there is one,
     /// else the document, else a new document's template.
     pub fn edit_config(self, path: &str) {
+        // A document in the editor takes the place of an agent shown
+        // read-only.
+        self.agent_open.set(None);
         if let Some(draft) = self
             .config_drafts
             .with_untracked(|drafts| drafts.get(path).cloned())

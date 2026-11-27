@@ -5,6 +5,14 @@ The client protocol's version is `MAJOR.MINOR.PATCH`
 adds and a major breaks; before it, every minor could break the wire (see the
 [compatibility spec](../specs/compatibility-v1.md) section 3).
 
+## 1.103.0
+
+- `agents.resolved` ([agent shortcuts spec](../specs/agent-shortcuts.md)
+  section 4): an agent document after every `inherit` and
+  `{{default_prompt}}`, with its comments, its chain, where each key came
+  from, the inherited prompt's lines, and the model variables it names,
+  resolved. A 1.102.0 daemon does not know the method.
+
 ## 1.102.0
 
 - Temporary runtimes ([spec](../specs/temporary-runtimes.md) section 7):

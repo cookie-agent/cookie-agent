@@ -770,6 +770,11 @@ models:
   first refresh, leaves the agent out, with a configuration diagnostic, until
   it does.
 
+The web client shows the result: click an agent's name in the Agents view
+for its **Resolved** tab, the document after every `inherit` with each
+key marked by the document it came from
+([agent shortcuts](../specs/agent-shortcuts.md)).
+
 Without `inherit`, a document of an official agent's ID replaces the official
 agent whole.
 

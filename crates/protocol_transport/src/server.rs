@@ -633,6 +633,11 @@ pub trait ServerProtocol: Send + Sync + 'static {
         &self,
         params: cookie_agent_protocol::AgentDocumentParams,
     ) -> Result<cookie_agent_protocol::AgentDocumentResult, ServerFault>;
+    /// An agent document after every `inherit`, for reading.
+    async fn resolved_agent(
+        &self,
+        params: cookie_agent_protocol::AgentsResolvedParams,
+    ) -> Result<cookie_agent_protocol::AgentsResolvedResult, ServerFault>;
     async fn compact_session(
         &self,
         params: SessionCompactParams,
@@ -2046,6 +2051,9 @@ async fn dispatch<S: ServerProtocol>(
         }
         cookie_agent_protocol::AGENTS_REPLACE_METHOD => {
             value(server.replace_agent(decode(params)?).await?)
+        }
+        cookie_agent_protocol::AGENTS_RESOLVED_METHOD => {
+            value(server.resolved_agent(decode(params)?).await?)
         }
         "session.compact" => value(server.compact_session(decode(params)?, context).await?),
         "session.revert" => value(server.revert_session(decode(params)?, context).await?),
