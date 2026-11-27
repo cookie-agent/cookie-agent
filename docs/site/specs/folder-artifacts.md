@@ -1,4 +1,4 @@
-# Folder artifacts: a page with its files
+# Folder artifacts: a page with its files, and every file over HTTP
 
 Status: **draft** (2026-11-26), not approved. Decisions are in
 [section 11](#11-decisions).
@@ -39,8 +39,10 @@ Goals:
   on the landing page and in *Open full page*.
 - **Downloads** give a `.zip`, and `transfer` from a folder artifact writes
   the folder.
-- **Nothing changes for one file.** Single-file attachments and assets keep
-  their storage, their events, and the `srcdoc` path unchanged.
+- **Every file over HTTP too.** A single-file attachment or asset keeps
+  its storage and events, and gets a URL on the same route as a folder's
+  files. The web client loads it over HTTP and falls back to the WebSocket
+  when HTTP does not work (section 6.6).
 
 Non-goals:
 
@@ -143,7 +145,7 @@ protocol for the fields it mirrors.
 | `asset.read` | The same `path`. |
 | `artifact.manifest` (new) | `session_id`, `sha256` → `main`, `entries` (`path`, `size`, `media_type`). For the side panel's file list and the share landing page. |
 | `asset.manifest` (new) | `store`, `asset` → the same, for the asset's current content. |
-| `folder.url` (new) | `{ session_id, sha256 }` or `{ store, asset }` → `base`, the folder's path on the `/f/` route (section 6.1). It computes the key and stores nothing. A share guest gets its share link's path instead (section 6.5). |
+| `content.urls` (new) | `targets`: up to 64 of `{ session_id, sha256 }` or `{ store, asset }`, a file or a folder → `urls`, one per target in order: a file's URL or a folder's base on the `/f/` route (section 6.1), or `null` for a target that does not resolve. It computes keys and stores nothing. A share guest gets paths under its share link instead (section 6.5). |
 | `attachment.save_asset` | Unchanged signature; a folder attachment makes a folder asset. |
 
 `ArtifactRef.folder`, `PersistedFilePart.folder`, and `AssetBlock.folder`
@@ -175,37 +177,43 @@ resolved:
 - **The TUI** shows `📎 report/ · HTML · 14 files · 3.2 MB`, with the same
   web link as any attachment or asset.
 
-## 6. The sandbox, with files
+## 6. Serving files, and the sandbox
 
 ### 6.1 The `/f/` route and its key
 
-The page's files are served by the daemon over HTTP, at a URL whose key
-only the daemon can make:
+Every artifact and asset, a folder's files and a single file alike, is
+served by the daemon over HTTP, at a URL whose key only the daemon can
+make:
 
 ```text
-<page origin>/f/<store>/<sha256>/<key>/<path>    one entry, inline
-<page origin>/f/<store>/<sha256>/<key>.zip       the whole folder, as a download
+<page origin>/f/<store>/<sha256>/<key>/<path>             a folder's entry, inline
+<page origin>/f/<store>/<sha256>/<key>.zip                a folder, as a download
+<page origin>/f/<store>/<sha256>/<key>/<name>             a file, inline
+<page origin>/f/<store>/<sha256>/<key>/<name>?download    a file, as a download
 ```
 
-- **`<store>`** names the store the folder is in (a tree's artifacts, a
+- **`<store>`** names the store the content is in (a tree's artifacts, a
   tree's assets, a project's assets, or the shared store), `<sha256>` the
-  folder's manifest, and **`<key>`** is
+  file or the folder's manifest, and **`<key>`** is
   `HMAC-SHA256(daemon token, "cookie-folder/1" ‖ store ‖ sha256)`, cut to
   128 bits, base64url. It is computed as the page ticket is
   (`plugin_pages::page_ticket`): nothing is stored, and there is no expiry
   or renewal.
-- **The web page asks for the URL** with `folder.url` when it shows a
-  folder. The key is not put on `ArtifactRef` or `AssetBlock`: those are
-  saved in history, where a key would outlive a token rotation. The page
-  caches the answer for the connection.
-- **Only the owner's page gets a key.** A share guest's `folder.url`
+- **A file's `<name>`** is for the reader and the download, as a share
+  link's is: the file name, or the title slugged with its extension. The
+  daemon ignores it.
+- **The web page asks for URLs** with `content.urls`, a batch for the
+  cards it is about to show. The key is not put on `ArtifactRef` or
+  `AssetBlock`: those are saved in history, where a key would outlive a
+  token rotation. The page caches the answers for the connection.
+- **Only the owner's page gets a key.** A share guest's `content.urls`
   answers a path under its share link (section 6.5), never a key, so
   revoking the link ends the guest's access to its folders.
 - **The URL names content, not an asset.** An asset's URL is for its
   content at the time; when the asset is rewritten, its figures ask again
   and get the new content's URL, as they read again today. So a page never
   mixes files of two writes.
-- **A URL works while the store still holds that folder**, and until the
+- **A URL works while the store still holds that content**, and until the
   daemon token is rotated, which changes every key. Deleting or rewriting
   the asset, or deleting the session tree that holds the attachment, ends
   it.
@@ -213,17 +221,20 @@ only the daemon can make:
   does, because the page's requests cannot carry a header the browser does
   not add (section 12). The daemon recomputes the key from the path. It
   serves `GET` and `HEAD`, with range requests, and answers one `404` for
-  every failure (a wrong key, a path not in the manifest, a manifest the
+  every failure (a wrong key, a path not in the manifest, content the
   store no longer references).
-- **Headers on every answer:** the entry's media type (`text/*` with
-  `charset=utf-8`), `Cache-Control: private, max-age=31536000, immutable`
+- **Headers on every answer:** the file's media type (`text/*` with
+  `charset=utf-8`), `Accept-Ranges: bytes`, `Cache-Control: private, max-age=31536000, immutable`
   (content-addressed, so a cache is never stale), `Referrer-Policy:
   no-referrer`, `X-Content-Type-Options: nosniff`, `X-Robots-Tag: noindex`,
   and `Access-Control-Allow-Origin: *` without credentials, because the
   page that loads them has an opaque origin (section 6.2). HTML and SVG
   entries get the CSP `sandbox` header that `raw` gets for share links
-  ([share links](share-links.md) section 5.2), so an entry opened at the
-  top level cannot act as the daemon's origin.
+  ([share links](share-links.md) section 5.2), so a file opened at the
+  top level cannot act as the daemon's origin. A PDF is served as share
+  `raw` serves one, without a sandbox, which the browser's viewer refuses,
+  and with `frame-ancestors 'self'`. `?download` adds
+  `Content-Disposition: attachment` with the name.
 - **On the share-only port** (`[public] listen`) the `/f/` route is not
   served. Share links have their own path (section 6.4).
 
@@ -232,8 +243,8 @@ only the daemon can make:
 The page and the viewer keep today's architecture: the page reads the main
 file with `asset.read` or `artifact.read`, and sends the bytes to
 `viewer.html`, which puts them in the inner frame's `srcdoc`. For a folder
-it also sends the folder's absolute base from `folder.url`, and the viewer
-inserts
+it also sends the folder's absolute base from `content.urls`, and the
+viewer inserts
 
 ```html
 <base href="https://<daemon>/f/<store>/<sha256>/<key>/<main's folder>/">
@@ -310,21 +321,52 @@ A guest of a [conversation share](conversation-shares.md) sees the
 folders of the shared session through its own link:
 
 ```text
-<share base>/s/<id>/f/<store>/<sha256>/<path>
+<share base>/s/<id>/f/<store>/<sha256>/<path>     a folder's entry
+<share base>/s/<id>/f/<store>/<sha256>/<name>     a file
 ```
 
 - **Checked on every request:** the link is live, it is a conversation
-  share, and the folder is one the shared session tree can show (its
+  share, and the content is one the shared session tree can show (its
   artifacts, its session assets, or its project's assets). Anything else
   is the share route's one `404`.
 - **Nothing new is stored.** The share record that already exists is the
-  key, so revoking the link, or its expiry, ends the guest's folder URLs
-  with it.
+  key, so revoking the link, or its expiry, ends the guest's URLs with it.
 - **Same headers** as the `/f/` route (section 6.1), including the CSP
   `sandbox` on HTML and SVG and `Access-Control-Allow-Origin: *`, but with
   `Cache-Control: no-store`, as every share answer has, so a revoked
   link is not served from a cache in front of the daemon.
 - **The share-only port** serves these paths, as it serves the guest page.
+
+### 6.6 Single files over HTTP, with a WebSocket fallback
+
+The web client reads every file it shows over HTTP first, and over the
+WebSocket (`artifact.read`, `asset.read`) when HTTP does not work. HTTP
+lets the browser stream, seek, and cache; the WebSocket stays the path that
+always works, since the page already holds that connection.
+
+| What | Over HTTP | The fallback |
+|---|---|---|
+| An image, a video, audio | The element's `src` is the file's URL, so a video seeks with range requests and plays before it has all arrived | On the element's `error`, the bytes are read over the WebSocket into a `blob:` URL, as today |
+| A PDF | The reader's frame loads the URL | As today |
+| An HTML page | The page `fetch`es the main file and sends it to the viewer | `artifact.read`, as today |
+| Markdown, text, code | `fetch` | `artifact.read`, as today |
+| *Download* | A hidden link to the URL with `?download`, which the browser streams to disk | Read whole over the WebSocket, as today |
+| A folder's files | The `<base>` of section 6.2 | None: a frame's own requests cannot use the WebSocket. The main file shows, read over the WebSocket, with a note on the card, "This page's files could not be loaded" |
+
+- **When HTTP does not work:** a request fails at the network level, the
+  URL answers `404` though `content.urls` just gave it, or no URL comes
+  back. A daemon behind a proxy that forwards only `/ws`, or a static-host
+  bundle whose daemon address the browser blocks for HTTP, are the cases
+  this is for.
+- **The client remembers for the connection.** After the first failure it
+  reads over the WebSocket for the rest of the connection, so a page full
+  of images does not fail once per image. A new connection tries HTTP
+  again.
+- **Thumbnails** stay on `asset.thumbnail`, read over the WebSocket and kept
+  in Cache Storage ([asset thumbnails](asset-thumbnails.md)).
+- **Share guests** use the paths of section 6.5 the same way, with the
+  same fallback over their guest connection.
+- **The TUI** reads nothing itself and is unchanged.
 
 ## 7. The agent's side
 
@@ -408,12 +450,15 @@ checkout by mistake, and the error names the largest subfolders.
   No size is known in advance, so the answer has no `Content-Length`.
 - **The web's *Download*** opens the folder's `.zip` URL in a hidden link with
   `download`, so the browser streams it to disk; it never builds the zip in
-  memory.
+  memory. Without HTTP, a folder has no download; a file is read over the
+  WebSocket as today (section 6.6).
 - **The TUI** has no download; its link opens the web client.
 
 ## 9. Security notes
 
-- **A folder URL is a bearer secret** for one folder, with no expiry. It
+- **A content URL is a bearer secret** for one file or folder, with no
+  expiry. Every artifact and asset has one, an uploaded file or a tool's
+  kept output as much as a page. It
   appears in the page's frame and in requests the page makes. A page that
   sends `document.baseURI` elsewhere leaks a URL to its own files, which it
   could send directly anyway, reachable only at the daemon's address. A
@@ -447,9 +492,10 @@ checkout by mistake, and the error names the largest subfolders.
 2. **The agent's side:** folders in `<attach src>` and `write_asset` with
    `main`, `read_asset` and `read_artifact` with `path`, the label, the
    prompt and description text, `transfer` from a folder artifact.
-3. **The web:** `folder.url`, the `/f/` route, the viewer's `<base>`,
-   Markdown with relative images, the *Files* tab, the folder badge, zip
-   downloads. The TUI's line.
+3. **The web:** `content.urls`, the `/f/` route for files and folders, the
+   viewer's `<base>`, Markdown with relative images, the *Files* tab, the
+   folder badge, zip downloads; every file read over HTTP with the
+   WebSocket fallback (section 6.6). The TUI's line.
 4. **Share links:** `raw/<path>` for folders, the landing page's list, the
    zip download.
 
@@ -473,6 +519,9 @@ Decided by the user on 2026-11-26, as recommended:
    the page ticket is, with no stored state, no expiry, and no renewal
    (section 6.1). The user asked to keep this simple rather than manage
    expiring grants. Share links keep using their own ID (section 6.4).
+6. **Single files are served over HTTP too**, on the same route, and the
+   web client tries HTTP first and falls back to the WebSocket (section
+   6.6). Asked for by the user on 2026-11-26.
 
 ## 12. Alternatives considered
 
