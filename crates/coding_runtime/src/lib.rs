@@ -24,6 +24,7 @@ use cookie_agent_runtime_api::display;
 pub mod edit;
 mod files;
 pub mod fs_cap;
+mod net;
 mod path_args;
 pub mod read;
 pub mod server;

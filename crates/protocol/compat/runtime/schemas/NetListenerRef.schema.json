@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "`net/unlisten`: stop listening. Connections it accepted stay until\nclosed.",
+  "properties": {
+    "listener": {
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "listener"
+  ],
+  "title": "NetListenerRef",
+  "type": "object"
+}

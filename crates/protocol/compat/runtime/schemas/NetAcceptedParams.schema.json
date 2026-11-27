@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "`net/accepted` (runtime → daemon): a TCP listener accepted a\nconnection.",
+  "properties": {
+    "connection": {
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "listener": {
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "peer": {
+      "description": "The peer's address, `host:port`.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "listener",
+    "connection",
+    "peer"
+  ],
+  "title": "NetAcceptedParams",
+  "type": "object"
+}

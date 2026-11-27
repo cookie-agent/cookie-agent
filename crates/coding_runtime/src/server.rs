@@ -263,6 +263,7 @@ pub async fn serve(transport: Box<dyn Transport>, options: ServeOptions) -> Stri
         executions: Mutex::default(),
         next_prepared: AtomicU64::new(1),
         settings_changes: tokio::sync::watch::channel(None).0,
+        net: crate::net::Net::new(peer.clone(), stop.clone()),
         stop,
         files: crate::files::Files::new(options_journal.clone()),
     });
@@ -346,6 +347,8 @@ struct Server {
     stop: CancellationToken,
     /// Transfers' routes and handles; dropped with the connection.
     files: crate::files::Files,
+    /// Forwards' listeners and connections; closed with the connection.
+    net: Arc<crate::net::Net>,
 }
 
 /// What `runtime/initialize` set, and `runtime/settings_changed` changes.
@@ -724,6 +727,7 @@ impl Server {
                 reply(request, result).await;
             }
             other if other.starts_with("fs/") => self.handle_files(request).await,
+            other if other.starts_with("net/") => self.handle_net(request).await,
             other if other.starts_with("agent/") => match self.acp.handle_request(&request).await {
                 Some(result) => reply(request, result).await,
                 None => {
@@ -784,6 +788,33 @@ impl Server {
                         .await;
                 });
             }
+            method::NET_DATA => match notification.params() {
+                Ok(params) => {
+                    if let Err(error) = self.net.data(&params) {
+                        eprintln!("cookie-agent runtime: ignored `net/data`: {}", error.0);
+                    }
+                }
+                Err(error) => ignored(error),
+            },
+            method::NET_ACK => match notification.params() {
+                Ok(params) => self.net.ack(&params),
+                Err(error) => ignored(error),
+            },
+            method::NET_CLOSE => match notification.params() {
+                Ok(params) => self.net.close(&params),
+                Err(error) => ignored(error),
+            },
+            method::NET_DATAGRAM => match notification.params() {
+                Ok(params) => {
+                    let net = Arc::clone(&self.net);
+                    tokio::spawn(async move {
+                        if let Err(error) = net.datagram(&params).await {
+                            eprintln!("cookie-agent runtime: ignored `net/datagram`: {}", error.0);
+                        }
+                    });
+                }
+                Err(error) => ignored(error),
+            },
             // Notifications this runtime does not know are ignored.
             _ => {
                 self.acp.handle_notification(notification);
@@ -878,6 +909,63 @@ impl Server {
         }
         *lock(&state.hosted) = hosted;
         Ok(())
+    }
+
+    /// The `net/*` requests of forwards.
+    async fn handle_net(&self, request: IncomingRequest) {
+        use cookie_agent_protocol::runtime_protocol::{
+            NetConnectParams, NetConnectResult, NetListenParams, NetListenResult, NetListenerRef,
+        };
+
+        let net_error = |error: crate::net::NetError| -> RpcError {
+            errors::NET_FAILED.error().detail(error.0).into()
+        };
+        match request.method.as_str() {
+            method::NET_LISTEN => {
+                let result = async {
+                    let params: NetListenParams = request.params()?;
+                    let (listener, port) = self
+                        .net
+                        .listen(params.protocol, &params.bind, params.port)
+                        .await
+                        .map_err(net_error)?;
+                    Ok(NetListenResult { listener, port })
+                }
+                .await;
+                reply(request, result).await;
+            }
+            method::NET_UNLISTEN => {
+                let result = request.params::<NetListenerRef>().map(|params| {
+                    self.net.unlisten(params.listener);
+                    Empty {}
+                });
+                reply(request, result).await;
+            }
+            method::NET_CONNECT => {
+                let result = async {
+                    let params: NetConnectParams = request.params()?;
+                    self.net
+                        .connect(params.protocol, &params.host, params.port)
+                        .await
+                        .map_err(net_error)
+                }
+                .await;
+                let started = result.as_ref().ok().copied();
+                reply(
+                    request,
+                    result.map(|connection| NetConnectResult { connection }),
+                )
+                .await;
+                // The daemon has the connection's number before its bytes.
+                if let Some(connection) = started {
+                    self.net.start(connection);
+                }
+            }
+            other => {
+                let error = errors::UNKNOWN_METHOD.error().field("method", other);
+                let _ = request.fail(error.into()).await;
+            }
+        }
     }
 
     /// The `fs/*` requests of transfers.
@@ -1108,6 +1196,7 @@ impl Server {
             mcp_servers: mcp_reports,
             acp_agents: self.acp.reports(),
             files: true,
+            net: true,
         })
     }
 

@@ -1,0 +1,37 @@
+{
+  "$defs": {
+    "NetProtocol": {
+      "description": "A transport a forward carries.",
+      "enum": [
+        "tcp",
+        "udp"
+      ],
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "`net/listen`: listen on `bind:port` of the runtime's machine.",
+  "properties": {
+    "bind": {
+      "description": "An address of the machine, such as `127.0.0.1`.",
+      "type": "string"
+    },
+    "port": {
+      "description": "`0` picks a free port.",
+      "format": "uint16",
+      "maximum": 65535,
+      "minimum": 0,
+      "type": "integer"
+    },
+    "protocol": {
+      "$ref": "#/$defs/NetProtocol"
+    }
+  },
+  "required": [
+    "protocol",
+    "bind",
+    "port"
+  ],
+  "title": "NetListenParams",
+  "type": "object"
+}

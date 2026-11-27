@@ -1,0 +1,35 @@
+{
+  "$defs": {
+    "NetProtocol": {
+      "description": "A transport a forward carries.",
+      "enum": [
+        "tcp",
+        "udp"
+      ],
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "`net/connect`: connect to `host:port` from the runtime's machine.",
+  "properties": {
+    "host": {
+      "type": "string"
+    },
+    "port": {
+      "format": "uint16",
+      "maximum": 65535,
+      "minimum": 0,
+      "type": "integer"
+    },
+    "protocol": {
+      "$ref": "#/$defs/NetProtocol"
+    }
+  },
+  "required": [
+    "protocol",
+    "host",
+    "port"
+  ],
+  "title": "NetConnectParams",
+  "type": "object"
+}

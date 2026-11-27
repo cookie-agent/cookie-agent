@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "`net/close` (either direction): a connection's end. `eof` ends only the\nsender's direction; anything else ends the connection.",
+  "properties": {
+    "connection": {
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "reason": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "connection"
+  ],
+  "title": "NetCloseParams",
+  "type": "object"
+}

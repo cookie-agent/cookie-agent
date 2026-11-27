@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "`net/ack` (either direction): bytes of `net/data` the receiver has\nwritten to its socket, which the sender may send again.",
+  "properties": {
+    "bytes": {
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "connection": {
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "connection",
+    "bytes"
+  ],
+  "title": "NetAckParams",
+  "type": "object"
+}

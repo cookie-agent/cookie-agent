@@ -1324,6 +1324,14 @@ error_codes! {
         hint: None,
         description: "An `fs/*` request failed: the path is missing or exists already, it could not be read or written, or the bytes written do not match the source.",
     }
+    NET_FAILED {
+        code: "net_failed",
+        rpc: APPLICATION_ERROR,
+        fields: [],
+        message: "The forward could not listen or connect on the runtime.",
+        hint: None,
+        description: "A `net/*` request failed: the address is not the machine's, the port is in use, or the target refused the connection, was unreachable, or did not answer in time.",
+    }
     CONTEXT_FAILED {
         code: "context_failed",
         rpc: APPLICATION_ERROR,

@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "listener": {
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "port": {
+      "description": "The port it listens on.",
+      "format": "uint16",
+      "maximum": 65535,
+      "minimum": 0,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "listener",
+    "port"
+  ],
+  "title": "NetListenResult",
+  "type": "object"
+}

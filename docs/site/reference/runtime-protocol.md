@@ -131,7 +131,7 @@ plugin protocol adds its own (see
 
 ## Version
 
-The protocol version is a semver string, currently **1.18.0**
+The protocol version is a semver string, currently **1.19.0**
 (`cookie_agent_protocol::RUNTIME_PROTOCOL_VERSION`). The daemon sends its
 version in `runtime/initialize` and the runtime answers with its own. Each end
 reads the other's `protocol_version` from the raw JSON before it decodes
@@ -235,6 +235,8 @@ never needs to send one.
 1.18.0 added `folder` to `ArtifactRef` and the `asset` display block
 ([folder artifacts](../specs/folder-artifacts.md)). Only the daemon makes
 them.
+1.19.0 added [forwards](#forwards): the optional `net` of
+`runtime/initialize`'s result and the `net/*` messages.
 
 ## Capabilities and instances
 
@@ -441,6 +443,7 @@ or enables OAuth, which stays with the daemon's global runtime.
 | `producer_messaging` | Optional, default `false`: the runtime sends producer messages to the sessions attached to its instances (see [Producer messaging](#producer-messaging)). |
 | `acp_agents` | Optional, since 1.7.0: the ACP agents the runtime hosts, `{ id, description, enabled }` each, in ID order. Absent when it hosts none. |
 | `files` | Optional, default `false`, since 1.13.0: the runtime answers the `fs/*` requests of [transfers](#transfers). The coding runtime does. |
+| `net` | Optional, default `false`, since 1.19.0: the runtime answers the `net/*` requests of [forwards](#forwards). The coding runtime does. |
 | `mcp_servers` | Optional, since 1.5.0: every MCP server the runtime is configured with, in name order, as server reports (see [`capability/open`](#capabilityopen)) with a `scope`: the runtime-scoped ones with their status now (usually `connecting`), the workspace-scoped ones as configured, `disconnected` (or `disabled`) with no tools. Absent when it has none. |
 
 ### `capability/open`
@@ -873,6 +876,46 @@ runtime.
   rule; closing its `to` route stops it.
 
 Failures are `fs_failed`, with the reason in `detail`.
+
+### Forwards
+
+Since 1.19.0 a runtime that reports `net: true` takes part in forwards
+([spec](../specs/forwards.md)): the daemon asks it to listen on a port of
+its machine or to connect to one reached from it, and relays the bytes
+between two runtimes, or between a runtime and a browser, over each
+runtime's connection.
+
+| Message | Direction | Params | Result |
+|---|---|---|---|
+| `net/listen` | request | `protocol` (`tcp` or `udp`), `bind`, `port` (`0` picks a free one) | `listener`, and the `port` it got |
+| `net/unlisten` | request | `listener` | `{}`; connections it accepted stay until closed |
+| `net/accepted` | runtime → daemon | `listener`, `connection`, `peer` | |
+| `net/connect` | request | `protocol`, `host`, `port` | `connection` |
+| `net/data` | both | `connection`, `data` (base64, at most 64 KiB) | |
+| `net/ack` | both | `connection`, `bytes` | |
+| `net/close` | both | `connection`, `reason?` | |
+| `net/datagram` | both | `listener` and `peer`, or `connection`; `data` | |
+
+- **Listeners and connections** are numbers the runtime chooses. A TCP
+  connection reads its socket only once the daemon has its number: an
+  accepted one after `net/accepted`, a connected one after the reply to
+  `net/connect`.
+- **Flow control.** Each side has at most 1 MiB sent on a connection and
+  not acknowledged with `net/ack`, which the receiver sends once it has
+  written the bytes to its socket; it stops reading its socket until acks
+  arrive.
+- **`net/close`** with `reason` `eof` ends the sender's direction only, as
+  a socket's shutdown does; any other reason, or none, ends the
+  connection.
+- **UDP.** A `udp` listener reports each datagram with its `peer` and
+  sends one back to a `peer`; a `udp` connection sends and receives its
+  datagrams with neither.
+- **A dropped connection** to the daemon closes every listener and
+  connection of the runtime.
+
+Failures are `net_failed`, with the reason in `detail`: the bind address is
+not one of the machine's, the port is in use, or the target refused the
+connection, was unreachable, or gave no answer in 10 seconds.
 
 ## Errors
 

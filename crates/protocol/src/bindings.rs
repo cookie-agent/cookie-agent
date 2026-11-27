@@ -15,7 +15,9 @@ use crate::runtime_protocol::{
     ExecuteParams, ExecuteResult, FsCopyParams, FsHandle, FsPrepareParams, FsPrepareResult,
     FsReadChunkParams, FsReadChunkResult, FsReadOpenParams, FsReadOpenResult, FsWriteChunkParams,
     FsWriteCommitParams, FsWriteOpenParams, FsWritten, InitializeParams, InitializeResult,
-    McpChangedParams, McpReconnectParams, McpWantedParams, Outcome, PrepareParams, PrepareResult,
+    McpChangedParams, McpReconnectParams, McpWantedParams, NetAcceptedParams, NetAckParams,
+    NetCloseParams, NetConnectParams, NetConnectResult, NetDataParams, NetDatagramParams,
+    NetListenParams, NetListenResult, NetListenerRef, Outcome, PrepareParams, PrepareResult,
     PreparedRef, RuntimeMcpChangedParams, RuntimeMcpReconnectParams, RuntimeSettingsChangedParams,
     RuntimeTools, ShellEnvironmentReport, ToolProgressParams, method as runtime_method,
 };
@@ -598,6 +600,18 @@ fn runtime_methods() -> Vec<MethodSpec> {
         request!(runtime_method::FS_WRITE_COMMIT, FromDaemon, FsWriteCommitParams => FsWritten),
         request!(runtime_method::FS_CLOSE, FromDaemon, FsHandle => Empty),
         request!(runtime_method::FS_COPY, FromDaemon, FsCopyParams => FsWritten),
+        request!(runtime_method::NET_LISTEN, FromDaemon, NetListenParams => NetListenResult),
+        request!(runtime_method::NET_UNLISTEN, FromDaemon, NetListenerRef => Empty),
+        declaration!(runtime_method::NET_ACCEPTED, NetAcceptedParams),
+        request!(runtime_method::NET_CONNECT, FromDaemon, NetConnectParams => NetConnectResult),
+        notification!(runtime_method::NET_DATA, FromDaemon, NetDataParams),
+        declaration!(runtime_method::NET_DATA, NetDataParams),
+        notification!(runtime_method::NET_ACK, FromDaemon, NetAckParams),
+        declaration!(runtime_method::NET_ACK, NetAckParams),
+        notification!(runtime_method::NET_CLOSE, FromDaemon, NetCloseParams),
+        declaration!(runtime_method::NET_CLOSE, NetCloseParams),
+        notification!(runtime_method::NET_DATAGRAM, FromDaemon, NetDatagramParams),
+        declaration!(runtime_method::NET_DATAGRAM, NetDatagramParams),
     ]
 }
 

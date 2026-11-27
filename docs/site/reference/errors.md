@@ -149,5 +149,6 @@ codes are the standard `-32700`, `-32600`, `-32601`, `-32602`, and
 | `not_initialized` | `-32000` | A request before `runtime/initialize` or `plugin/initialize`. | The connection has not been initialized yet. | – | – |
 | `unknown_handle` | `-32000` | A request named a prepared call, job, instance, or transfer handle the runtime does not have. | The tool call or workspace the request names is no longer open. | – | – |
 | `fs_failed` | `-32000` | An `fs/*` request failed: the path is missing or exists already, it could not be read or written, or the bytes written do not match the source. | The transfer failed on the runtime. | – | – |
+| `net_failed` | `-32000` | A `net/*` request failed: the address is not the machine's, the port is in use, or the target refused the connection, was unreachable, or did not answer in time. | The forward could not listen or connect on the runtime. | – | – |
 | `context_failed` | `-32000` | Reading a runtime's `AGENTS.md` context failed. | The workspace's instructions could not be read. | Check that the AGENTS.md files are readable. | `path` (optional): The file that could not be read. |
 | `reply_too_large` | `-32000` | A reply would exceed the frame bound. | The answer is too large to send. | – | – |

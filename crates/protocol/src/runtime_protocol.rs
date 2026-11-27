@@ -45,7 +45,9 @@ pub const MAX_PREPARE_BATCH: usize = 256;
 /// runtime stops dialing in on a permanent refusal and dials in again,
 /// after a wait, on any other.
 mod files;
+mod net;
 pub use files::*;
+pub use net::*;
 
 pub mod dial_in {
     /// HTTP 400: the runtime ID is malformed. Permanent.
@@ -207,6 +209,28 @@ pub mod method {
     /// daemon → runtime: copies one prepared route to another on the
     /// runtime's own machine (since 1.13.0).
     pub const FS_COPY: &str = "fs/copy";
+    /// daemon → runtime: listens on a port of the runtime's machine, for a
+    /// forward (since 1.19.0, runtimes that report `net`).
+    pub const NET_LISTEN: &str = "net/listen";
+    /// daemon → runtime: stops a listener (since 1.19.0).
+    pub const NET_UNLISTEN: &str = "net/unlisten";
+    /// runtime → daemon (notification): a TCP listener accepted a
+    /// connection (since 1.19.0).
+    pub const NET_ACCEPTED: &str = "net/accepted";
+    /// daemon → runtime: connects to a port reached from the runtime's
+    /// machine (since 1.19.0).
+    pub const NET_CONNECT: &str = "net/connect";
+    /// Either direction (notification): bytes of a connection (since
+    /// 1.19.0).
+    pub const NET_DATA: &str = "net/data";
+    /// Either direction (notification): bytes of a connection written, so
+    /// the sender may send more (since 1.19.0).
+    pub const NET_ACK: &str = "net/ack";
+    /// Either direction (notification): a connection's end, or one
+    /// direction's (since 1.19.0).
+    pub const NET_CLOSE: &str = "net/close";
+    /// Either direction (notification): one UDP datagram (since 1.19.0).
+    pub const NET_DATAGRAM: &str = "net/datagram";
 }
 
 /// An empty params or result object.
@@ -672,6 +696,10 @@ pub struct InitializeResult {
     /// (runtime protocol 1.13.0).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub files: bool,
+    /// The runtime takes part in forwards: it answers the `net/*` requests
+    /// (runtime protocol 1.19.0).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub net: bool,
 }
 
 /// The machine a runtime runs on, as `runtime/initialize` reports it.

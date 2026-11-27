@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "`net/datagram` (either direction): one UDP datagram, of a UDP listener\nand its `peer`, or of a UDP connection.",
+  "properties": {
+    "connection": {
+      "format": "uint64",
+      "minimum": 0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "data": {
+      "description": "Base64, at most [`MAX_NET_DATA_BYTES`] decoded.",
+      "type": "string"
+    },
+    "listener": {
+      "format": "uint64",
+      "minimum": 0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "peer": {
+      "description": "With a listener: the peer it came from, or goes to.",
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "data"
+  ],
+  "title": "NetDatagramParams",
+  "type": "object"
+}

@@ -187,6 +187,102 @@
     },
     {
       "direction": "to_daemon",
+      "kind": "notification",
+      "method": "net/accepted",
+      "params": "NetAcceptedParams",
+      "params_role": "information",
+      "result": null
+    },
+    {
+      "direction": "from_daemon",
+      "kind": "notification",
+      "method": "net/ack",
+      "params": "NetAckParams",
+      "params_role": "information",
+      "result": null
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "notification",
+      "method": "net/ack",
+      "params": "NetAckParams",
+      "params_role": "information",
+      "result": null
+    },
+    {
+      "direction": "from_daemon",
+      "kind": "notification",
+      "method": "net/close",
+      "params": "NetCloseParams",
+      "params_role": "information",
+      "result": null
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "notification",
+      "method": "net/close",
+      "params": "NetCloseParams",
+      "params_role": "information",
+      "result": null
+    },
+    {
+      "direction": "from_daemon",
+      "kind": "request",
+      "method": "net/connect",
+      "params": "NetConnectParams",
+      "params_role": "information",
+      "result": "NetConnectResult"
+    },
+    {
+      "direction": "from_daemon",
+      "kind": "notification",
+      "method": "net/data",
+      "params": "NetDataParams",
+      "params_role": "information",
+      "result": null
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "notification",
+      "method": "net/data",
+      "params": "NetDataParams",
+      "params_role": "information",
+      "result": null
+    },
+    {
+      "direction": "from_daemon",
+      "kind": "notification",
+      "method": "net/datagram",
+      "params": "NetDatagramParams",
+      "params_role": "information",
+      "result": null
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "notification",
+      "method": "net/datagram",
+      "params": "NetDatagramParams",
+      "params_role": "information",
+      "result": null
+    },
+    {
+      "direction": "from_daemon",
+      "kind": "request",
+      "method": "net/listen",
+      "params": "NetListenParams",
+      "params_role": "information",
+      "result": "NetListenResult"
+    },
+    {
+      "direction": "from_daemon",
+      "kind": "request",
+      "method": "net/unlisten",
+      "params": "NetListenerRef",
+      "params_role": "information",
+      "result": "Empty"
+    },
+    {
+      "direction": "to_daemon",
       "kind": "request",
       "method": "producer/discard",
       "params": "ProducerDiscardParams",

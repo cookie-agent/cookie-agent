@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "`net/data` (either direction): bytes of a TCP connection, in order.",
+  "properties": {
+    "connection": {
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "data": {
+      "description": "Base64, at most [`MAX_NET_DATA_BYTES`] decoded.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "connection",
+    "data"
+  ],
+  "title": "NetDataParams",
+  "type": "object"
+}

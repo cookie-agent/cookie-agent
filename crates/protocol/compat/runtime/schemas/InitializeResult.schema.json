@@ -254,6 +254,10 @@
       },
       "type": "array"
     },
+    "net": {
+      "description": "The runtime takes part in forwards: it answers the `net/*` requests\n(runtime protocol 1.19.0).",
+      "type": "boolean"
+    },
     "platform": {
       "default": null,
       "description": "Operating system, as Rust's `std::env::consts::OS` names it, for a\nruntime where it matters.",

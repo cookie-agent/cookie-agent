@@ -1,6 +1,6 @@
 # Forwards: a machine's web app at the daemon's address, and ports between machines
 
-Status: **approved** (2026-11-26), queued after folder artifacts. The
+Status: **approved** (2026-11-26), being implemented. The
 user's decisions are in
 [section 12](#12-decisions-2026-11-26).
 
@@ -398,3 +398,15 @@ thousand of them code.
 8. **`<attach forward/>` shows a forward that exists** as a live page
    (section 7.1), by its handle and an optional `path`. A tag never makes
    one: the agent makes it with `forward_create` first.
+
+## Implementation notes
+
+Phase 1 (runtime protocol 1.19.0):
+
+- **`net/unlisten` is a request** answered `{}`, like the other requests
+  the daemon makes; the listener's connections stay until closed.
+- **A TCP connection's end** is a `net/close` with reason `eof` from the
+  side whose socket reached its end, which the daemon passes on so the
+  other side shuts its writing half; any other reason is a reset. The
+  daemon ends a connection both of whose directions ended with a
+  `net/close` of its own.
