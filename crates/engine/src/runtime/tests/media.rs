@@ -795,7 +795,7 @@ async fn files_the_run_model_cannot_take_are_admitted_and_reach_it_as_labels() {
         let requests = with_watchdog("captured requests", captured).await.unwrap();
         let body = request_body(&requests[0]).to_string();
         let name = artifact.filename.clone().unwrap();
-        let label = format!("[file {name}, ");
+        let label = format!("[file {name} attached to this user message · ");
         assert!(body.contains(&label), "{case}: {body}");
         assert!(
             body.contains(&format!("artifact {}", &artifact.sha256[..8])),
@@ -1134,24 +1134,30 @@ async fn an_image_in_history_reaches_a_text_only_model_as_its_label() {
         !second.to_string().contains("\"type\":\"image\""),
         "{second}"
     );
-    // The reason joins the file's label, which still names the artifact.
-    let placeholder = format!(
-        "[file pixel.png, {} B, artifact {}; not shown: custom.test/group/fallback does not \
-         accept images]",
+    // The file's label, which still names the artifact, says the request
+    // does not carry it, and the placeholder after it says why.
+    let label = format!(
+        "[file pixel.png attached to this user message · image/png · {} B · artifact {} · not \
+         included",
         bytes.len(),
         &artifact.sha256[..8]
     );
-    assert!(
-        second["messages"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|message| {
-                message["content"]
-                    .as_array()
-                    .is_some_and(|parts| parts.iter().any(|part| part["text"] == placeholder))
-            }),
-        "{second}"
+    let placeholder = format!(
+        "[image omitted: custom.test/group/fallback does not accept images (pixel.png, {} B)]",
+        bytes.len()
     );
+    let texts = second["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|message| message["content"].as_array())
+        .flatten()
+        .filter_map(|part| part["text"].as_str())
+        .collect::<Vec<_>>();
+    let at = texts
+        .iter()
+        .position(|text| text.starts_with(&label))
+        .unwrap_or_else(|| panic!("{second}"));
+    assert_eq!(texts.get(at + 1), Some(&placeholder.as_str()), "{second}");
     fixture.engine.shutdown().await;
 }

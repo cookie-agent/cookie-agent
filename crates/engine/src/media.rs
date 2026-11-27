@@ -30,13 +30,8 @@ use cookie_agent_runtime_api::media::mime_type_matches;
 /// [image omitted: provider/model does not accept images in tool results (screenshot.png, 471 KB)]
 /// ```
 ///
-/// A user's file has its label just before it (`[file screenshot.png, 471
-/// KB, artifact 5f2c81d0]`); the reason joins the label instead, so the
-/// model can still pass the file on with `transfer`:
-///
-/// ```text
-/// [file screenshot.png, 471 KB, artifact 5f2c81d0; not shown: provider/model does not accept images]
-/// ```
+/// A user's file has its label just before it, which
+/// [`settle_file_labels`] then ends by whether the file is still there.
 ///
 /// It is a pure function of the history and the model, so a replay of the
 /// same history to the same model sends the same request and keeps the
@@ -69,9 +64,6 @@ pub(crate) fn fit_media(
             )
         })
         .collect::<Vec<_>>();
-    // The reason of each user input placeholder, which joins the file's
-    // label when one comes just before it.
-    let mut reasons = std::collections::HashMap::new();
     visit_media_parts(history, |_, kind, slot| {
         let (file, accepted, in_tool_result) = match &slot {
             MediaSlot::Input(oven_sdk::InputPart::File(file))
@@ -79,13 +71,11 @@ pub(crate) fn fit_media(
             MediaSlot::Tool(oven_sdk::ContentValue::File(file)) => (file, &tool_result, true),
             _ => return,
         };
-        let Some((placeholder, reason)) = misfit(file, kind, model, accepted, in_tool_result)
-        else {
+        let Some((placeholder, _)) = misfit(file, kind, model, accepted, in_tool_result) else {
             return;
         };
         match slot {
             MediaSlot::Input(part) => {
-                reasons.insert(placeholder.clone(), reason);
                 *part = oven_sdk::InputPart::Text(oven_sdk::TextPart::new(placeholder));
             }
             MediaSlot::Assistant(part) => {
@@ -94,36 +84,130 @@ pub(crate) fn fit_media(
             MediaSlot::Tool(value) => *value = oven_sdk::ContentValue::Text(placeholder),
         }
     });
-    if reasons.is_empty() {
+}
+
+/// What a request's history says of each user file it labels, by the
+/// label's head ([`cookie_agent_protocol::model_text::user_file_label_head`]):
+/// what [`settle_file_labels`] decides the label's ending from.
+pub(crate) type FileLabels = std::collections::HashMap<String, FileFacts>;
+
+/// A user file as its label's ending needs it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct FileFacts {
+    pub(crate) byte_length: u64,
+    pub(crate) content: FileContent,
+}
+
+/// What a user file's stored copy holds.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum FileContent {
+    /// The copy is missing or damaged.
+    Missing,
+    /// UTF-8 text, which `read_artifact` pages.
+    Text,
+    /// A media file of this type.
+    Media(String),
+    /// Anything else.
+    Binary,
+}
+
+/// The tools of a request that can do something with a file its user
+/// message does not carry.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct FileTools {
+    pub(crate) read_artifact: bool,
+    pub(crate) transfer: bool,
+}
+
+impl FileTools {
+    /// The tools `request` offers, at once or deferred.
+    pub(crate) fn of(request: &oven_sdk::Request) -> Self {
+        let offers = |name: &str| request.tools.iter().any(|tool| tool.name == name);
+        Self {
+            read_artifact: offers(crate::base_tools::READ_ARTIFACT),
+            transfer: offers(crate::machines_tool::TRANSFER),
+        }
+    }
+}
+
+/// How the label of a file of `facts` ends when the request does not carry
+/// the file: `read_artifact` when it returns the file to a model that takes
+/// `tool` media from a tool, else `transfer` when the request offers it and
+/// there is a copy to send.
+pub(crate) fn missing_file_ending(
+    facts: &FileFacts,
+    tool: &[ToolInputMedia],
+    tools: FileTools,
+) -> cookie_agent_protocol::model_text::FileLabelEnding {
+    use cookie_agent_protocol::model_text::FileLabelEnding;
+    use cookie_agent_runtime_api::media::{AttachmentGate, gate_attachment};
+    let readable = match &facts.content {
+        FileContent::Missing => return FileLabelEnding::OnlyName,
+        FileContent::Text => true,
+        FileContent::Media(mime) => matches!(
+            gate_attachment(tool, mime, facts.byte_length),
+            AttachmentGate::AttachToolResult | AttachmentGate::DeliverViaUserTurn
+        ),
+        FileContent::Binary => false,
+    };
+    if readable && tools.read_artifact {
+        FileLabelEnding::ReadArtifactReturnsIt
+    } else if tools.transfer {
+        FileLabelEnding::UseTransfer
+    } else {
+        FileLabelEnding::OnlyName
+    }
+}
+
+/// Ends each user file label of `history` by what the request carries
+/// (`docs/site/specs/attachment-handling.md` section 4.1): `included below`
+/// when the file follows its label, which holds only once [`fit_media`] and
+/// [`elide_excess_media`] have put placeholders in place of the files the
+/// model does not get, else what `tools` can do with it
+/// ([`missing_file_ending`]). `labels` are the history's labels; a label
+/// settles again the same way, so this may run after each fitting.
+pub(crate) fn settle_file_labels(
+    history: &mut [oven_sdk::HistoryTurn],
+    labels: &FileLabels,
+    tool: &[ToolInputMedia],
+    tools: FileTools,
+) {
+    use cookie_agent_protocol::model_text::FileLabelEnding;
+    if labels.is_empty() {
         return;
     }
     for turn in history {
         let oven_sdk::HistoryTurn::User(message) = turn else {
             continue;
         };
-        let mut parts = Vec::with_capacity(message.content.len());
-        for part in std::mem::take(&mut message.content) {
-            if let oven_sdk::InputPart::Text(text) = &part
-                && let Some(reason) = reasons.get(&text.text)
-                && let Some(oven_sdk::InputPart::Text(label)) = parts.last_mut()
-                && is_file_label(&label.text)
-            {
-                let joined = format!(
-                    "{}; not shown: {reason}]",
-                    &label.text[..label.text.len() - 1]
-                );
-                *label = oven_sdk::TextPart::new(joined);
+        for index in 0..message.content.len() {
+            let included = matches!(
+                message.content.get(index + 1),
+                Some(oven_sdk::InputPart::File(_))
+            );
+            let oven_sdk::InputPart::Text(text) = &mut message.content[index] else {
                 continue;
+            };
+            let Some(facts) = text
+                .text
+                .strip_suffix(']')
+                .and_then(|label| label.rsplit_once(" · "))
+                .and_then(|(head, _)| labels.get(head).map(|facts| (head, facts)))
+            else {
+                continue;
+            };
+            let (head, facts) = facts;
+            let ending = if included {
+                FileLabelEnding::IncludedBelow
+            } else {
+                missing_file_ending(facts, tool, tools)
+            };
+            let settled = format!("{head} · {}]", ending.text());
+            if settled != text.text {
+                *text = oven_sdk::TextPart::new(settled);
             }
-            parts.push(part);
         }
-        message.content = parts;
     }
-}
-
-/// Whether `text` is a user file's label, as the history writes it.
-fn is_file_label(text: &str) -> bool {
-    text.starts_with("[file") && text.ends_with(']') && text.contains(", artifact ")
 }
 
 /// The placeholder of a file `model` does not take, and the reason it

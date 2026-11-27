@@ -4,16 +4,78 @@
 //! around a compaction summary, a deferred tools announcement, a changed
 //! instructions announcement, the marker
 //! after an interrupted reply, the marker that stands for an elided tool
-//! output, the line a tool-emitted system message starts with, and a loop
-//! warning's start.
+//! output, the line a tool-emitted system message starts with, a loop
+//! warning's start, and the label ahead of a user's file.
 
 pub mod memory_snapshot;
 
 use crate::{
-    AgentMdEntry, AnnouncedPromptBlock, AnnouncedToolGroup, ToolGroupSource, UnavailableToolGroup,
+    AgentMdEntry, AnnouncedPromptBlock, AnnouncedToolGroup, ArtifactRef, ToolGroupSource,
+    UnavailableToolGroup,
 };
 
 pub use memory_snapshot::{machine_memory_turn, snapshot_turn as memory_snapshot_turn};
+
+/// Hex digits of the digest a user file's label shows.
+const FILE_LABEL_DIGEST_CHARS: usize = 8;
+
+/// Whether a request carries a user file's bytes after its label, and if
+/// not, what the model can do instead: how [`user_file_label`] ends.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FileLabelEnding {
+    /// The file follows the label in this request.
+    IncludedBelow,
+    /// Not in the request, but `read_artifact` returns it to this model.
+    ReadArtifactReturnsIt,
+    /// Not in the request, and only a machine can work on it: `transfer`
+    /// copies it to one.
+    UseTransfer,
+    /// Not in the request, and the model has no tool that helps.
+    OnlyName,
+}
+
+impl FileLabelEnding {
+    /// The ending's text, the label's last part.
+    #[must_use]
+    pub const fn text(self) -> &'static str {
+        match self {
+            Self::IncludedBelow => "included below",
+            Self::ReadArtifactReturnsIt => "not included; read_artifact returns it",
+            Self::UseTransfer => "not included; use transfer to copy it to a machine you work on",
+            Self::OnlyName => "not included; only its name is available",
+        }
+    }
+}
+
+/// The label a model or an ACP agent gets for a file the user attached
+/// (`docs/site/specs/attachment-handling.md` section 4.1): its name, media
+/// type, size, and the first hex digits of its digest, which name it for
+/// `read_artifact`, `transfer`, and `<attach artifact=…/>`, then whether
+/// this request carries it, as in
+/// `[file Screenshot.jpg attached to this user message · image/jpeg · 671 KB · artifact 0c697e90 · included below]`.
+#[must_use]
+pub fn user_file_label(artifact: &ArtifactRef, ending: FileLabelEnding) -> String {
+    format!("{} · {}]", user_file_label_head(artifact), ending.text())
+}
+
+/// A user file's label up to its ending, which names the file: what
+/// [`user_file_label`] renders before ` · <ending>]`. The ending is the text
+/// after the label's last ` · `.
+#[must_use]
+pub fn user_file_label_head(artifact: &ArtifactRef) -> String {
+    let digest = &artifact.sha256[..artifact.sha256.len().min(FILE_LABEL_DIGEST_CHARS)];
+    let mut label = String::from("[file");
+    if let Some(name) = &artifact.filename {
+        label.push(' ');
+        label.push_str(name);
+    }
+    label.push_str(&format!(
+        " attached to this user message · {} · {} · artifact {digest}",
+        artifact.media_type,
+        crate::human_bytes(artifact.byte_length)
+    ));
+    label
+}
 
 /// What opens the `AGENTS.md` turn, before the files.
 pub const AGENT_MD_PREAMBLE: &str = "<system-reminder>\nAs you answer the user's questions, you can use the following context:\n# AGENTS.md\nCodebase and user instructions are shown below. Be sure to adhere to these instructions.\nIMPORTANT: These instructions OVERRIDE any default behavior and you MUST follow them exactly as written.";
@@ -384,7 +446,43 @@ fn source_label(source: ToolGroupSource) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::{LOOP_WARNING_MARKER, loop_warning, without_loop_warning};
+    use super::{
+        FileLabelEnding, LOOP_WARNING_MARKER, loop_warning, user_file_label, user_file_label_head,
+        without_loop_warning,
+    };
+
+    #[test]
+    fn a_file_label_names_the_artifact_by_its_first_digits() {
+        let artifact = |filename: Option<&str>| crate::ArtifactRef {
+            sha256: format!("5f2c81d0{}", "a".repeat(56)),
+            byte_length: 3_355_443,
+            media_type: crate::FILE_UPLOAD_MEDIA_TYPE.into(),
+            filename: filename.map(str::to_owned),
+        };
+        assert_eq!(
+            user_file_label_head(&artifact(Some("report.zip"))),
+            "[file report.zip attached to this user message · application/octet-stream · 3.2 MB \
+             · artifact 5f2c81d0"
+        );
+        assert_eq!(
+            user_file_label_head(&artifact(None)),
+            "[file attached to this user message · application/octet-stream · 3.2 MB · artifact \
+             5f2c81d0"
+        );
+        // The ending is the text after the last ` · `, whatever the name.
+        let named = artifact(Some("a · b.zip"));
+        for ending in [
+            FileLabelEnding::IncludedBelow,
+            FileLabelEnding::ReadArtifactReturnsIt,
+            FileLabelEnding::UseTransfer,
+            FileLabelEnding::OnlyName,
+        ] {
+            let label = user_file_label(&named, ending);
+            let (head, tail) = label.rsplit_once(" · ").unwrap();
+            assert_eq!(head, user_file_label_head(&named));
+            assert_eq!(tail, format!("{}]", ending.text()));
+        }
+    }
 
     #[test]
     fn a_loop_warning_splits_from_the_output_it_ends() {

@@ -247,15 +247,12 @@ fn differences(expected: &Value, actual: &Value, path: &str, found: &mut Vec<Str
     }
 }
 
-/// The first history format whose golden snapshots were recorded with the
-/// file labels of [`without_file_labels`].
-const FILE_LABELS_FORMAT: u32 = 2;
-
-/// Removes from `read`'s history views the file labels a build adds before
-/// each user file (`docs/site/specs/machines-on-demand.md` section 6.4):
-/// model text the engine injects as it reads, which snapshots recorded
-/// before it (those of format 1) cannot hold. Everything else of the history
-/// must still read as recorded.
+/// Removes from a snapshot's history views the file labels a build adds
+/// before each user file (`docs/site/specs/machines-on-demand.md` section
+/// 6.4): model text the engine renders as it reads, which snapshots of
+/// format 1 do not hold and later ones hold in the format of the build that
+/// recorded them (`docs/site/specs/attachment-handling.md` section 4.1).
+/// Everything else of the history must still read as recorded.
 fn without_file_labels(read: &mut Value) {
     for_each_session(read, |session| {
         for view in ["full", "assembled"] {
@@ -270,7 +267,9 @@ fn without_file_labels(read: &mut Value) {
                     content.retain(|part| {
                         !(part["type"] == "text"
                             && part["value"]["text"].as_str().is_some_and(|text| {
-                                text.starts_with("[file") && text.contains(", artifact ")
+                                text.starts_with("[file")
+                                    && (text.contains(", artifact ")
+                                        || text.contains(" · artifact "))
                             }))
                     });
                 }
@@ -429,6 +428,7 @@ async fn golden_history_reads_as_recorded() {
         )
         .expect("recorded snapshot JSON");
         expand_recorded_events(&scenario, &mut recorded);
+        without_file_labels(&mut recorded);
         if format < HISTORY_FORMAT {
             as_converted(&mut recorded);
         }
@@ -436,9 +436,7 @@ async fn golden_history_reads_as_recorded() {
         for opening in [Opening::ReadOnly, Opening::Owned] {
             let opened = open_scenario(&scenario, opening).await;
             let mut read = snapshot(&opened.engine, &opened.roots).await;
-            if format < FILE_LABELS_FORMAT {
-                without_file_labels(&mut read);
-            }
+            without_file_labels(&mut read);
             let mut found = Vec::new();
             differences(&recorded["trees"], &read["trees"], "trees", &mut found);
             if matches!(opening, Opening::ReadOnly) {
@@ -2775,6 +2773,7 @@ async fn tolerates_future_data(name: &str) {
     )
     .unwrap();
     expand_recorded_events(&scenario, &mut recorded);
+    without_file_labels(&mut recorded);
     // The newer record is the logs' last.
     fn advance_tips(value: &mut Value) {
         match value {
@@ -2800,6 +2799,7 @@ async fn tolerates_future_data(name: &str) {
         for opening in [Opening::ReadOnly, Opening::Owned] {
             let opened = open_scenario(&copy, opening).await;
             let mut read = snapshot(&opened.engine, &opened.roots).await;
+            without_file_labels(&mut read);
             if !skippable {
                 // The unknown record each log ends with is reported as
                 // skipped, which opens the log render-only.

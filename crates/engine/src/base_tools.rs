@@ -25,6 +25,7 @@ use goal::GoalTools;
 use loader::LoaderTools;
 use message::MessageToolProvider;
 use read_artifact::ReadArtifactTool;
+pub(crate) use read_artifact::TOOL_NAME as READ_ARTIFACT;
 use skill::SkillTool;
 use stop_background::StopBackgroundTool;
 pub(crate) use stop_background::TOOL_NAME as STOP_BACKGROUND_TOOL;

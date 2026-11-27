@@ -171,6 +171,37 @@ pub trait ToolArtifacts: std::fmt::Debug + Send + Sync {
             .map(|_| artifact)
             .map_err(|_| ToolError::execution("an artifact is named here by its whole digest"))
     }
+
+    /// The head of artifact `digest` of `session`'s tree, its first
+    /// [`crate::media::MEDIA_SNIFF_BYTES`] or all of a shorter one, and its
+    /// total length: what recognizing its content needs. `None` from a host
+    /// that does not tell, whose artifacts tools then read as text.
+    async fn artifact_head(
+        self: Arc<Self>,
+        _session: SessionId,
+        _digest: String,
+    ) -> Result<Option<ArtifactHead>, ToolError> {
+        Ok(None)
+    }
+
+    /// The bytes of `attachment`, an artifact of `session`'s tree, verified
+    /// against its digest and length.
+    async fn read_attachment(
+        self: Arc<Self>,
+        _session: SessionId,
+        _attachment: ToolAttachment,
+    ) -> Result<Vec<u8>, ToolError> {
+        Err(ToolError::execution(
+            "this host does not read artifacts as files",
+        ))
+    }
+}
+
+/// The start of an artifact, as [`ToolArtifacts::artifact_head`] reads it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ArtifactHead {
+    pub head: Vec<u8>,
+    pub total_bytes: u64,
 }
 
 /// One page of an artifact.

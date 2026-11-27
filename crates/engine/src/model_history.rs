@@ -370,6 +370,9 @@ pub(crate) struct ModelContext {
     pub(crate) replay_decisions: Vec<ReplayDecision>,
     /// One per assistant turn of `history`, in order.
     pub(crate) assistant_prefixes: Vec<AssistantPrefix>,
+    /// The user file labels of `history`, which a request settles once its
+    /// media are fitted ([`crate::media::settle_file_labels`]).
+    pub(crate) file_labels: crate::media::FileLabels,
 }
 
 fn latest_checkpoint<'a>(
@@ -732,6 +735,7 @@ fn summary_context(
         native_context: None,
         replay_decisions: assembled.replay_decisions,
         assistant_prefixes: assembled.assistant_prefixes,
+        file_labels: assembled.file_labels,
     })
 }
 
@@ -982,6 +986,7 @@ struct AssembledHistory {
     history: Vec<HistoryTurn>,
     replay_decisions: Vec<ReplayDecision>,
     assistant_prefixes: Vec<AssistantPrefix>,
+    file_labels: crate::media::FileLabels,
 }
 
 /// The context a request on `binding` sends, any provider window allowed:
@@ -1025,6 +1030,7 @@ pub(crate) fn assemble_model_context_with<E: Borrow<StoredEvent>>(
             native_context: None,
             replay_decisions: assembled.replay_decisions,
             assistant_prefixes: assembled.assistant_prefixes,
+            file_labels: assembled.file_labels,
         });
     };
     if let Some((source_through_seq, native_context)) = usable_window(commit, binding, use_windows)
@@ -1051,6 +1057,7 @@ pub(crate) fn assemble_model_context_with<E: Borrow<StoredEvent>>(
             native_context: Some(native_context),
             replay_decisions: assembled.replay_decisions,
             assistant_prefixes: assembled.assistant_prefixes,
+            file_labels: assembled.file_labels,
         });
     }
     if matches!(commit.checkpoint, ContextCheckpoint::NativeWindow { .. }) {
@@ -1124,6 +1131,7 @@ pub(crate) fn assemble_summary_view<E: Borrow<StoredEvent>>(
                 native_context: None,
                 replay_decisions: assembled.replay_decisions,
                 assistant_prefixes: assembled.assistant_prefixes,
+                file_labels: assembled.file_labels,
             })
         }
     }
@@ -1170,6 +1178,7 @@ fn assemble_history_with_replay(
             .or(events.first())
             .map(|event| event.session_id),
     );
+    let mut file_labels = crate::media::FileLabels::new();
     // One forward pass gathers everything the main loop looks up by key.
     let mut loaded_skills = Vec::<&str>::new();
     let mut delegation_children = HashMap::new();
@@ -1354,7 +1363,11 @@ fn assemble_history_with_replay(
                     logical.push(LogicalTurn::System(content.as_plain_text()));
                 }
                 cookie_agent_protocol::ExtensionMessageRole::User => {
-                    logical.push(LogicalTurn::User(user_content(content, store)?));
+                    logical.push(LogicalTurn::User(user_content(
+                        content,
+                        store,
+                        &mut file_labels,
+                    )?));
                 }
                 cookie_agent_protocol::ExtensionMessageRole::Assistant => {
                     logical.push(LogicalTurn::SeedAssistant(content.as_plain_text()));
@@ -1366,12 +1379,20 @@ fn assemble_history_with_replay(
             }
             EventPayload::UserInputApplied { user_input_seq } => {
                 if let Some(content) = submitted.remove(user_input_seq) {
-                    logical.push(LogicalTurn::User(user_content(content, store)?));
+                    logical.push(LogicalTurn::User(user_content(
+                        content,
+                        store,
+                        &mut file_labels,
+                    )?));
                 }
             }
             EventPayload::ProducerMessageAdmitted { .. } => {
                 if let Some(body) = producer_admissions.get(&envelope.seq) {
-                    logical.push(LogicalTurn::User(user_content(body, store)?));
+                    logical.push(LogicalTurn::User(user_content(
+                        body,
+                        store,
+                        &mut file_labels,
+                    )?));
                 }
             }
             EventPayload::ModelTurnCommitted {
@@ -1777,6 +1798,7 @@ fn assemble_history_with_replay(
         history,
         replay_decisions,
         assistant_prefixes,
+        file_labels,
     })
 }
 
@@ -2149,15 +2171,22 @@ fn user_text(input: &str) -> UserMessage {
 }
 
 /// A stored user input for a live request. Text parts stay as they are, and
-/// each file part becomes its label (`[file report.zip, 3.2 MB, artifact
-/// 5f2c81d0]`), which names it for `transfer`, then the file from the
-/// tree's store the way tool-emitted user messages do, with the same note
-/// standing in for a missing artifact. A `file` upload is its label alone.
-/// A part of a kind this build does not know never reaches a model.
+/// each file part becomes its label
+/// ([`cookie_agent_protocol::model_text::user_file_label`]), which names it
+/// for `read_artifact` and `transfer`, then the file from the tree's store
+/// the way tool-emitted user messages do, with the same note standing in
+/// for a missing artifact. A `file` upload is its label alone. Each label
+/// ends as though the request carried what follows it, and `labels` gains
+/// what [`crate::media::settle_file_labels`] ends it by once the request's
+/// media are fitted. A part of a kind this build does not know never
+/// reaches a model.
 fn user_content(
     content: &UserContent,
     store: SessionArtifacts<'_>,
+    labels: &mut crate::media::FileLabels,
 ) -> Result<UserMessage, HistoryError> {
+    use crate::media::{FileContent, FileFacts, FileTools};
+    use cookie_agent_protocol::model_text::{FileLabelEnding, user_file_label_head};
     let mut parts = Vec::new();
     for part in content.parts() {
         match part {
@@ -2165,15 +2194,49 @@ fn user_content(
                 parts.push(InputPart::Text(TextPart::new(text)));
             }
             Open::Known(UserContentPart::File { artifact }) => {
-                parts.push(InputPart::Text(TextPart::new(file_label(artifact))));
-                if artifact.media_type == cookie_agent_protocol::FILE_UPLOAD_MEDIA_TYPE {
-                    continue;
-                }
                 let attachment = user_file_attachment(artifact)?;
-                parts.push(match attachment_file(&attachment, store)? {
-                    Ok(file) => InputPart::File(file),
-                    Err(note) => InputPart::Text(TextPart::new(note)),
-                });
+                let (content, file) =
+                    if artifact.media_type == cookie_agent_protocol::FILE_UPLOAD_MEDIA_TYPE {
+                        (uploaded_file_content(&attachment, store)?, None)
+                    } else {
+                        match attachment_file(&attachment, store)? {
+                            Ok(file) => {
+                                let content = if artifact.media_type
+                                    == cookie_agent_protocol::media_sniff::TEXT_MEDIA_TYPE
+                                {
+                                    FileContent::Text
+                                } else {
+                                    FileContent::Media(artifact.media_type.clone())
+                                };
+                                (content, Some(InputPart::File(file)))
+                            }
+                            Err(note) => (
+                                FileContent::Missing,
+                                Some(InputPart::Text(TextPart::new(note))),
+                            ),
+                        }
+                    };
+                let facts = FileFacts {
+                    byte_length: artifact.byte_length,
+                    content,
+                };
+                let head = user_file_label_head(artifact);
+                let ending = if matches!(file, Some(InputPart::File(_))) {
+                    FileLabelEnding::IncludedBelow
+                } else {
+                    // Without a request yet, as though it offered both tools.
+                    let tools = FileTools {
+                        read_artifact: true,
+                        transfer: true,
+                    };
+                    crate::media::missing_file_ending(&facts, &[], tools)
+                };
+                parts.push(InputPart::Text(TextPart::new(format!(
+                    "{head} · {}]",
+                    ending.text()
+                ))));
+                parts.extend(file);
+                labels.insert(head, facts);
             }
             Open::Unknown { .. } => {}
         }
@@ -2181,19 +2244,38 @@ fn user_content(
     Ok(UserMessage::new(parts))
 }
 
-/// How the model sees a user's file, named for `transfer`: its name, size,
-/// and the first hex digits of its digest.
-pub(crate) fn file_label(artifact: &ArtifactRef) -> String {
-    let digest = &artifact.sha256[..artifact.sha256.len().min(FILE_LABEL_DIGEST_CHARS)];
-    let size = cookie_agent_protocol::human_bytes(artifact.byte_length);
-    match &artifact.filename {
-        Some(name) => format!("[file {name}, {size}, artifact {digest}]"),
-        None => format!("[file, {size}, artifact {digest}]"),
+/// What a `file` upload's stored copy holds, recognized from its head as
+/// `artifact.read` recognizes a blob.
+fn uploaded_file_content(
+    attachment: &ToolAttachment,
+    store: SessionArtifacts<'_>,
+) -> Result<crate::media::FileContent, HistoryError> {
+    use crate::media::FileContent;
+    let bytes = match store.read_verified_attachment(attachment) {
+        Ok(bytes) => bytes,
+        Err(error)
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::InvalidData
+            ) =>
+        {
+            return Ok(FileContent::Missing);
+        }
+        Err(error) => return Err(error.into()),
+    };
+    let head = &bytes[..bytes
+        .len()
+        .min(cookie_agent_runtime_api::media::MEDIA_SNIFF_BYTES)];
+    if let Some(media_type) =
+        cookie_agent_runtime_api::media::recognize_media_type(head, bytes.len() as u64)
+    {
+        return Ok(FileContent::Media(media_type.to_owned()));
     }
+    Ok(match std::str::from_utf8(head) {
+        Err(error) if error.error_len().is_some() => FileContent::Binary,
+        _ => FileContent::Text,
+    })
 }
-
-/// Hex digits of the digest a file label shows.
-pub(crate) const FILE_LABEL_DIGEST_CHARS: usize = 8;
 
 /// A user file part as the attachment the artifact store reads.
 fn user_file_attachment(artifact: &ArtifactRef) -> Result<ToolAttachment, HistoryError> {

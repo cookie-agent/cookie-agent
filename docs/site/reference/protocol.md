@@ -466,12 +466,17 @@ daemon restart forgets leases; an upload no event referenced then stays in
 the store.
 
 **File labels.** Each `file` part reaches the model with its label just
-before it, `[file report.zip, 3.2 MB, artifact 5f2c81d0]`: its name, size,
-and the first 8 hex digits of its digest, which `transfer` takes to copy it
-to a machine. A `file` upload is its label alone. A file the model does not
-take carries the reason in its label instead of its content, `[file
-screenshot.png, 471 KB, artifact 5f2c81d0; not shown: acme/text-model does
-not accept images]`.
+before it, `[file Screenshot.jpg attached to this user message · image/jpeg
+· 671 KB · artifact 0c697e90 · included below]`: its name, media type, size,
+the first 8 hex digits of its digest, which `read_artifact` and `transfer`
+take, and whether this request carries the file. ACP agents get the same
+label before each file block. A file the request leaves out (a `file`
+upload, or a file the model does not take, which a placeholder with the
+reason then follows) ends `not included; read_artifact returns it`, `not
+included; use transfer to copy it to a machine you work on`, or `not
+included; only its name is available`, by what the request's tools can do
+with it ([Media](../sessions/media.md#file-labels)).
+`cookie_agent_protocol::model_text::user_file_label` renders the label.
 
 **Admission.** `run.start`, `run.steer`, and `session.submit_input` check
 every `file` part against the model the input reaches: the run's selected

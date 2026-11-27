@@ -3406,6 +3406,18 @@ impl EventLog {
             .map(|(names, _)| names.clone())
     }
 
+    /// Whether the latest recorded model request offered tool `name`, at
+    /// once or deferred.
+    pub fn last_model_offers_tool(&self, name: &str) -> bool {
+        self.storage()
+            .index
+            .last_model_tools
+            .as_ref()
+            .is_some_and(|(names, deferred)| {
+                names.iter().chain(deferred).any(|offered| offered == name)
+            })
+    }
+
     /// The latest `MemoryLoaded` record, and whether a checkpoint was
     /// committed after it.
     pub fn last_memory_loaded(&self) -> Option<(Arc<StoredEvent>, bool)> {

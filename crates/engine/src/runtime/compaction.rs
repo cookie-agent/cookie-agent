@@ -1220,15 +1220,23 @@ impl Engine {
             .with_tools(tools)
             .with_header_context(header_context);
         let adapter = input.binding.descriptor.adapter_id.as_str();
+        let tool_media = policy::tool_input_media(adapter, &capabilities);
         crate::media::fit_media(
             &mut request.history,
             &input.binding.selection.model,
             &policy::user_input_media(adapter, &capabilities),
-            &policy::tool_input_media(adapter, &capabilities),
+            &tool_media,
         );
         if crate::media::elide_excess_media(&mut request.history, &capabilities).is_err() {
             return NativeOutcome::default();
         }
+        let file_tools = crate::media::FileTools::of(&request);
+        crate::media::settle_file_labels(
+            &mut request.history,
+            &view.file_labels,
+            &tool_media,
+            file_tools,
+        );
         let seeded = view.native_context.is_some();
         if let Some(native_context) = view.native_context {
             request = request.with_native_context(native_context);

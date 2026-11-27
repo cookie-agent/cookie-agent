@@ -1,11 +1,19 @@
 //! What an ACP prompt carries of a user's files
 //! (`docs/site/specs/acp-agents.md` section 15, input and pickers): images,
-//! audio, and text files as the agent's prompt capabilities allow, else a
-//! note that the agent cannot read the file; and what the clients are told
-//! the agent takes.
+//! audio, and text files as the agent's prompt capabilities allow, each
+//! after the label models get (`docs/site/specs/attachment-handling.md`
+//! section 4.1), else the label alone; and what the clients are told the
+//! agent takes.
 
-use cookie_agent_protocol::{ArtifactRef, InputMedia, MediaKindLabel, media_sniff};
-use cookie_agent_runtime_api::media::upload_media_types;
+use cookie_agent_protocol::{
+    ArtifactRef, InputMedia, MediaKindLabel, media_sniff,
+    runtime_protocol::{MediaDelivery, ToolInputMedia},
+};
+use cookie_agent_runtime_api::media::{
+    MEDIA_SNIFF_BYTES, recognize_media_type, upload_media_types,
+};
+
+use crate::media::{FileContent, FileFacts, FileTools, missing_file_ending};
 use serde_json::{Value, json};
 
 use super::wire::{self, PromptCapabilities};
@@ -95,42 +103,103 @@ fn attachment_uri(artifact: &ArtifactRef) -> String {
     uri
 }
 
-/// The prompt block of `artifact`, a file the user attached, for an agent
-/// with `caps`: an `image`, an `audio`, or a text `resource` block when the
-/// agent takes it and `read` has its bytes, else a note naming the file.
-pub(crate) fn file_block(
+/// The media cookie's tools return to an agent with `caps` over the MCP
+/// bridge, as tool results: the images and audio its prompts take
+/// (`docs/site/specs/attachment-handling.md` section 4.3).
+pub(crate) fn bridge_input_media(caps: &PromptCapabilities) -> Vec<ToolInputMedia> {
+    input_media(caps)
+        .into_iter()
+        .filter(|media| {
+            [MediaKindLabel::IMAGE, MediaKindLabel::AUDIO].contains(&media.kind.as_str())
+        })
+        .map(|media| ToolInputMedia {
+            kind: media.kind,
+            mime_types: media.mime_types,
+            max_bytes: media.max_bytes,
+            delivery: MediaDelivery::ToolResult,
+        })
+        .collect()
+}
+
+/// The prompt blocks of `artifact`, a file the user attached, for an agent
+/// with `caps` whose bridge offers `tools`: its label
+/// ([`cookie_agent_protocol::model_text::user_file_label`]), which names the
+/// artifact for `read_artifact`, `transfer`, and `<attach artifact=…/>`,
+/// then an `image`, an `audio`, or a text `resource` block when the agent
+/// takes it and `read` has its bytes. A file the prompt does not carry is
+/// its label alone, which says what the bridged tools can do with it (as
+/// [`crate::media::missing_file_ending`] decides for a model); one whose
+/// stored copy is gone is its label and a note saying so.
+pub(crate) fn file_blocks(
     artifact: &ArtifactRef,
     caps: &PromptCapabilities,
+    tools: FileTools,
     read: impl FnOnce() -> Option<bytes::Bytes>,
-) -> Value {
+) -> Vec<Value> {
     use base64::Engine as _;
+    use cookie_agent_protocol::model_text::{FileLabelEnding, user_file_label};
+    let label = |ending| wire::text_block(&user_file_label(artifact, ending));
     let how = delivery(artifact, caps);
-    let bytes = (how != Delivery::Note).then(read).flatten();
-    match (how, bytes) {
-        (Delivery::Image, Some(bytes)) => json!({
+    let uploaded = artifact.media_type == cookie_agent_protocol::FILE_UPLOAD_MEDIA_TYPE;
+    // A `file` upload's content says what `read_artifact` can do with it.
+    let bytes = (how != Delivery::Note || uploaded).then(read).flatten();
+    let block = match (&how, &bytes) {
+        (Delivery::Image, Some(bytes)) => Some(json!({
             "type": "image",
             "mimeType": artifact.media_type,
             "data": base64::engine::general_purpose::STANDARD.encode(bytes),
-        }),
-        (Delivery::Audio, Some(bytes)) => json!({
+        })),
+        (Delivery::Audio, Some(bytes)) => Some(json!({
             "type": "audio",
             "mimeType": artifact.media_type,
             "data": base64::engine::general_purpose::STANDARD.encode(bytes),
+        })),
+        (Delivery::Text, Some(bytes)) => std::str::from_utf8(bytes).ok().map(|text| {
+            json!({
+                "type": "resource",
+                "resource": {
+                    "uri": attachment_uri(artifact),
+                    "mimeType": artifact.media_type,
+                    "text": text,
+                },
+            })
         }),
-        (Delivery::Text, Some(bytes)) if std::str::from_utf8(&bytes).is_ok() => json!({
-            "type": "resource",
-            "resource": {
-                "uri": attachment_uri(artifact),
-                "mimeType": artifact.media_type,
-                "text": String::from_utf8_lossy(&bytes),
-            },
-        }),
-        _ => wire::text_block(&format!(
-            "[attached file {} ({}), which this agent cannot read]",
-            artifact.filename.as_deref().unwrap_or("unnamed"),
-            artifact.media_type
-        )),
+        _ => None,
+    };
+    if let Some(block) = block {
+        return vec![label(FileLabelEnding::IncludedBelow), block];
     }
+    let content = match bytes {
+        None if how != Delivery::Note || uploaded => FileContent::Missing,
+        None if artifact.media_type == media_sniff::TEXT_MEDIA_TYPE => FileContent::Text,
+        None => FileContent::Media(artifact.media_type.clone()),
+        Some(bytes) => {
+            let head = &bytes[..bytes.len().min(MEDIA_SNIFF_BYTES)];
+            if let Some(media_type) = recognize_media_type(head, bytes.len() as u64) {
+                FileContent::Media(media_type.to_owned())
+            } else if std::str::from_utf8(head).is_err_and(|error| error.error_len().is_some()) {
+                FileContent::Binary
+            } else {
+                FileContent::Text
+            }
+        }
+    };
+    let facts = FileFacts {
+        byte_length: artifact.byte_length,
+        content,
+    };
+    let ending = missing_file_ending(&facts, &bridge_input_media(caps), tools);
+    if facts.content == FileContent::Missing {
+        return vec![
+            label(ending),
+            wire::text_block(&format!(
+                "[{} ({}) is unavailable: its stored copy is missing or damaged]",
+                artifact.filename.as_deref().unwrap_or("file"),
+                artifact.media_type
+            )),
+        ];
+    }
+    vec![label(ending)]
 }
 
 /// Whether `title` is the start of the context cookie put ahead of the
@@ -179,39 +248,73 @@ mod tests {
     fn files_go_as_the_agent_takes_them_and_the_rest_as_a_note() {
         let all = caps(true, true, true);
         let bytes = || Some(bytes::Bytes::from_static(b"hello"));
-        let text = file_block(&artifact("text/plain", Some("my notes.md")), &all, bytes);
+        use cookie_agent_protocol::model_text::FileLabelEnding;
+        let label = |artifact: &ArtifactRef, ending| {
+            wire::text_block(&cookie_agent_protocol::model_text::user_file_label(
+                artifact, ending,
+            ))
+        };
+        let both = FileTools {
+            read_artifact: true,
+            transfer: true,
+        };
+        let notes = artifact("text/plain", Some("my notes.md"));
         assert_eq!(
-            text,
-            json!({"type": "resource", "resource": {
-                "uri": "attachment:///my%20notes.md", "mimeType": "text/plain", "text": "hello",
-            }})
+            file_blocks(&notes, &all, both, bytes),
+            [
+                label(&notes, FileLabelEnding::IncludedBelow),
+                json!({"type": "resource", "resource": {
+                    "uri": "attachment:///my%20notes.md", "mimeType": "text/plain", "text": "hello",
+                }})
+            ]
         );
-        let audio = file_block(&artifact("audio/wav", None), &all, bytes);
-        assert_eq!(audio["type"], "audio");
-        assert_eq!(audio["mimeType"], "audio/wav");
-        assert_eq!(audio["data"], "aGVsbG8=");
-        // A PDF, and files the agent does not take, are a note; the bytes
-        // are not even read.
-        for (media_type, caps) in [
-            ("application/pdf", all.clone()),
-            ("text/plain", caps(true, true, false)),
-            ("audio/wav", caps(true, false, true)),
+        let wav = artifact("audio/wav", None);
+        let audio = file_blocks(&wav, &all, both, bytes);
+        assert_eq!(audio[0], label(&wav, FileLabelEnding::IncludedBelow));
+        assert_eq!(audio[1]["type"], "audio");
+        assert_eq!(audio[1]["mimeType"], "audio/wav");
+        assert_eq!(audio[1]["data"], "aGVsbG8=");
+        // Files the agent does not take are their label alone, which says
+        // what the bridged tools can do; the bytes are not even read.
+        for (media_type, caps, tools, ending) in [
+            // `read_artifact` returns no PDF over the bridge.
+            (
+                "application/pdf",
+                all.clone(),
+                both,
+                FileLabelEnding::UseTransfer,
+            ),
+            (
+                "application/pdf",
+                all.clone(),
+                FileTools::default(),
+                FileLabelEnding::OnlyName,
+            ),
+            (
+                "text/plain",
+                caps(true, true, false),
+                both,
+                FileLabelEnding::ReadArtifactReturnsIt,
+            ),
+            (
+                "audio/wav",
+                caps(true, false, true),
+                both,
+                FileLabelEnding::UseTransfer,
+            ),
         ] {
-            let block = file_block(&artifact(media_type, Some("x")), &caps, || {
+            let file = artifact(media_type, Some("x"));
+            let blocks = file_blocks(&file, &caps, tools, || {
                 panic!("read a file the agent cannot take")
             });
-            assert_eq!(block["type"], "text");
-            assert!(
-                block["text"]
-                    .as_str()
-                    .unwrap()
-                    .contains("which this agent cannot read"),
-                "{block}"
-            );
+            assert_eq!(blocks, [label(&file, ending)], "{media_type}");
         }
-        // A file the store no longer has is a note too.
-        let gone = file_block(&artifact("image/png", Some("a.png")), &all, || None);
-        assert_eq!(gone["type"], "text");
+        // A file the store no longer has is its label and a note.
+        let png = artifact("image/png", Some("a.png"));
+        let gone = file_blocks(&png, &all, both, || None);
+        assert_eq!(gone.len(), 2);
+        assert_eq!(gone[0], label(&png, FileLabelEnding::OnlyName));
+        assert_eq!(gone[1]["type"], "text");
     }
 
     #[test]

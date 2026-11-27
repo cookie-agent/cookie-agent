@@ -2098,6 +2098,16 @@ impl Engine {
                 );
                 crate::media::elide_excess_media(&mut request.history, &capabilities)
                     .map_err(ModelError::invalid_request)?;
+                // Each user file's label then says whether the request
+                // carries the file.
+                let file_labels = context.file_labels;
+                let file_tools = crate::media::FileTools::of(&request);
+                crate::media::settle_file_labels(
+                    &mut request.history,
+                    &file_labels,
+                    &turn_context.input_media,
+                    file_tools,
+                );
                 request.inference.max_output_tokens =
                     policy::effective_max_output_tokens(binding, policy.agent.max_output_tokens);
                 if let Some(native_context) = context.native_context {
@@ -2223,6 +2233,13 @@ impl Engine {
                 );
                 crate::media::elide_excess_media(&mut request.history, &capabilities)
                     .map_err(ModelError::invalid_request)?;
+                let file_tools = crate::media::FileTools::of(&request);
+                crate::media::settle_file_labels(
+                    &mut request.history,
+                    &file_labels,
+                    &turn_context.input_media,
+                    file_tools,
+                );
                 let prompt_fingerprint = request_fingerprint(&request)?;
                 self.record_model_tools(session, run, attempt_id, &request, binding)
                     .await?;

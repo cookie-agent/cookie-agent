@@ -605,6 +605,15 @@ chooses its own deferral. Tool groups only take away: your `deny` rules
 still refuse calls. The former `acp.hide_tools` is removed, and a document
 that declares it fails.
 
+A result of cookie's tools that holds an image or audio file, such as
+`read` of a screenshot, `read_artifact` of an image the user sent, or an
+MCP tool's image, reaches the agent as an MCP `image` or `audio` content
+block after the text. The bridge's tools return images and audio only to an
+agent whose prompts take that kind; to any other, `read` and
+`read_artifact` refuse the file and say what to do instead. A PDF or video
+file a result still carries goes as an embedded `resource` block with the
+file as its `blob`.
+
 ## Several machines
 
 The agent's own file and shell tools act on its host machine only.
@@ -668,8 +677,14 @@ not in it.
   text files, up to 1 MiB, as embedded context to one that takes it
   (Claude Code and Codex do). The composers offer attaching once the
   agent has started on that runtime and check files against what it
-  advertised; anything else, such as a PDF, reaches the agent as a note
-  that it cannot read the file.
+  advertised. Each file comes after the label models get,
+  `[file Screenshot.jpg attached to this user message · image/jpeg · 671 KB
+  · artifact 0c697e90 · included below]`, which names its artifact for
+  `read_artifact`, `transfer`, and `<attach artifact=…/>`. Anything else,
+  such as a PDF, reaches the agent as that label alone, ended by what the
+  bridged tools can do with it: `read_artifact` for text and for images or
+  audio the agent takes, else `transfer` when the bridge offers it
+  ([file labels](../sessions/media.md#file-labels)).
 - **Agent options.** The agent's other options, such as its mode, are the
   session's agent options: `/options` in the TUI, and **All agent options**
   in the web client's model sheet. An on/off option, such as Claude Code's

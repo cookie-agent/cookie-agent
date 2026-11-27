@@ -49,15 +49,39 @@ is too large. An attachment the model does not take reaches it as its label.
 
 ## File labels
 
-Each attached file reaches the model with a label just before it:
+Each attached file reaches the model, and an ACP agent, with a label just
+before it:
 
 ```text
-[file report.zip, 3.2 MB, artifact 5f2c81d0]
+[file Screenshot.jpg attached to this user message · image/jpeg · 671 KB · artifact 0c697e90 · included below]
 ```
 
 The label names the artifact by the first 8 hex digits of its digest, which
-`transfer` takes, so "save this to labpc" from a phone is a single call. A
-`file` upload is its label alone.
+`read_artifact` and `transfer` take, so "save this to labpc" from a phone is
+a single call. Its last part says whether this request carries the file, and
+if not, what works for it:
+
+| Ending | When |
+|---|---|
+| `included below` | The file follows the label in this request. |
+| `not included; read_artifact returns it` | The request leaves it out, but `read_artifact` returns it: UTF-8 text, or media this model takes from a tool (such as an image an earlier build stored as a file, or one over the request's count of images). |
+| `not included; use transfer to copy it to a machine you work on` | Neither, and the request offers `transfer`, at once or deferred. |
+| `not included; only its name is available` | Neither, and no `transfer`; or the stored copy is gone. |
+
+A `file` upload, such as an archive, is its label alone:
+
+```text
+[file report.zip attached to this user message · application/octet-stream · 3.2 MB · artifact 5f2c81d0 · not included; use transfer to copy it to a machine you work on]
+```
+
+The ending is decided for each request, after the model's media limits
+apply, so it holds for the model that reads it.
+
+`read_artifact` of an image, PDF, audio, or video artifact the model takes
+returns the file itself, as `read` returns one; of one it does not take, or
+of other binary content, an error that says so and suggests what to do on a
+machine instead (for example `ffmpeg` for a video, `pdftoppm` for a PDF),
+naming `transfer` when the session offers it.
 
 ## In the terminal UI
 
@@ -75,11 +99,12 @@ Backspace at the start of the draft removes the newest. See
 ## When the model changes
 
 A session can move to another model, or a run can fall back to one. A model
-that does not accept a file in the history gets the reason in the file's
-label instead of the file, such as:
+that does not accept a file in the history gets the file's label, ended by
+what works for it, and a note with the reason in place of the file, such as:
 
 ```text
-[file screenshot.png, 471 KB, artifact 5f2c81d0; not shown: acme/text-model does not accept images]
+[file screenshot.png attached to this user message · image/png · 471 KB · artifact 5f2c81d0 · not included; use transfer to copy it to a machine you work on]
+[image omitted: acme/text-model does not accept images (screenshot.png, 471 KB)]
 ```
 
 A file a tool returned has no label; a short note stands in for it, such as

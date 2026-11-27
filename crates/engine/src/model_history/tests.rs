@@ -479,7 +479,9 @@ fn a_stored_user_file_part_becomes_a_file_input_part() {
         other => panic!("expected a label: {other:?}"),
     };
     assert!(
-        label(1).starts_with("[file screenshot.png, 10 B, artifact ") && label(1).ends_with(']'),
+        label(1).starts_with(
+            "[file screenshot.png attached to this user message · image/png · 10 B · artifact "
+        ) && label(1).ends_with(']'),
         "{}",
         label(1)
     );
@@ -491,7 +493,9 @@ fn a_stored_user_file_part_becomes_a_file_input_part() {
                 && matches!(&file.source, oven_sdk::FileSource::Bytes(bytes) if bytes.as_ref() == b"user image")
     ));
     assert!(
-        label(3).starts_with("[file lost.png, 10 B, artifact "),
+        label(3).starts_with(
+            "[file lost.png attached to this user message · image/png · 10 B · artifact "
+        ),
         "{}",
         label(3)
     );
@@ -500,24 +504,6 @@ fn a_stored_user_file_part_becomes_a_file_input_part() {
         oven_sdk::InputPart::Text(text)
             if text.text == "[lost.png (image/png) is unavailable: its stored copy is missing or damaged]"
     ));
-}
-
-#[test]
-fn a_file_label_names_the_artifact_by_its_first_digits() {
-    let artifact = |filename: Option<&str>| cookie_agent_protocol::ArtifactRef {
-        sha256: format!("5f2c81d0{}", "a".repeat(56)),
-        byte_length: 3_355_443,
-        media_type: cookie_agent_protocol::FILE_UPLOAD_MEDIA_TYPE.into(),
-        filename: filename.map(str::to_owned),
-    };
-    assert_eq!(
-        super::file_label(&artifact(Some("report.zip"))),
-        "[file report.zip, 3.2 MB, artifact 5f2c81d0]"
-    );
-    assert_eq!(
-        super::file_label(&artifact(None)),
-        "[file, 3.2 MB, artifact 5f2c81d0]"
-    );
 }
 
 #[test]

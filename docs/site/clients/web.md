@@ -772,8 +772,9 @@ refreshes no longer change). Reset and Replace ask once more.
     file the model takes goes up as media; any other (an archive, a kind
     the model does not accept, a file over its limit) goes up as a file,
     and the status line says why. The model sees a file's label, `[file
-    report.zip, 3.2 MB, artifact 5f2c81d0]`, and can copy it to a machine
-    with `transfer`. Only a file over the daemon's 25 MB upload limit is
+    report.zip attached to this user message · application/octet-stream ·
+    3.2 MB · artifact 5f2c81d0 · not included; use transfer to copy it to a
+    machine you work on]`, and can copy it to a machine with `transfer`. Only a file over the daemon's 25 MB upload limit is
     refused.
   - An image too large for the model or the daemon is offered as
     **Downscale and attach**: the page redraws it smaller and attaches that.

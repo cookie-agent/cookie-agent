@@ -2629,7 +2629,16 @@ impl Turn<'_> {
                     if text.is_empty() {
                         text = result.title.as_str().to_owned();
                     }
-                    serde_json::json!({"content": [{"type": "text", "text": text}], "isError": false})
+                    let mut content = vec![serde_json::json!({"type": "text", "text": text})];
+                    content.extend(
+                        bridge_media_blocks(
+                            Arc::clone(&engine.inner.artifacts),
+                            active.session,
+                            result.attachments.clone(),
+                        )
+                        .await,
+                    );
+                    serde_json::json!({"content": content, "isError": false})
                 }
                 Err(failure) => serde_json::json!({
                     "content": [{"type": "text", "text": failure.message}],
@@ -2653,15 +2662,20 @@ impl Turn<'_> {
     }
 
     /// The turn context a call of cookie's tools through the bridge runs
-    /// with: the agent's, on its synthetic model.
+    /// with: the agent's, on its synthetic model, taking the images and
+    /// audio its prompt capabilities take as attachments of the result,
+    /// which the bridge's reply carries as MCP content
+    /// (`docs/site/specs/attachment-handling.md` section 4.3).
     fn bridge_turn_context(&self) -> Arc<cookie_agent_runtime_api::TurnAgentContext> {
         let selection = cookie_agent_protocol::acp_model_selection(&self.live.agent.id);
+        let input_media =
+            super::prompt::bridge_input_media(&self.live.process.init().capabilities.prompt());
         Arc::new(cookie_agent_runtime_api::TurnAgentContext {
             agent: self.live.agent.id.clone(),
             model: selection.model,
             adapter: cookie_agent_protocol::AdaptorId::new(crate::policy::ACP_ADAPTER)
                 .expect("static adapter"),
-            input_media: Vec::new(),
+            input_media,
         })
     }
 
@@ -2944,6 +2958,49 @@ fn echo_failure(fields: &ToolCallFields) -> Option<String> {
         .and_then(text)
         .map(|text| text.trim().to_owned())
         .filter(|text| !text.is_empty())
+}
+
+/// The MCP content blocks of a bridged result's `attachments`, read from
+/// `session`'s tree: an `image` or `audio` block for each image or audio
+/// file, and an embedded `resource` with the file as its `blob` for any
+/// other, such as a PDF or a video. A file whose stored copy does not read
+/// back verified stays the reference the result's text names.
+async fn bridge_media_blocks(
+    store: Arc<super::super::artifacts::ArtifactRouter>,
+    session: SessionId,
+    attachments: Vec<cookie_agent_protocol::ToolAttachment>,
+) -> Vec<Value> {
+    use base64::Engine as _;
+    if attachments.is_empty() {
+        return Vec::new();
+    }
+    super::super::blocking_io::run(move || {
+        attachments
+            .into_iter()
+            .filter_map(|attachment| {
+                let bytes = store.read_verified_attachment(session, &attachment).ok()?;
+                let data = base64::engine::general_purpose::STANDARD.encode(bytes);
+                let mime = attachment.mime_type.as_str();
+                Some(match mime.split('/').next() {
+                    Some(kind @ ("image" | "audio")) => serde_json::json!({
+                        "type": kind,
+                        "data": data,
+                        "mimeType": mime,
+                    }),
+                    _ => serde_json::json!({
+                        "type": "resource",
+                        "resource": {
+                            "uri": attachment.reference.uri,
+                            "mimeType": mime,
+                            "blob": data,
+                        },
+                    }),
+                })
+            })
+            .collect()
+    })
+    .await
+    .unwrap_or_default()
 }
 
 /// The MCP result of a call through the bridge outside the agent's turn.
@@ -3836,8 +3893,9 @@ impl Engine {
         (prompt, taken)
     }
 
-    /// Adds the blocks of `content` to `prompt`: text, and files as the
-    /// agent's prompt capabilities `caps` allow ([`super::prompt`]).
+    /// Adds the blocks of `content` to `prompt`: text, and files after
+    /// their labels as the agent's prompt capabilities `caps` allow
+    /// ([`super::prompt`]).
     fn push_content(
         &self,
         prompt: &mut Vec<Value>,
@@ -3845,11 +3903,22 @@ impl Engine {
         content: &cookie_agent_protocol::UserContent,
         caps: &wire::PromptCapabilities,
     ) {
+        // What the bridge offers the agent, as the session last recorded it.
+        let offers = |name: &str| {
+            self.inner
+                .store
+                .get(session)
+                .is_ok_and(|projection| projection.log.last_model_offers_tool(name))
+        };
+        let tools = crate::media::FileTools {
+            read_artifact: offers(crate::base_tools::READ_ARTIFACT),
+            transfer: offers(crate::machines_tool::TRANSFER),
+        };
         for part in content.parts() {
             match part {
                 Open::Known(UserContentPart::Text { text }) => prompt.push(wire::text_block(text)),
                 Open::Known(UserContentPart::File { artifact }) => {
-                    prompt.push(super::prompt::file_block(artifact, caps, || {
+                    prompt.extend(super::prompt::file_blocks(artifact, caps, tools, || {
                         self.read_user_artifact(session, artifact)
                     }));
                 }

@@ -201,7 +201,7 @@ pub(crate) async fn read_artifact_async(
     blocking_io::run(move || read_artifact(&store, session, &target, request)).await?
 }
 
-fn read_error(error: std::io::Error) -> ToolError {
+pub(super) fn read_error(error: std::io::Error) -> ToolError {
     match error.kind() {
         std::io::ErrorKind::FileTooLarge => ToolError::resource_limit(error.to_string()),
         // Artifacts are written without fsync, so a crash can lose one a

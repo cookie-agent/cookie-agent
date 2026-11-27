@@ -1,6 +1,8 @@
 //! `read_artifact`: pages through output the session tree retained, and
 //! through the output of the tree's background calls by job ID, while they
-//! run and after (`docs/site/specs/live-tool-output.md`).
+//! run and after (`docs/site/specs/live-tool-output.md`). An image, PDF,
+//! audio, or video artifact comes back as the file itself when the turn's
+//! model takes it (`docs/site/specs/attachment-handling.md` section 4.2).
 //!
 //! A base-layer tool: it reads only artifacts stored in the calling session's
 //! own tree, and only that tree's background calls, so it needs no permission
@@ -24,7 +26,7 @@ use super::{
     tool_error,
 };
 
-const TOOL_NAME: &str = "read_artifact";
+pub(crate) const TOOL_NAME: &str = "read_artifact";
 /// Hex digits of the digest shown in the tool call header.
 const DISPLAY_DIGEST_CHARS: usize = 12;
 
@@ -52,7 +54,7 @@ struct ReadArtifactArgs {
 }
 
 /// What the model reads about `read_artifact`.
-const DESCRIPTION: &str = "Read retained tool output by line, as `read` reads a file, or the output of a call running in the background. A truncated result names the artifact (and stream) to read in a `read_artifact` hint, with the 1-based `offset` of the first line it left out: read from there. Elided history names the artifact to read from its first line. `artifact` is the digest a hint names, or its first 8 or more hex digits, or a background call's job ID, such as `job_1a2b3c4d`. Given only a job ID, it returns the call's output so far as its result would show it if it ended now; with a `stream`, `offset`, or `limit`, it pages that output as it stands. A job ID keeps reading for a while after the call ends. Lines come back numbered, `N: text`, counting from 1. `offset` is the 1-based line to start at (default 1), or, when negative, how many lines before the end to start (-50 reads the last 50 lines), and `limit` the most lines to return (default 2000). A line longer than 4 KiB is cut and ends with `... [line truncated: N more bytes]`, and a page stops before it passes the result size limit (about 2 MiB). A page that leaves lines out ends with a note such as `[120 more lines; continue with offset=2001]`: read again from that offset. An offset past the last line is an error.";
+const DESCRIPTION: &str = "Read retained tool output by line, as `read` reads a file, or the output of a call running in the background. An image, PDF, audio, or video artifact the model takes comes back as the file itself, as `read` returns one. A truncated result names the artifact (and stream) to read in a `read_artifact` hint, with the 1-based `offset` of the first line it left out: read from there. Elided history names the artifact to read from its first line. `artifact` is the digest a hint names, or its first 8 or more hex digits, or a background call's job ID, such as `job_1a2b3c4d`. Given only a job ID, it returns the call's output so far as its result would show it if it ended now; with a `stream`, `offset`, or `limit`, it pages that output as it stands. A job ID keeps reading for a while after the call ends. Lines come back numbered, `N: text`, counting from 1. `offset` is the 1-based line to start at (default 1), or, when negative, how many lines before the end to start (-50 reads the last 50 lines), and `limit` the most lines to return (default 2000). A line longer than 4 KiB is cut and ends with `... [line truncated: N more bytes]`, and a page stops before it passes the result size limit (about 2 MiB). A page that leaves lines out ends with a note such as `[120 more lines; continue with offset=2001]`: read again from that offset. An offset past the last line is an error.";
 
 impl ReadArtifactArgs {
     /// Checks the artifact and stream the call names; the executor finds
@@ -215,8 +217,8 @@ impl ToolProvider for ReadArtifactTool {
         let request = LineRequest::new(args.offset, args.limit)?;
         // A job ID read with no window asks for the snapshot, so its
         // arguments stay as given.
-        let window = (args.stream.is_some() || args.offset.is_some() || args.limit.is_some())
-            .then_some(request);
+        let paged = args.offset.is_some() || args.limit.is_some();
+        let window = (args.stream.is_some() || paged).then_some(request);
         if !args.is_job() {
             args.offset = Some(request.offset());
             args.limit = Some(request.limit());
@@ -250,6 +252,7 @@ impl ToolProvider for ReadArtifactTool {
                 stream: args.stream.clone(),
                 request,
                 window,
+                paged,
                 session: ctx.session,
             }),
         )?
@@ -268,7 +271,182 @@ struct ReadArtifactExecutor {
     /// The request, when the call gave a stream or window: a job ID read
     /// without one is a snapshot.
     window: Option<LineRequest>,
+    /// Whether the call gave an `offset` or a `limit`, which a media file,
+    /// read whole, refuses.
+    paged: bool,
     session: SessionId,
+}
+
+/// `artifact` as a media file, when its content is one
+/// (`docs/site/specs/attachment-handling.md` section 4.2): the file itself
+/// as the result's attachment when the turn's model takes it, else an
+/// error saying why not and what to do instead, naming `transfer` when
+/// `offers_transfer`; an error for other binary content too. `None` for
+/// text, which pages as lines, and from a host that cannot tell.
+async fn read_media(
+    context: &ToolExecutionContext,
+    artifact: &str,
+    shown: &str,
+    paged: bool,
+    offers_transfer: bool,
+) -> Result<Option<ToolResult>, ToolError> {
+    use cookie_agent_runtime_api::media::{
+        AttachmentGate, gate_attachment, recognize_media_type, validate_attachment,
+    };
+    let artifacts = &context.artifacts;
+    let Some(head) = std::sync::Arc::clone(artifacts)
+        .artifact_head(context.session, artifact.to_owned())
+        .await?
+    else {
+        return Ok(None);
+    };
+    let label = &artifact[..artifact.len().min(8)];
+    let size = cookie_agent_protocol::human_bytes(head.total_bytes);
+    let Some(mime) = recognize_media_type(&head.head, head.total_bytes) else {
+        if std::str::from_utf8(&head.head).is_err_and(|error| error.error_len().is_some()) {
+            return Err(ToolError::execution(format!(
+                "artifact {label} is binary ({size}), not text. {}",
+                work_on_it_elsewhere(None, offers_transfer)
+            )));
+        }
+        return Ok(None);
+    };
+    let max_bytes = cookie_agent_runtime_api::media::max_tool_attachment_bytes(mime);
+    if head.total_bytes > max_bytes {
+        return Err(ToolError::resource_limit(format!(
+            "artifact {label} is {} {mime} ({size}), larger than the {} a tool attaches. {}",
+            article(mime),
+            cookie_agent_protocol::human_bytes(max_bytes),
+            work_on_it_elsewhere(Some(mime), offers_transfer)
+        )));
+    }
+    let attachment = cookie_agent_protocol::ToolAttachment {
+        mime_type: cookie_agent_protocol::MimeType::new(mime).map_err(tool_error)?,
+        filename: None,
+        byte_length: head.total_bytes,
+        sha256: cookie_agent_protocol::Sha256Digest::new(artifact).map_err(tool_error)?,
+        reference: cookie_agent_protocol::ArtifactReference {
+            uri: format!("artifact://sha256/{artifact}"),
+        },
+    };
+    let turn = &context.turn_context;
+    let gate = gate_attachment(&turn.input_media, mime, head.total_bytes);
+    if !matches!(
+        gate,
+        AttachmentGate::AttachToolResult | AttachmentGate::DeliverViaUserTurn
+    ) {
+        // An image's size, when the file is small enough to read for it.
+        let mut about = size.clone();
+        if mime.starts_with("image/")
+            && head.total_bytes <= cookie_agent_runtime_api::media::MAX_ATTACHMENT_BYTES
+            && let Ok(bytes) = std::sync::Arc::clone(artifacts)
+                .read_attachment(context.session, attachment.clone())
+                .await
+            && let Some((width, height)) = image_dimensions(&bytes)
+        {
+            about = format!("{width}×{height}, {size}");
+        }
+        let why = match gate {
+            AttachmentGate::RejectTooLarge { max_bytes } => format!(
+                ", larger than the {} this model takes",
+                cookie_agent_protocol::human_bytes(max_bytes)
+            ),
+            _ => format!(" that this model takes no {} of", plural(mime)),
+        };
+        return Err(ToolError::execution(format!(
+            "artifact {label} is {} {mime} ({about}){why}. {}",
+            article(mime),
+            work_on_it_elsewhere(Some(mime), offers_transfer)
+        )));
+    }
+    if paged {
+        return Err(ToolError::execution(format!(
+            "artifact {label} is {} {mime}, which comes back whole: read it without `offset` and \
+             `limit`",
+            article(mime)
+        )));
+    }
+    let bytes = std::sync::Arc::clone(artifacts)
+        .read_attachment(context.session, attachment.clone())
+        .await?;
+    validate_attachment(mime, std::path::Path::new(""), &bytes)?;
+    // The blob already is in the tree's store: the attachment names it,
+    // and nothing new is retained.
+    let mut result = cookie_agent_runtime_api::media::media_file_result(
+        attachment,
+        gate,
+        safe_title(format!("Read artifact {shown}")),
+        None,
+    )?;
+    result.metadata["artifact"] = serde_json::Value::from(artifact);
+    Ok(Some(result))
+}
+
+/// What the model can do with a file it cannot read here, `mime` a media
+/// type, or `None` for other binary content: copy it to a machine, with
+/// `transfer` when the session offers it, and work on it there with
+/// command-line tools of its kind.
+fn work_on_it_elsewhere(mime: Option<&str>, offers_transfer: bool) -> String {
+    let tools = match mime {
+        Some(mime) if mime.starts_with("video/") => {
+            "`ffmpeg` to extract frames you can `read` as images, and `ffprobe` for its streams"
+        }
+        Some(mime) if mime.starts_with("audio/") => {
+            "`ffprobe` for its streams, and `ffmpeg` to cut or convert it"
+        }
+        Some("application/pdf") => {
+            "`pdftotext` for its text, or `pdftoppm` to render pages you can `read` as images"
+        }
+        Some(mime) if mime.starts_with("image/") => {
+            "ImageMagick `convert` to resize it or convert it to a format this model takes"
+        }
+        _ => "`file`, `xxd`, or the program that opens it",
+    };
+    if offers_transfer {
+        format!(
+            "Use `transfer` to copy it to the machine you work on and inspect it there with \
+             command-line tools (for example {tools})."
+        )
+    } else {
+        format!(
+            "Copy it to a machine and inspect it there with command-line tools (for example \
+             {tools})."
+        )
+    }
+}
+
+/// An image's width and height, as validating it as an upload finds them.
+fn image_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
+    use cookie_agent_protocol::media_sniff::{UploadRejection, validate_upload};
+    match validate_upload(bytes) {
+        Ok(upload) => upload.image,
+        Err(UploadRejection::TooLarge { image, .. }) => image,
+        Err(_) => None,
+    }
+}
+
+/// The article before a media type: "an image/png", "a video/mp4".
+fn article(mime: &str) -> &'static str {
+    if mime.starts_with(['a', 'e', 'i', 'o', 'u']) {
+        "an"
+    } else {
+        "a"
+    }
+}
+
+/// What a model takes none of, for a media type.
+fn plural(mime: &str) -> &'static str {
+    if mime.starts_with("image/") {
+        "images"
+    } else if mime == "application/pdf" {
+        "PDFs"
+    } else if mime.starts_with("audio/") {
+        "audio"
+    } else if mime.starts_with("video/") {
+        "video"
+    } else {
+        "files"
+    }
 }
 
 impl ReadArtifactExecutor {
@@ -337,6 +515,21 @@ impl PreparedExecutor for ReadArtifactExecutor {
         let target = ArtifactReadTarget::parse(&artifact, stream.as_deref())
             .map_err(ToolError::execution)?;
         let shown = shown(&artifact, stream.as_deref());
+        // The session offers `transfer` when its latest model request did,
+        // at once or deferred.
+        let offers_transfer = self.engine.as_ref().is_some_and(|engine| {
+            engine.inner.store.get(self.session).is_ok_and(|session| {
+                session
+                    .log
+                    .last_model_offers_tool(crate::machines_tool::TRANSFER)
+            })
+        });
+        if stream.is_none()
+            && let Some(result) =
+                read_media(&context, &artifact, &shown, self.paged, offers_transfer).await?
+        {
+            return Ok(cookie_agent_runtime_api::ToolCompletion::single(result));
+        }
         let request = self.request;
         let read = context.read_artifact(target, request).await?;
         let page = read.page;

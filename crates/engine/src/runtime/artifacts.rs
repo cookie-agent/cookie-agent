@@ -1178,6 +1178,36 @@ impl cookie_agent_runtime_api::ToolArtifacts for ArtifactRouter {
     ) -> Result<String, crate::ToolError> {
         reads::resolve_artifact_async(self, session, artifact).await
     }
+
+    async fn artifact_head(
+        self: Arc<Self>,
+        session: SessionId,
+        digest: String,
+    ) -> Result<Option<cookie_agent_runtime_api::ArtifactHead>, crate::ToolError> {
+        super::blocking_io::run(move || {
+            let store = self.read_store(session)?.ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::NotFound, "artifact missing")
+            })?;
+            let range = store.read_range(&digest, 0, 0)?;
+            Ok(Some(cookie_agent_runtime_api::ArtifactHead {
+                head: range.head,
+                total_bytes: range.total_bytes,
+            }))
+        })
+        .await?
+        .map_err(reads::read_error)
+    }
+
+    async fn read_attachment(
+        self: Arc<Self>,
+        session: SessionId,
+        attachment: ToolAttachment,
+    ) -> Result<Vec<u8>, crate::ToolError> {
+        super::blocking_io::run(move || self.read_verified_attachment(session, &attachment))
+            .await?
+            .map(|bytes| bytes.to_vec())
+            .map_err(reads::read_error)
+    }
 }
 
 impl std::fmt::Debug for ArtifactRouter {

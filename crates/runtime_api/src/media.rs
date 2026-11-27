@@ -401,12 +401,82 @@ fn malformed_media() -> ToolError {
 
 /// Checks that `bytes` are a supported media file of the declared
 /// `mime_type` within the attachment size bounds.
-pub fn validate_attachment(mime_type: &str, path: &Path, bytes: &[u8]) -> Result<(), ToolError> {
-    let max_attachment_bytes = if mime_type.starts_with("video/") {
+/// The result of a tool that returns a media file whole, as `read` and
+/// `read_artifact` do: a `Media` display block, and `attachment` as the
+/// result's attachment, or as the user message after the result where
+/// `gate` (which [`gate_attachment`] decided, and which must admit the file)
+/// says the model takes its kind only there.
+pub fn media_file_result(
+    attachment: cookie_agent_protocol::ToolAttachment,
+    gate: AttachmentGate,
+    title: cookie_agent_protocol::SafeDisplayText,
+    alt: Option<String>,
+) -> Result<cookie_agent_protocol::PersistedToolResult, ToolError> {
+    use cookie_agent_protocol::{
+        DisplayBlock, Open, ToolEmittedContent, ToolEmittedMessage, ToolEmittedMessageRole,
+    };
+    let mime = attachment.mime_type.to_string();
+    let length = attachment.byte_length;
+    let metadata = serde_json::json!({
+        "kind": "attachment",
+        "mime_type": mime,
+        "sha256": attachment.sha256,
+    });
+    let media = DisplayBlock::Media {
+        artifact: attachment.artifact_ref(),
+        alt,
+    };
+    let (output, attachments, additional_messages) = match gate {
+        AttachmentGate::AttachToolResult => (
+            format!("Attached {mime} ({length} bytes)."),
+            vec![attachment],
+            Vec::new(),
+        ),
+        AttachmentGate::DeliverViaUserTurn => (
+            format!("Attached {mime} ({length} bytes), delivered in the following message."),
+            Vec::new(),
+            vec![
+                ToolEmittedMessage::new(
+                    ToolEmittedMessageRole::User,
+                    vec![ToolEmittedContent::File(attachment)],
+                )
+                .map_err(|error| ToolError::execution(error.to_string()))?,
+            ],
+        ),
+        AttachmentGate::RejectUnsupportedModel
+        | AttachmentGate::RejectUnsupportedFamily
+        | AttachmentGate::RejectTooLarge { .. } => {
+            return Err(ToolError::execution(format!(
+                "Cannot attach {mime}: the model does not take it"
+            )));
+        }
+    };
+    Ok(cookie_agent_protocol::PersistedToolResult {
+        display: vec![Open::Known(media)],
+        background: None,
+        retained_output: None,
+        title,
+        output,
+        metadata,
+        attachments,
+        additional_messages,
+        loaded_tools: Vec::new(),
+    })
+}
+
+/// The most bytes a tool attachment of `mime_type` may have: the video cap
+/// for a video, the attachment cap for any other file.
+#[must_use]
+pub fn max_tool_attachment_bytes(mime_type: &str) -> u64 {
+    if mime_type.starts_with("video/") {
         MAX_VIDEO_ATTACHMENT_BYTES
     } else {
         MAX_ATTACHMENT_BYTES
-    };
+    }
+}
+
+pub fn validate_attachment(mime_type: &str, path: &Path, bytes: &[u8]) -> Result<(), ToolError> {
+    let max_attachment_bytes = max_tool_attachment_bytes(mime_type);
     if bytes.len() as u64 > max_attachment_bytes {
         return Err(ToolError::resource_limit(format!(
             "attachment is {} bytes; the limit is {max_attachment_bytes} bytes",

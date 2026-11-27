@@ -900,7 +900,7 @@ read_artifact(artifact: string, limit?: integer, offset?: integer, stream?: stri
 Description sent to the model:
 
 ```text
-Read retained tool output by line, as `read` reads a file, or the output of a call running in the background. A truncated result names the artifact (and stream) to read in a `read_artifact` hint, with the 1-based `offset` of the first line it left out: read from there. Elided history names the artifact to read from its first line. `artifact` is the digest a hint names, or its first 8 or more hex digits, or a background call's job ID, such as `job_1a2b3c4d`. Given only a job ID, it returns the call's output so far as its result would show it if it ended now; with a `stream`, `offset`, or `limit`, it pages that output as it stands. A job ID keeps reading for a while after the call ends. Lines come back numbered, `N: text`, counting from 1. `offset` is the 1-based line to start at (default 1), or, when negative, how many lines before the end to start (-50 reads the last 50 lines), and `limit` the most lines to return (default 2000). A line longer than 4 KiB is cut and ends with `... [line truncated: N more bytes]`, and a page stops before it passes the result size limit (about 2 MiB). A page that leaves lines out ends with a note such as `[120 more lines; continue with offset=2001]`: read again from that offset. An offset past the last line is an error.
+Read retained tool output by line, as `read` reads a file, or the output of a call running in the background. An image, PDF, audio, or video artifact the model takes comes back as the file itself, as `read` returns one. A truncated result names the artifact (and stream) to read in a `read_artifact` hint, with the 1-based `offset` of the first line it left out: read from there. Elided history names the artifact to read from its first line. `artifact` is the digest a hint names, or its first 8 or more hex digits, or a background call's job ID, such as `job_1a2b3c4d`. Given only a job ID, it returns the call's output so far as its result would show it if it ended now; with a `stream`, `offset`, or `limit`, it pages that output as it stands. A job ID keeps reading for a while after the call ends. Lines come back numbered, `N: text`, counting from 1. `offset` is the 1-based line to start at (default 1), or, when negative, how many lines before the end to start (-50 reads the last 50 lines), and `limit` the most lines to return (default 2000). A line longer than 4 KiB is cut and ends with `... [line truncated: N more bytes]`, and a page stops before it passes the result size limit (about 2 MiB). A page that leaves lines out ends with a note such as `[120 more lines; continue with offset=2001]`: read again from that offset. An offset past the last line is an error.
 ```
 
 Always, whatever the agent's permission rules: it reads only output retained by the session's own tree.
@@ -988,6 +988,31 @@ corrupt artifacts produce tool errors.
 ```json
 {"artifact":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","stream":"results","offset":1,"limit":200}
 ```
+
+Without `stream`, `read_artifact` first recognizes the artifact's content
+from its head, as `artifact.read` does
+([attachment handling](../specs/attachment-handling.md#42-read_artifact-reads-media)):
+
+- **Text** pages as above.
+- **An image, PDF, audio, or video file the turn's model takes** comes back
+  whole, as `read` returns one, through the same gate and caps (20 MiB, 25
+  MiB for a video): a `Media` display block, and the file as the result's
+  attachment, or as the user message after it where the model takes that
+  kind only there. The stored blob is the attachment; nothing new is
+  retained. `offset` and `limit` are refused for it.
+- **Media the model does not take**, or over the caps, is an error naming
+  the file's type and size (an image's dimensions too) and what to do on a
+  machine instead, by kind: `ffmpeg` and `ffprobe` for video and audio,
+  `pdftotext` or `pdftoppm` for a PDF, ImageMagick `convert` for an image.
+  It names `transfer` to copy the file there when the session's latest
+  request offered it, at once or deferred, such as `artifact 0c697e90 is a
+  video/mp4 (12.3 MB) that this model takes no video of. Use transfer to
+  copy it to the machine you work on and inspect it there with command-line
+  tools (for example ffmpeg to extract frames you can read as images, and
+  ffprobe for its streams).`
+- **Other binary content**, whose head is not UTF-8, is an error that names
+  it as binary, with the same advice (`file`, `xxd`, or the program that
+  opens it), in place of lossy lines.
 
 `artifact` may instead be the job ID of a call of the session tree running
 in the [background](#background-calls), or one that ended recently. Without
@@ -2260,7 +2285,7 @@ transfer(from: object | object, overwrite?: boolean, to: object)
 Description sent to the model:
 
 ```text
-Copy a file or folder to a machine of this session: from another of its machines, or from an artifact of this session, such as a file the user sent, whose label names it (`[file report.zip, 3.2 MB, artifact 5f2c81d0]`). `from` is `{"machine": "labpc", "path": "~/data"}` or `{"artifact": "5f2c81d0"}` (with `stream` for one stream of retained tool output); `to` is `{"machine": "laptop", "path": "~/Downloads/data"}`, the path the copy will have, not a folder to put it in. Machines are named as the machines block and `list_runtimes` name them; a relative path resolves against that machine's working directory, and `~` against its home. A folder is copied with everything below it. An existing destination is an error unless `overwrite` is true, which replaces a file or merges into a folder. The daemon relays the bytes, so the machines need not reach each other. The source is checked as `read` on its machine and the destination as `write` on its own. The result gives the bytes and files copied and, for a file, its SHA-256.
+Copy a file or folder to a machine of this session: from another of its machines, or from an artifact of this session, such as a file the user sent, whose label names it (`[file report.zip attached to this user message · application/octet-stream · 3.2 MB · artifact 5f2c81d0 · …]`). `from` is `{"machine": "labpc", "path": "~/data"}` or `{"artifact": "5f2c81d0"}` (with `stream` for one stream of retained tool output); `to` is `{"machine": "laptop", "path": "~/Downloads/data"}`, the path the copy will have, not a folder to put it in. Machines are named as the machines block and `list_runtimes` name them; a relative path resolves against that machine's working directory, and `~` against its home. A folder is copied with everything below it. An existing destination is an error unless `overwrite` is true, which replaces a file or merges into a folder. The daemon relays the bytes, so the machines need not reach each other. The source is checked as `read` on its machine and the destination as `write` on its own. The result gives the bytes and files copied and, for a file, its SHA-256.
 ```
 
 Only when the session has the `global` runtime and a machine whose runtime takes transfers (runtime protocol 1.13.0) attached, and no `"*": deny` for `write` hides it. The source is checked as `read@<its runtime>` on its path and the destination as `write@<its runtime>` on its own; an artifact source needs no rule. Both machines must be attached to the session.

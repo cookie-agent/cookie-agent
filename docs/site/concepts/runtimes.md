@@ -83,7 +83,7 @@ before.
 `transfer` copies a file or a folder to one of the session's machines, from
 another of them or from an artifact of the session, such as a file the user
 sent: each user file reaches the model with a label naming its artifact,
-`[file report.zip, 3.2 MB, artifact 5f2c81d0]`. The machines need not reach
+`[file Screenshot.jpg attached to this user message · image/jpeg · 671 KB · artifact 0c697e90 · included below]`. The machines need not reach
 each other: the daemon relays the bytes between their runtimes and keeps none
 of them, so a large copy adds only its summary to the session log. The source
 is checked as `read` on its machine and the destination as `write` on its

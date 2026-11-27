@@ -5,8 +5,7 @@ use std::{
 
 use async_trait::async_trait;
 use cookie_agent_protocol::{
-    DisplayBlock, Open, PersistedToolResult as ToolResult, PreparedPresentation,
-    ToolEmittedContent, ToolEmittedMessage, ToolEmittedMessageRole, ToolHint,
+    DisplayBlock, Open, PersistedToolResult as ToolResult, PreparedPresentation, ToolHint,
 };
 use cookie_agent_runtime_api::{
     PreparedExecutor, PreparedTool, SessionToolContext, ToolCall, ToolError, ToolExecutionContext,
@@ -15,6 +14,7 @@ use cookie_agent_runtime_api::{
     media::approved_media_type,
     media::attachment_gate_error,
     media::gate_attachment,
+    media::media_file_result,
     media::sniff_media_type,
     text_tools::{self, LineRequest, LineWindow, MAX_PAGE_BYTES, PageError},
     tool_presentation,
@@ -336,50 +336,13 @@ fn attachment_result(
             .map(|name| name.to_string_lossy().into_owned()),
         bytes,
     )?;
-    let sha256 = attachment.sha256.clone();
-    let media = DisplayBlock::Media {
-        artifact: attachment.artifact_ref(),
-        alt: path
-            .file_name()
+    media_file_result(
+        attachment,
+        gate,
+        crate::safe_title(format!("Read {}", path.display())),
+        path.file_name()
             .map(|name| name.to_string_lossy().into_owned()),
-    };
-    let (output, attachments, additional_messages) = match gate {
-        AttachmentGate::AttachToolResult => (
-            format!("Attached {mime} ({} bytes).", bytes.len()),
-            vec![attachment],
-            Vec::new(),
-        ),
-        AttachmentGate::DeliverViaUserTurn => (
-            format!(
-                "Attached {mime} ({} bytes), delivered in the following message.",
-                bytes.len()
-            ),
-            Vec::new(),
-            vec![
-                ToolEmittedMessage::new(
-                    ToolEmittedMessageRole::User,
-                    vec![ToolEmittedContent::File(attachment)],
-                )
-                .map_err(|error| ToolError::execution(error.to_string()))?,
-            ],
-        ),
-        AttachmentGate::RejectUnsupportedModel
-        | AttachmentGate::RejectUnsupportedFamily
-        | AttachmentGate::RejectTooLarge { .. } => {
-            unreachable!("rejected attachment gates returned an error")
-        }
-    };
-    Ok(ToolResult {
-        display: vec![Open::Known(media)],
-        background: None,
-        retained_output: None,
-        title: crate::safe_title(format!("Read {}", path.display())),
-        output,
-        metadata: serde_json::json!({"kind":"attachment","mime_type":mime,"sha256":sha256}),
-        attachments,
-        additional_messages,
-        loaded_tools: Vec::new(),
-    })
+    )
 }
 
 /// One page of numbered lines, read in a single streaming pass that also

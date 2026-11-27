@@ -355,3 +355,49 @@ field).
   own type, and each request decides whether its model gets the bytes.
 - Files already stored as `application/octet-stream` are left as they are.
   The web does not sniff them to draw them as images.
+
+## Implementation notes
+
+What the implementation of phase 2 (delivery) does differently from the
+sections above, or adds:
+
+- **The label says what the request carries** (section 4.1, revised by the
+  user 2026-11-26): `[file NAME attached to this user message · TYPE · SIZE
+  · artifact DIGEST8 · ENDING]`, without `NAME ` for an unnamed file. The
+  ending is `included below` when the file follows the label in this
+  request, else `not included; read_artifact returns it` (UTF-8 text, or
+  media whose type and size the model takes from a tool per
+  `gate_attachment`, a `file` upload's content sniffed as `artifact.read`
+  does), `not included; use transfer to copy it to a machine you work on`
+  (the request offers `transfer`, at once or deferred, and a copy exists),
+  or `not included; only its name is available`. `model_text::
+  user_file_label(artifact, FileLabelEnding)` renders it. It replaces the
+  two `not shown inline; …` forms.
+- **Where the ending is decided** (native): history assembly renders each
+  label as though the request carried what follows it and records the
+  file's facts by the label's head; `media::settle_file_labels` ends every
+  label after `fit_media` and `elide_excess_media`, at each place a request
+  is fitted (the attempt, after plugins, and a native compaction request).
+  A file `fit_media` drops no longer joins its reason into the label: the
+  `[image omitted: …]` placeholder with the reason follows the label.
+- **ACP labels**: the ending follows the agent's prompt capabilities for
+  what the prompt carries, the bridge's tool media (images and audio its
+  prompts take) for `read_artifact`, and the session's latest recorded
+  bridge tool list for `read_artifact` and `transfer`. A stored copy that is
+  gone adds the `[name (type) is unavailable: …]` note native models get.
+- **`read_artifact` and `read` share one result builder**
+  (`runtime_api::media::media_file_result`), the same gate for all four
+  kinds (including delivery in the user message after the result), and
+  the same caps (`max_tool_attachment_bytes`: 25 MiB for video, 20 MiB
+  otherwise). Its refusals name the kind's command-line tools (`ffmpeg` and
+  `ffprobe`, `pdftotext` or `pdftoppm`, ImageMagick `convert`; `file` or
+  `xxd` for other binary) and name `transfer` only when the session's
+  latest request offered it; an image's dimensions come from reading the
+  blob when it is within the attachment cap.
+- **Accepted bridge media** (section 4.3) come from the live agent process's
+  prompt capabilities, the source `KnownAgent.input_media` is recorded
+  from, limited to images and audio. A PDF or video attachment a bridged
+  result still carries goes as an embedded `resource` block with `blob`
+  and `mimeType`.
+- **No `acp.bridge_media`** (section 4.3): bridge replies carry media
+  blocks to every agent; no declaration key turns them off.

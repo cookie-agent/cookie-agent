@@ -102,8 +102,10 @@ path only needs to exist where the TUI runs. A file the selected model takes
 (images, PDFs, audio, or video within its limits) goes up as media. Any
 other file, such as an archive, a kind the model does not accept, or one over
 its byte or pixel limit, goes up as a file: the status line says why, and the
-model sees its label, `[file report.zip, 3.2 MB, artifact 5f2c81d0]`, and
-can copy it to a machine with `transfer`. Only a file over the daemon's
+model sees its label, `[file report.zip attached to this user message ·
+application/octet-stream · 3.2 MB · artifact 5f2c81d0 · not included; use
+transfer to copy it to a machine you work on]`, and can copy it to a machine
+with `transfer`. Only a file over the daemon's
 25 MB upload limit is refused. The TUI does not shrink images. Each attachment shows on the composer's
 bottom border as `📎 name · type · size`; Backspace at the start of the draft
 removes the newest one. A message may be attachments alone. A message taken

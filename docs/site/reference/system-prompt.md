@@ -242,7 +242,8 @@ forms:
   `<subagent_report session_id=…>`, `<background_result job=…>`,
   `<agent_message from=…>`, and `<scheduled_job id=…>`.
 - **Markers that stand in for content** in the history stay in brackets:
-  `[file report.zip, 3.2 MB, artifact 5f2c81d0]`, `[tool output elided; …]`,
+  `[file report.zip attached to this user message · application/octet-stream · 3.2 MB · artifact 5f2c81d0 · …]`,
+  `[tool output elided; …]`,
   and `[Response interrupted — …]`.
 
 Attribute values escape `&`, `"`, `<`, and `>`; element text escapes `&`,

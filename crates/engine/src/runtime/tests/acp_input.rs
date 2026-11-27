@@ -254,7 +254,7 @@ async fn prompt_with_files(
         .unwrap()
         .iter()
         .filter(|block| {
-            block["type"] != "text" || block["text"].as_str().unwrap().starts_with("[attached")
+            block["type"] != "text" || block["text"].as_str().unwrap().starts_with("[file")
         })
         .cloned()
         .collect()
@@ -269,16 +269,28 @@ async fn text_and_audio_files_reach_an_agent_that_takes_them() {
     assert_eq!(notes.media_type, "text/plain");
     let sound = upload(engine, session, &wav(), "hello.wav").await;
     assert_eq!(sound.media_type, "audio/wav");
+    let labels = [&notes, &sound].map(|artifact| {
+        serde_json::json!({
+            "type": "text",
+            "text": cookie_agent_protocol::model_text::user_file_label(
+                artifact,
+                cookie_agent_protocol::model_text::FileLabelEnding::IncludedBelow,
+            ),
+        })
+    });
     let blocks = prompt_with_files(&acp, session, "say ok", vec![notes, sound]).await;
-    assert_eq!(blocks.len(), 2, "{blocks:?}");
+    // Each file comes after its label.
+    assert_eq!(blocks.len(), 4, "{blocks:?}");
+    assert_eq!(blocks[0], labels[0]);
     assert_eq!(
-        blocks[0],
+        blocks[1],
         serde_json::json!({"type": "resource", "resource": {
             "uri": "attachment:///notes.md", "mimeType": "text/plain", "text": "line one\n",
         }})
     );
-    assert_eq!(blocks[1]["type"], "audio");
-    assert_eq!(blocks[1]["mimeType"], "audio/wav");
+    assert_eq!(blocks[2], labels[1]);
+    assert_eq!(blocks[3]["type"], "audio");
+    assert_eq!(blocks[3]["mimeType"], "audio/wav");
     // The clients are told what the agent takes, once its process started.
     let kinds = engine
         .current_runtime()
@@ -306,18 +318,17 @@ async fn files_an_agent_does_not_take_become_a_note() {
     let session = engine.create_session(selection()).unwrap().session_id;
     let notes = upload(engine, session, b"line one\n", "notes.md").await;
     let sound = upload(engine, session, &wav(), "hello.wav").await;
+    let heads = [&notes, &sound].map(cookie_agent_protocol::model_text::user_file_label_head);
     let blocks = prompt_with_files(&acp, session, "say ok", vec![notes, sound]).await;
-    let notes = blocks
-        .iter()
-        .map(|block| block["text"].as_str().unwrap_or_default().to_owned())
-        .collect::<Vec<_>>();
-    assert_eq!(
-        notes,
-        [
-            "[attached file notes.md (text/plain), which this agent cannot read]",
-            "[attached file hello.wav (audio/wav), which this agent cannot read]",
-        ]
-    );
+    // Each is its label alone, which says the prompt does not carry it.
+    assert_eq!(blocks.len(), heads.len(), "{blocks:?}");
+    for (block, head) in blocks.iter().zip(&heads) {
+        let text = block["text"].as_str().unwrap_or_default();
+        let ending = text
+            .strip_prefix(head.as_str())
+            .unwrap_or_else(|| panic!("{text}"));
+        assert!(ending.starts_with(" · not included"), "{text}");
+    }
 }
 
 /// A session of the agent that attaches `local` at the daemon's workspace
