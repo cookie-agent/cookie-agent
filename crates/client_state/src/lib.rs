@@ -61,6 +61,7 @@ pub mod session_window;
 pub mod shares;
 pub mod skills;
 pub mod speech;
+pub mod star;
 pub mod subscriptions;
 pub mod tool_header;
 pub mod transcript_mode;
@@ -2382,6 +2383,7 @@ impl StateStore {
             | ClientDelivery::MemoryChanged(_)
             | ClientDelivery::AssetsChanged(_)
             | ClientDelivery::SharesChanged(_)
+            | ClientDelivery::StarChanged(_)
             | ClientDelivery::ProjectsChanged(_)
             | ClientDelivery::CronsChanged(_)
             | ClientDelivery::WebhooksChanged(_)

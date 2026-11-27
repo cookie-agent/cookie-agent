@@ -1,7 +1,9 @@
 # Asking for a GitHub star
 
-Status: **approved** (2026-11-27), being implemented, with a [preview](github-star/preview.html).
-The user's decisions are in [section 7](#7-decisions-2026-11-27).
+Status: **implemented** (2026-11-27; client protocol 1.106.0), with a
+[preview](github-star/preview.html). The user's decisions are in
+[section 7](#7-decisions-2026-11-27); [section 8](#8-implementation-notes)
+says where the build adds to the draft.
 
 ## 1. Problem
 
@@ -142,3 +144,13 @@ changes nothing and returns `starred: false`.
   history.
 - **Later** hides the card for 7 days. **Star** and **Don't remind me** end
   it for good, and so does finding that the account already starred.
+
+## 8. Implementation notes
+
+- The card's × answers `later`, as **Later** does.
+- `star.answer` with an answer the daemon does not know is `-32602`.
+- Guests are refused both methods and never get `star.changed`, through
+  the guest guard's default.
+- The engine keeps the state in `crates/engine/src/star.rs`; the page's
+  card is `crates/web/src/views/star.rs`, mounted in the transcript's
+  container so it sits above the composer.

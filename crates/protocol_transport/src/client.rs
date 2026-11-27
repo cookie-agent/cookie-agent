@@ -213,6 +213,9 @@ pub enum ClientDelivery {
     /// A share link was made, changed, revoked, or removed (client
     /// protocol 1.86.0); refetch `shares.list`.
     SharesChanged(cookie_agent_protocol::SharesChangedNotification),
+    /// The star card's state changed (client protocol 1.106.0); ask
+    /// `star.status` again.
+    StarChanged(cookie_agent_protocol::StarChangedNotification),
     /// A project was created, changed, or deleted; refetch
     /// `projects.list`.
     ProjectsChanged(cookie_agent_protocol::ProjectsChangedNotification),
@@ -1249,6 +1252,31 @@ impl Client {
         self.call(
             cookie_agent_protocol::ASSET_DELETE_METHOD,
             &cookie_agent_protocol::AssetDeleteParams { store, asset },
+        )
+        .await
+    }
+
+    /// Whether the star card shows (`star.status`, client protocol
+    /// 1.106.0).
+    pub async fn star_status(
+        &self,
+    ) -> Result<cookie_agent_protocol::StarStatusResult, ClientError> {
+        self.call(
+            cookie_agent_protocol::STAR_STATUS_METHOD,
+            &cookie_agent_protocol::StarStatusParams {},
+        )
+        .await
+    }
+
+    /// Records what the user did with the star card (`star.answer`, client
+    /// protocol 1.106.0).
+    pub async fn star_answer(
+        &self,
+        answer: cookie_agent_protocol::StarAnswer,
+    ) -> Result<cookie_agent_protocol::StarAnswerResult, ClientError> {
+        self.call(
+            cookie_agent_protocol::STAR_ANSWER_METHOD,
+            &cookie_agent_protocol::StarAnswerParams { answer },
         )
         .await
     }
@@ -3266,6 +3294,11 @@ async fn route_notification(
             let changed: cookie_agent_protocol::SharesChangedNotification =
                 serde_json::from_str(params)?;
             let _ = deliveries.send(ClientDelivery::SharesChanged(changed));
+        }
+        cookie_agent_protocol::STAR_CHANGED_METHOD => {
+            let changed: cookie_agent_protocol::StarChangedNotification =
+                serde_json::from_str(params)?;
+            let _ = deliveries.send(ClientDelivery::StarChanged(changed));
         }
         cookie_agent_protocol::PROJECTS_CHANGED_METHOD => {
             let changed: cookie_agent_protocol::ProjectsChangedNotification =

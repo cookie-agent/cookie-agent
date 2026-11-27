@@ -1,0 +1,43 @@
+{
+  "$defs": {
+    "StarAnswer": {
+      "description": "What the user did with the card.",
+      "oneOf": [
+        {
+          "const": "star",
+          "description": "**Star as @login**: the daemon stars with its token. The card\nnever shows again, whether starring worked or not.",
+          "type": "string"
+        },
+        {
+          "const": "opened",
+          "description": "The page opened the repository's page. The card never shows\nagain.",
+          "type": "string"
+        },
+        {
+          "const": "later",
+          "description": "**Later**, or the card's ×: hidden for 7 days.",
+          "type": "string"
+        },
+        {
+          "const": "dismiss",
+          "description": "**Don't remind me**: the card never shows again.",
+          "type": "string"
+        }
+      ],
+      "x-open": true
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Records the user's answer.",
+  "properties": {
+    "answer": {
+      "$ref": "#/$defs/StarAnswer"
+    }
+  },
+  "required": [
+    "answer"
+  ],
+  "title": "StarAnswerParams",
+  "type": "object"
+}

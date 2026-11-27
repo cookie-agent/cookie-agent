@@ -1,7 +1,7 @@
 # Protocol Reference
 
 The daemon exposes JSON-RPC 2.0 over a WebSocket at `/ws`. This build speaks
-client protocol `1.105.0`; the [changelog](protocol-changelog.md) lists what
+client protocol `1.106.0`; the [changelog](protocol-changelog.md) lists what
 each version changed. A client and a daemon connect when their majors are
 equal: a minor only adds, so the two use what the lower minor includes, and
 the patch never matters. [Compatibility](compatibility.md) states the rules
@@ -375,6 +375,8 @@ Idempotent redelivery resolves against the state preceding the original run.
 | `asset.thumbnail` | `store`, `asset` ID (since 1.93.0; see [Assets](#assets)) | The `sha256` of the current content and its `thumbnail?`: `media_type`, base64 `data`, `width`, `height`; without one, `retry_later` (since 1.94.0) |
 | `asset.rename` | `store`, `asset` ID, `title` (1 to 200 characters on one line) | The renamed `asset` |
 | `asset.delete` | `store`, `asset` ID | Empty object |
+| `star.status` | None (since 1.106.0; see [The star card](#the-star-card)) | `show`, and `login?`: the GitHub account the daemon stars as |
+| `star.answer` | `answer`: `star`, `opened`, `later`, or `dismiss` (since 1.106.0; see [The star card](#the-star-card)) | `starred`: GitHub accepted the star |
 | `shares.list` | `asset?` ID, `session?` ID (since 1.88.0; see [Share links](#share-links)) | The live `shares`, newest first, `enabled`, and the live `sessions` (conversation shares, since 1.88.0) |
 | `share.create` | `store`, `asset` ID, `expiry`, `reuse?` | The `share`, and `created`: false when `reuse` returned the asset's newest live link |
 | `share.update` | `id`, `title?`, `expiry?` | The changed `share`, or `share_not_found` |
@@ -1015,6 +1017,26 @@ deleted session tree's and project's (`project.delete` also returns
 `shares_disabled` and every link answers as gone; `shares.list` says so in
 `enabled`. Each change but a view sends `shares.changed` to every
 connection.
+
+### The star card
+
+Since 1.106.0 the daemon decides when the web page asks for a GitHub star
+([spec](../specs/github-star.md)). `star.status` answers `show: true` once
+the daemon has been used for 7 days (from `first_used` in
+`<data_root>/star.json`), unless an answer ended the card or **Later**
+hid it within the last 7 days. With a GitHub token on its machine
+(`GH_TOKEN`, `GITHUB_TOKEN`, or `gh auth token`) the daemon also names the
+account in `login`, and when that account has starred the repository it
+records so and answers `show: false`. It reaches GitHub only once the card
+would otherwise show, and keeps what GitHub said for 24 hours.
+
+`star.answer` records the user's answer: `star` stars as `login`, and
+`starred` says whether GitHub accepted; `opened` says the page opened the
+repository's page; `later` hides the card for 7 days; `dismiss` ends it.
+`star` and `opened` end it too, whatever the outcome. An answer after the
+card ended changes nothing, and an answer the daemon does not know is
+`-32602`. Each change sends `star.changed` to every connection. Guests get
+neither method nor the notification.
 
 
 ### Conversation shares
@@ -1903,6 +1925,7 @@ subscriptions to the deleted sessions end with them: no further
 | `memory.changed` | A memory file changed through the daemon; an empty object |
 | `assets.changed` | An asset was written, renamed, or deleted through the daemon; an empty object (since 1.67.0) |
 | `shares.changed` | A share link was made, changed, revoked, or removed with its asset; an empty object (since 1.86.0) |
+| `star.changed` | The star card's state changed; ask `star.status` again. An empty object (since 1.106.0) |
 | `projects.changed` | A project was created, changed, or deleted; an empty object |
 | `crons.changed` | A cron job was created, changed, fired, or deleted; an empty object |
 | `webhooks.changed` | A webhook was created, changed, received an event, or was deleted; an empty object |
@@ -1927,7 +1950,7 @@ notification, and a list that ends as it was last sent sends none.
 
 ### Daemon-wide changes
 
-`runtime.changed`, `sessions.changed`, `mcp.changed`, `runtimes.changed`, `plugins.changed`, `machines.changed`, `memory.changed`, `assets.changed`, `shares.changed`, `projects.changed`, `crons.changed`, `webhooks.changed`, `notifications.changed`, `daemon.restarting`, and `onboarding.changed` reach every connection
+`runtime.changed`, `sessions.changed`, `mcp.changed`, `runtimes.changed`, `plugins.changed`, `machines.changed`, `memory.changed`, `assets.changed`, `shares.changed`, `star.changed`, `projects.changed`, `crons.changed`, `webhooks.changed`, `notifications.changed`, `daemon.restarting`, and `onboarding.changed` reach every connection
 from its handshake on, whether or not it subscribed to any session, so each
 client sharing a daemon stays current with what the others do. Clients ignore
 notification methods they do not know.

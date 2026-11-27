@@ -679,6 +679,18 @@ impl ServerProtocol for StubServer {
     ) -> Result<cookie_agent_protocol::AssetRenameResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
+    async fn star_status(
+        &self,
+        _: cookie_agent_protocol::StarStatusParams,
+    ) -> Result<cookie_agent_protocol::StarStatusResult, ServerFault> {
+        Err(ServerFault::method_not_found("stub"))
+    }
+    async fn star_answer(
+        &self,
+        _: cookie_agent_protocol::StarAnswerParams,
+    ) -> Result<cookie_agent_protocol::StarAnswerResult, ServerFault> {
+        Err(ServerFault::method_not_found("stub"))
+    }
     async fn list_shares(
         &self,
         _: cookie_agent_protocol::SharesListParams,

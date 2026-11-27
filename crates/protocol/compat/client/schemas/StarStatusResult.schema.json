@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "login": {
+      "description": "The GitHub account the daemon stars as, when it can star: the card\noffers **Star as @login**, and otherwise a link to\n[`STAR_REPOSITORY_URL`].",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "show": {
+      "description": "The card shows.",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "show"
+  ],
+  "title": "StarStatusResult",
+  "type": "object"
+}

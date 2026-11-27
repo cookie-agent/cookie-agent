@@ -397,6 +397,8 @@ fn client_methods() -> Vec<MethodSpec> {
         request!(ASSET_RENAME_METHOD, ToDaemon, AssetRenameParams => AssetRenameResult),
         request!(ASSET_DELETE_METHOD, ToDaemon, AssetDeleteParams => AssetDeleteResult),
         request!(SHARES_LIST_METHOD, ToDaemon, SharesListParams => SharesListResult),
+        request!(STAR_STATUS_METHOD, ToDaemon, StarStatusParams => StarStatusResult),
+        request!(STAR_ANSWER_METHOD, ToDaemon, StarAnswerParams => StarAnswerResult),
         request!(SHARE_CREATE_METHOD, ToDaemon, ShareCreateParams => ShareCreateResult),
         request!(SHARE_UPDATE_METHOD, ToDaemon, ShareUpdateParams => ShareUpdateResult),
         request!(SHARE_REVOKE_METHOD, ToDaemon, ShareRevokeParams => ShareRevokeResult),
@@ -486,6 +488,7 @@ fn client_methods() -> Vec<MethodSpec> {
         notification!(MEMORY_CHANGED_METHOD, FromDaemon, MemoryChangedNotification),
         notification!(ASSETS_CHANGED_METHOD, FromDaemon, AssetsChangedNotification),
         notification!(SHARES_CHANGED_METHOD, FromDaemon, SharesChangedNotification),
+        notification!(STAR_CHANGED_METHOD, FromDaemon, StarChangedNotification),
         notification!(
             PROJECTS_CHANGED_METHOD,
             FromDaemon,

@@ -526,6 +526,8 @@ mod tests {
         "attachment.save_asset",
         "asset.rename",
         "asset.delete",
+        "star.status",
+        "star.answer",
         "shares.list",
         "share.create",
         "share.update",

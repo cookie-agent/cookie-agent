@@ -68,6 +68,7 @@ mod shares;
 mod shell;
 mod sidebar;
 mod skills;
+mod star;
 mod tool_groups;
 mod webhook_form;
 mod webhooks;
@@ -308,6 +309,7 @@ fn ChatView(workspace: Workspace) -> impl IntoView {
                         data-transcript-fade
                     ></div>
                     <loader::TranscriptLoader workspace=workspace />
+                    <star::StarCard workspace=workspace />
                 </div>
                 <DraftFiles workspace=workspace />
                 // An agent's question waits above the composer, scrolling

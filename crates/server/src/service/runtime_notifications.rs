@@ -307,6 +307,33 @@ impl Server {
         });
     }
 
+    /// Signals star card changes to this connection; bursts coalesce.
+    pub(super) fn start_star_notifications(&self, context: ServerContext) {
+        let mut receiver = self.engine.subscribe_star_changes();
+        receiver.mark_unchanged();
+        tokio::spawn(async move {
+            let shutdown = context.shutdown();
+            loop {
+                tokio::select! {
+                    _ = shutdown.cancelled() => return,
+                    changed = receiver.changed() => if changed.is_err() {
+                        return;
+                    },
+                }
+                if context
+                    .notify(
+                        cookie_agent_protocol::STAR_CHANGED_METHOD,
+                        &cookie_agent_protocol::StarChangedNotification {},
+                    )
+                    .await
+                    .is_err()
+                {
+                    return;
+                }
+            }
+        });
+    }
+
     /// Signals share link changes to this connection; bursts coalesce.
     pub(super) fn start_share_notifications(&self, context: ServerContext) {
         let mut receiver = self.engine.subscribe_share_changes();

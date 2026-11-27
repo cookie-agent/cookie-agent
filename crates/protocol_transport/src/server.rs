@@ -1269,6 +1269,16 @@ pub trait ServerProtocol: Send + Sync + 'static {
         &self,
         params: cookie_agent_protocol::AssetDeleteParams,
     ) -> Result<cookie_agent_protocol::AssetDeleteResult, ServerFault>;
+    /// Whether the star card shows.
+    async fn star_status(
+        &self,
+        params: cookie_agent_protocol::StarStatusParams,
+    ) -> Result<cookie_agent_protocol::StarStatusResult, ServerFault>;
+    /// Records what the user did with the star card.
+    async fn star_answer(
+        &self,
+        params: cookie_agent_protocol::StarAnswerParams,
+    ) -> Result<cookie_agent_protocol::StarAnswerResult, ServerFault>;
     /// Lists the share links.
     async fn list_shares(
         &self,
@@ -2466,6 +2476,12 @@ async fn dispatch<S: ServerProtocol>(
         }
         cookie_agent_protocol::SHARES_LIST_METHOD => {
             value(server.list_shares(decode(params)?).await?)
+        }
+        cookie_agent_protocol::STAR_STATUS_METHOD => {
+            value(server.star_status(decode(params)?).await?)
+        }
+        cookie_agent_protocol::STAR_ANSWER_METHOD => {
+            value(server.star_answer(decode(params)?).await?)
         }
         cookie_agent_protocol::SHARE_CREATE_METHOD => {
             value(server.create_share(decode(params)?).await?)

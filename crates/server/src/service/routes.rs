@@ -47,6 +47,7 @@ impl ServerProtocol for Server {
         self.start_project_notifications(context.clone());
         self.start_asset_notifications(context.clone());
         self.start_share_notifications(context.clone());
+        self.start_star_notifications(context.clone());
         self.start_cron_notifications(context.clone());
         self.start_webhook_notifications(context.clone());
         self.start_push_notifications(context.clone());
@@ -1368,6 +1369,23 @@ impl ServerProtocol for Server {
             .delete_asset(params)
             .await
             .map_err(protocol_fault)
+    }
+
+    async fn star_status(
+        &self,
+        _: cookie_agent_protocol::StarStatusParams,
+    ) -> Result<cookie_agent_protocol::StarStatusResult> {
+        Ok(self.engine.star_status().await)
+    }
+
+    async fn star_answer(
+        &self,
+        params: cookie_agent_protocol::StarAnswerParams,
+    ) -> Result<cookie_agent_protocol::StarAnswerResult> {
+        if params.answer == cookie_agent_protocol::StarAnswer::Unknown {
+            return Err(ServerFault::invalid_params("unknown star answer"));
+        }
+        Ok(self.engine.star_answer(params.answer).await)
     }
 
     async fn list_shares(

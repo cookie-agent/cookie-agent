@@ -1604,6 +1604,24 @@ run `cookie mcp auth <server>` instead.
   allowed for that client, on the server's side (see
   [MCP](../extend/mcp.md#oauth-for-remote-servers)).
 
+## Asking for a star
+
+Once the daemon has been used for 7 days, the page asks once whether you
+would star Cookie Agent on GitHub, in a card over the bottom right of the
+transcript ([spec](../specs/github-star.md)).
+
+- **Star as @login** shows when the daemon's machine has a GitHub token
+  (`GH_TOKEN`, `GITHUB_TOKEN`, or a `gh` signed in): the daemon stars the
+  repository with it. Without one, **Star on GitHub** opens the repository
+  in a new tab.
+- **Later**, or the card's ×, hides it for 7 days.
+- **Don't remind me** hides it for good, and so does **Star**.
+
+The daemon keeps the answer in `~/.cookie-agent/star.json`. It reaches
+GitHub only once the card would show, never logs or keeps the token, and
+does not show the card at all when the signed-in account already starred
+the repository.
+
 ## What the page does not do
 
 - **Offer this machine as a runtime.** A browser has no workspace to share.

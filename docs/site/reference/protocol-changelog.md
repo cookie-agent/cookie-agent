@@ -5,6 +5,14 @@ The client protocol's version is `MAJOR.MINOR.PATCH`
 adds and a major breaks; before it, every minor could break the wire (see the
 [compatibility spec](../specs/compatibility-v1.md) section 3).
 
+## 1.106.0
+
+- The star card ([spec](../specs/github-star.md),
+  [The star card](protocol.md#the-star-card)): `star.status`, whether the
+  web page asks for a GitHub star and the account the daemon would star
+  as, `star.answer`, the user's answer, and the `star.changed`
+  notification. Neither method exists on a 1.105.0 daemon.
+
 ## 1.105.0
 
 - Attachments ([spec](../specs/attachment-handling.md) sections 5 and 10):

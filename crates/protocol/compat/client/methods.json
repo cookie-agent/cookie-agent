@@ -1394,6 +1394,30 @@
       "result": "SpeechTranscribeFinishResult"
     },
     {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "star.answer",
+      "params": "StarAnswerParams",
+      "params_role": "command",
+      "result": "StarAnswerResult"
+    },
+    {
+      "direction": "from_daemon",
+      "kind": "notification",
+      "method": "star.changed",
+      "params": "StarChangedNotification",
+      "params_role": "information",
+      "result": null
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "star.status",
+      "params": "StarStatusParams",
+      "params_role": "command",
+      "result": "StarStatusResult"
+    },
+    {
       "direction": "from_daemon",
       "kind": "notification",
       "method": "webhooks.changed",

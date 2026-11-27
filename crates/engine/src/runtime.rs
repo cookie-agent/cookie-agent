@@ -1086,6 +1086,8 @@ pub(crate) struct Inner {
     pub(crate) message_attachments: message_attachments::MessageAttachments,
     /// The cron jobs.
     pub(crate) crons: Arc<crate::crons::CronStore>,
+    /// The GitHub star card (`star.json`).
+    pub(crate) star: crate::star::StarPrompt,
     pub(crate) cron_scheduler: cron::fire::CronSchedulerState,
     /// The per-key locks of deliveries into threads.
     pub(crate) thread_locks: threads::ThreadLocks,
@@ -1308,6 +1310,7 @@ impl Engine {
             eprintln!("cookie-agent: projects: {error}");
         }
         let crons = Arc::new(crate::crons::CronStore::open(&options.data_dir)?);
+        let star = crate::star::StarPrompt::open(&options.data_dir);
         let webhooks = Arc::new(crate::webhooks::store::WebhookStore::open(
             &options.data_dir,
         )?);
@@ -1459,6 +1462,7 @@ impl Engine {
                 shares,
                 message_attachments: Default::default(),
                 crons,
+                star,
                 cron_scheduler: cron::fire::CronSchedulerState::default(),
                 thread_locks: threads::ThreadLocks::default(),
                 webhooks,

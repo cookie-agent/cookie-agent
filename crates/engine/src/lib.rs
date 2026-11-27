@@ -37,6 +37,7 @@ mod runtime_snapshot;
 mod runtimes;
 mod runtimes_tool;
 mod shares;
+mod star;
 #[cfg(test)]
 #[path = "../../../test-support/model_fixtures.rs"]
 mod test_support;

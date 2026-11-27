@@ -59,6 +59,7 @@ mod restart;
 mod selection;
 mod shares;
 mod skills;
+mod star;
 mod tool_groups;
 mod tree;
 mod unread;
@@ -80,6 +81,7 @@ pub use projects::{EditorFields, ProjectEditor};
 pub use provider_sign_in::{PASTE_BACK_STEPS, ProviderSignIn, page_on_loopback};
 pub use selection::{PickState, Picked};
 pub use shares::ShareDialog;
+pub use star::StarPhase;
 pub use webhook::{WebhookConfirm, WebhookEventOpen, WebhookForm, WebhookRevealed, WebhookTab};
 
 /// How long usage events settle before the status bar's cost is read again.
@@ -353,6 +355,10 @@ pub struct Workspace {
     /// base its handshake gave links, and the address of its page, which
     /// a link without a URL of its own is put after.
     pub has_shares: RwSignal<bool>,
+    /// Whether the daemon answers `star.status` (client protocol 1.106.0),
+    /// and where the GitHub star card is.
+    pub has_star: RwSignal<bool>,
+    pub star: RwSignal<StarPhase>,
     /// This connection is a guest's (`docs/site/specs/conversation-shares.md`
     /// section 6): the link it came through, and what the link allows.
     pub guest: RwSignal<Option<cookie_agent_protocol::GuestHello>>,
@@ -764,6 +770,8 @@ impl Workspace {
             asset_renaming: RwSignal::new(None),
             asset_deleting: RwSignal::new(None),
             has_shares: RwSignal::new(false),
+            has_star: RwSignal::new(false),
+            star: RwSignal::new(StarPhase::Hidden),
             guest: RwSignal::new(None),
             session_share_dialog: RwSignal::new(None),
             share_url: RwSignal::new(None),
@@ -990,6 +998,10 @@ impl Workspace {
             .set(cookie_agent_client_state::shares::daemon_has_shares(
                 client.daemon_version(),
             ));
+        self.has_star
+            .set(cookie_agent_client_state::star::daemon_has_star(
+                client.daemon_version(),
+            ));
         self.answers_delivery
             .set(cookie_agent_client_state::uploads::daemon_answers_delivery(
                 client.daemon_version(),
@@ -1007,6 +1019,7 @@ impl Workspace {
             self.keeps_unread.set(false);
             self.keeps_pins.set(false);
             self.has_shares.set(false);
+            self.has_star.set(false);
         }
         self.share_list.set(None);
         // A new connection has heard nothing of what the page shows.
@@ -1016,6 +1029,7 @@ impl Workspace {
         self.client.set_value(Some(client));
         self.refresh_config_status();
         self.refresh_shares();
+        self.refresh_star();
         self.subscriptions
             .update_value(|subscriptions| subscriptions.reset());
         self.finish_waiting_sign_in();
@@ -1263,6 +1277,10 @@ impl Workspace {
             }
             ClientDelivery::SharesChanged(_) => {
                 self.refresh_shares();
+                return;
+            }
+            ClientDelivery::StarChanged(_) => {
+                self.refresh_star();
                 return;
             }
             ClientDelivery::McpChanged(_)
