@@ -489,6 +489,16 @@ pub struct Workspace {
     pub keeps_unread: RwSignal<bool>,
     /// Whether the daemon keeps pinned sessions (client protocol 1.66.0).
     pub keeps_pins: RwSignal<bool>,
+    /// The daemon answers `attachment.delivery` and `artifact.thumbnail`
+    /// (client protocol 1.105.0).
+    pub answers_delivery: RwSignal<bool>,
+    /// What the next message would give its model of each draft file, by
+    /// digest, as the daemon last answered for the draft's selection.
+    pub deliveries:
+        RwSignal<std::collections::HashMap<String, cookie_agent_protocol::AttachmentDelivery>>,
+    /// Counts `attachment.delivery` requests, so only the latest answer is
+    /// kept.
+    delivery_request: StoredValue<u64>,
     /// The session list's select mode and its selection.
     pub picking: selection::Picking,
     /// `notifications.get`, once read.
@@ -815,6 +825,9 @@ impl Workspace {
             has_push: RwSignal::new(false),
             keeps_unread: RwSignal::new(false),
             keeps_pins: RwSignal::new(false),
+            answers_delivery: RwSignal::new(false),
+            deliveries: RwSignal::new(std::collections::HashMap::new()),
+            delivery_request: StoredValue::new(0),
             picking: selection::Picking::new(),
             notifications: RwSignal::new(None),
             push_context: RwSignal::new(crate::push::PushContext::default()),
@@ -975,6 +988,10 @@ impl Workspace {
             ));
         self.has_shares
             .set(cookie_agent_client_state::shares::daemon_has_shares(
+                client.daemon_version(),
+            ));
+        self.answers_delivery
+            .set(cookie_agent_client_state::uploads::daemon_answers_delivery(
                 client.daemon_version(),
             ));
         // A guest reaches its one session, so nothing daemon-wide is offered.
@@ -3380,6 +3397,33 @@ impl Workspace {
             if done {
                 return Ok((bytes, read.sha256, read.media_type));
             }
+        }
+    }
+
+    /// The thumbnail the daemon makes of the viewed session's artifact
+    /// `sha256` (`artifact.thumbnail`, client protocol 1.105.0); `None` from
+    /// a daemon before it, or for an artifact the tree no longer has.
+    pub async fn artifact_thumbnail(
+        self,
+        sha256: String,
+    ) -> Result<Option<cookie_agent_protocol::AssetThumbnailResult>, String> {
+        let (Some(client), Some(session_id)) = (self.client(), self.selected.get_untracked())
+        else {
+            return Err("not connected".into());
+        };
+        if !self.answers_delivery.get_untracked() {
+            return Ok(None);
+        }
+        match client
+            .artifact_thumbnail(cookie_agent_protocol::ArtifactThumbnailParams {
+                session_id,
+                sha256,
+            })
+            .await
+        {
+            Ok(result) => Ok(Some(result)),
+            Err(error) if error.is(&cookie_agent_protocol::errors::ARTIFACT_NOT_FOUND) => Ok(None),
+            Err(error) => Err(crate::errors::describe_full(&error)),
         }
     }
 

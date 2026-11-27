@@ -229,6 +229,7 @@ pub fn WorkspaceView(
     });
     provide_context(workspace);
     let history = workspace.follow_history();
+    workspace.follow_deliveries();
     let listeners = StoredValue::new_local(vec![phone, desktop, history]);
     on_cleanup(move || {
         for listener in listeners

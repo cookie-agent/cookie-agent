@@ -2,13 +2,17 @@
 //! the camera, drag and drop, or paste. Each file's content is sniffed in
 //! the page as the daemon sniffs it, checked against what the selected
 //! model accepts, and uploaded at once in chunks (the shared upload
-//! policy); the draft shows it as a chip. A file the model does not take
-//! inline goes up as a `file` upload, which the model sees as its label. A new session's draft keeps its
+//! policy); the draft shows it as a chip. Media the model does not take
+//! goes up with its own type, and a request whose model does not take it
+//! sends its label; unrecognized content goes up as a `file` upload. A new
+//! session's draft keeps its
 //! files in the page until the first message created the session, then
 //! uploads them. An image too large is offered downscaled through a
 //! canvas; video never is.
 
-use cookie_agent_client_state::uploads::{AcceptedMedia, UploadFailure, attached_as_file, upload};
+use cookie_agent_client_state::uploads::{
+    AcceptedMedia, UploadFailure, attached_as_file, attached_by_name, upload,
+};
 use cookie_agent_protocol::{ArtifactRef, SessionId, UploadKind, media_sniff::validate_upload};
 use cookie_agent_protocol_transport::Client;
 use leptos::{prelude::*, task::spawn_local};
@@ -82,6 +86,8 @@ pub struct AttachOffer {
     /// starts like media but does not parse, offered as a file the model
     /// sees by its label (`docs/site/specs/attachment-handling.md` 3.2).
     pub limits: Option<ImageLimits>,
+    /// How a downscale offer declined attaches the file as it is.
+    pub as_is: UploadKind,
 }
 
 impl Workspace {
@@ -144,8 +150,14 @@ impl Workspace {
         };
         match assess(&name, &bytes, &accepted) {
             Assessment::Attach => self.upload(name, bytes, UploadKind::Media, None),
-            Assessment::Downscale { reason, limits } => {
-                self.offer_downscale(name, reason, limits, bytes)
+            Assessment::Downscale {
+                reason,
+                limits,
+                as_is,
+            } => self.offer_downscale(name, reason, limits, as_is, bytes),
+            Assessment::AsMedia(reason) => {
+                let note = attached_by_name(&name, &reason);
+                self.upload(name, bytes, UploadKind::Media, Some(note));
             }
             Assessment::AsFile(reason) => {
                 let note = attached_as_file(&name, &reason);
@@ -160,12 +172,20 @@ impl Workspace {
         leptos::prelude::untrack(|| self.accepted_media())
     }
 
-    fn offer_downscale(self, name: String, reason: String, limits: ImageLimits, bytes: Vec<u8>) {
+    fn offer_downscale(
+        self,
+        name: String,
+        reason: String,
+        limits: ImageLimits,
+        as_is: UploadKind,
+        bytes: Vec<u8>,
+    ) {
         self.offer_bytes.set_value(bytes);
         self.attach_offer.set(Some(AttachOffer {
             name,
             reason,
             limits: Some(limits),
+            as_is,
         }));
     }
 
@@ -177,6 +197,7 @@ impl Workspace {
             name,
             reason,
             limits: None,
+            as_is: UploadKind::File,
         }));
     }
 
@@ -194,10 +215,25 @@ impl Workspace {
         self.upload(offer.name, bytes, UploadKind::File, Some(note));
     }
 
-    /// Declines the offer.
+    /// Declines the offer: a downscale declined attaches the image as it
+    /// is, which the model sees by its label; an unreadable file is
+    /// dropped.
     pub fn dismiss_offer(self) {
+        let offer = self.attach_offer.get_untracked();
         self.attach_offer.set(None);
-        self.offer_bytes.set_value(Vec::new());
+        let bytes = self
+            .offer_bytes
+            .try_update_value(std::mem::take)
+            .unwrap_or_default();
+        if let Some(offer) = offer.filter(|offer| offer.limits.is_some())
+            && !bytes.is_empty()
+        {
+            let note = match offer.as_is {
+                UploadKind::Media => attached_by_name(&offer.name, &offer.reason),
+                UploadKind::File => attached_as_file(&offer.name, &offer.reason),
+            };
+            self.upload(offer.name, bytes, offer.as_is, Some(note));
+        }
     }
 
     /// Accepts the downscale offer: re-encodes the image smaller until it
@@ -264,6 +300,7 @@ impl Workspace {
                         return;
                     }
                     Assessment::Refuse(reason)
+                    | Assessment::AsMedia(reason)
                     | Assessment::AsFile(reason)
                     | Assessment::OfferAsFile(reason) => {
                         self.status.set(reason);
@@ -333,7 +370,14 @@ impl Workspace {
             .and_then(image_limits);
         match (failure.too_large, limits) {
             (Some(refused), Some(limits)) if image => {
-                self.offer_downscale(name, failure.message, tightened(limits, refused), bytes);
+                // Refused as it is, it can still go up as a file.
+                self.offer_downscale(
+                    name,
+                    failure.message,
+                    tightened(limits, refused),
+                    UploadKind::File,
+                    bytes,
+                );
             }
             _ => self.status.set(failure.message),
         }
@@ -443,7 +487,64 @@ impl Workspace {
         }
     }
 
-    /// Forgets the files a new session's draft kept.
+    /// Asks the daemon what the next message would give its model of each
+    /// draft file whenever the files, the draft's model or agent, or the
+    /// session's runtimes change, a moment after the last change
+    /// (`docs/site/specs/attachment-handling.md` section 10). A new
+    /// session's draft has no session to ask about: its chips judge from
+    /// the model's accepted media alone.
+    pub fn follow_deliveries(self) {
+        Effect::new(move || {
+            let files = self.attachments.get();
+            let selection = self.draft.get();
+            let _runtimes = self.agent_runtimes();
+            let session = self.selected.get().filter(|_| !self.new_session.get());
+            let request = self.delivery_request.get_value() + 1;
+            self.delivery_request.set_value(request);
+            let (Some(session_id), Some(selection), true) =
+                (session, selection, self.answers_delivery.get())
+            else {
+                self.deliveries.set(std::collections::HashMap::new());
+                return;
+            };
+            if files.is_empty() || self.holds_draft_files(&files) {
+                self.deliveries.set(std::collections::HashMap::new());
+                return;
+            }
+            let Some(client) = untrack(|| self.client()) else {
+                return;
+            };
+            spawn_local(async move {
+                gloo_timers::future::sleep(std::time::Duration::from_millis(150)).await;
+                if self.delivery_request.get_value() != request {
+                    return;
+                }
+                let answer = client
+                    .attachment_delivery(cookie_agent_protocol::AttachmentDeliveryParams {
+                        session_id,
+                        files,
+                        selection,
+                    })
+                    .await;
+                if self.delivery_request.get_value() != request {
+                    return;
+                }
+                // Without an answer the chips judge for themselves.
+                self.deliveries.set(
+                    answer
+                        .map(|answer| {
+                            answer
+                                .files
+                                .into_iter()
+                                .map(|file| (file.sha256.clone(), file))
+                                .collect()
+                        })
+                        .unwrap_or_default(),
+                );
+            });
+        });
+    }
+
     /// Takes the file `sha256` off the draft.
     pub fn remove_attachment(self, sha256: &str) {
         self.attachments

@@ -9,7 +9,7 @@ use cookie_agent_client_state::{
     format::format_clock_elapsed,
     media_type_word,
     permissions::{PermissionRow, parse_rule_key, rule_runtimes, takes_runtime},
-    uploads::name_only_reason,
+    uploads::{ChipBadge, chip_badge},
 };
 use leptos::{ev, prelude::*};
 
@@ -32,8 +32,10 @@ const BAR: &str = "flex flex-wrap items-center gap-2 border-t border-line px-3 p
 pub(super) const FIELD: &str = "min-h-11 rounded-lg bg-surface px-3 font-mono text-[0.8125rem] shadow-[inset_0_0_0_1px_var(--color-line-2)] transition-shadow placeholder:text-faint hover:shadow-[inset_0_0_0_1px_var(--color-faint)] focus:shadow-[inset_0_0_0_1px_var(--color-accent),0_0_0_3px_var(--color-accent-soft)] focus:outline-none lg:min-h-9";
 
 /// The draft's files as chips, each marked when the model sees only its
-/// name, and an offer to downscale an image too large to attach or to
-/// attach a file that could not be read as a file.
+/// name (as `attachment.delivery` answers, else as the model's accepted
+/// media say), and warned when nothing the model has can read it; and an
+/// offer to downscale an image too large to attach or to attach a file that
+/// could not be read as a file.
 #[component]
 pub fn DraftFiles(workspace: Workspace) -> impl IntoView {
     view! {
@@ -76,7 +78,12 @@ pub fn DraftFiles(workspace: Workspace) -> impl IntoView {
                                 }
                                     .into_any()
                             }}
-                            <button type="button" class=BUTTON on:click=move |_| workspace.dismiss_offer()>
+                            <button
+                                type="button"
+                                class=BUTTON
+                                title=if downscale { "Attach it as it is: the model sees its name only" } else { "Drop it" }
+                                on:click=move |_| workspace.dismiss_offer()
+                            >
                                 "Dismiss"
                             </button>
                         </div>
@@ -95,7 +102,10 @@ pub fn DraftFiles(workspace: Workspace) -> impl IntoView {
                         .map(|artifact| {
                             let sha256 = artifact.sha256.clone();
                             let accepted = workspace.accepted_media();
-                            let name_only = name_only_reason(&artifact, accepted.as_ref());
+                            let delivery = workspace
+                                .deliveries
+                                .with(|deliveries| deliveries.get(&artifact.sha256).cloned());
+                            let badge = chip_badge(&artifact, delivery.as_ref(), accepted.as_ref());
                             let thumbnail = crate::workspace::draft_thumbnail(&artifact.sha256);
                             let label = format!(
                                 "{} · {} · {}",
@@ -117,10 +127,19 @@ pub fn DraftFiles(workspace: Workspace) -> impl IntoView {
                                         None => view! { <Glyph icon=icondata::LuPaperclip class="opacity-70" /> }.into_any(),
                                     }}
                                     <span class="min-w-0 truncate">{label}</span>
-                                    {name_only.map(|reason| view! {
-                                        <span class="name-only rounded-full bg-surface-2 px-2 text-muted" title=reason>
-                                            "name only"
-                                        </span>
+                                    {badge.map(|badge| match badge {
+                                        ChipBadge::NameOnly(reason) => view! {
+                                            <span class="name-only rounded-full bg-surface-2 px-2 text-muted" title=reason>
+                                                "name only"
+                                            </span>
+                                        }
+                                            .into_any(),
+                                        ChipBadge::CantRead(reason) => view! {
+                                            <span class="cant-read shrink-0 rounded-full bg-warn-soft px-2 text-warn" title=reason>
+                                                "model can't read it"
+                                            </span>
+                                        }
+                                            .into_any(),
                                     })}
                                     <button
                                         type="button"

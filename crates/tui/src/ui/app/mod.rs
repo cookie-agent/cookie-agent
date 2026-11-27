@@ -1080,6 +1080,9 @@ pub struct App {
     pub(super) attachments: Vec<cookie_agent_protocol::ArtifactRef>,
     /// A pasted path waiting for the user to attach it or paste it as text.
     pub(super) attach_offer: Option<attachments::AttachOffer>,
+    /// What the next message would give its model of each draft file
+    /// (`attachment.delivery`), and what it was last asked about.
+    pub(super) file_deliveries: attachments::Deliveries,
     pub(super) modal: Modal,
     /// The newest status message; the composer's bottom border shows it for
     /// [`STATUS_LIVE`], then it is cleared ([`App::expire_status`]).
@@ -1261,6 +1264,11 @@ pub(in crate::ui) enum RpcUpdate {
         session_id: SessionId,
         name: String,
         result: Result<attachments::Uploaded, attachments::AttachError>,
+    },
+    /// `attachment.delivery` answered request `request`, or failed.
+    AttachmentDelivery {
+        request: u64,
+        result: Result<cookie_agent_protocol::AttachmentDeliveryResult, String>,
     },
     /// A revert RPC committed; the `rewound` notification rebuilds the
     /// transcript, and a reverted message's text is owed back to the
@@ -1911,6 +1919,7 @@ impl App {
             composer_drafts: composer_drafts::ComposerDrafts::default(),
             attachments: Vec::new(),
             attach_offer: None,
+            file_deliveries: attachments::Deliveries::default(),
             modal: Modal::None,
             status: String::new(),
             status_shown: None,

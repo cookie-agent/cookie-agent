@@ -153,6 +153,8 @@ impl App {
         // their own panels over it instead of clearing to the terminal.
         frame.render_widget(Block::default().style(self.theme.surface()), frame.area());
         self.hit_map.clear();
+        // The draft chips say what the next message gives its model.
+        self.follow_deliveries();
         // The composer takes one text row by default and grows with its
         // soft-wrapped content up to the ceiling; the layout reclaims those
         // rows from the conversation pane. The row count comes from the same

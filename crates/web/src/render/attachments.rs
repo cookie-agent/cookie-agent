@@ -188,7 +188,8 @@ impl CardFile {
                 escape(block.handle.as_str()),
             ),
             CardSource::Artifact { sha256, key } => format!(
-                "data-asset=\"artifact\" data-asset-sha=\"{sha}\" data-artifact-sha=\"{sha}\"{} data-asset-name=\"{}\" {common}",
+                "data-asset=\"artifact\" data-asset-sha=\"{sha}\" data-artifact-sha=\"{sha}\" data-artifact-bytes=\"{}\"{} data-asset-name=\"{}\" {common}",
+                self.byte_length,
                 key.map(|key| format!(" data-attach-key=\"{}\"", key.attribute()))
                     .unwrap_or_default(),
                 escape(self.filename.as_deref().unwrap_or(&self.title)),
@@ -645,7 +646,7 @@ fn file_html(file: &CardFile) -> String {
         String::new()
     };
     format!(
-        "<span class=\"{SURFACE} items-center gap-2.5 px-2.5 py-2\" {}><span class=\"grid h-9 w-9 shrink-0 place-items-center rounded-lg border font-mono text-[0.625rem] font-bold {hue}\">{}</span><span class=\"flex min-w-0 flex-1 flex-col\"><span class=\"truncate text-sm\" data-asset-title>{}</span><span class=\"truncate text-[0.6875rem] text-muted\" title=\"{}\"><span data-asset-note>{} · {}</span>{name_only}</span></span>{}{}<button type=\"button\" data-action=\"asset-download\" class=\"inline-flex size-9 shrink-0 items-center justify-center rounded-md text-accent hover:bg-hover\" aria-label=\"Download {}\" title=\"Download\">{}</button></span>",
+        "<span class=\"{SURFACE} items-center gap-2.5 px-2.5 py-2\" {}><span class=\"grid h-9 w-9 shrink-0 place-items-center rounded-lg border font-mono text-[0.625rem] font-bold {hue}\" data-file-badge>{}</span><span class=\"flex min-w-0 flex-1 flex-col\"><span class=\"truncate text-sm\" data-asset-title>{}</span><span class=\"truncate text-[0.6875rem] text-muted\" title=\"{}\"><span data-asset-note>{} · {}</span>{name_only}</span></span>{}{}<button type=\"button\" data-action=\"asset-download\" class=\"inline-flex size-9 shrink-0 items-center justify-center rounded-md text-accent hover:bg-hover\" aria-label=\"Download {}\" title=\"Download\">{}</button></span>",
         file.placeholder("file"),
         escape(&label),
         escape(name),

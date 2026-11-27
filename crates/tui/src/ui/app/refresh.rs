@@ -590,6 +590,9 @@ impl App {
                 name,
                 result,
             } => self.finish_attachment(session_id, name, result),
+            RpcUpdate::AttachmentDelivery { request, result } => {
+                self.install_deliveries(request, result);
+            }
             RpcUpdate::SteerRecalled { session_id, input } => {
                 if self.selected == Some(session_id) {
                     self.restore_composer(vec![input]);

@@ -91,6 +91,14 @@ pub fn attached_as_file(name: &str, reason: &str) -> String {
     )
 }
 
+/// What the status line says of `name`, media the model does not take
+/// (`reason`), attached all the same: this model sees its label, and a model
+/// the session moves to that takes it gets the file
+/// (`docs/site/specs/attachment-handling.md` question Q2b).
+pub fn attached_by_name(name: &str, reason: &str) -> String {
+    format!("attached {name} ({reason}): this model sees its name only")
+}
+
 /// Why the model `accepted` describes sees `artifact` by its label alone,
 /// or `None` when it takes the file inline. A `kind: file` upload is always
 /// seen by its label (`docs/site/specs/attachment-handling.md` section 3.2).
@@ -118,6 +126,70 @@ pub fn name_only_reason(
         )
         .err()
         .map(|reason| format!("{reason}: the model sees its name and size"))
+}
+
+/// The client protocol minor from which a daemon answers
+/// `attachment.delivery` and `artifact.thumbnail`.
+pub const ATTACHMENT_DELIVERY_MINOR: u32 = 105;
+
+/// Whether a daemon of `version` answers `attachment.delivery` and
+/// `artifact.thumbnail`.
+#[must_use]
+pub fn daemon_answers_delivery(version: Option<cookie_agent_protocol::SemVer>) -> bool {
+    version.is_some_and(|version| {
+        version
+            .shared_minor(cookie_agent_protocol::CLIENT_PROTOCOL_VERSION)
+            .is_some_and(|minor| minor >= ATTACHMENT_DELIVERY_MINOR)
+    })
+}
+
+/// What a draft chip says of a file its message would not carry
+/// (`docs/site/specs/attachment-handling.md` section 10, decision of
+/// 2026-11-26), with the tooltip that says why.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ChipBadge {
+    /// The model sees its label, and `read_artifact` or `transfer` can get
+    /// at it: the neutral **name only** badge.
+    NameOnly(String),
+    /// Nothing the model has can read it: the warning **model can't read
+    /// it** badge. The file is still attached and sent.
+    CantRead(String),
+}
+
+impl ChipBadge {
+    /// Why, for the badge's tooltip.
+    #[must_use]
+    pub fn tooltip(&self) -> &str {
+        match self {
+            Self::NameOnly(why) | Self::CantRead(why) => why,
+        }
+    }
+}
+
+/// The badge of `artifact`'s draft chip: as `delivery`, the daemon's
+/// `attachment.delivery` answer, says; without one (a new session, or a
+/// daemon before it), as [`name_only_reason`] judges from `accepted`.
+#[must_use]
+pub fn chip_badge(
+    artifact: &ArtifactRef,
+    delivery: Option<&cookie_agent_protocol::AttachmentDelivery>,
+    accepted: Option<&AcceptedMedia>,
+) -> Option<ChipBadge> {
+    use cookie_agent_protocol::AttachmentEnding;
+    let Some(delivery) = delivery else {
+        return name_only_reason(artifact, accepted).map(ChipBadge::NameOnly);
+    };
+    let why = match &delivery.reason {
+        Some(reason) => format!("{reason}. The model gets {}", delivery.label),
+        None => format!("The model gets {}", delivery.label),
+    };
+    match delivery.ending {
+        AttachmentEnding::Included => None,
+        AttachmentEnding::NameOnly => Some(ChipBadge::CantRead(why)),
+        AttachmentEnding::ReadArtifact | AttachmentEnding::Transfer | AttachmentEnding::Unknown => {
+            Some(ChipBadge::NameOnly(why))
+        }
+    }
 }
 
 /// Why a file of `bytes` is refused for being over `max_bytes`.

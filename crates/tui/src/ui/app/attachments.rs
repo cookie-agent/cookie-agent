@@ -41,7 +41,7 @@ impl From<String> for AttachError {
 }
 
 pub(in crate::ui) use cookie_agent_client_state::uploads::AcceptedMedia;
-use cookie_agent_client_state::uploads::{attached_as_file, too_large};
+use cookie_agent_client_state::uploads::{attached_as_file, attached_by_name, too_large};
 
 /// The file a paste names when it is exactly one existing file path, as
 /// terminals paste a file dropped on them: absolute, `~/…`, or a `file://`
@@ -130,18 +130,24 @@ async fn upload_file(
     if bytes.is_empty() {
         return Err(format!("{name} is empty").into());
     }
-    // What the model cannot take inline is attached as a file: the model
-    // sees its label and can copy it to a machine with `transfer`.
+    // Media the model does not take goes up with its own type, and the
+    // model sees its label (`docs/site/specs/attachment-handling.md`
+    // question Q2b); what the daemon does not recognize, or takes only as a
+    // file, is attached as a file, which `transfer` can copy to a machine.
+    let mut by_name = None;
     let as_file = match validate_upload(&bytes) {
-        Ok(upload) => accepted
-            .check(
-                &name,
-                upload.kind,
-                upload.media_type,
-                bytes.len() as u64,
-                upload.image,
-            )
-            .err(),
+        Ok(upload) => {
+            by_name = accepted
+                .check(
+                    &name,
+                    upload.kind,
+                    upload.media_type,
+                    bytes.len() as u64,
+                    upload.image,
+                )
+                .err();
+            None
+        }
         Err(UploadRejection::Unrecognized) => Some(format!(
             "{} takes {} inline",
             accepted.model,
@@ -185,12 +191,36 @@ async fn upload_file(
     .map_err(|failure| AttachError::Failed(failure.message))?;
     Ok(Uploaded {
         artifact,
-        note: as_file.map(|reason| attached_as_file(&name, &reason)),
+        note: as_file
+            .map(|reason| attached_as_file(&name, &reason))
+            .or_else(|| by_name.map(|reason| attached_by_name(&name, &reason))),
     })
 }
 
-/// A file uploaded, and what the status line says of it when it went up as
-/// a file the model does not take inline.
+/// What `attachment.delivery` answered for the draft's files, by digest, and
+/// what it was last asked: the session, the draft's selection and files,
+/// and the session's runtimes (`docs/site/specs/attachment-handling.md`
+/// section 10).
+#[derive(Debug, Default)]
+pub(in crate::ui) struct Deliveries {
+    pub(in crate::ui) files:
+        std::collections::HashMap<String, cookie_agent_protocol::AttachmentDelivery>,
+    asked: Option<DeliveryQuestion>,
+    request: u64,
+    /// The file just attached, whose reason the status line says once the
+    /// answer comes.
+    announce: Option<String>,
+}
+
+type DeliveryQuestion = (
+    SessionId,
+    cookie_agent_protocol::RunSelection,
+    Vec<ArtifactRef>,
+    Vec<cookie_agent_protocol::RuntimeId>,
+);
+
+/// A file uploaded, and what the status line says of it when the model does
+/// not take it inline.
 pub(in crate::ui) struct Uploaded {
     pub(in crate::ui) artifact: ArtifactRef,
     pub(in crate::ui) note: Option<String>,
@@ -317,6 +347,7 @@ impl App {
                     .iter()
                     .any(|attached| attached.sha256 == artifact.sha256)
                 {
+                    self.file_deliveries.announce = Some(artifact.sha256.clone());
                     self.attachments.push(artifact);
                 }
             }
@@ -337,6 +368,89 @@ impl App {
                 self.session_errors.record(&error);
                 self.status = error;
             }
+        }
+    }
+
+    /// Asks `attachment.delivery` about the draft's files when they, the
+    /// draft's model or agent, or the session's runtimes changed since it
+    /// was last asked. A new session's draft, and a daemon before client
+    /// protocol 1.105.0, leave the chips to judge from the model's accepted
+    /// media.
+    pub(super) fn follow_deliveries(&mut self) {
+        let question = self
+            .selected
+            .filter(|_| self.new_session_draft.is_none() && !self.attachments.is_empty())
+            .filter(|_| {
+                cookie_agent_client_state::uploads::daemon_answers_delivery(
+                    self.client.daemon_version(),
+                )
+            })
+            .zip(self.draft.clone())
+            .map(|(session_id, selection)| {
+                (
+                    session_id,
+                    selection,
+                    self.attachments.clone(),
+                    self.agent_runtimes(),
+                )
+            });
+        if question == self.file_deliveries.asked {
+            return;
+        }
+        self.file_deliveries.asked = question.clone();
+        self.file_deliveries.request += 1;
+        let Some((session_id, selection, files, _)) = question else {
+            self.file_deliveries.files.clear();
+            return;
+        };
+        let request = self.file_deliveries.request;
+        let client = self.client.clone();
+        let updates = self.rpc_updates_tx.clone();
+        self.spawn_rpc(async move {
+            let result = client
+                .attachment_delivery(cookie_agent_protocol::AttachmentDeliveryParams {
+                    session_id,
+                    files,
+                    selection,
+                })
+                .await
+                .map_err(|error| error.to_string());
+            let _ = updates.send(RpcUpdate::AttachmentDelivery { request, result });
+        });
+    }
+
+    /// Installs the answer to `attachment.delivery` request `request` when
+    /// it is the latest; a failure leaves the chips to judge for
+    /// themselves. The file just attached has its reason said.
+    pub(super) fn install_deliveries(
+        &mut self,
+        request: u64,
+        result: Result<cookie_agent_protocol::AttachmentDeliveryResult, String>,
+    ) {
+        if request != self.file_deliveries.request {
+            return;
+        }
+        self.file_deliveries.files = result
+            .map(|answer| {
+                answer
+                    .files
+                    .into_iter()
+                    .map(|file| (file.sha256.clone(), file))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let Some(announce) = self.file_deliveries.announce.take() else {
+            return;
+        };
+        let attached = self
+            .attachments
+            .iter()
+            .find(|artifact| artifact.sha256 == announce);
+        if let Some((artifact, reason)) = attached.and_then(|artifact| {
+            let delivery = self.file_deliveries.files.get(&artifact.sha256)?;
+            Some((artifact, delivery.reason.clone()?))
+        }) {
+            self.status = format!("attached {}: {reason}", artifact.display_name());
         }
     }
 
@@ -441,7 +555,8 @@ impl App {
 
     /// The draft's attachments as chips on the composer's bottom border,
     /// `📎 name · type word · size` each, `· name only` after one the model sees
-    /// by its label alone, as many as fit and a count of the rest.
+    /// by its label alone and `· can't read` after one nothing it has can
+    /// read, as many as fit and a count of the rest.
     /// Draws the attachment chips into the composer's bottom border, and
     /// returns how many columns they take.
     pub(super) fn render_attachment_chips(&self, frame: &mut ratatui::Frame, area: Rect) -> u16 {
@@ -454,10 +569,18 @@ impl App {
         let mut used = 0;
         let accepted = self.accepted_media();
         for (index, artifact) in self.attachments.iter().enumerate() {
-            // A file the model sees by its label alone says so.
-            let name_only =
-                cookie_agent_client_state::uploads::name_only_reason(artifact, accepted.as_ref())
-                    .map_or("", |_| " · name only");
+            // A file the model sees by its label alone says so, and one
+            // nothing the model has can read warns.
+            use cookie_agent_client_state::uploads::{ChipBadge, chip_badge};
+            let name_only = match chip_badge(
+                artifact,
+                self.file_deliveries.files.get(&artifact.sha256),
+                accepted.as_ref(),
+            ) {
+                None => "",
+                Some(ChipBadge::NameOnly(_)) => " · name only",
+                Some(ChipBadge::CantRead(_)) => " · can't read",
+            };
             let chip = format!(
                 " 📎 {} · {} · {}{name_only} ",
                 artifact.display_name(),

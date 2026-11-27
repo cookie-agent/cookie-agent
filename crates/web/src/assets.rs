@@ -698,6 +698,48 @@ fn open_deck(card: &web_sys::Element, workspace: Workspace) {
         .flatten()
         .or_else(|| card.closest("[data-deck]").ok().flatten())
         .unwrap_or_else(|| card.clone());
+    // A card that shows a thumbnail reads its file whole only now.
+    let unread = scope
+        .query_selector_all("[data-asset][data-index][data-thumbnail-only]")
+        .ok()
+        .map(|cards| {
+            (0..cards.length())
+                .filter_map(|at| cards.item(at)?.dyn_into::<web_sys::Element>().ok())
+                .filter(|each| {
+                    each.get_attribute("data-asset-current").is_some_and(|sha| {
+                        CONTENTS.with(|contents| contents.borrow_mut().get(&sha).is_none())
+                    })
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    if unread.is_empty() {
+        return show_deck(card, &scope, workspace);
+    }
+    workspace.status.set("opening…".into());
+    let card = card.clone();
+    spawn_local(async move {
+        for each in &unread {
+            let Some(shown) = placeholder(each) else {
+                continue;
+            };
+            let Some(asset) = shown.artifact_asset() else {
+                continue;
+            };
+            if let Err(error) = content(&asset, &shown.source, workspace).await {
+                workspace
+                    .status
+                    .set(format!("the file could not be read: {error}"));
+                return;
+            }
+        }
+        workspace.status.set(String::new());
+        show_deck(&card, &scope, workspace);
+    });
+}
+
+/// [`open_deck`] once every card of `scope` was read.
+fn show_deck(card: &web_sys::Element, scope: &web_sys::Element, workspace: Workspace) {
     let Ok(cards) = scope.query_selector_all("[data-asset][data-index]") else {
         return;
     };
@@ -882,9 +924,36 @@ async fn fill(element: web_sys::Element, shown: Placeholder, workspace: Workspac
             Err(error) => return failed(&element, error.to_string()),
         },
     };
-    // A file's chip shows what the asset is, not what it holds.
+    // A file's chip shows what the asset is, not what it holds; a stored
+    // PDF's, its first page.
     if shown.view == "file" {
         let _ = element.set_attribute("data-asset-current", &asset.sha256);
+        card_state(&element, &asset, &shown);
+        let _ = element.set_attribute("data-shown", "yes");
+        if matches!(&shown.source, Source::Artifact { media_type, .. } if media_type == "application/pdf")
+            && let Some(url) = artifact_thumbnail_url(&asset.sha256, workspace).await
+            && let Ok(Some(badge)) = element.query_selector("[data-file-badge]")
+        {
+            badge.set_inner_html(&format!(
+                "<img src=\"{}\" alt=\"\" draggable=\"false\" class=\"h-full w-full rounded-lg object-cover object-top\" data-artifact-thumbnail>",
+                escape(&url)
+            ));
+        }
+        return;
+    }
+    // A stored picture over 1 MiB, or a video, shows the daemon's thumbnail
+    // and is read whole only to be viewed
+    // (`docs/site/specs/attachment-handling.md` section 5.1).
+    if shown.view == "thumb"
+        && thumbnail_first(&element, &shown.source)
+        && let Some(url) = artifact_thumbnail_url(&asset.sha256, workspace).await
+    {
+        let _ = element.set_attribute("data-asset-current", &asset.sha256);
+        let _ = element.set_attribute("data-thumbnail-only", "");
+        let target = body(&element);
+        target.set_inner_html("");
+        let _ = target.remove_attribute("data-shown");
+        thumb_at(&target, &url, &asset.media_type, &asset.title, true);
         card_state(&element, &asset, &shown);
         let _ = element.set_attribute("data-shown", "yes");
         return;
@@ -1018,6 +1087,51 @@ async fn fill_tile(
     let _ = element.set_attribute("data-shown", "yes");
 }
 
+/// The size from which a stored picture shows the daemon's thumbnail
+/// rather than its bytes.
+const THUMBNAIL_FROM_BYTES: u64 = 1024 * 1024;
+
+/// Whether the card `element` of a stored file `source` shows the daemon's
+/// thumbnail first: a video, or a picture over [`THUMBNAIL_FROM_BYTES`].
+fn thumbnail_first(element: &web_sys::Element, source: &Source) -> bool {
+    let Source::Artifact { media_type, .. } = source else {
+        return false;
+    };
+    let bytes = element
+        .get_attribute("data-artifact-bytes")
+        .and_then(|bytes| bytes.parse::<u64>().ok())
+        .unwrap_or(0);
+    media_type.starts_with("video/")
+        || (media_type.starts_with("image/")
+            && media_type != "image/svg+xml"
+            && bytes > THUMBNAIL_FROM_BYTES)
+}
+
+/// The `Blob` URL of the thumbnail of the viewed session's stored file
+/// `sha256`, as this page or the browser keeps it, else as
+/// `artifact.thumbnail` draws it; `None` when there is none, for the card to
+/// read the file instead.
+async fn artifact_thumbnail_url(sha256: &str, workspace: Workspace) -> Option<String> {
+    if let Some(known) = known_thumbnail(sha256).await {
+        return known;
+    }
+    let result = workspace
+        .artifact_thumbnail(sha256.to_owned())
+        .await
+        .ok()
+        .flatten()?;
+    match result.thumbnail {
+        Some(thumbnail) => daemon_thumbnail(&result.sha256, &thumbnail),
+        None => {
+            if !result.retry_later {
+                NO_THUMBNAIL.with(|none| none.borrow_mut().insert(result.sha256.clone()));
+                crate::thumbnail_store::keep_none(result.sha256);
+            }
+            None
+        }
+    }
+}
+
 /// What this page or the browser knows of the content `sha256`'s
 /// thumbnail: `Some(Some(url))` its `Blob` URL, `Some(None)` that it has
 /// none, `None` nothing yet.
@@ -1116,7 +1230,20 @@ fn panel(target: &web_sys::Element, content: &Content, asset: &Asset) {
 /// A gallery card's picture: the image, or a video's first frame, filling
 /// its frame; alone in its gallery, whole at its own shape.
 fn thumb(target: &web_sys::Element, content: &Content, asset: &Asset) {
-    let video = content.media_type.starts_with("video/");
+    thumb_at(
+        target,
+        &content.url,
+        &content.media_type,
+        &asset.title,
+        false,
+    );
+}
+
+/// [`thumb`] of the picture at `url` of a file of `media_type` titled
+/// `title`; `still` draws a video's or a PDF's thumbnail, a picture, with a
+/// video's play mark over it.
+fn thumb_at(target: &web_sys::Element, url: &str, media_type: &str, title: &str, still: bool) {
+    let video = media_type.starts_with("video/");
     let alone = target
         .closest("[data-gallery='1']")
         .ok()
@@ -1128,27 +1255,42 @@ fn thumb(target: &web_sys::Element, content: &Content, asset: &Asset) {
         "block max-h-48 w-auto max-w-full object-contain"
     } else if alone {
         "block max-h-96 w-auto max-w-full object-contain"
-    } else if content.media_type == "image/svg+xml" {
+    } else if media_type == "image/svg+xml" {
         "h-full w-full object-contain"
     } else {
         "h-full w-full object-cover"
     };
-    let svg_ground = if content.media_type == "image/svg+xml" {
+    let svg_ground = if media_type == "image/svg+xml" {
         " bg-white"
     } else {
         ""
     };
-    let picture = if video {
+    let play = format!(
+        "<span class=\"pointer-events-none absolute inset-0 flex items-center justify-center\">{}</span>",
+        crate::icons::svg(icondata::LuCirclePlay, "text-4xl text-white/90 drop-shadow")
+    );
+    let picture = if video && still {
+        format!(
+            "<img src=\"{}\" alt=\"{}\" draggable=\"false\" class=\"pointer-events-none {size}\" data-artifact-thumbnail>{play}",
+            escape(url),
+            escape(title)
+        )
+    } else if video {
         format!(
             "<video preload=\"metadata\" muted playsinline src=\"{}\" class=\"pointer-events-none {size}\"></video><span class=\"pointer-events-none absolute inset-0 flex items-center justify-center\">{}</span>",
-            escape(&content.url),
+            escape(url),
             crate::icons::svg(icondata::LuCirclePlay, "text-4xl text-white/90 drop-shadow")
         )
     } else {
+        let marked = if still {
+            " data-artifact-thumbnail"
+        } else {
+            ""
+        };
         format!(
-            "<img src=\"{}\" alt=\"{}\" draggable=\"false\" class=\"pointer-events-none {size}{svg_ground}\">",
-            escape(&content.url),
-            escape(&asset.title)
+            "<img src=\"{}\" alt=\"{}\" draggable=\"false\" class=\"pointer-events-none {size}{svg_ground}\"{marked}>",
+            escape(url),
+            escape(title)
         )
     };
     target.set_inner_html(&picture);

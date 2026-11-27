@@ -195,7 +195,7 @@ async fn a_message_of_attachments_alone_is_sent() {
 }
 
 #[tokio::test]
-async fn a_kind_the_model_does_not_take_goes_up_as_a_file() {
+async fn a_kind_the_model_does_not_take_goes_up_with_its_own_type() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = write_file(dir.path(), "shot.png", &png(4, 3, 16));
     let (mut app, _session, recorded) = attach_app(
@@ -210,19 +210,19 @@ async fn a_kind_the_model_does_not_take_goes_up_as_a_file() {
     app.attach_file(&path).await;
     apply_next_update(&mut app).await;
     assert!(
-        app.status.contains("attached shot.png as a file")
-            && app.status.contains("does not accept image files"),
+        app.status.contains("does not accept image files"),
         "{}",
         app.status
     );
     let begun = requests(&recorded, "artifact.upload.begin");
     assert_eq!(begun.len(), 1);
-    assert_eq!(begun[0]["kind"], "file");
+    // `media`, the default kind, goes unsaid.
+    assert_ne!(begun[0]["kind"], "file");
     assert_eq!(app.attachments.len(), 1);
 }
 
 #[tokio::test]
-async fn files_over_the_models_limits_go_up_as_files_and_only_the_daemons_limit_refuses() {
+async fn media_over_the_models_limits_keeps_its_type_and_only_the_daemons_limit_refuses() {
     let dir = tempfile::tempdir().expect("tempdir");
     let (mut app, _session, recorded) = attach_app(
         vec![media(MediaKindLabel::IMAGE, &["image/png"], 1024)],
@@ -242,24 +242,19 @@ async fn files_over_the_models_limits_go_up_as_files_and_only_the_daemons_limit_
         app.status
     );
     assert!(requests(&recorded, "artifact.upload.begin").is_empty());
-    // Over the model's byte or pixel limit: a file.
+    // Over the model's byte or pixel limit: media all the same, which the
+    // model sees by its label.
     let big = write_file(dir.path(), "big.png", &png(4, 3, 4096));
     app.attach_file(&big).await;
     apply_next_update(&mut app).await;
-    assert!(
-        app.status.contains("attached big.png as a file"),
-        "{}",
-        app.status
-    );
+    assert!(app.status.contains("big.png"), "{}", app.status);
     let wide = write_file(dir.path(), "wide.png", &png(9000, 2, 16));
     app.models[0].input_media = vec![media(MediaKindLabel::IMAGE, &["image/png"], 1024 * 1024)];
     app.attach_file(&wide).await;
     apply_next_update(&mut app).await;
     assert!(
-        app.status.contains("attached wide.png as a file")
-            && app
-                .status
-                .contains("accepts images up to 8000 pixels a side"),
+        app.status
+            .contains("accepts images up to 8000 pixels a side"),
         "{}",
         app.status
     );
@@ -267,7 +262,10 @@ async fn files_over_the_models_limits_go_up_as_files_and_only_the_daemons_limit_
         .iter()
         .map(|params| params["kind"].clone())
         .collect::<Vec<_>>();
-    assert_eq!(kinds, [json!("file"), json!("file")]);
+    assert!(
+        kinds.len() == 2 && kinds.iter().all(|kind| kind != "file"),
+        "{kinds:?}"
+    );
 }
 
 #[tokio::test]

@@ -4,7 +4,7 @@
 
 use cookie_agent_client_state::uploads::{AcceptedMedia, RefusedLimits, too_large};
 use cookie_agent_protocol::{
-    InputMedia,
+    InputMedia, UploadKind,
     media_sniff::{
         MAX_IMAGE_DIMENSION, MAX_IMAGE_PIXELS, MAX_VIDEO_ATTACHMENT_BYTES, UploadRejection,
         max_attachment_bytes, validate_upload,
@@ -12,8 +12,8 @@ use cookie_agent_protocol::{
 };
 
 /// The `accept` attribute for the file input: empty, every file. One the
-/// model does not take inline goes up as a file, which the model sees as
-/// its label.
+/// model does not take inline goes up all the same, and the model sees its
+/// label.
 pub fn accept_attribute(_: &[InputMedia]) -> String {
     String::new()
 }
@@ -79,10 +79,20 @@ pub enum Assessment {
     /// It fits: upload it as it is.
     Attach,
     /// An image too large for the model or the daemon: offer to re-encode
-    /// it within `limits`.
-    Downscale { reason: String, limits: ImageLimits },
-    /// The model does not take it inline, for `0`: upload it as a file,
-    /// which the model sees as its label and can copy to a machine.
+    /// it within `limits`. Declined, it goes up as it is, as `as_is`: media
+    /// of its own type when the daemon takes it, else a file.
+    Downscale {
+        reason: String,
+        limits: ImageLimits,
+        as_is: UploadKind,
+    },
+    /// Media the daemon recognizes that the model does not take, for `0`:
+    /// upload it with its own type; each request decides whether its model
+    /// gets it (`docs/site/specs/attachment-handling.md` question Q2b), and
+    /// this one's sees its label.
+    AsMedia(String),
+    /// Not recognized, or text over the inline cap, for `0`: upload it as a
+    /// file, which the model sees as its label and can copy to a machine.
     AsFile(String),
     /// It starts like media but does not parse, for `0`: ask before
     /// uploading it as a file, since the user may expect the model to see it
@@ -141,21 +151,26 @@ pub fn assess(name: &str, bytes: &[u8], accepted: &AcceptedMedia) -> Assessment 
     if length > MAX_VIDEO_ATTACHMENT_BYTES {
         return Assessment::Refuse(too_large(name, "file", length, MAX_VIDEO_ATTACHMENT_BYTES));
     }
-    let downscale = |reason: String| match image_limits(accepted) {
-        Some(limits) => Assessment::Downscale { reason, limits },
+    let downscale = |reason: String, as_is: UploadKind| match image_limits(accepted) {
+        Some(limits) => Assessment::Downscale {
+            reason,
+            limits,
+            as_is,
+        },
+        None if as_is == UploadKind::Media => Assessment::AsMedia(reason),
         None => Assessment::AsFile(reason),
     };
     match validate_upload(bytes) {
         Ok(upload) => {
-            // The kind and type first: a file of a type the model does not
-            // take goes up as a file whatever its size.
+            // The kind and type first: media of a type the model does not
+            // take goes up as it is whatever its size.
             if let Err(reason) = accepted.check(name, upload.kind, upload.media_type, 0, None) {
-                return Assessment::AsFile(reason);
+                return Assessment::AsMedia(reason);
             }
             match accepted.check(name, upload.kind, upload.media_type, length, upload.image) {
                 Ok(()) => Assessment::Attach,
-                Err(reason) if upload.kind == "image" => downscale(reason),
-                Err(reason) => Assessment::AsFile(reason),
+                Err(reason) if upload.kind == "image" => downscale(reason, UploadKind::Media),
+                Err(reason) => Assessment::AsMedia(reason),
             }
         }
         Err(UploadRejection::Unrecognized) => Assessment::AsFile(format!(
@@ -179,7 +194,7 @@ pub fn assess(name: &str, bytes: &[u8], accepted: &AcceptedMedia) -> Assessment 
                 None => too_large(name, kind, byte_length, max_bytes),
             };
             if kind == "image" {
-                downscale(reason)
+                downscale(reason, UploadKind::File)
             } else {
                 Assessment::AsFile(reason)
             }
@@ -273,7 +288,7 @@ mod tests {
         );
         assert!(matches!(
             assess("notes.md", b"# Notes\n", &accepted(vec![image.clone()])),
-            Assessment::AsFile(reason) if reason.contains("does not accept text files")
+            Assessment::AsMedia(reason) if reason.contains("does not accept text files")
         ));
         assert!(accepts_images(&[pdf.clone(), image.clone()]));
         assert!(!accepts_images(std::slice::from_ref(&pdf)));
@@ -316,7 +331,7 @@ mod tests {
         let model = accepted(vec![image_media(10_000, Some(200))]);
         assert_eq!(assess("dot.png", &small, &model), Assessment::Attach);
         let wide = png(400, 50);
-        let Assessment::Downscale { reason, limits } = assess("wide.png", &wide, &model) else {
+        let Assessment::Downscale { reason, limits, .. } = assess("wide.png", &wide, &model) else {
             panic!("a wide image is offered a downscale");
         };
         assert!(reason.contains("400×50"), "{reason}");
@@ -331,10 +346,10 @@ mod tests {
     }
 
     #[test]
-    fn files_the_model_does_not_take_go_up_as_files_whatever_their_size() {
+    fn media_the_model_does_not_take_keeps_its_type_whatever_its_size() {
         let pdf_only = accepted(vec![media("pdf", &["application/pdf"])]);
-        let Assessment::AsFile(reason) = assess("dot.png", &png(100, 50), &pdf_only) else {
-            panic!("an image for a pdf-only model goes up as a file");
+        let Assessment::AsMedia(reason) = assess("dot.png", &png(100, 50), &pdf_only) else {
+            panic!("an image for a pdf-only model goes up as an image");
         };
         assert!(reason.contains("does not accept image"), "{reason}");
         assert_eq!(
@@ -343,7 +358,7 @@ mod tests {
         );
         assert!(matches!(
             assess("notes.txt", b"plain words", &pdf_only),
-            Assessment::AsFile(_)
+            Assessment::AsMedia(_)
         ));
         assert!(matches!(
             assess("data.bin", b"nul\0byte", &pdf_only),
