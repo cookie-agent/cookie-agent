@@ -36,6 +36,7 @@ pub(super) fn attachment_state(outcome: Option<AttachmentOutcome>) -> crate::sta
                     source: AttachSource::Path {
                         path: "runs/loss.html".into(),
                         machine: None,
+                        main: None,
                     },
                     title: Some("Loss curves".into()),
                 },

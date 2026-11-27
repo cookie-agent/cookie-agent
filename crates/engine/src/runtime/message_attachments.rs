@@ -66,12 +66,37 @@ enum Checked {
     Denied,
 }
 
+/// An attachment of the folder `manifest`, stored as `digest`.
+fn folder_part(
+    manifest: &cookie_agent_protocol::FolderManifest,
+    manifest_bytes: u64,
+    digest: String,
+    reference: cookie_agent_protocol::ArtifactReference,
+    name: String,
+) -> Result<AttachmentOutcome, String> {
+    Ok(AttachmentOutcome::Attached {
+        file: PersistedFilePart {
+            media_type: MimeType::new(manifest.main_entry().media_type.clone())
+                .map_err(|error| error.to_string())?,
+            filename: Some(name),
+            source: PersistedFileSource::Artifact {
+                byte_length: manifest_bytes,
+                sha256: Sha256Digest::new(digest).map_err(|error| error.to_string())?,
+                reference,
+            },
+            metadata: None,
+            folder: Some(manifest.info()),
+        },
+    })
+}
+
 /// The line a failure is told to the model as.
 fn failure_note(tag: &AttachTag, reason: &str) -> String {
     let named = match &tag.source {
         AttachSource::Path {
             path,
             machine: Some(machine),
+            ..
         } => format!("{path} on {machine}"),
         AttachSource::Path { path, .. } => path.clone(),
         AttachSource::Artifact { sha256 } => format!("artifact {sha256}"),
@@ -227,11 +252,16 @@ impl Engine {
         agent: Option<&cookie_agent_protocol::AgentSnapshot>,
     ) -> AttachmentOutcome {
         let result = match &tag.source {
-            AttachSource::Path { path, machine } => {
+            AttachSource::Path {
+                path,
+                machine,
+                main,
+            } => {
                 self.attach_file(
                     key.session,
                     path,
                     machine.as_deref().or(default_machine),
+                    main.as_deref(),
                     agent,
                 )
                 .await
@@ -300,13 +330,14 @@ impl Engine {
         })
     }
 
-    /// Reads the file `path` of `machine` once into the session tree's
-    /// artifacts.
+    /// Reads the file or folder `path` of `machine` once into the session
+    /// tree's artifacts; `main` names a folder's main file.
     async fn attach_file(
         &self,
         session: SessionId,
         path: &str,
         machine: Option<&str>,
+        main: Option<&str>,
         agent: Option<&cookie_agent_protocol::AgentSnapshot>,
     ) -> Result<AttachmentOutcome, String> {
         let machine = match machine {
@@ -332,15 +363,16 @@ impl Engine {
                     prepared.path, endpoint.machine
                 ));
             }
-            Some(FsKind::Folder) => {
+            Some(FsKind::File) if main.is_some() => {
                 close(client, prepared.route).await;
                 return Err(format!(
-                    "{} on {} is a folder",
+                    "{} on {} is a file; main=\"…\" is only for a folder",
                     prepared.path, endpoint.machine
                 ));
             }
             Some(_) => {}
         }
+        let folder = prepared.kind == Some(FsKind::Folder);
         if let Some(size) = prepared.size
             && size > ASSET_MAX_BYTES
         {
@@ -369,15 +401,49 @@ impl Engine {
                 return Err("reading it is not allowed".into());
             }
         }
-        let bytes = crate::asset_tools::read_route(&client, prepared.route).await?;
         let name = prepared
             .path
+            .trim_end_matches(['/', '\\'])
             .rsplit(['/', '\\'])
             .next()
             .filter(|name| !name.is_empty())
-            .unwrap_or("file")
+            .unwrap_or(if folder { "folder" } else { "file" })
             .to_owned();
+        if folder {
+            let tar = crate::folders::read_tar(&client, prepared.route).await?;
+            return self.store_folder_attachment(session, tar, main, name).await;
+        }
+        let bytes = crate::asset_tools::read_route(&client, prepared.route).await?;
         self.store_attachment(session, &bytes, &name)
+    }
+
+    /// Unpacks the folder `tar` into the session tree's artifacts, as the
+    /// folder `name`.
+    async fn store_folder_attachment(
+        &self,
+        session: SessionId,
+        tar: std::fs::File,
+        main: Option<&str>,
+        name: String,
+    ) -> Result<AttachmentOutcome, String> {
+        let artifacts = std::sync::Arc::clone(&self.inner.artifacts);
+        let main = main.map(str::to_owned);
+        crate::runtime::blocking_io::run(move || {
+            let manifest = crate::folders::unpack(tar, main.as_deref(), |bytes| {
+                artifacts
+                    .retain(session, bytes)
+                    .map(|(_, digest)| digest)
+                    .map_err(|error| format!("a file was not stored: {error}"))
+            })
+            .map_err(|error| error.describe("main=\"…\""))?;
+            let json = manifest.to_canonical_json();
+            let (reference, digest) = artifacts
+                .retain(session, &json)
+                .map_err(|error| format!("the folder was not stored: {error}"))?;
+            folder_part(&manifest, json.len() as u64, digest, reference, name)
+        })
+        .await
+        .map_err(|error| error.to_string())?
     }
 
     /// Keeps `bytes` in the session tree's artifacts, as the file `name`.
@@ -430,6 +496,22 @@ impl Engine {
             .read_store(session)
             .map_err(|error| error.to_string())?
             .ok_or_else(|| "this session has no artifacts".to_owned())?;
+        // A folder of the tree is attached as the folder it is.
+        if let Ok(Some(manifest)) =
+            crate::runtime::artifacts::read_folder_manifest(&store, digest.as_str())
+        {
+            let json = manifest.to_canonical_json();
+            let reference = cookie_agent_protocol::ArtifactReference {
+                uri: format!("artifact://sha256/{}", digest.as_str()),
+            };
+            return folder_part(
+                &manifest,
+                json.len() as u64,
+                digest.as_str().to_owned(),
+                reference,
+                tag.label(),
+            );
+        }
         let range = store
             .read_range(digest.as_str(), 0, 0)
             .map_err(|_| "this session has no such artifact".to_owned())?;
@@ -664,7 +746,8 @@ mod tests {
             failure_note(
                 &tag(AttachSource::Path {
                     path: "runs/loss.png".into(),
-                    machine: Some("labpc".into())
+                    machine: Some("labpc".into()),
+                    main: None
                 }),
                 "no such file"
             ),

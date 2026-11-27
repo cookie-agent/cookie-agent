@@ -45,6 +45,9 @@ struct ReadArtifactArgs {
     /// Named stream of a multi-stream output, such as `stdout`, as a truncation hint names it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     stream: Option<String>,
+    /// For a folder artifact, as a folder label names one: the file to read, by its path in the folder. Omitted, the folder's files are listed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    path: Option<String>,
     /// The 1-based line to start at; a negative one counts back from the end, so -50 starts at the 50th line from the end. Defaults to 1.
     #[schemars(extend("default" = 1))]
     offset: Option<i64>,
@@ -54,7 +57,7 @@ struct ReadArtifactArgs {
 }
 
 /// What the model reads about `read_artifact`.
-const DESCRIPTION: &str = "Read retained tool output by line, as `read` reads a file, or the output of a call running in the background. An image, PDF, audio, or video artifact the model takes comes back as the file itself, as `read` returns one. A truncated result names the artifact (and stream) to read in a `read_artifact` hint, with the 1-based `offset` of the first line it left out: read from there. Elided history names the artifact to read from its first line. `artifact` is the digest a hint names, or its first 8 or more hex digits, or a background call's job ID, such as `job_1a2b3c4d`. Given only a job ID, it returns the call's output so far as its result would show it if it ended now; with a `stream`, `offset`, or `limit`, it pages that output as it stands. A job ID keeps reading for a while after the call ends. Lines come back numbered, `N: text`, counting from 1. `offset` is the 1-based line to start at (default 1), or, when negative, how many lines before the end to start (-50 reads the last 50 lines), and `limit` the most lines to return (default 2000). A line longer than 4 KiB is cut and ends with `... [line truncated: N more bytes]`, and a page stops before it passes the result size limit (about 2 MiB). A page that leaves lines out ends with a note such as `[120 more lines; continue with offset=2001]`: read again from that offset. An offset past the last line is an error.";
+const DESCRIPTION: &str = "Read retained tool output by line, as `read` reads a file, or the output of a call running in the background. An image, PDF, audio, or video artifact the model takes comes back as the file itself, as `read` returns one. A truncated result names the artifact (and stream) to read in a `read_artifact` hint, with the 1-based `offset` of the first line it left out: read from there. Elided history names the artifact to read from its first line. `artifact` is the digest a hint names, or its first 8 or more hex digits, or a background call's job ID, such as `job_1a2b3c4d`. Given only a job ID, it returns the call's output so far as its result would show it if it ended now; with a `stream`, `offset`, or `limit`, it pages that output as it stands. A job ID keeps reading for a while after the call ends. A folder artifact, as a `[folder …]` label names one, lists its files; `path` reads one of them. Lines come back numbered, `N: text`, counting from 1. `offset` is the 1-based line to start at (default 1), or, when negative, how many lines before the end to start (-50 reads the last 50 lines), and `limit` the most lines to return (default 2000). A line longer than 4 KiB is cut and ends with `... [line truncated: N more bytes]`, and a page stops before it passes the result size limit (about 2 MiB). A page that leaves lines out ends with a note such as `[120 more lines; continue with offset=2001]`: read again from that offset. An offset past the last line is an error.";
 
 impl ReadArtifactArgs {
     /// Checks the artifact and stream the call names; the executor finds
@@ -250,6 +253,7 @@ impl ToolProvider for ReadArtifactTool {
                 job: args.is_job(),
                 artifact: args.artifact.clone(),
                 stream: args.stream.clone(),
+                path: args.path.clone(),
                 request,
                 window,
                 paged,
@@ -267,6 +271,8 @@ struct ReadArtifactExecutor {
     /// The digest, or its start, the call names; or a job ID.
     artifact: String,
     stream: Option<String>,
+    /// A folder's file to read.
+    path: Option<String>,
     request: LineRequest,
     /// The request, when the call gave a stream or window: a job ID read
     /// without one is a snapshot.
@@ -490,6 +496,27 @@ impl ReadArtifactExecutor {
     }
 }
 
+/// A folder artifact's files, one a line, for `read_artifact` without a
+/// `path`.
+fn folder_files(artifact: &str, manifest: &cookie_agent_protocol::FolderManifest) -> String {
+    let mut output = format!(
+        "Folder artifact {} ({} files, {}, main {}). Read a file with `path`:",
+        &artifact[..artifact.len().min(12)],
+        manifest.entries.len(),
+        cookie_agent_protocol::human_bytes(manifest.byte_length()),
+        manifest.main
+    );
+    for entry in &manifest.entries {
+        output.push_str(&format!(
+            "\n  {} ({}, {})",
+            entry.path,
+            entry.media_type,
+            cookie_agent_protocol::human_bytes(entry.byte_length)
+        ));
+    }
+    output
+}
+
 #[async_trait]
 impl PreparedExecutor for ReadArtifactExecutor {
     async fn execute(
@@ -508,9 +535,49 @@ impl PreparedExecutor for ReadArtifactExecutor {
                 .await
                 .map(cookie_agent_runtime_api::ToolCompletion::single);
         }
-        let artifact = std::sync::Arc::clone(&context.artifacts)
+        let mut artifact = std::sync::Arc::clone(&context.artifacts)
             .resolve_artifact(self.session, self.artifact)
             .await?;
+        // A folder lists its files, or reads the one `path` names.
+        let folder = match (&self.engine, self.stream.is_none()) {
+            (Some(engine), true) => engine.folder_manifest_of(self.session, &artifact).await?,
+            _ => None,
+        };
+        match (folder, &self.path) {
+            (Some(manifest), Some(path)) => {
+                artifact = manifest
+                    .entry(path)
+                    .ok_or_else(|| {
+                        ToolError::execution(format!("the folder has no file {path:?}"))
+                    })?
+                    .sha256
+                    .clone();
+            }
+            (Some(manifest), None) => {
+                let output = folder_files(&artifact, &manifest);
+                return Ok(cookie_agent_runtime_api::ToolCompletion::single(
+                    ToolResult {
+                        title: safe_title(format!("Read folder {}", &artifact[..12])),
+                        display: crate::base_tools::markdown_display(&format!(
+                            "```text\n{output}\n```"
+                        )),
+                        output,
+                        background: None,
+                        retained_output: None,
+                        metadata: serde_json::json!({ "artifact": artifact, "folder": true }),
+                        attachments: Vec::new(),
+                        additional_messages: Vec::new(),
+                        loaded_tools: Vec::new(),
+                    },
+                ));
+            }
+            (None, Some(_)) => {
+                return Err(ToolError::execution(
+                    "`path` names a file of a folder artifact, and this artifact is not one",
+                ));
+            }
+            (None, None) => {}
+        }
         let stream = self.stream;
         let target = ArtifactReadTarget::parse(&artifact, stream.as_deref())
             .map_err(ToolError::execution)?;
@@ -733,7 +800,7 @@ mod tests {
             serde_json::json!({"artifact": digest, "stream": "out/more"}),
             serde_json::json!({"artifact": digest, "limit": 0}),
             serde_json::json!({"artifact": digest, "offset": 0}),
-            serde_json::json!({"artifact": digest, "path": "x"}),
+            serde_json::json!({"artifact": digest, "folder": "x"}),
         ] {
             assert!(
                 ReadArtifactTool::default()

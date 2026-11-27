@@ -894,13 +894,13 @@ capture, stay in the tree's `blobs/` directory until the tree is deleted.
 <!-- generated: tool read_artifact -->
 
 ```text
-read_artifact(artifact: string, limit?: integer, offset?: integer, stream?: string)
+read_artifact(artifact: string, limit?: integer, offset?: integer, path?: string, stream?: string)
 ```
 
 Description sent to the model:
 
 ```text
-Read retained tool output by line, as `read` reads a file, or the output of a call running in the background. An image, PDF, audio, or video artifact the model takes comes back as the file itself, as `read` returns one. A truncated result names the artifact (and stream) to read in a `read_artifact` hint, with the 1-based `offset` of the first line it left out: read from there. Elided history names the artifact to read from its first line. `artifact` is the digest a hint names, or its first 8 or more hex digits, or a background call's job ID, such as `job_1a2b3c4d`. Given only a job ID, it returns the call's output so far as its result would show it if it ended now; with a `stream`, `offset`, or `limit`, it pages that output as it stands. A job ID keeps reading for a while after the call ends. Lines come back numbered, `N: text`, counting from 1. `offset` is the 1-based line to start at (default 1), or, when negative, how many lines before the end to start (-50 reads the last 50 lines), and `limit` the most lines to return (default 2000). A line longer than 4 KiB is cut and ends with `... [line truncated: N more bytes]`, and a page stops before it passes the result size limit (about 2 MiB). A page that leaves lines out ends with a note such as `[120 more lines; continue with offset=2001]`: read again from that offset. An offset past the last line is an error.
+Read retained tool output by line, as `read` reads a file, or the output of a call running in the background. An image, PDF, audio, or video artifact the model takes comes back as the file itself, as `read` returns one. A truncated result names the artifact (and stream) to read in a `read_artifact` hint, with the 1-based `offset` of the first line it left out: read from there. Elided history names the artifact to read from its first line. `artifact` is the digest a hint names, or its first 8 or more hex digits, or a background call's job ID, such as `job_1a2b3c4d`. Given only a job ID, it returns the call's output so far as its result would show it if it ended now; with a `stream`, `offset`, or `limit`, it pages that output as it stands. A job ID keeps reading for a while after the call ends. A folder artifact, as a `[folder …]` label names one, lists its files; `path` reads one of them. Lines come back numbered, `N: text`, counting from 1. `offset` is the 1-based line to start at (default 1), or, when negative, how many lines before the end to start (-50 reads the last 50 lines), and `limit` the most lines to return (default 2000). A line longer than 4 KiB is cut and ends with `... [line truncated: N more bytes]`, and a page stops before it passes the result size limit (about 2 MiB). A page that leaves lines out ends with a note such as `[120 more lines; continue with offset=2001]`: read again from that offset. An offset past the last line is an error.
 ```
 
 Always, whatever the agent's permission rules: it reads only output retained by the session's own tree.
@@ -910,6 +910,7 @@ Always, whatever the agent's permission rules: it reads only output retained by 
 | `artifact` | `string` | yes | The artifact's lowercase hex SHA-256 digest, as a truncation hint names it, or its first 8 or more digits, as a file label shows them; or the job ID of a call in the background, such as `job_1a2b3c4d`. |
 | `limit` | `integer` | no | The most lines to return. Defaults to 2000. Default: `2000`. |
 | `offset` | `integer` | no | The 1-based line to start at; a negative one counts back from the end, so -50 starts at the 50th line from the end. Defaults to 1. Default: `1`. |
+| `path` | `string` | no | For a folder artifact, as a folder label names one: the file to read, by its path in the folder. Omitted, the folder's files are listed. |
 | `stream` | `string` | no | Named stream of a multi-stream output, such as `stdout`, as a truncation hint names it. |
 
 ??? note "Parameters JSON Schema"
@@ -934,6 +935,10 @@ Always, whatever the agent's permission rules: it reads only output retained by 
           "description": "The 1-based line to start at; a negative one counts back from the end, so -50 starts at the 50th line from the end. Defaults to 1.",
           "format": "int64",
           "type": "integer"
+        },
+        "path": {
+          "description": "For a folder artifact, as a folder label names one: the file to read, by its path in the folder. Omitted, the folder's files are listed.",
+          "type": "string"
         },
         "stream": {
           "description": "Named stream of a multi-stream output, such as `stdout`, as a truncation hint names it.",
@@ -3761,13 +3766,13 @@ under its own action, `share`.
 <!-- generated: tool write_asset -->
 
 ```text
-write_asset(asset?: string, machine?: string, path: string, scope?: "session" | "project", title?: string)
+write_asset(asset?: string, machine?: string, main?: string, path: string, scope?: "session" | "project", title?: string)
 ```
 
 Description sent to the model:
 
 ```text
-Save a file as an asset, a file you give the user, or replace an asset you saved before. The file is read from a machine of this session: `path` resolves as `read` resolves it, against the machine's working directory or under `~`, and `machine` names the machine as the machines block and `list_runtimes` do; omitted, it is the default machine the machines block marks. Any file up to 25 MiB works. Images, SVG, video, and audio are shown as they are, and a Markdown file (`.md`) as a rendered document, for reports and notes. An HTML page is rendered live, with its scripts and network access, and must be one self-contained file. Anything else is offered as a download. Without `asset` this saves a new asset and returns its handle, such as `asset_3f9a1c2e`. With a handle it replaces that asset's content, and every place it was shown updates, so revise something you saved before by its handle rather than saving it again. `scope` is `session` by default: the asset belongs to this conversation and its subagents, and is deleted with it. Use `project` for something to keep after this conversation, which every session of the project can use. Saving does not show the asset: write `<attach asset="asset_3f9a1c2e"/>` in your reply where it should show.
+Save a file as an asset, a file you give the user, or replace an asset you saved before. The file is read from a machine of this session: `path` resolves as `read` resolves it, against the machine's working directory or under `~`, and `machine` names the machine as the machines block and `list_runtimes` do; omitted, it is the default machine the machines block marks. Any file up to 25 MiB works, or a folder of up to 200 MiB and 2000 files. Images, SVG, video, and audio are shown as they are, and a Markdown file (`.md`) as a rendered document, for reports and notes. An HTML page is rendered live, with its scripts and network access; to give it images, scripts, or data as separate files, save the folder that holds them and its relative paths will work. A folder shows as its `index.html`, else its `README.md` or `index.md`, else its only file; `main` names another file of it to show. Anything else is offered as a download. Without `asset` this saves a new asset and returns its handle, such as `asset_3f9a1c2e`. With a handle it replaces that asset's content, and every place it was shown updates, so revise something you saved before by its handle rather than saving it again. `scope` is `session` by default: the asset belongs to this conversation and its subagents, and is deleted with it. Use `project` for something to keep after this conversation, which every session of the project can use. Saving does not show the asset: write `<attach asset="asset_3f9a1c2e"/>` in your reply where it should show.
 ```
 
 Only when the session has the `global` runtime attached and no `"*": deny` for `asset` hides them. A root run of any agent but an internal one is allowed them by default; a delegated run is denied them. `write_asset` also checks its file as `read` on the machine it reads it from.
@@ -3776,6 +3781,7 @@ Only when the session has the `global` runtime attached and no `"*": deny` for `
 |---|---|---|---|
 | `asset` | `string` | no | The handle of an asset to replace. Omit it to save a new asset |
 | `machine` | `string` | no | Machine to read the file from, by its name in the machines block. Default: the machine the machines block marks default. |
+| `main` | `string` | no | For a folder: the file it shows as, by its path in the folder. Defaults to index.html, then README.md, then index.md, then its only file at its top |
 | `path` | `string` | yes | The file to save: relative to the machine's working directory, absolute, or under `~` |
 | `scope` | `"session" \| "project"` | no | `session` (default): this conversation's, deleted with it. `project`: kept in the project's assets. Only for a new asset |
 | `title` | `string` | no | Shown with the asset. Defaults to the file name for a new asset, and to the current title when replacing |
@@ -3801,6 +3807,10 @@ Only when the session has the `global` runtime attached and no `"*": deny` for `
         },
         "machine": {
           "description": "Machine to read the file from, by its name in the machines block. Default: the machine the machines block marks default.",
+          "type": "string"
+        },
+        "main": {
+          "description": "For a folder: the file it shows as, by its path in the folder. Defaults to index.html, then README.md, then index.md, then its only file at its top",
           "type": "string"
         },
         "path": {
@@ -3831,13 +3841,13 @@ Only when the session has the `global` runtime attached and no `"*": deny` for `
 <!-- generated: tool read_asset -->
 
 ```text
-read_asset(asset: string, limit?: integer, offset?: integer)
+read_asset(asset: string, limit?: integer, offset?: integer, path?: string)
 ```
 
 Description sent to the model:
 
 ```text
-Read an asset's content by its handle, as `read` reads a file: text with `offset` and `limit` in 1-based lines (a negative `offset` counts back from the end), an image as an image when you take images, and otherwise only the asset's type and size.
+Read an asset's content by its handle, as `read` reads a file: text with `offset` and `limit` in 1-based lines (a negative `offset` counts back from the end), an image as an image when you take images, and otherwise only the asset's type and size. A folder asset lists its files and then reads its main file; `path` reads another file of it.
 ```
 
 Only when the session has the `global` runtime attached and no `"*": deny` for `asset` hides them. A root run of any agent but an internal one is allowed them by default; a delegated run is denied them. `write_asset` also checks its file as `read` on the machine it reads it from.
@@ -3847,6 +3857,7 @@ Only when the session has the `global` runtime attached and no `"*": deny` for `
 | `asset` | `string` | yes | The asset's handle |
 | `limit` | `integer` | no | The most lines to return, for text. Defaults to 2000. Default: `2000`. |
 | `offset` | `integer` | no | The 1-based line to start at, for text; a negative one counts back from the end, so -50 starts at the 50th line from the end. Defaults to 1. Default: `1`. |
+| `path` | `string` | no | For a folder asset: the file to read, by its path in the folder. Omitted, the folder's files are listed and its main file read |
 
 ??? note "Parameters JSON Schema"
 
@@ -3870,6 +3881,10 @@ Only when the session has the `global` runtime attached and no `"*": deny` for `
           "description": "The 1-based line to start at, for text; a negative one counts back from the end, so -50 starts at the 50th line from the end. Defaults to 1.",
           "format": "int64",
           "type": "integer"
+        },
+        "path": {
+          "description": "For a folder asset: the file to read, by its path in the folder. Omitted, the folder's files are listed and its main file read",
+          "type": "string"
         }
       },
       "required": [

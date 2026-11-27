@@ -56,9 +56,9 @@ const LISTED_ON_ERROR: usize = 20;
 /// The most assets `list_assets` lists.
 const LIST_MAX: usize = 100;
 
-const WRITE_DESCRIPTION: &str = "Save a file as an asset, a file you give the user, or replace an asset you saved before. The file is read from a machine of this session: `path` resolves as `read` resolves it, against the machine's working directory or under `~`, and `machine` names the machine as the machines block and `list_runtimes` do; omitted, it is the default machine the machines block marks. Any file up to 25 MiB works. Images, SVG, video, and audio are shown as they are, and a Markdown file (`.md`) as a rendered document, for reports and notes. An HTML page is rendered live, with its scripts and network access, and must be one self-contained file. Anything else is offered as a download. Without `asset` this saves a new asset and returns its handle, such as `asset_3f9a1c2e`. With a handle it replaces that asset's content, and every place it was shown updates, so revise something you saved before by its handle rather than saving it again. `scope` is `session` by default: the asset belongs to this conversation and its subagents, and is deleted with it. Use `project` for something to keep after this conversation, which every session of the project can use. Saving does not show the asset: write `<attach asset=\"asset_3f9a1c2e\"/>` in your reply where it should show.";
+const WRITE_DESCRIPTION: &str = "Save a file as an asset, a file you give the user, or replace an asset you saved before. The file is read from a machine of this session: `path` resolves as `read` resolves it, against the machine's working directory or under `~`, and `machine` names the machine as the machines block and `list_runtimes` do; omitted, it is the default machine the machines block marks. Any file up to 25 MiB works, or a folder of up to 200 MiB and 2000 files. Images, SVG, video, and audio are shown as they are, and a Markdown file (`.md`) as a rendered document, for reports and notes. An HTML page is rendered live, with its scripts and network access; to give it images, scripts, or data as separate files, save the folder that holds them and its relative paths will work. A folder shows as its `index.html`, else its `README.md` or `index.md`, else its only file; `main` names another file of it to show. Anything else is offered as a download. Without `asset` this saves a new asset and returns its handle, such as `asset_3f9a1c2e`. With a handle it replaces that asset's content, and every place it was shown updates, so revise something you saved before by its handle rather than saving it again. `scope` is `session` by default: the asset belongs to this conversation and its subagents, and is deleted with it. Use `project` for something to keep after this conversation, which every session of the project can use. Saving does not show the asset: write `<attach asset=\"asset_3f9a1c2e\"/>` in your reply where it should show.";
 
-const READ_DESCRIPTION: &str = "Read an asset's content by its handle, as `read` reads a file: text with `offset` and `limit` in 1-based lines (a negative `offset` counts back from the end), an image as an image when you take images, and otherwise only the asset's type and size.";
+const READ_DESCRIPTION: &str = "Read an asset's content by its handle, as `read` reads a file: text with `offset` and `limit` in 1-based lines (a negative `offset` counts back from the end), an image as an image when you take images, and otherwise only the asset's type and size. A folder asset lists its files and then reads its main file; `path` reads another file of it.";
 
 const LIST_DESCRIPTION: &str = "List the assets you can use: this conversation's and the project's, newest first, each with its handle, title, type, size, scope, and which session last saved it and when. At most 100 are listed.";
 
@@ -89,6 +89,11 @@ struct WriteArgs {
     #[serde(default)]
     #[schemars(with = "Option<ScopeArg>")]
     scope: Option<AssetScope>,
+    /// For a folder: the file it shows as, by its path in the folder.
+    /// Defaults to index.html, then README.md, then index.md, then its only
+    /// file at its top
+    #[serde(default)]
+    main: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -96,6 +101,10 @@ struct WriteArgs {
 struct ReadArgs {
     /// The asset's handle
     asset: String,
+    /// For a folder asset: the file to read, by its path in the folder.
+    /// Omitted, the folder's files are listed and its main file read
+    #[serde(default)]
+    path: Option<String>,
     /// The 1-based line to start at, for text; a negative one counts back from the end, so -50 starts at the 50th line from the end. Defaults to 1.
     #[serde(default)]
     #[schemars(extend("default" = 1))]
@@ -350,16 +359,30 @@ pub(crate) fn resolve(
     }))
 }
 
-/// `asset_3f9a1c2e "Loss curves" (text/html, 48 KB, session scope)`.
+/// `asset_3f9a1c2e "Loss curves" (text/html, 48 KB, session scope)`, or
+/// for a folder `(folder, 14 files, 3.2 MB, main index.html, session
+/// scope)`.
 fn scoped_summary(asset: &Asset) -> String {
     format!(
-        "{} {:?} ({}, {}, {} scope)",
+        "{} {:?} ({}, {} scope)",
         asset.handle,
         asset.title,
-        asset.media_type,
-        human_bytes(asset.byte_length),
+        kind_and_size(asset),
         asset.store.scope().as_str()
     )
+}
+
+/// `text/html, 48 KB`, or `folder, 14 files, 3.2 MB, main index.html`.
+fn kind_and_size(asset: &Asset) -> String {
+    match &asset.folder {
+        Some(folder) => format!(
+            "folder, {} files, {}, main {}",
+            folder.files,
+            human_bytes(folder.bytes),
+            folder.main
+        ),
+        None => format!("{}, {}", asset.media_type, human_bytes(asset.byte_length)),
+    }
 }
 
 fn text_result(title: &str, output: String, display: Vec<Open<DisplayBlock>>) -> ToolCompletion {
@@ -385,6 +408,7 @@ enum AssetCall {
     Write(Box<WriteCall>),
     Read {
         asset: Asset,
+        path: Option<String>,
         request: cookie_agent_runtime_api::text_tools::LineRequest,
     },
     List(Option<AssetScope>),
@@ -404,6 +428,8 @@ struct WriteCall {
     store: cookie_agent_protocol::AssetStore,
     replace: Option<Asset>,
     title: Option<String>,
+    /// A folder's main file, as the call named it.
+    main: Option<String>,
 }
 
 impl Drop for WriteCall {
@@ -583,6 +609,7 @@ impl ToolProvider for AssetTools {
                     stores,
                     replace,
                     title: args.title,
+                    main: args.main,
                     prepared,
                 };
                 // Refused before anyone is asked to approve it.
@@ -593,9 +620,9 @@ impl ToolProvider for AssetTools {
                             write.prepared.path, write.machine
                         )));
                     }
-                    Some(FsKind::Folder) => {
+                    Some(FsKind::File) if write.main.is_some() => {
                         return Err(refused(format!(
-                            "{} on {} is a folder; an asset is one file",
+                            "{} on {} is a file; `main` is only for a folder",
                             write.prepared.path, write.machine
                         )));
                     }
@@ -629,7 +656,14 @@ impl ToolProvider for AssetTools {
                     resolve(engine, stores, &reference)
                 })
                 .await?;
-                (AssetCall::Read { asset, request }, None)
+                (
+                    AssetCall::Read {
+                        asset,
+                        path: args.path,
+                        request,
+                    },
+                    None,
+                )
             }
             LIST => {
                 let args: ListArgs = parse_args(LIST, call.arguments.clone())?;
@@ -736,9 +770,11 @@ impl PreparedExecutor for AssetExecutor {
         let session = self.session;
         match self.call {
             AssetCall::Write(write) => execute_write(engine, context, *write).await,
-            AssetCall::Read { asset, request } => {
-                execute_read(engine, context, asset, request).await
-            }
+            AssetCall::Read {
+                asset,
+                path,
+                request,
+            } => execute_read(engine, context, asset, path, request).await,
             AssetCall::List(scope) => {
                 let assets = blocking(&engine, session, move |engine, stores| {
                     let mut assets = engine.session_assets(stores).map_err(store_failed)?;
@@ -859,6 +895,31 @@ async fn execute_share(
     ))
 }
 
+/// The most files `read_asset` lists of a folder.
+const FOLDER_LISTED: usize = 200;
+
+/// A folder's files, one a line after its header, then where its main
+/// file starts.
+fn folder_listing(manifest: &cookie_agent_protocol::FolderManifest) -> String {
+    let mut listing = String::from("\nFiles:");
+    for entry in manifest.entries.iter().take(FOLDER_LISTED) {
+        listing.push_str(&format!(
+            "\n  {} ({}, {})",
+            entry.path,
+            entry.media_type,
+            human_bytes(entry.byte_length)
+        ));
+    }
+    if manifest.entries.len() > FOLDER_LISTED {
+        listing.push_str(&format!(
+            "\n  … {} more; read one with `path`",
+            manifest.entries.len() - FOLDER_LISTED
+        ));
+    }
+    listing.push_str(&format!("\nMain file {}:", manifest.main));
+    listing
+}
+
 /// One `list_assets` line: the asset, its scope, and who saved it when.
 fn list_line(
     engine: &Engine,
@@ -878,14 +939,27 @@ fn list_line(
         }
     };
     format!(
-        "{} {:?} {} {} · {} · saved by {saved_by} {} ago",
+        "{} {:?} {} · {} · saved by {saved_by} {} ago",
         asset.handle,
         asset.title,
-        asset.media_type,
-        human_bytes(asset.byte_length),
+        match &asset.folder {
+            Some(folder) => format!(
+                "folder, {} files, {}",
+                folder.files,
+                human_bytes(folder.bytes)
+            ),
+            None => format!("{} {}", asset.media_type, human_bytes(asset.byte_length)),
+        },
         asset.store.scope().as_str(),
         cookie_agent_protocol::memory_age(asset.updated.at, now),
     )
+}
+
+/// What a write read from its machine, before it is stored.
+enum Pending {
+    File(crate::assets::AssetContent),
+    /// A folder's tar stream, unpacked into the store as it is written.
+    Folder(std::fs::File),
 }
 
 /// Reads the file of `write` from its machine, at most
@@ -940,16 +1014,31 @@ async fn execute_write(
     mut write: WriteCall,
 ) -> Result<ToolCompletion, ToolError> {
     let shown = format!("{} on {}", write.prepared.path, write.machine);
-    let bytes = tokio::select! {
-        read = read_file(&mut write) => read,
-        () = context.cancellation.cancelled() => Err("the call was stopped".into()),
-    }
-    .map_err(|error| refused(format!("reading {shown} failed: {error}")))?;
-    let filename = std::path::Path::new(&write.prepared.path)
+    let folder = write.prepared.kind == Some(FsKind::Folder);
+    let filename = std::path::Path::new(write.prepared.path.trim_end_matches(['/', '\\']))
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .filter(|name| !name.is_empty());
-    let media_type = crate::assets::media_type(filename.as_deref().unwrap_or_default(), &bytes);
+    let content = if folder {
+        write.armed = false;
+        let tar = tokio::select! {
+            read = crate::folders::read_tar(&write.client, write.route) => read,
+            () = context.cancellation.cancelled() => Err("the call was stopped".into()),
+        }
+        .map_err(|error| refused(format!("reading {shown} failed: {error}")))?;
+        Pending::Folder(tar)
+    } else {
+        let bytes = tokio::select! {
+            read = read_file(&mut write) => read,
+            () = context.cancellation.cancelled() => Err("the call was stopped".into()),
+        }
+        .map_err(|error| refused(format!("reading {shown} failed: {error}")))?;
+        let media_type = crate::assets::media_type(filename.as_deref().unwrap_or_default(), &bytes);
+        Pending::File(crate::assets::AssetContent::File {
+            media_type: media_type.to_owned(),
+            bytes,
+        })
+    };
     let stamp = AssetStamp {
         at: jiff::Timestamp::now(),
         session: context.session,
@@ -958,18 +1047,32 @@ async fn execute_write(
     let store = write.store.clone();
     let replace = write.replace.as_ref().map(|asset| asset.id);
     let stores = write.stores.clone();
-    let request = crate::assets::AssetWrite {
-        replace,
-        title: write.title.clone(),
-        filename,
-        content: crate::assets::AssetContent::File {
-            media_type: media_type.to_owned(),
-            bytes,
-        },
-        stamp,
-    };
+    let title = write.title.clone();
+    let main = write.main.clone();
     let (asset, new) = engine
         .assets_blocking(move |_, assets| {
+            // A folder's files are stored first, then the folder names them.
+            let content = match content {
+                Pending::File(content) => content,
+                Pending::Folder(tar) => {
+                    let manifest = crate::folders::unpack(tar, main.as_deref(), |bytes| {
+                        assets
+                            .stage_blob(&store, bytes)
+                            .map_err(|error| error.to_string())
+                    })
+                    .map_err(|error| {
+                        crate::assets::AssetError::InvalidRequest(error.describe("`main`"))
+                    })?;
+                    crate::assets::AssetContent::Folder(manifest)
+                }
+            };
+            let request = crate::assets::AssetWrite {
+                replace,
+                title,
+                filename,
+                content,
+                stamp,
+            };
             // A new asset's handle is clear of both stores the session
             // reaches, so a handle names one asset there.
             let other = if store == stores.session {
@@ -1000,28 +1103,52 @@ async fn execute_read(
     engine: Engine,
     context: ToolExecutionContext,
     asset: Asset,
+    path: Option<String>,
     request: cookie_agent_runtime_api::text_tools::LineRequest,
 ) -> Result<ToolCompletion, ToolError> {
     use cookie_agent_runtime_api::text_tools::{MAX_PAGE_BYTES, page_text};
 
-    let header = scoped_summary(&asset);
-    let (store, id, total) = (asset.store.clone(), asset.id, asset.byte_length);
-    let (bytes, asset) = engine
+    if path.is_some() && asset.folder.is_none() {
+        return Err(refused(format!(
+            "{} is a file; `path` is only for a folder asset",
+            asset.handle
+        )));
+    }
+    let mut header = scoped_summary(&asset);
+    let (store, id) = (asset.store.clone(), asset.id);
+    let listing = asset.folder.is_some() && path.is_none();
+    let wanted = path.clone();
+    let (bytes, media_type, listed, asset) = engine
         .assets_blocking(move |_, stores| {
-            let part = stores.read(&store, id, None, 0, total)?;
-            Ok((part.bytes, part.asset))
+            // The whole file, read in one go: at most an asset's limit.
+            let part = stores.read(&store, id, wanted.as_deref(), 0, ASSET_MAX_BYTES)?;
+            let listed = if listing {
+                Some(stores.manifest(&store, id)?.1)
+            } else {
+                None
+            };
+            Ok((part.bytes, part.media_type, listed, part.asset))
         })
         .await
         .map_err(|error| refused(error.to_string()))?;
+    if let Some(path) = &path {
+        header.push_str(&format!(
+            ", file {path} ({media_type}, {})",
+            human_bytes(bytes.len() as u64)
+        ));
+    }
+    if let Some(manifest) = &listed {
+        header.push_str(&folder_listing(manifest));
+    }
     let accepted = context.turn_context.input_media.iter().find(|media| {
         media.delivery == cookie_agent_protocol::runtime_protocol::MediaDelivery::ToolResult
             && media.mime_types.iter().any(|accepted| {
-                cookie_agent_protocol::media_sniff::mime_type_matches(accepted, &asset.media_type)
+                cookie_agent_protocol::media_sniff::mime_type_matches(accepted, &media_type)
             })
             && bytes.len() as u64 <= media.max_bytes
     });
     if accepted.is_some()
-        && let Ok(mime_type) = cookie_agent_protocol::MimeType::new(asset.media_type.clone())
+        && let Ok(mime_type) = cookie_agent_protocol::MimeType::new(media_type.clone())
     {
         let (reference, sha256) = context.artifacts.retain(context.session, &bytes)?;
         let attachment = cookie_agent_protocol::ToolAttachment {

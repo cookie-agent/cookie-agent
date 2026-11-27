@@ -5,6 +5,13 @@ The client protocol's version is `MAJOR.MINOR.PATCH`
 adds and a major breaks; before it, every minor could break the wire (see the
 [compatibility spec](../specs/compatibility-v1.md) section 3).
 
+## 1.107.0
+
+- The attachment tag's `src` may name a folder, and `AttachSource.path`
+  has an optional `main`, the folder's file to show it as
+  ([folder artifacts spec](../specs/folder-artifacts.md) section 7.2).
+  Plugin protocol 1.50.0 carries it.
+
 ## 1.106.0
 
 - The star card ([spec](../specs/github-star.md),

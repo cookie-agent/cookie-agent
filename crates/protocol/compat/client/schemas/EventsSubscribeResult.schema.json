@@ -1431,9 +1431,15 @@
       "description": "What a tag attaches.",
       "oneOf": [
         {
-          "description": "A file on a machine: `src`, with the tag's `machine`.",
+          "description": "A file or a folder on a machine: `src`, with the tag's `machine`,\nand for a folder the file `main` names to show it as (client\nprotocol 1.107.0).",
           "properties": {
             "machine": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "main": {
               "type": [
                 "string",
                 "null"

@@ -26,7 +26,7 @@ An agent writes a tag where a file should show:
 
 | Tag | Shows |
 |---|---|
-| `<attach src="runs/loss.png"/>` | A file of the session's workspace machine; add `machine="name"` for another machine |
+| `<attach src="runs/loss.png"/>` | A file of the session's workspace machine; add `machine="name"` for another machine. `src` may name a [folder](#folders) |
 | `<attach artifact="<sha256>"/>` | An artifact of the conversation, such as tool output kept aside |
 | `<attach asset="asset_3f9a1c2e"/>` | An asset, live |
 
@@ -61,6 +61,28 @@ them when it needs them:
 
 The model gets one line back from each call, never the file, so showing
 an asset costs almost nothing of its context.
+
+## Folders
+
+An attachment or an asset can be a folder: a page with its images,
+scripts, and data beside it, or a Markdown report with its figures. It
+shows as its **main file**: `index.html`, else `README.md`, else
+`index.md`, else its only file at its top. `main="…"` on a tag, or `main`
+on `write_asset`, names another.
+
+```markdown
+<attach src="runs/report/" title="Run 14 report"/>
+<attach src="runs/report" main="summary.md"/>
+```
+
+- **Limits:** 200 MiB and 2000 files per folder, and 25 MiB per file.
+- **Reading one:** `read_asset` lists a folder asset's files and reads its
+  main file, and `path` reads another of them; `read_artifact` does the
+  same for an attached folder, by the digest its `[folder …]` label names.
+- **Copying one:** `transfer` of a folder artifact writes the folder at
+  the destination, its files with mode `0644`.
+
+See the [folder artifacts spec](../specs/folder-artifacts.md).
 
 ## Session and project assets
 
@@ -113,7 +135,8 @@ from, so your `read` rules decide which files can become assets. See
   *Preview* and *Source*, *Full screen*, and *Download*. An HTML page runs
   there in a sandboxed frame with its scripts and network access, with no
   access to the page, its storage, or its connection to the daemon. A
-  page must be one self-contained file.
+  page may be one file, or a [folder](#folders) whose other files it
+  loads by relative paths.
 - **Handles.** A handle the agent names in its reply is a chip that opens
   the asset, and every card can copy its handle, to give the asset back
   to an agent.

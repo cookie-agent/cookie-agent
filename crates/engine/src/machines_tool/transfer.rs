@@ -182,7 +182,13 @@ impl MachineEnd {
 
 enum SourceEnd {
     Machine(MachineEnd),
-    Artifact { digest: String, size: u64 },
+    /// An artifact of the tree; a folder's is sent as its `tar` stream,
+    /// whose length `size` is then.
+    Artifact {
+        digest: String,
+        size: u64,
+        tar: Option<std::sync::Arc<crate::runtime::machines::transfers::FolderTar>>,
+    },
 }
 
 pub(super) async fn prepare(
@@ -234,13 +240,14 @@ pub(super) async fn prepare(
             SourceEnd::Machine(end)
         }
         Source::Artifact(from) => {
-            let (digest, size) = engine
+            let (digest, size, tar) = engine
                 .transfer_artifact(ctx.session, from.artifact.clone(), from.stream.clone())
                 .await?;
+            let tar = tar.map(std::sync::Arc::new);
             if let Some(error) = too_large(size) {
                 return Err(error);
             }
-            SourceEnd::Artifact { digest, size }
+            SourceEnd::Artifact { digest, size, tar }
         }
     };
     let prepared = destination_endpoint
@@ -258,7 +265,8 @@ pub(super) async fn prepare(
     };
     let source_kind = match &source {
         SourceEnd::Machine(end) => end.prepared.kind.unwrap_or(FsKind::File),
-        SourceEnd::Artifact { .. } => FsKind::File,
+        SourceEnd::Artifact { tar: Some(_), .. } => FsKind::Folder,
+        SourceEnd::Artifact { tar: None, .. } => FsKind::File,
     };
     // Refused before anyone is asked to approve it.
     match destination.prepared.kind {
@@ -393,7 +401,37 @@ impl TransferExecutor {
                     .await?;
                 Ok((chunk.data, chunk.summary))
             }
-            (SourceEnd::Artifact { digest, size }, _) => {
+            (
+                SourceEnd::Artifact {
+                    tar: Some(tar),
+                    size,
+                    ..
+                },
+                _,
+            ) => {
+                let length = MAX_FS_CHUNK_BYTES.min(size.saturating_sub(offset));
+                let summary = FsStreamSummary {
+                    sha256: tar.sha256.clone(),
+                    bytes: tar.bytes,
+                    files: tar.files,
+                    skipped: 0,
+                };
+                let tar = std::sync::Arc::clone(tar);
+                let data = if length == 0 {
+                    Vec::new()
+                } else {
+                    tokio::task::spawn_blocking(move || tar.read(offset, length))
+                        .await
+                        .map_err(|error| error.to_string())?
+                        .map_err(|error| error.to_string())?
+                };
+                let end = offset + data.len() as u64 >= *size;
+                Ok((
+                    base64::engine::general_purpose::STANDARD.encode(&data),
+                    end.then_some(summary),
+                ))
+            }
+            (SourceEnd::Artifact { digest, size, .. }, _) => {
                 let length = MAX_FS_CHUNK_BYTES.min(size.saturating_sub(offset));
                 let data = if length == 0 {
                     Vec::new()
@@ -437,7 +475,15 @@ impl TransferExecutor {
                     opened.size,
                 )
             }
-            SourceEnd::Artifact { size, .. } => (None, FsKind::File, Some(*size)),
+            SourceEnd::Artifact { size, tar, .. } => (
+                None,
+                if tar.is_some() {
+                    FsKind::Folder
+                } else {
+                    FsKind::File
+                },
+                Some(*size),
+            ),
         };
         if let (Some(limit), Some(size)) = (self.limit, size)
             && size > limit

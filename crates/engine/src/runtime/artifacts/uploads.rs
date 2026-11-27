@@ -534,6 +534,29 @@ impl Engine {
         Ok((range.data, range.total_bytes, media_type))
     }
 
+    /// The manifest of artifact `sha256` of `session`'s tree when it is a
+    /// folder, for the tools.
+    pub(crate) async fn folder_manifest_of(
+        &self,
+        session: SessionId,
+        sha256: &str,
+    ) -> Result<Option<cookie_agent_protocol::FolderManifest>, crate::ToolError> {
+        let artifacts = Arc::clone(&self.inner.artifacts);
+        let digest = sha256.to_owned();
+        blocking_io::run(move || {
+            let Some(store) = artifacts.read_store(session)? else {
+                return Ok(None);
+            };
+            match super::read_folder_manifest(&store, &digest) {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+                read => read,
+            }
+        })
+        .await
+        .map_err(|error| crate::ToolError::execution(error.to_string()))?
+        .map_err(|error: std::io::Error| crate::ToolError::execution(error.to_string()))
+    }
+
     /// The manifest of folder artifact `sha256` in the store of `session`'s
     /// tree (`artifact.manifest`).
     pub async fn artifact_manifest(

@@ -14,6 +14,7 @@ mod delegation_api;
 #[path = "../../../test-support/eventually.rs"]
 mod eventually;
 mod exposure;
+mod folders;
 pub mod grant_journal;
 mod heap;
 mod machines;

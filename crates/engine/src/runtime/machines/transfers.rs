@@ -130,23 +130,112 @@ impl Engine {
     }
 }
 
+/// A folder artifact as the tar stream a transfer sends it as
+/// (`docs/site/specs/folder-artifacts.md` section 7.4): its files in a
+/// temporary file, with mode `0644` and the time it was built.
+pub(crate) struct FolderTar {
+    file: std::sync::Mutex<std::fs::File>,
+    /// The stream's length and SHA-256.
+    pub(crate) size: u64,
+    pub(crate) sha256: String,
+    pub(crate) files: u64,
+    /// The files' bytes together.
+    pub(crate) bytes: u64,
+}
+
+impl FolderTar {
+    fn build(
+        store: &crate::runtime::artifacts::ArtifactStore,
+        manifest: &cookie_agent_protocol::FolderManifest,
+    ) -> std::io::Result<Self> {
+        use sha2::Digest as _;
+        use std::io::{Read as _, Seek as _};
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |since| since.as_secs());
+        let mut builder = tar::Builder::new(tempfile::tempfile()?);
+        for entry in &manifest.entries {
+            let blob = store.open_existing(&entry.sha256)?.ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!("the folder's file {} is missing", entry.path),
+                )
+            })?;
+            let mut header = tar::Header::new_gnu();
+            header.set_entry_type(tar::EntryType::Regular);
+            header.set_size(entry.byte_length);
+            header.set_mode(0o644);
+            header.set_mtime(now);
+            header.set_uid(0);
+            header.set_gid(0);
+            builder.append_data(&mut header, &entry.path, blob.take(entry.byte_length))?;
+        }
+        let mut file = builder.into_inner()?;
+        file.rewind()?;
+        let mut hasher = sha2::Sha256::new();
+        let size = std::io::copy(&mut file, &mut hasher)?;
+        file.rewind()?;
+        Ok(Self {
+            file: std::sync::Mutex::new(file),
+            size,
+            sha256: format!("{:x}", hasher.finalize()),
+            files: manifest.entries.len() as u64,
+            bytes: manifest.byte_length(),
+        })
+    }
+
+    /// `length` bytes of the stream from `offset`. Blocking.
+    pub(crate) fn read(&self, offset: u64, length: u64) -> std::io::Result<Vec<u8>> {
+        use std::io::{Read as _, Seek as _};
+
+        let mut file = self
+            .file
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        file.seek(std::io::SeekFrom::Start(offset))?;
+        let mut data = Vec::new();
+        (&mut *file).take(length).read_to_end(&mut data)?;
+        Ok(data)
+    }
+}
+
 impl Engine {
     /// The artifact a transfer's `from` names in `session`'s tree, and its
     /// length; see [`crate::runtime::artifacts::reads::transfer_source`].
+    /// A folder comes with the tar stream it is sent as, and the stream's
+    /// length.
     pub(crate) async fn transfer_artifact(
         &self,
         session: SessionId,
         artifact: String,
         stream: Option<String>,
-    ) -> Result<(String, u64), crate::ToolError> {
+    ) -> Result<(String, u64, Option<FolderTar>), crate::ToolError> {
         let store = std::sync::Arc::clone(&self.inner.artifacts);
         crate::runtime::blocking_io::run(move || {
-            crate::runtime::artifacts::reads::transfer_source(
+            let (digest, size) = crate::runtime::artifacts::reads::transfer_source(
                 &store,
                 session,
                 &artifact,
                 stream.as_deref(),
-            )
+            )?;
+            if stream.is_some() {
+                return Ok((digest, size, None));
+            }
+            let read_error = |error: std::io::Error| crate::ToolError::execution(error.to_string());
+            let tree = store
+                .read_store(session)
+                .map_err(read_error)?
+                .ok_or_else(|| crate::ToolError::execution("the session's artifacts are gone"))?;
+            match crate::runtime::artifacts::read_folder_manifest(&tree, &digest)
+                .map_err(read_error)?
+            {
+                Some(manifest) => {
+                    let tar = FolderTar::build(&tree, &manifest).map_err(read_error)?;
+                    Ok((digest, tar.size, Some(tar)))
+                }
+                None => Ok((digest, size, None)),
+            }
         })
         .await?
     }

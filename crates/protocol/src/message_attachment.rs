@@ -34,11 +34,15 @@ pub fn markdown_options() -> pulldown_cmark::Options {
 #[derive(Clone, Debug, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AttachSource {
-    /// A file on a machine: `src`, with the tag's `machine`.
+    /// A file or a folder on a machine: `src`, with the tag's `machine`,
+    /// and for a folder the file `main` names to show it as (client
+    /// protocol 1.107.0).
     Path {
         path: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         machine: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        main: Option<String>,
     },
     /// An artifact of the session tree, by its hex SHA-256 or the start of
     /// it (8 or more digits) as a file label shows it.
@@ -65,12 +69,16 @@ impl AttachTag {
             return title.clone();
         }
         match &self.source {
-            AttachSource::Path { path, .. } => path
-                .rsplit(['/', '\\'])
-                .next()
-                .filter(|name| !name.is_empty())
-                .unwrap_or(path)
-                .to_owned(),
+            AttachSource::Path { path, .. } => {
+                // A folder's path may end with a slash.
+                let trimmed = path.trim_end_matches(['/', '\\']);
+                trimmed
+                    .rsplit(['/', '\\'])
+                    .next()
+                    .filter(|name| !name.is_empty())
+                    .unwrap_or(path)
+                    .to_owned()
+            }
             AttachSource::Artifact { sha256 } => {
                 format!("artifact {}", sha256.get(..12).unwrap_or(sha256))
             }
@@ -166,17 +174,24 @@ fn parse_tag(text: &str) -> Option<(AttachTag, usize)> {
     if !rest.starts_with(|char: char| char.is_whitespace()) {
         return None;
     }
-    let (mut src, mut machine, mut artifact, mut asset, mut title) = (None, None, None, None, None);
+    let (mut src, mut machine, mut main, mut artifact, mut asset, mut title) =
+        (None, None, None, None, None, None);
     loop {
         rest = rest.trim_start();
         if let Some(after) = rest.strip_prefix("/>") {
             let length = text.len() - after.len();
             let source = match (src, artifact, asset) {
-                (Some(path), None, None) => AttachSource::Path { path, machine },
-                (None, Some(sha256), None) if machine.is_none() => {
+                (Some(path), None, None) => AttachSource::Path {
+                    path,
+                    machine,
+                    main,
+                },
+                (None, Some(sha256), None) if machine.is_none() && main.is_none() => {
                     AttachSource::Artifact { sha256 }
                 }
-                (None, None, Some(handle)) if machine.is_none() => AttachSource::Asset { handle },
+                (None, None, Some(handle)) if machine.is_none() && main.is_none() => {
+                    AttachSource::Asset { handle }
+                }
                 _ => return None,
             };
             let title = title
@@ -206,6 +221,7 @@ fn parse_tag(text: &str) -> Option<(AttachTag, usize)> {
         let slot = match name {
             "src" => &mut src,
             "machine" => &mut machine,
+            "main" => &mut main,
             "artifact" => &mut artifact,
             "asset" => &mut asset,
             "title" => &mut title,
@@ -270,6 +286,7 @@ mod tests {
         AttachSource::Path {
             path: path.into(),
             machine: machine.map(Into::into),
+            main: None,
         }
     }
 

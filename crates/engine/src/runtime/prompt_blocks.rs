@@ -33,7 +33,9 @@ pub(crate) const SKILLS_BLOCK: &str = "skills";
 pub(crate) fn attachments_block(machine: bool) -> String {
     let file = if machine {
         "`<attach src=\"runs/loss.png\"/>` for a file on a machine (add `machine=\"name\"` \
-         for one on another machine than the default), "
+         for one on another machine than the default; `src` may name a folder whose files a \
+         page or Markdown document references by relative paths, which shows as its \
+         `index.html`, or the file `main=\"…\"` names), "
     } else {
         ""
     };
@@ -44,10 +46,11 @@ pub(crate) fn attachments_block(machine: bool) -> String {
          `<attach asset=\"asset_3f9a1c2e\"/>` to show an asset. Add `title=\"…\"` to name it. \
          Pictures, video, and audio play, an HTML page runs live, Markdown renders, and \
          anything else downloads. Tags written next to each other show as one row. A file is \
-         read once, when your message ends, at most {} MiB, and at most {} attachments go in \
-         one message. A tag inside code is only text. If an attachment fails, you are told \
+         read once, when your message ends, at most {} MiB (a folder {} MiB), and at most {} \
+         attachments go in one message. A tag inside code is only text. If an attachment fails, you are told \
          before your next request.",
         cookie_agent_protocol::ASSET_MAX_BYTES / (1024 * 1024),
+        cookie_agent_protocol::FOLDER_MAX_BYTES / (1024 * 1024),
         cookie_agent_protocol::ATTACH_MAX_PER_MESSAGE,
     )
 }

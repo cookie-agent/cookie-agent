@@ -574,3 +574,21 @@ Phase 1 (client protocol 1.104.0, plugin protocol 1.49.0, runtime protocol
 - **Folder assets' files are staged** (`AssetStores::stage_blob`) before the
   write that names them, which checks each is still there. A staged file no
   write named is removed by the store's sweep at the next start.
+
+Phase 2 (client protocol 1.107.0, plugin protocol 1.50.0):
+
+- **The daemon unpacks a folder** from the runtime's tar stream, kept in an
+  anonymous temporary file, one file at a time into the store, so one file
+  at most is in memory. Links are resolved inside the folder (a link to a
+  file is that file again, one to a folder each file under it, a few hops
+  at most); links that leave it are left out, as the runtime leaves them
+  out of a copy.
+- **No label change for models.** Folders reach a model only through tags
+  in its own replies and tool results, never as user content, so the
+  `[folder …]` label of section 7.4 is not written; `read_artifact` and
+  `read_asset` name a folder in their own output.
+- **`read_artifact` without `path`** lists a folder's files rather than
+  reading its main file, as `read_asset` lists them before it.
+- **A `transfer` of a folder artifact** builds its tar stream in a
+  temporary file first, so the stream's SHA-256 is known before it is
+  sent, as the runtime's commit checks it.

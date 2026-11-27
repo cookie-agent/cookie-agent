@@ -814,6 +814,7 @@ mod tests {
             source: AttachSource::Path {
                 path: path.into(),
                 machine: None,
+                main: None,
             },
             title: None,
         }

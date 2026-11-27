@@ -4139,6 +4139,7 @@ mod tests {
                     source: cookie_agent_protocol::AttachSource::Path {
                         path: "runs/loss.png".into(),
                         machine: None,
+                        main: None,
                     },
                     title: None,
                 },

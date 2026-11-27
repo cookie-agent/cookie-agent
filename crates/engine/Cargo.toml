@@ -56,6 +56,8 @@ uuid.workspace = true
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
 rustix.workspace = true
+tar = { version = "0.4.45", default-features = false }
+tempfile.workspace = true
 
 [dev-dependencies]
 cookie_agent_coding_runtime = { version = "=0.4.0", path = "../coding_runtime" }
@@ -67,5 +69,4 @@ cookie_agent_models = { version = "=0.4.0", path = "../models", features = ["tes
 cookie_agent_runtime_api = { version = "=0.4.0", path = "../runtime_api", features = ["test-support"] }
 insta.workspace = true
 oven-sdk-openai.workspace = true
-tempfile.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
