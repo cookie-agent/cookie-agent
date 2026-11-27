@@ -1139,7 +1139,7 @@ error_codes! {
         ],
         message: "The {kind} is too large to attach.",
         hint: Some("Attach a smaller file, or downscale it first."),
-        description: "An upload or attachment above the model's or the store's limits.",
+        description: "An upload or attachment above the store's limits (an input above the model's, before 1.105.0).",
     }
     MEDIA_TYPE_UNSUPPORTED {
         code: "media_type_unsupported",
@@ -1158,7 +1158,7 @@ error_codes! {
         ],
         message: "The model {model} does not accept {kind} input.",
         hint: Some("Choose a model that accepts it, or remove the attachment."),
-        description: "An input with a file part the run's model does not accept.",
+        description: "An input with a file part the run's model does not accept; no longer sent since 1.105.0, when each request sends such a file as its label.",
     }
     MEDIA_LIMIT_EXCEEDED {
         code: "media_limit_exceeded",
@@ -1170,7 +1170,7 @@ error_codes! {
         ],
         message: "The input has {count} {kind} attachments, more than the {max_count} the model accepts.",
         hint: Some("Remove some attachments."),
-        description: "An input with more file parts of one kind than the model accepts.",
+        description: "An input with more file parts of one kind than the model accepts; no longer sent since 1.105.0, when each request sends the excess as labels.",
     }
     DIGEST_MISMATCH {
         code: "digest_mismatch",

@@ -1314,6 +1314,16 @@ pub trait ServerProtocol: Send + Sync + 'static {
         &self,
         params: cookie_agent_protocol::ArtifactManifestParams,
     ) -> Result<cookie_agent_protocol::FolderManifestResult, ServerFault>;
+    /// A small picture of an artifact of a session's tree.
+    async fn artifact_thumbnail(
+        &self,
+        params: cookie_agent_protocol::ArtifactThumbnailParams,
+    ) -> Result<cookie_agent_protocol::AssetThumbnailResult, ServerFault>;
+    /// What a message would give its model of each of a draft's files.
+    async fn attachment_delivery(
+        &self,
+        params: cookie_agent_protocol::AttachmentDeliveryParams,
+    ) -> Result<cookie_agent_protocol::AttachmentDeliveryResult, ServerFault>;
     async fn runtime_snapshot(
         &self,
         params: RuntimeSnapshotGetParams,
@@ -2408,6 +2418,12 @@ async fn dispatch<S: ServerProtocol>(
         }
         cookie_agent_protocol::ASSET_MANIFEST_METHOD => {
             value(server.asset_manifest(decode(params)?).await?)
+        }
+        cookie_agent_protocol::ARTIFACT_THUMBNAIL_METHOD => {
+            value(server.artifact_thumbnail(decode(params)?).await?)
+        }
+        cookie_agent_protocol::ATTACHMENT_DELIVERY_METHOD => {
+            value(server.attachment_delivery(decode(params)?).await?)
         }
         cookie_agent_protocol::ASSETS_LIST_METHOD => {
             value(server.list_assets(decode(params)?).await?)

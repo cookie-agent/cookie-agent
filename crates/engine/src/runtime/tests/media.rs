@@ -681,56 +681,34 @@ async fn a_lease_sweep_never_takes_an_upload_an_input_holds_or_references() {
 }
 
 #[tokio::test]
-async fn admission_refuses_only_files_it_cannot_send_as_they_are() {
-    for expected in ["count", "missing"] {
-        let (fixture, selection) = media_fixture("http://127.0.0.1:9/v1", IMAGE_CAPABILITIES);
-        let session = fixture.engine.create_session(selection.clone()).unwrap();
-        let image = upload(&fixture, session.session_id, &png(2, 2, 200), "a.png")
+async fn admission_refuses_a_file_the_store_does_not_hold() {
+    let (fixture, selection) = media_fixture("http://127.0.0.1:9/v1", IMAGE_CAPABILITIES);
+    let session = fixture.engine.create_session(selection.clone()).unwrap();
+    let image = upload(&fixture, session.session_id, &png(2, 2, 200), "a.png")
+        .await
+        .artifact;
+    let content = with_file(
+        "gone",
+        &ArtifactRef {
+            sha256: "e".repeat(64),
+            ..image.clone()
+        },
+    );
+    let error = media(
+        fixture
+            .engine
+            .start_run(
+                start(session.session_id, &selection, "missing", content),
+                origin(),
+            )
             .await
-            .artifact;
-        let content = match expected {
-            "count" => {
-                let second = upload(&fixture, session.session_id, &png(3, 3, 200), "b.png")
-                    .await
-                    .artifact;
-                let mut parts = with_file("two", &image).into_parts();
-                parts.push(Open::Known(UserContentPart::File { artifact: second }));
-                UserContent::new(parts).unwrap()
-            }
-            _ => with_file(
-                "gone",
-                &ArtifactRef {
-                    sha256: "e".repeat(64),
-                    ..image.clone()
-                },
-            ),
-        };
-        let error = media(
-            fixture
-                .engine
-                .start_run(
-                    start(session.session_id, &selection, expected, content),
-                    origin(),
-                )
-                .await
-                .unwrap_err(),
-        );
-        match expected {
-            "count" => assert_eq!(
-                error,
-                MediaError::LimitExceeded {
-                    kind: "image".into(),
-                    count: 2,
-                    max_count: 1
-                }
-            ),
-            _ => assert!(matches!(error, MediaError::ArtifactNotFound { .. })),
-        }
-        // Nothing of the run was recorded.
-        let projection = fixture.engine.inner.store.get(session.session_id).unwrap();
-        assert!(projection.runs.is_empty(), "{expected}");
-        fixture.engine.shutdown().await;
-    }
+            .unwrap_err(),
+    );
+    assert!(matches!(error, MediaError::ArtifactNotFound { .. }));
+    // Nothing of the run was recorded.
+    let projection = fixture.engine.inner.store.get(session.session_id).unwrap();
+    assert!(projection.runs.is_empty());
+    fixture.engine.shutdown().await;
 }
 
 #[tokio::test]
@@ -846,71 +824,6 @@ async fn a_reference_must_say_what_the_stored_content_is() {
     assert!(
         matches!(error, MediaError::ArtifactNotFound { ref reason, .. } if reason.contains("text/plain, not image/png")),
         "{error:?}"
-    );
-    fixture.engine.shutdown().await;
-}
-
-#[tokio::test]
-async fn steered_and_queued_input_is_admitted_against_the_model_it_will_reach() {
-    let (endpoint, _captured, reached, release) =
-        scripted_server_with_delayed_response(vec![anthropic_usage_body("done", 1, 0, 0)], 0).await;
-    let (fixture, selection) = media_fixture(&endpoint, IMAGE_CAPABILITIES);
-    let session = fixture.engine.create_session(selection.clone()).unwrap();
-    let image = upload(&fixture, session.session_id, &png(2, 2, 32), "a.png")
-        .await
-        .artifact;
-    let second = upload(&fixture, session.session_id, &png(3, 3, 32), "b.png")
-        .await
-        .artifact;
-    // Two images, where the model takes one a message.
-    let mut parts = with_file("and these", &image).into_parts();
-    parts.push(Open::Known(UserContentPart::File { artifact: second }));
-    let two = UserContent::new(parts).unwrap();
-    fixture
-        .engine
-        .start_run(
-            start(session.session_id, &selection, "first", "hello".into()),
-            origin(),
-        )
-        .await
-        .unwrap();
-    with_watchdog("first request", reached).await.unwrap();
-    for delivery in [InputDelivery::Steer, InputDelivery::Queue] {
-        let error = media(
-            fixture
-                .engine
-                .submit_input(
-                    SessionSubmitInputParams {
-                        session_id: session.session_id,
-                        content: two.clone(),
-                        delivery,
-                        selection: None,
-                        client_run_id: ClientRunId::new(format!("{delivery:?}")).unwrap(),
-                        reset_fallback: false,
-                    },
-                    origin(),
-                )
-                .await
-                .unwrap_err(),
-        );
-        assert_eq!(
-            error,
-            MediaError::LimitExceeded {
-                kind: "image".into(),
-                count: 2,
-                max_count: 1
-            },
-            "{delivery:?}"
-        );
-    }
-    release.notify_one();
-    wait_for_session_not_running(&fixture.engine, session.session_id).await;
-    let projection = fixture.engine.inner.store.get(session.session_id).unwrap();
-    assert!(
-        !projection.log.event_snapshot().iter().any(|event| matches!(
-            event.payload,
-            EventPayload::UserInputAdmitted { .. } | EventPayload::UserInputQueued { .. }
-        ))
     );
     fixture.engine.shutdown().await;
 }

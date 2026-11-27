@@ -1340,6 +1340,26 @@ impl Client {
             .await
     }
 
+    /// A small picture of an artifact of a session's tree
+    /// (`artifact.thumbnail`, client protocol 1.105.0).
+    pub async fn artifact_thumbnail(
+        &self,
+        params: cookie_agent_protocol::ArtifactThumbnailParams,
+    ) -> Result<cookie_agent_protocol::AssetThumbnailResult, ClientError> {
+        self.call(cookie_agent_protocol::ARTIFACT_THUMBNAIL_METHOD, &params)
+            .await
+    }
+
+    /// What a message would give its model of each of a draft's files
+    /// (`attachment.delivery`, client protocol 1.105.0).
+    pub async fn attachment_delivery(
+        &self,
+        params: cookie_agent_protocol::AttachmentDeliveryParams,
+    ) -> Result<cookie_agent_protocol::AttachmentDeliveryResult, ClientError> {
+        self.call(cookie_agent_protocol::ATTACHMENT_DELIVERY_METHOD, &params)
+            .await
+    }
+
     /// Older history of a session, newest first (`events.page`, client
     /// protocol 1.59.0).
     ///

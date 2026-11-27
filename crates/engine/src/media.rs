@@ -43,26 +43,11 @@ pub(crate) fn fit_media(
     user: &[InputMedia],
     tool: &[ToolInputMedia],
 ) {
-    let user = user
-        .iter()
-        .map(|media| {
-            (
-                media.kind.as_str(),
-                media.mime_types.as_slice(),
-                media.max_bytes,
-            )
-        })
-        .collect::<Vec<_>>();
+    let user = user.iter().map(Accepts::of_user).collect::<Vec<_>>();
     let tool_result = tool
         .iter()
         .filter(|media| media.delivery == MediaDelivery::ToolResult)
-        .map(|media| {
-            (
-                media.kind.as_str(),
-                media.mime_types.as_slice(),
-                media.max_bytes,
-            )
-        })
+        .map(Accepts::of_tool)
         .collect::<Vec<_>>();
     visit_media_parts(history, |_, kind, slot| {
         let (file, accepted, in_tool_result) = match &slot {
@@ -71,7 +56,8 @@ pub(crate) fn fit_media(
             MediaSlot::Tool(oven_sdk::ContentValue::File(file)) => (file, &tool_result, true),
             _ => return,
         };
-        let Some((placeholder, _)) = misfit(file, kind, model, accepted, in_tool_result) else {
+        let Some(placeholder) = misfit(file, kind_label(kind), model, accepted, in_tool_result)
+        else {
             return;
         };
         match slot {
@@ -84,6 +70,131 @@ pub(crate) fn fit_media(
             MediaSlot::Tool(value) => *value = oven_sdk::ContentValue::Text(placeholder),
         }
     });
+    // A user's text file (and any other file of no media kind) goes only to
+    // a model that lists it, as an ACP agent does; native models list none,
+    // so their label says `read_artifact` returns it.
+    for turn in history {
+        let oven_sdk::HistoryTurn::User(message) = turn else {
+            continue;
+        };
+        for part in &mut message.content {
+            let oven_sdk::InputPart::File(file) = part else {
+                continue;
+            };
+            if capability_media_kind(&file.media_type).is_some() {
+                continue;
+            }
+            let kind = other_kind(&file.media_type);
+            if let Some(placeholder) = misfit(file, kind, model, &user, false) {
+                *part = oven_sdk::InputPart::Text(oven_sdk::TextPart::new(placeholder));
+            }
+        }
+    }
+}
+
+/// What a model takes of one kind, as fitting checks a file against it.
+struct Accepts<'a> {
+    kind: &'a str,
+    mime_types: &'a [String],
+    max_bytes: u64,
+}
+
+impl<'a> Accepts<'a> {
+    fn of_user(media: &'a InputMedia) -> Self {
+        Self {
+            kind: media.kind.as_str(),
+            mime_types: &media.mime_types,
+            max_bytes: media.max_bytes,
+        }
+    }
+
+    fn of_tool(media: &'a ToolInputMedia) -> Self {
+        Self {
+            kind: media.kind.as_str(),
+            mime_types: &media.mime_types,
+            max_bytes: media.max_bytes,
+        }
+    }
+}
+
+/// The kind label of a file of no media kind: `text` for text, else
+/// `file`, which no model lists.
+fn other_kind(media_type: &str) -> &'static str {
+    if media_type.starts_with("text/") {
+        cookie_agent_protocol::MediaKindLabel::TEXT
+    } else {
+        "file"
+    }
+}
+
+/// The kind label a request fits a user file of `media_type` under: its
+/// media kind, `text`, or `file`.
+pub(crate) fn user_file_kind(media_type: &str) -> &'static str {
+    capability_media_kind(media_type).map_or_else(|| other_kind(media_type), kind_label)
+}
+
+/// Why `model`, which takes `user` in a user turn, does not take one user
+/// file of kind `kind` ([`user_file_kind`]), `media_type`, and `size`: its
+/// kind, its media type, or its size, as [`fit_media`] decides; `None` when
+/// it takes it.
+pub(crate) fn user_file_fit(
+    kind: &str,
+    media_type: &str,
+    size: u64,
+    model: &dyn std::fmt::Display,
+    user: &[InputMedia],
+) -> Option<String> {
+    let accepted = user.iter().map(Accepts::of_user).collect::<Vec<_>>();
+    misfit_reason(kind, media_type, Some(size), model, &accepted, false)
+}
+
+/// What a stored copy of `total` bytes starting with `head` (its first
+/// bytes, or all of it) holds, recognized as `artifact.read` recognizes a
+/// blob.
+pub(crate) fn sniffed_content(head: &[u8], total: u64) -> FileContent {
+    use cookie_agent_runtime_api::media::{MEDIA_SNIFF_BYTES, recognize_media_type};
+    let head = &head[..head.len().min(MEDIA_SNIFF_BYTES)];
+    if let Some(media_type) = recognize_media_type(head, total) {
+        FileContent::Media(media_type.to_owned())
+    } else if std::str::from_utf8(head).is_err_and(|error| error.error_len().is_some()) {
+        FileContent::Binary
+    } else {
+        FileContent::Text
+    }
+}
+
+/// Why `model`, which takes `user` in a user turn, gets the user files of
+/// one message only by their labels, in order: `None` for a file the request
+/// carries, else the reason, as [`fit_media`] and then [`elide_excess_media`]
+/// decide for the latest user message (which keeps the first of a kind up
+/// to its count). Each file is its kind label ([`user_file_kind`]), media
+/// type, and size.
+pub(crate) fn user_files_fit(
+    files: &[(&str, &str, u64)],
+    model: &dyn std::fmt::Display,
+    user: &[InputMedia],
+) -> Vec<Option<String>> {
+    let mut counts = BTreeMap::<&str, u32>::new();
+    files
+        .iter()
+        .map(|(kind, media_type, size)| {
+            if let Some(reason) = user_file_fit(kind, media_type, *size, model, user) {
+                return Some(reason);
+            }
+            let max_count = user
+                .iter()
+                .find(|media| media.kind.as_str() == *kind)
+                .map_or(0, |media| media.max_count);
+            let count = counts.entry(kind).or_default();
+            *count += 1;
+            (*count > max_count).then(|| {
+                format!(
+                    "{model} takes at most {max_count} {} in one request",
+                    plural(kind)
+                )
+            })
+        })
+        .collect()
 }
 
 /// What a request's history says of each user file it labels, by the
@@ -140,22 +251,29 @@ pub(crate) fn missing_file_ending(
     tools: FileTools,
 ) -> cookie_agent_protocol::model_text::FileLabelEnding {
     use cookie_agent_protocol::model_text::FileLabelEnding;
-    use cookie_agent_runtime_api::media::{AttachmentGate, gate_attachment};
-    let readable = match &facts.content {
-        FileContent::Missing => return FileLabelEnding::OnlyName,
-        FileContent::Text => true,
-        FileContent::Media(mime) => matches!(
-            gate_attachment(tool, mime, facts.byte_length),
-            AttachmentGate::AttachToolResult | AttachmentGate::DeliverViaUserTurn
-        ),
-        FileContent::Binary => false,
-    };
-    if readable && tools.read_artifact {
+    if facts.content == FileContent::Missing {
+        return FileLabelEnding::OnlyName;
+    }
+    if returns_file(facts, tool) && tools.read_artifact {
         FileLabelEnding::ReadArtifactReturnsIt
     } else if tools.transfer {
         FileLabelEnding::UseTransfer
     } else {
         FileLabelEnding::OnlyName
+    }
+}
+
+/// Whether `read_artifact` returns a file of `facts` to a model that takes
+/// `tool` media from a tool: text, or media `gate_attachment` lets through.
+pub(crate) fn returns_file(facts: &FileFacts, tool: &[ToolInputMedia]) -> bool {
+    use cookie_agent_runtime_api::media::{AttachmentGate, gate_attachment};
+    match &facts.content {
+        FileContent::Missing | FileContent::Binary => false,
+        FileContent::Text => true,
+        FileContent::Media(mime) => matches!(
+            gate_attachment(tool, mime, facts.byte_length),
+            AttachmentGate::AttachToolResult | AttachmentGate::DeliverViaUserTurn
+        ),
     }
 }
 
@@ -210,48 +328,73 @@ pub(crate) fn settle_file_labels(
     }
 }
 
-/// The placeholder of a file `model` does not take, and the reason it
-/// names; `None` when it fits.
+/// The placeholder of a file of kind `kind` that `model` does not take,
+/// naming why; `None` when it fits.
 fn misfit(
     file: &oven_sdk::FilePart,
-    kind: CapabilityMediaKind,
+    kind: &str,
     model: &ModelKey,
-    accepted: &[(&str, &[String], u64)],
+    accepted: &[Accepts<'_>],
     in_tool_result: bool,
-) -> Option<(String, String)> {
-    let label = media_label(kind);
+) -> Option<String> {
     let size = match &file.source {
         oven_sdk::FileSource::Bytes(bytes) => Some(bytes.len() as u64),
         oven_sdk::FileSource::Text(text) => Some(text.len() as u64),
         oven_sdk::FileSource::Url(_) | oven_sdk::FileSource::ProviderReference { .. } => None,
     };
-    let reason = match accepted.iter().find(|(of, _, _)| *of == kind_label(kind)) {
-        None if in_tool_result => {
-            format!("{model} does not accept {} in tool results", plural(kind))
-        }
-        None => format!("{model} does not accept {}", plural(kind)),
-        Some((_, mime_types, _))
-            if !mime_types
-                .iter()
-                .any(|accepted| mime_type_matches(accepted, &file.media_type)) =>
-        {
-            format!("{model} does not accept {}", file.media_type)
-        }
-        Some((_, _, max_bytes)) if size.is_some_and(|size| size > *max_bytes) => {
-            format!(
-                "larger than the {} {model} accepts",
-                human_bytes(*max_bytes)
-            )
-        }
-        Some(_) => return None,
-    };
+    let reason = misfit_reason(
+        kind,
+        &file.media_type,
+        size,
+        model,
+        accepted,
+        in_tool_result,
+    )?;
     let about = match (file.filename.as_deref(), size) {
         (Some(name), Some(size)) => format!(" ({name}, {})", human_bytes(size)),
         (Some(name), None) => format!(" ({name})"),
         (None, Some(size)) => format!(" ({})", human_bytes(size)),
         (None, None) => String::new(),
     };
-    Some((format!("[{label} omitted: {reason}{about}]"), reason))
+    let label = match kind {
+        cookie_agent_protocol::MediaKindLabel::PDF => "PDF",
+        kind => kind,
+    };
+    Some(format!("[{label} omitted: {reason}{about}]"))
+}
+
+/// Why a file of kind `kind`, `media_type`, and `size` does not fit what
+/// `model` takes (`accepted`): its kind, its media type, or its size;
+/// `None` when it fits.
+fn misfit_reason(
+    kind: &str,
+    media_type: &str,
+    size: Option<u64>,
+    model: &dyn std::fmt::Display,
+    accepted: &[Accepts<'_>],
+    in_tool_result: bool,
+) -> Option<String> {
+    Some(match accepted.iter().find(|of| of.kind == kind) {
+        None if in_tool_result => {
+            format!("{model} does not accept {} in tool results", plural(kind))
+        }
+        None => format!("{model} does not accept {}", plural(kind)),
+        Some(of)
+            if !of
+                .mime_types
+                .iter()
+                .any(|accepted| mime_type_matches(accepted, media_type)) =>
+        {
+            format!("{model} does not accept {media_type}")
+        }
+        Some(of) if size.is_some_and(|size| size > of.max_bytes) => {
+            format!(
+                "larger than the {} {model} accepts",
+                human_bytes(of.max_bytes)
+            )
+        }
+        Some(_) => return None,
+    })
 }
 
 const fn kind_label(kind: CapabilityMediaKind) -> &'static str {
@@ -263,12 +406,15 @@ const fn kind_label(kind: CapabilityMediaKind) -> &'static str {
     }
 }
 
-fn plural(kind: CapabilityMediaKind) -> &'static str {
+/// A kind label in the plural, as a reason names it.
+pub(crate) fn plural(kind: &str) -> &'static str {
     match kind {
-        CapabilityMediaKind::Image => "images",
-        CapabilityMediaKind::Audio => "audio",
-        CapabilityMediaKind::Pdf => "PDFs",
-        CapabilityMediaKind::Video => "videos",
+        cookie_agent_protocol::MediaKindLabel::IMAGE => "images",
+        cookie_agent_protocol::MediaKindLabel::AUDIO => "audio",
+        cookie_agent_protocol::MediaKindLabel::PDF => "PDFs",
+        cookie_agent_protocol::MediaKindLabel::VIDEO => "videos",
+        cookie_agent_protocol::MediaKindLabel::TEXT => "text files",
+        _ => "files",
     }
 }
 
@@ -276,9 +422,11 @@ fn plural(kind: CapabilityMediaKind) -> &'static str {
 ///
 /// Media accumulates over a long session (screenshots, read PDFs), so the whole history can
 /// exceed a count that each turn respects. Rather than failing every later request, the oldest
-/// excess parts are replaced with a short text placeholder and the newest are kept. Only the
-/// current (latest) user message is protected: when it alone exceeds the limit the request fails,
-/// because eliding it would silently drop what was just attached. This is request assembly only;
+/// excess parts are replaced with a short text placeholder and the newest are kept. The current
+/// (latest) user message is elided last: when it alone exceeds the limit, every older part of
+/// the kind goes and the message keeps its first parts up to the limit, the rest becoming
+/// placeholders whose labels say they were not included (admission no longer refuses them,
+/// `docs/site/specs/attachment-handling.md` question Q2b). This is request assembly only;
 /// durable history is untouched.
 ///
 /// Elision is a pure function of the history, so replays of the same history produce the same
@@ -290,13 +438,15 @@ fn plural(kind: CapabilityMediaKind) -> &'static str {
 pub(crate) fn elide_excess_media(
     history: &mut [oven_sdk::HistoryTurn],
     capabilities: &ModelCapabilities,
-) -> Result<(), String> {
+) {
     let mut counts = BTreeMap::<CapabilityMediaKind, (usize, usize)>::new();
     visit_media_parts(history, |protected, kind, _| {
         let (total, current) = counts.entry(kind).or_default();
         *total += 1;
         *current += usize::from(protected);
     });
+    // Per kind: how many older parts go, and how many of the current
+    // message's stay.
     let mut elide = BTreeMap::new();
     for (kind, capability) in &capabilities.media {
         let limit = capability.max_count as usize;
@@ -305,29 +455,33 @@ pub(crate) fn elide_excess_media(
             continue;
         }
         if current > limit {
-            return Err(format!(
-                "the current message contains {current} {} file parts; the model accepts at most {limit} per request",
-                media_label(*kind)
-            ));
+            elide.insert(*kind, (total - current, limit));
+            continue;
         }
         let step = (limit / 2).max(1);
         let elided = (total - limit)
             .div_ceil(step)
             .saturating_mul(step)
             .min(total - current);
-        elide.insert(*kind, elided);
+        elide.insert(*kind, (elided, current));
     }
     if elide.is_empty() {
-        return Ok(());
+        return;
     }
     visit_media_parts(history, |protected, kind, slot| {
-        let Some(remaining) = elide.get_mut(&kind) else {
+        let Some((older, kept)) = elide.get_mut(&kind) else {
             return;
         };
-        if protected || *remaining == 0 {
+        if protected {
+            if *kept > 0 {
+                *kept -= 1;
+                return;
+            }
+        } else if *older == 0 {
             return;
+        } else {
+            *older -= 1;
         }
-        *remaining -= 1;
         let label = media_label(kind);
         let placeholder = format!("[{label} omitted: over the model's per-request {label} limit]");
         match slot {
@@ -340,7 +494,6 @@ pub(crate) fn elide_excess_media(
             MediaSlot::Tool(value) => *value = oven_sdk::ContentValue::Text(placeholder),
         }
     });
-    Ok(())
 }
 
 fn media_label(kind: CapabilityMediaKind) -> &'static str {
@@ -716,7 +869,7 @@ mod tests {
             &[],
         );
         // One image is left for a limit of one: nothing more is elided.
-        elide_excess_media(&mut history, &image_capabilities(1)).unwrap();
+        elide_excess_media(&mut history, &image_capabilities(1));
         let (kept, placeholders) = summarize(&history);
         assert_eq!(kept, [b"p".to_vec()]);
         assert_eq!(placeholders, 0);
@@ -726,7 +879,7 @@ mod tests {
     fn media_within_the_limit_is_left_untouched() {
         let mut history = vec![tool_image(b"a"), user_images(&[b"b"])];
         let original = history.clone();
-        elide_excess_media(&mut history, &image_capabilities(2)).unwrap();
+        elide_excess_media(&mut history, &image_capabilities(2));
         assert_eq!(history, original);
     }
 
@@ -741,7 +894,7 @@ mod tests {
         ];
         let original = history.clone();
         // Six images against a limit of four elide down in steps of two: the two oldest go.
-        elide_excess_media(&mut history, &image_capabilities(4)).unwrap();
+        elide_excess_media(&mut history, &image_capabilities(4));
         let (kept, placeholders) = summarize(&history);
         assert_eq!(
             kept,
@@ -757,7 +910,7 @@ mod tests {
 
         // Eliding an already elided request is a no-op.
         let elided = history.clone();
-        elide_excess_media(&mut history, &image_capabilities(4)).unwrap();
+        elide_excess_media(&mut history, &image_capabilities(4));
         assert_eq!(history, elided);
     }
 
@@ -784,7 +937,7 @@ mod tests {
                 .to_vec();
             let mut history = tags.iter().map(|tag| tool_image(tag)).collect::<Vec<_>>();
             history.insert(0, user_images(&[]));
-            elide_excess_media(&mut history, &image_capabilities(limit)).unwrap();
+            elide_excess_media(&mut history, &image_capabilities(limit));
             let (kept, placeholders) = summarize(&history);
             assert!(kept.len() <= limit as usize && kept.len() > limit as usize / 2);
             assert_eq!(kept.last().unwrap(), tags.last().unwrap());
@@ -798,14 +951,14 @@ mod tests {
     }
 
     #[test]
-    fn current_user_message_media_is_protected_and_fails_only_alone_over_the_limit() {
+    fn current_user_message_media_is_elided_last_keeping_its_first_parts() {
         // Older tool media is elided before anything the latest user message attached.
         let mut history = vec![
             tool_image(b"t1"),
             tool_image(b"t2"),
             user_images(&[b"u1", b"u2"]),
         ];
-        elide_excess_media(&mut history, &image_capabilities(2)).unwrap();
+        elide_excess_media(&mut history, &image_capabilities(2));
         let (kept, placeholders) = summarize(&history);
         assert_eq!(kept, [b"u1".to_vec(), b"u2".to_vec()]);
         assert_eq!(placeholders, 2);
@@ -815,13 +968,11 @@ mod tests {
             user_images(&[b"u1", b"u2", b"u3"]),
             tool_image(b"t1"),
         ];
-        let original = history.clone();
-        let error = elide_excess_media(&mut history, &image_capabilities(2))
-            .expect_err("the current message alone exceeds the limit");
-        assert_eq!(
-            error,
-            "the current message contains 3 image file parts; the model accepts at most 2 per request"
-        );
-        assert_eq!(history, original);
+        // The current message alone over the limit keeps its first parts up
+        // to it; everything older goes.
+        elide_excess_media(&mut history, &image_capabilities(2));
+        let (kept, placeholders) = summarize(&history);
+        assert_eq!(kept, [b"u1".to_vec(), b"u2".to_vec()]);
+        assert_eq!(placeholders, 3);
     }
 }

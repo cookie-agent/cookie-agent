@@ -1,7 +1,7 @@
 # Protocol Reference
 
 The daemon exposes JSON-RPC 2.0 over a WebSocket at `/ws`. This build speaks
-client protocol `1.62.0`; the [changelog](protocol-changelog.md) lists what
+client protocol `1.105.0`; the [changelog](protocol-changelog.md) lists what
 each version changed. A client and a daemon connect when their majors are
 equal: a minor only adds, so the two use what the lower minor includes, and
 the patch never matters. [Compatibility](compatibility.md) states the rules
@@ -363,6 +363,8 @@ Idempotent redelivery resolves against the state preceding the original run.
 | `speech.transcribe.cancel` | `transcription_id` | Empty object |
 | `artifact.read` | Session ID, `sha256`, optional `path` (since 1.104.0; see [Folders](#folders)), `offset`, `length` (at most 1 MiB) | Base64 `data`, `total_bytes`, `media_type` |
 | `artifact.manifest` | Session ID, `sha256` of a folder (since 1.104.0; see [Folders](#folders)) | The folder's `sha256`, `main`, and `entries` |
+| `artifact.thumbnail` | Session ID, `sha256` (since 1.105.0; see [Media](#media)) | As `asset.thumbnail`: the `sha256`, its `thumbnail?`, and without one `retry_later` |
+| `attachment.delivery` | Session ID, `files` (`ArtifactRef`s, at most 64), the draft's `selection` (since 1.105.0; see [Media](#media)) | Per file, in order: `sha256`, `ending` (`included`, `read_artifact`, `transfer`, `name_only`), the `label` the model gets, and `reason?` |
 | `assets.list` | `store` (since 1.67.0; see [Assets](#assets)) | The store's `assets`, newest first |
 | `assets.search` | `project?`, `scope?` (since 1.71.0; see [Assets](#assets)) | The `assets` of many stores, newest first, and the `sessions` whose own they list |
 | `attachment.decide` | `session_id`, `model_turn_seq`, `content_index`, `ordinal`, `allow` (since 1.73.0; see [Attachments](#attachments)) | `{}`; the tag's next `assistant_attachment` says how it resolved |
@@ -482,23 +484,38 @@ with it ([Media](../sessions/media.md#file-labels)).
 `cookie_agent_protocol::model_text::user_file_label` renders the label.
 
 **Admission.** `run.start`, `run.steer`, and `session.submit_input` check
-every `file` part against the model the input reaches: the run's selected
-model (for a steer, the running run's; for a queued input, the model of the
-selection it will start with). The part must name an artifact of the tree's
-store whose content is what the reference says (`artifact_not_found`). One
-of a kind and media type the model accepts, within its byte limit, must also
-be that media (`media_type_unsupported`) within the model's image limits
-(`media_too_large`, with the image's `width` and `height` and the model's
-limits), and the parts of one kind the model takes must not outnumber
-`max_count` (`media_limit_exceeded`). These are the model's
-[`input_media`](#the-catalog-view). Since 1.56.0 any other file is admitted:
-the model sees its label with the reason it is not shown. A refused input
-records nothing. A model the input does not reach this way, such as a
-fallback or a model the session moves to later, sees the same for each file
-it does not accept, and a placeholder for one a tool returned
-([Media reads](tools.md#media-reads) describes the wording). A run of an
-[ACP agent](#acp-agents) checks none of this: the agent gets each file it
-takes (its `AgentRuntime.input_media`) and a note naming the others.
+every `file` part: it must name an artifact of the tree's store whose
+content is what the reference says (`artifact_not_found`), and a file of a
+media type the daemon recognizes (or `text/plain`) must be that media within
+the daemon-wide upload limits (`media_type_unsupported`, `media_too_large`).
+A refused input records nothing. Since 1.105.0 admission no longer checks a
+file against the model: each request decides what its model gets
+([attachments spec](../specs/attachment-handling.md) question Q2b). A file of
+a kind, media type, or size the request's model does not take, a text file
+for a native model (which takes none), and the parts of a kind past its
+`max_count` (the latest message keeps its first ones) reach it as their
+label followed by a placeholder with the reason
+([Media reads](tools.md#media-reads) describes the wording); a later request
+whose model takes the file sends it. A daemon before 1.105.0 refused such
+an input with `media_unsupported`, `media_limit_exceeded`, or the model's
+`media_too_large`; it no longer sends those for an input. An
+[ACP agent](#acp-agents) gets each file its prompt capabilities take, by
+kind, type, and size (its `AgentRuntime.input_media`), and the label of the
+others.
+
+**`attachment.delivery`** (since 1.105.0)
+`{ session_id, files, selection }` answers, for each of a draft's `files`
+in order, what a message of the session sent now with `selection` would give
+its model or ACP agent, by the rules a request uses: `ending` `included` (the
+request carries the file after its label), `read_artifact` or `transfer`
+(the label alone, and that tool, offered at once or deferred, gets at it), or
+`name_only` (the label alone, and no tool helps); `label`, the exact
+[label](#user-content) the model gets; and `reason`, why the file is not
+included (for `name_only` also why no tool helps, such as `no machine is
+attached to copy it to`). An ending this build does not know reads as
+`unknown`. Clients ask whenever a draft's files, its model or agent, or the
+session's runtimes change; a draft of a session not yet created has nothing
+to ask about and judges from the model's `input_media`.
 
 **`artifact.read`** `{ session_id, sha256, offset, length }` returns
 `{ data, total_bytes, media_type }`: up to `length` (at most 1 MiB) bytes
@@ -508,6 +525,16 @@ encoded, fewer at the end, and none at `offset = total_bytes`. `media_type`
 is recognized from the content: a media type, `text/plain` for UTF-8 text,
 or `application/octet-stream`. A blob is verified against its digest when it
 is first read. An artifact the store does not have is `artifact_not_found`.
+
+**`artifact.thumbnail`** (since 1.105.0) `{ session_id, sha256 }` returns a
+small picture of an artifact of the session's tree as `asset.thumbnail` does
+for an asset ([Assets](#assets)): an image scaled down, a video's first
+frame, or a PDF's first page, at most 768 pixels on its longer side, or
+`retry_later` when the drawing tool was missing or slow; a
+[folder](#folders) shows its main file. The daemon keeps it beside the
+tree's blobs, and deletes it with its blob or the tree. The web
+page shows it for a picture over 1 MiB, a video, or a PDF in the
+transcript, and reads the file itself only to view it.
 
 Model, agent, and catalog discovery uses `runtime.snapshot.get`. Skills use the
 session-aware `skills.list` and `skills.get` methods because visibility depends

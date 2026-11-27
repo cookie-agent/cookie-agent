@@ -450,6 +450,7 @@ fn read_verified_file_numbered(
     Ok(pager.finish().expect("a lossy pager takes any bytes"))
 }
 
+pub(crate) mod delivery;
 mod platform;
 pub(crate) mod reads;
 pub(crate) mod uploads;
@@ -461,6 +462,9 @@ pub(crate) struct ArtifactStore {
     #[cfg(test)]
     pub(crate) io_test_hook: ArtifactIoTestHook,
     directory: platform::Directory,
+    /// Where the directory is: blobs are drawn from here, and their
+    /// thumbnails kept in `thumbnails/` beside it.
+    path: std::path::PathBuf,
     verified_reads: std::sync::Mutex<VerifiedFileCache>,
     /// Handles [`ArtifactStore::read_range`] verified once, when it opened
     /// them; ranges of a cached handle are served without hashing again.
@@ -473,7 +477,8 @@ impl ArtifactStore {
         Ok(std::sync::Arc::new(Self {
             #[cfg(test)]
             io_test_hook: ArtifactIoTestHook::default(),
-            directory: platform::Directory::at(directory)?,
+            directory: platform::Directory::at(directory.clone())?,
+            path: directory,
             verified_reads: std::sync::Mutex::default(),
             verified_ranges: std::sync::Mutex::default(),
             verified_attachment_bytes: std::sync::Mutex::default(),
@@ -554,8 +559,75 @@ impl ArtifactStore {
             if self.directory.remove(digest)? {
                 deleted += 1;
             }
+            // A blob's thumbnail goes with it.
+            for format in crate::assets::thumbnail::Format::ALL {
+                match std::fs::remove_file(self.thumbnail_path(digest, format)) {
+                    Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+                        return Err(error);
+                    }
+                    _ => {}
+                }
+            }
         }
         Ok(deleted)
+    }
+
+    /// Where blob `digest` is, for a tool that reads it by path; readers
+    /// that can verify it go through the store instead.
+    pub(crate) fn blob_file(&self, digest: &str) -> std::path::PathBuf {
+        self.path.join(digest)
+    }
+
+    fn thumbnail_path(
+        &self,
+        digest: &str,
+        format: crate::assets::thumbnail::Format,
+    ) -> std::path::PathBuf {
+        self.path
+            .parent()
+            .unwrap_or(&self.path)
+            .join(ARTIFACT_THUMBNAILS_DIR)
+            .join(format!("{digest}.{}", format.extension()))
+    }
+
+    /// The thumbnail kept of blob `digest`, if any
+    /// (`docs/site/specs/attachment-handling.md` section 5.1).
+    pub(crate) fn kept_thumbnail(&self, digest: &str) -> Option<crate::assets::thumbnail::Picture> {
+        if !is_digest_name_common(digest) {
+            return None;
+        }
+        crate::assets::thumbnail::Format::ALL
+            .into_iter()
+            .find_map(|format| {
+                let bytes = std::fs::read(self.thumbnail_path(digest, format)).ok()?;
+                crate::assets::thumbnail::Picture::of(bytes, format)
+            })
+    }
+
+    /// Keeps `picture` as the thumbnail of blob `digest` while the store
+    /// holds the blob, beside the tree's blobs so it goes with the tree and
+    /// with the blob ([`Self::remove`]).
+    pub(crate) fn keep_thumbnail(
+        &self,
+        digest: &str,
+        picture: &crate::assets::thumbnail::Picture,
+    ) -> std::io::Result<()> {
+        use std::io::Write as _;
+        if !is_digest_name_common(digest) || self.directory.len(digest)?.is_none() {
+            return Ok(());
+        }
+        let path = self.thumbnail_path(digest, picture.format);
+        let folder = path.parent().expect("a thumbnail has a folder");
+        std::fs::create_dir_all(folder)?;
+        let temporary = folder.join(format!(".{digest}.{}.tmp", uuid::Uuid::now_v7()));
+        let written = (|| {
+            std::fs::File::create(&temporary)?.write_all(&picture.bytes)?;
+            std::fs::rename(&temporary, &path)
+        })();
+        if written.is_err() {
+            let _ = std::fs::remove_file(&temporary);
+        }
+        written
     }
 
     /// Hard-links blob `digest` into `into`; a blob this store lacks is
@@ -1121,6 +1193,8 @@ type TreeResolver = Arc<dyn Fn(SessionId) -> Option<SessionId> + Send + Sync>;
 /// A tree's artifacts: its `blobs/` folder, which also holds the large
 /// values of its session logs (history format 2).
 pub(crate) const ARTIFACTS_DIR: &str = crate::events::blobs::BLOBS_DIR;
+/// The folder beside a tree's blobs that keeps their thumbnails.
+pub(crate) const ARTIFACT_THUMBNAILS_DIR: &str = "thumbnails";
 
 /// Content-addressed artifacts, each belonging to exactly one root tree
 /// (tree-local sessions, D).

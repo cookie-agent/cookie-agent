@@ -79,7 +79,9 @@ fn access(method: &str) -> Access {
         | protocol::SESSION_BACKGROUND_LIST_METHOD
         | protocol::SESSION_RUNTIMES_LIST_METHOD
         | protocol::ARTIFACT_READ_METHOD
-        | protocol::ARTIFACT_MANIFEST_METHOD => Access::Read("session_id"),
+        | protocol::ARTIFACT_MANIFEST_METHOD
+        | protocol::ARTIFACT_THUMBNAIL_METHOD
+        | protocol::ATTACHMENT_DELIVERY_METHOD => Access::Read("session_id"),
         "approval.list" => Access::Read("root_session_id"),
         protocol::ASSET_GET_METHOD
         | protocol::ASSET_READ_METHOD

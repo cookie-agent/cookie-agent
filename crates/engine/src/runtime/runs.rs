@@ -158,20 +158,8 @@ impl Engine {
         match self.intercept_user_input(active.session, content).await? {
             UserInputInterception::Accepted { content, original } => {
                 let session = active.session;
-                // A steer reaches the run's own model; a fallback it moved
-                // to gets stand-ins for what it does not accept.
-                let model = active.policy.run_model_selection().model;
-                let _input_artifacts = self
-                    .admit_input_media(
-                        session,
-                        &content,
-                        &model,
-                        &super::artifacts::uploads::catalog_input_media(
-                            &active.policy.runtime,
-                            &model,
-                        ),
-                    )
-                    .await?;
+                // Each request decides what its model gets of the files.
+                let _input_artifacts = self.admit_input_media(session, &content).await?;
                 self.on_actor(session, move |engine| {
                     engine.active_run_in(session, run_id)?;
                     if !engine.run_is_running(session, run_id)? {

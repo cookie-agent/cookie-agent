@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "`artifact.thumbnail` (client protocol 1.105.0,\n`docs/site/specs/attachment-handling.md` section 5.1): a small picture of\nan artifact of the store of `session_id`'s tree, drawn as\n`asset.thumbnail` draws one and kept with the tree.",
+  "properties": {
+    "session_id": {
+      "format": "uuid",
+      "type": "string"
+    },
+    "sha256": {
+      "maxLength": 64,
+      "minLength": 64,
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    }
+  },
+  "required": [
+    "session_id",
+    "sha256"
+  ],
+  "title": "ArtifactThumbnailParams",
+  "type": "object"
+}

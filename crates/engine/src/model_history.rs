@@ -2263,18 +2263,7 @@ fn uploaded_file_content(
         }
         Err(error) => return Err(error.into()),
     };
-    let head = &bytes[..bytes
-        .len()
-        .min(cookie_agent_runtime_api::media::MEDIA_SNIFF_BYTES)];
-    if let Some(media_type) =
-        cookie_agent_runtime_api::media::recognize_media_type(head, bytes.len() as u64)
-    {
-        return Ok(FileContent::Media(media_type.to_owned()));
-    }
-    Ok(match std::str::from_utf8(head) {
-        Err(error) if error.error_len().is_some() => FileContent::Binary,
-        _ => FileContent::Text,
-    })
+    Ok(crate::media::sniffed_content(&bytes, bytes.len() as u64))
 }
 
 /// A user file part as the attachment the artifact store reads.

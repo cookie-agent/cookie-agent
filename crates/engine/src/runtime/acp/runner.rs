@@ -3899,6 +3899,57 @@ impl Engine {
         (prompt, taken)
     }
 
+    /// What the bridge of `session` offers that does something with a user's
+    /// file: the tools the session last recorded offering, at once or
+    /// deferred; before it recorded any, what `policy` (else the session's
+    /// running run's) bridges.
+    pub(crate) fn acp_file_tools(
+        &self,
+        session: SessionId,
+        policy: Option<&crate::policy::FrozenRunPolicy>,
+    ) -> crate::media::FileTools {
+        let Ok(projection) = self.inner.store.get(session) else {
+            return crate::media::FileTools::default();
+        };
+        if projection.log.last_model_tool_names().is_some() {
+            let offers = |name: &str| projection.log.last_model_offers_tool(name);
+            return crate::media::FileTools {
+                read_artifact: offers(crate::base_tools::READ_ARTIFACT),
+                transfer: offers(crate::machines_tool::TRANSFER),
+            };
+        }
+        let running = || {
+            self.inner
+                .sessions
+                .active
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .values()
+                .find(|run| run.session == session)
+                .map(|run| Arc::clone(&run.policy))
+        };
+        let held;
+        let policy = match policy {
+            Some(policy) => policy,
+            None => match running() {
+                Some(policy) => {
+                    held = policy;
+                    &*held
+                }
+                None => return crate::media::FileTools::default(),
+            },
+        };
+        let names = self
+            .bridged_tool_definitions(session, policy)
+            .map(|tools| tools.into_iter().map(|tool| tool.name).collect::<Vec<_>>())
+            .unwrap_or_default();
+        let offers = |name: &str| names.iter().any(|offered| offered == name);
+        crate::media::FileTools {
+            read_artifact: offers(crate::base_tools::READ_ARTIFACT),
+            transfer: offers(crate::machines_tool::TRANSFER),
+        }
+    }
+
     /// Adds the blocks of `content` to `prompt`: text, and files after
     /// their labels as the agent's prompt capabilities `caps` allow
     /// ([`super::prompt`]).
@@ -3909,17 +3960,7 @@ impl Engine {
         content: &cookie_agent_protocol::UserContent,
         caps: &wire::PromptCapabilities,
     ) {
-        // What the bridge offers the agent, as the session last recorded it.
-        let offers = |name: &str| {
-            self.inner
-                .store
-                .get(session)
-                .is_ok_and(|projection| projection.log.last_model_offers_tool(name))
-        };
-        let tools = crate::media::FileTools {
-            read_artifact: offers(crate::base_tools::READ_ARTIFACT),
-            transfer: offers(crate::machines_tool::TRANSFER),
-        };
+        let tools = self.acp_file_tools(session, None);
         for part in content.parts() {
             match part {
                 Open::Known(UserContentPart::Text { text }) => prompt.push(wire::text_block(text)),

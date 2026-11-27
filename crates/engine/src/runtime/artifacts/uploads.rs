@@ -18,7 +18,7 @@
 //! the artifact gone, or it runs after, and finds it pinned or referenced.
 
 use std::{
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{HashMap, HashSet},
     fs::File,
     io::{Read as _, Seek as _, SeekFrom, Write as _},
     sync::{Arc, Mutex, Weak},
@@ -26,8 +26,8 @@ use std::{
 };
 
 use cookie_agent_protocol::{
-    ARTIFACT_CHUNK_BYTES, ArtifactRef, ArtifactUploadFinishResult, ImageSize, InputMedia, ModelKey,
-    SessionId, UploadId, UserContent,
+    ARTIFACT_CHUNK_BYTES, ArtifactRef, ArtifactUploadFinishResult, ImageSize, SessionId, UploadId,
+    UserContent,
 };
 use cookie_agent_runtime_api::media::{
     self as runtime_media, MAX_VIDEO_ATTACHMENT_BYTES, UploadRejection,
@@ -71,14 +71,6 @@ pub enum MediaError {
         height: Option<u32>,
         max_dimension: Option<u32>,
         max_pixels: Option<u64>,
-    },
-    #[error("model {model} accepts no {kind} input")]
-    Unsupported { kind: String, model: ModelKey },
-    #[error("{count} {kind} parts; model accepts {max_count}")]
-    LimitExceeded {
-        kind: String,
-        count: u32,
-        max_count: u32,
     },
     #[error("artifact {sha256} is not in the session tree's store: {reason}")]
     ArtifactNotFound { sha256: String, reason: String },
@@ -693,54 +685,32 @@ impl Engine {
         Ok(pinned)
     }
 
-    /// Admits the file parts of `content`, an input to a run of `model`,
-    /// whose accepted media are `accepted` (section 11.4): each names an
-    /// artifact of the tree's store whose content is what the part says.
-    /// One of a kind and media type the model accepts, within its byte
-    /// limit, must also be within its image limits, and no kind may
-    /// outnumber its `max_count`; any other reaches the model as its label
-    /// (`docs/site/specs/machines-on-demand.md` section 6.4). The artifacts
-    /// stay pinned for as long as the result lives, which the caller keeps
-    /// until the event naming them is written.
+    /// Admits the file parts of `content`, an input to a run (section
+    /// 11.4): each names an artifact of the tree's store whose content is
+    /// what the part says, held to the daemon-wide upload checks. Whether a
+    /// model gets a file's bytes is decided for each request
+    /// (`docs/site/specs/attachment-handling.md` question Q2b): media the
+    /// request's model does not take, or more of a kind than it takes,
+    /// reach it as their label. The artifacts stay pinned for as long as the
+    /// result lives, which the caller keeps until the event naming them is
+    /// written.
     pub(crate) async fn admit_input_media(
         &self,
         session: SessionId,
         content: &UserContent,
-        model: &ModelKey,
-        accepted: &[InputMedia],
     ) -> Result<PinnedArtifacts, EngineError> {
         let files = content.files().collect::<Vec<_>>();
-        let mut counts = BTreeMap::<&str, u32>::new();
         for artifact in &files {
             artifact
                 .validate()
                 .map_err(|error| MediaError::InvalidRequest(error.to_string()))?;
-            if let Some(media) = taken_inline(artifact, model, accepted) {
-                *counts.entry(media.kind.as_str()).or_default() += 1;
-            }
-        }
-        for (kind, count) in counts {
-            let max_count = accepted
-                .iter()
-                .find(|media| media.kind.as_str() == kind)
-                .map_or(0, |media| media.max_count);
-            if count > max_count {
-                return Err(MediaError::LimitExceeded {
-                    kind: kind.to_owned(),
-                    count,
-                    max_count,
-                }
-                .into());
-            }
         }
         let pinned = self.pin_input_artifacts(session, &files)?;
         let artifacts = Arc::clone(&self.inner.artifacts);
         let owned = files.into_iter().cloned().collect::<Vec<_>>();
-        let accepted = accepted.to_vec();
-        let model = model.clone();
         blocking_io::run(move || {
             for artifact in &owned {
-                check_stored_media(&artifacts, session, artifact, &model, &accepted)?;
+                check_stored_media(&artifacts, session, artifact)?;
             }
             Ok::<_, EngineError>(())
         })
@@ -884,59 +854,14 @@ fn finish(
     })
 }
 
-/// The entry of `accepted` under which the model takes `artifact` inline:
-/// its kind and media type, within the byte limit. `None` for a file the
-/// model only sees the label of.
-fn taken_inline<'a>(
-    artifact: &ArtifactRef,
-    model: &ModelKey,
-    accepted: &'a [InputMedia],
-) -> Option<&'a InputMedia> {
-    accepted_media(artifact, model, accepted)
-        .ok()
-        .filter(|media| artifact.byte_length <= media.max_bytes)
-}
-
-/// The entry of `accepted` that takes `artifact`'s kind and media type.
-fn accepted_media<'a>(
-    artifact: &ArtifactRef,
-    model: &ModelKey,
-    accepted: &'a [InputMedia],
-) -> Result<&'a InputMedia, MediaError> {
-    let Some(kind) = runtime_media::media_kind(&artifact.media_type) else {
-        return Err(MediaError::TypeUnsupported {
-            media_type: artifact.media_type.clone(),
-            reason: "not an image, PDF, audio, or video file".into(),
-        });
-    };
-    let Some(media) = accepted.iter().find(|media| media.kind.as_str() == kind) else {
-        return Err(MediaError::Unsupported {
-            kind: kind.to_owned(),
-            model: model.clone(),
-        });
-    };
-    if !media
-        .mime_types
-        .iter()
-        .any(|mime_type| runtime_media::mime_type_matches(mime_type, &artifact.media_type))
-    {
-        return Err(MediaError::TypeUnsupported {
-            media_type: artifact.media_type.clone(),
-            reason: format!("model {model} accepts {}", media.mime_types.join(", ")),
-        });
-    }
-    Ok(media)
-}
-
 /// Reads `artifact` from the store and checks that its content is what the
-/// reference says and, for a file the model takes inline, that it is that
-/// media and fits the model's image limits.
+/// reference says: a `file` upload is any bytes, and a file of a media type
+/// the daemon recognizes (or UTF-8 text) must be that media and pass the
+/// daemon-wide upload validation, whatever model it goes to.
 fn check_stored_media(
     artifacts: &super::ArtifactRouter,
     session: SessionId,
     artifact: &ArtifactRef,
-    model: &ModelKey,
-    accepted: &[InputMedia],
 ) -> Result<(), EngineError> {
     let not_found = |reason: String| MediaError::ArtifactNotFound {
         sha256: artifact.sha256.clone(),
@@ -965,10 +890,13 @@ fn check_stored_media(
         }
         Err(error) => return Err(error.into()),
     };
-    // A file the model only sees the label of is never read as media.
-    let Some(media) = taken_inline(artifact, model, accepted) else {
+    // A `file` upload, and a file of a type no upload is recognized as (one
+    // a tool attached), goes as its label and is never read as media.
+    if runtime_media::media_kind(&artifact.media_type).is_none()
+        && artifact.media_type != cookie_agent_protocol::media_sniff::TEXT_MEDIA_TYPE
+    {
         return Ok(());
-    };
+    }
     let validated =
         runtime_media::validate_upload(&bytes).map_err(|rejection| match rejection {
             UploadRejection::Unrecognized => MediaError::TypeUnsupported {
@@ -1003,43 +931,7 @@ fn check_stored_media(
         ))
         .into());
     }
-    if let Some((width, height)) = validated.image {
-        let too_wide = media
-            .max_dimension
-            .is_some_and(|side| width > side || height > side);
-        let too_many = media
-            .max_pixels
-            .is_some_and(|pixels| u64::from(width) * u64::from(height) > pixels);
-        if too_wide || too_many {
-            return Err(MediaError::TooLarge {
-                kind: media.kind.as_str().to_owned(),
-                byte_length: artifact.byte_length,
-                max_bytes: media.max_bytes,
-                width: Some(width),
-                height: Some(height),
-                max_dimension: media.max_dimension,
-                max_pixels: media.max_pixels,
-            }
-            .into());
-        }
-    }
     Ok(())
-}
-
-/// The media `model` accepts in user input, as the catalog `runtime`
-/// publishes it; none for a model the catalog does not list.
-pub(crate) fn catalog_input_media(
-    runtime: &crate::PublishedRuntime,
-    model: &ModelKey,
-) -> Vec<InputMedia> {
-    runtime
-        .result
-        .snapshot
-        .models
-        .iter()
-        .find(|descriptor| &descriptor.key == model)
-        .map(|descriptor| descriptor.input_media.clone())
-        .unwrap_or_default()
 }
 
 /// What `artifact.read` says a blob is: the media type its content is

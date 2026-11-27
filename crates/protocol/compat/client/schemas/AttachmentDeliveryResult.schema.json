@@ -1,0 +1,79 @@
+{
+  "$defs": {
+    "AttachmentDelivery": {
+      "description": "What a request gives its model of one file.",
+      "properties": {
+        "ending": {
+          "$ref": "#/$defs/AttachmentEnding"
+        },
+        "label": {
+          "description": "The label the model gets, word for word\n([`crate::model_text::user_file_label`]).",
+          "type": "string"
+        },
+        "reason": {
+          "description": "Why the request does not carry the file, such as `acme/text-only does\nnot accept images`; for `name_only`, also why no tool helps, such as\n`no machine is attached to copy it to`. Absent for `included`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sha256": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "sha256",
+        "ending",
+        "label"
+      ],
+      "type": "object"
+    },
+    "AttachmentEnding": {
+      "description": "How a file reaches the model: the label's ending.\nA value this build does not know reads as `unknown`: show the label.",
+      "oneOf": [
+        {
+          "enum": [
+            "unknown"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "included",
+          "description": "The request carries the file after its label.",
+          "type": "string"
+        },
+        {
+          "const": "read_artifact",
+          "description": "The label alone; `read_artifact` returns the file to the model.",
+          "type": "string"
+        },
+        {
+          "const": "transfer",
+          "description": "The label alone; `transfer` copies the file to a machine.",
+          "type": "string"
+        },
+        {
+          "const": "name_only",
+          "description": "The label alone, and no tool of the request helps.",
+          "type": "string"
+        }
+      ],
+      "x-open": true
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "files": {
+      "description": "One per file asked about, in order.",
+      "items": {
+        "$ref": "#/$defs/AttachmentDelivery"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "files"
+  ],
+  "title": "AttachmentDeliveryResult",
+  "type": "object"
+}

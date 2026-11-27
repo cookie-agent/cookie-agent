@@ -433,6 +433,8 @@ fn client_methods() -> Vec<MethodSpec> {
         request!(ARTIFACT_UPLOAD_CANCEL_METHOD, ToDaemon, ArtifactUploadCancelParams => ArtifactUploadCancelResult),
         request!(ARTIFACT_READ_METHOD, ToDaemon, ArtifactReadParams => ArtifactReadResult),
         request!(ARTIFACT_MANIFEST_METHOD, ToDaemon, ArtifactManifestParams => FolderManifestResult),
+        request!(ARTIFACT_THUMBNAIL_METHOD, ToDaemon, ArtifactThumbnailParams => AssetThumbnailResult),
+        request!(ATTACHMENT_DELIVERY_METHOD, ToDaemon, AttachmentDeliveryParams => AttachmentDeliveryResult),
         request!(SPEECH_TRANSCRIBE_BEGIN_METHOD, ToDaemon, SpeechTranscribeBeginParams => SpeechTranscribeBeginResult),
         request!(SPEECH_TRANSCRIBE_CHUNK_METHOD, ToDaemon, SpeechTranscribeChunkParams => SpeechTranscribeChunkResult),
         request!(SPEECH_TRANSCRIBE_FINISH_METHOD, ToDaemon, SpeechTranscribeFinishParams => SpeechTranscribeFinishResult),

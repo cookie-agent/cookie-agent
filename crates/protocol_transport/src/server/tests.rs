@@ -901,6 +901,18 @@ impl ServerProtocol for StubServer {
     ) -> Result<cookie_agent_protocol::FolderManifestResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
+    async fn artifact_thumbnail(
+        &self,
+        _: cookie_agent_protocol::ArtifactThumbnailParams,
+    ) -> Result<cookie_agent_protocol::AssetThumbnailResult, ServerFault> {
+        Err(ServerFault::method_not_found("stub"))
+    }
+    async fn attachment_delivery(
+        &self,
+        _: cookie_agent_protocol::AttachmentDeliveryParams,
+    ) -> Result<cookie_agent_protocol::AttachmentDeliveryResult, ServerFault> {
+        Err(ServerFault::method_not_found("stub"))
+    }
     async fn events_page(
         &self,
         _: cookie_agent_protocol::EventsPageParams,

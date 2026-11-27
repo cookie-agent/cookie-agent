@@ -543,19 +543,6 @@ fn media_error(error: &MediaError) -> ErrorBuilder {
             .field("height", height)
             .field("max_dimension", max_dimension)
             .field("max_pixels", max_pixels),
-        MediaError::Unsupported { kind, model } => errors::MEDIA_UNSUPPORTED
-            .error()
-            .field("kind", kind)
-            .field("model", model),
-        MediaError::LimitExceeded {
-            kind,
-            count,
-            max_count,
-        } => errors::MEDIA_LIMIT_EXCEEDED
-            .error()
-            .field("kind", kind)
-            .field("count", count)
-            .field("max_count", max_count),
         MediaError::ArtifactNotFound { .. } => errors::ARTIFACT_NOT_FOUND.error(),
         MediaError::InvalidRequest(_) => errors::BAD_PARAMS.error(),
     }

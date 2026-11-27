@@ -9,9 +9,7 @@ use cookie_agent_protocol::{
     ArtifactRef, InputMedia, MediaKindLabel, media_sniff,
     runtime_protocol::{MediaDelivery, ToolInputMedia},
 };
-use cookie_agent_runtime_api::media::{
-    MEDIA_SNIFF_BYTES, recognize_media_type, upload_media_types,
-};
+use cookie_agent_runtime_api::media::upload_media_types;
 
 use crate::media::{FileContent, FileFacts, FileTools, missing_file_ending};
 use serde_json::{Value, json};
@@ -64,6 +62,17 @@ pub(crate) fn input_media(caps: &PromptCapabilities) -> Vec<InputMedia> {
     media
 }
 
+/// The prompt capabilities `media`, made by [`input_media`], were made from:
+/// what an agent that last started with them takes, without its process.
+pub(crate) fn caps_of(media: &[InputMedia]) -> PromptCapabilities {
+    let takes = |kind: &str| media.iter().any(|entry| entry.kind.as_str() == kind);
+    PromptCapabilities {
+        image: takes(MediaKindLabel::IMAGE),
+        audio: takes(MediaKindLabel::AUDIO),
+        embedded_context: takes(MediaKindLabel::TEXT),
+    }
+}
+
 /// How a file reaches the agent.
 #[derive(Debug, Eq, PartialEq)]
 enum Delivery {
@@ -73,9 +82,30 @@ enum Delivery {
     Note,
 }
 
+/// Why an agent with `caps` (named `agent`) takes `artifact` in no prompt
+/// block: its kind, its media type, or its size against what the clients
+/// are told it takes ([`input_media`]), as [`crate::media::user_file_fit`]
+/// decides for a model; `None` when it takes it.
+pub(crate) fn prompt_misfit(
+    artifact: &ArtifactRef,
+    agent: &dyn std::fmt::Display,
+    caps: &PromptCapabilities,
+) -> Option<String> {
+    crate::media::user_file_fit(
+        crate::media::user_file_kind(&artifact.media_type),
+        &artifact.media_type,
+        artifact.byte_length,
+        agent,
+        &input_media(caps),
+    )
+}
+
+/// What a prompt of an agent with `caps` sends after `artifact`'s label.
 fn delivery(artifact: &ArtifactRef, caps: &PromptCapabilities) -> Delivery {
     let media_type = artifact.media_type.as_str();
-    if caps.image && media_type.starts_with("image/") {
+    if prompt_misfit(artifact, &"the agent", caps).is_some() {
+        Delivery::Note
+    } else if caps.image && media_type.starts_with("image/") {
         Delivery::Image
     } else if caps.audio && media_type.starts_with("audio/") {
         Delivery::Audio
@@ -173,16 +203,7 @@ pub(crate) fn file_blocks(
         None if how != Delivery::Note || uploaded => FileContent::Missing,
         None if artifact.media_type == media_sniff::TEXT_MEDIA_TYPE => FileContent::Text,
         None => FileContent::Media(artifact.media_type.clone()),
-        Some(bytes) => {
-            let head = &bytes[..bytes.len().min(MEDIA_SNIFF_BYTES)];
-            if let Some(media_type) = recognize_media_type(head, bytes.len() as u64) {
-                FileContent::Media(media_type.to_owned())
-            } else if std::str::from_utf8(head).is_err_and(|error| error.error_len().is_some()) {
-                FileContent::Binary
-            } else {
-                FileContent::Text
-            }
-        }
+        Some(bytes) => crate::media::sniffed_content(&bytes, bytes.len() as u64),
     };
     let facts = FileFacts {
         byte_length: artifact.byte_length,

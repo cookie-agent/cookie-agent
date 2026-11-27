@@ -1227,9 +1227,7 @@ impl Engine {
             &policy::user_input_media(adapter, &capabilities),
             &tool_media,
         );
-        if crate::media::elide_excess_media(&mut request.history, &capabilities).is_err() {
-            return NativeOutcome::default();
-        }
+        crate::media::elide_excess_media(&mut request.history, &capabilities);
         let file_tools = crate::media::FileTools::of(&request);
         crate::media::settle_file_labels(
             &mut request.history,

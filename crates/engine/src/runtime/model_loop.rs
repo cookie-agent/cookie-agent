@@ -404,15 +404,9 @@ impl Engine {
         let _input_artifacts = if producer_start || acp {
             None
         } else {
-            let model = &run_policy.selected_suffix[0].selection.model;
             Some(
-                self.admit_input_media(
-                    params.session_id,
-                    &params.content,
-                    model,
-                    &super::artifacts::uploads::catalog_input_media(&run_policy.runtime, model),
-                )
-                .await?,
+                self.admit_input_media(params.session_id, &params.content)
+                    .await?,
             )
         };
         let from_model = session.log.last_run_started().and_then(|_| {
@@ -2096,8 +2090,7 @@ impl Engine {
                     &user_media,
                     &turn_context.input_media,
                 );
-                crate::media::elide_excess_media(&mut request.history, &capabilities)
-                    .map_err(ModelError::invalid_request)?;
+                crate::media::elide_excess_media(&mut request.history, &capabilities);
                 // Each user file's label then says whether the request
                 // carries the file.
                 let file_labels = context.file_labels;
@@ -2231,8 +2224,7 @@ impl Engine {
                     &user_media,
                     &turn_context.input_media,
                 );
-                crate::media::elide_excess_media(&mut request.history, &capabilities)
-                    .map_err(ModelError::invalid_request)?;
+                crate::media::elide_excess_media(&mut request.history, &capabilities);
                 let file_tools = crate::media::FileTools::of(&request);
                 crate::media::settle_file_labels(
                     &mut request.history,

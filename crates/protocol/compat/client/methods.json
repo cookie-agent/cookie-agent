@@ -100,6 +100,14 @@
     {
       "direction": "to_daemon",
       "kind": "request",
+      "method": "artifact.thumbnail",
+      "params": "ArtifactThumbnailParams",
+      "params_role": "command",
+      "result": "AssetThumbnailResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
       "method": "artifact.upload.begin",
       "params": "ArtifactUploadBeginParams",
       "params_role": "command",
@@ -208,6 +216,14 @@
       "params": "AttachmentDecideParams",
       "params_role": "command",
       "result": "AttachmentDecideResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "attachment.delivery",
+      "params": "AttachmentDeliveryParams",
+      "params_role": "command",
+      "result": "AttachmentDeliveryResult"
     },
     {
       "direction": "to_daemon",

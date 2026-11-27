@@ -5,6 +5,18 @@ The client protocol's version is `MAJOR.MINOR.PATCH`
 adds and a major breaks; before it, every minor could break the wire (see the
 [compatibility spec](../specs/compatibility-v1.md) section 3).
 
+## 1.105.0
+
+- Attachments ([spec](../specs/attachment-handling.md) sections 5 and 10):
+  `attachment.delivery`, what a message sent with a draft's selection would
+  give its model of each draft file (`ending`, the `label`, and `reason`),
+  and `artifact.thumbnail`, a thumbnail of an artifact of a session's tree,
+  shaped as `asset.thumbnail`'s. Admission no longer refuses a file the
+  model does not take (`media_unsupported`, `media_limit_exceeded`, and the
+  model's `media_too_large` are no longer sent for an input): each request
+  sends such a file as its label. Neither method exists on a 1.104.0
+  daemon.
+
 ## 1.104.0
 
 - Folders ([folder artifacts spec](../specs/folder-artifacts.md),

@@ -18,6 +18,8 @@ pub const ARTIFACT_UPLOAD_CHUNK_METHOD: &str = "artifact.upload.chunk";
 pub const ARTIFACT_UPLOAD_FINISH_METHOD: &str = "artifact.upload.finish";
 pub const ARTIFACT_UPLOAD_CANCEL_METHOD: &str = "artifact.upload.cancel";
 pub const ARTIFACT_READ_METHOD: &str = "artifact.read";
+pub const ARTIFACT_THUMBNAIL_METHOD: &str = "artifact.thumbnail";
+pub const ATTACHMENT_DELIVERY_METHOD: &str = "attachment.delivery";
 
 /// The most decoded bytes one `artifact.upload.chunk` carries or one
 /// `artifact.read` returns.
@@ -222,6 +224,84 @@ pub struct ArtifactReadResult {
     /// The media type recognized from the content; `text/plain` for UTF-8
     /// text and `application/octet-stream` for anything else.
     pub media_type: String,
+}
+
+/// `artifact.thumbnail` (client protocol 1.105.0,
+/// `docs/site/specs/attachment-handling.md` section 5.1): a small picture of
+/// an artifact of the store of `session_id`'s tree, drawn as
+/// `asset.thumbnail` draws one and kept with the tree.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ArtifactThumbnailParams {
+    pub session_id: SessionId,
+    #[schemars(length(min = 64, max = 64), regex(pattern = "^[0-9a-f]{64}$"))]
+    pub sha256: String,
+}
+
+/// `attachment.delivery` (client protocol 1.105.0,
+/// `docs/site/specs/attachment-handling.md` section 10): what a message of
+/// `session_id` sent with `selection` would give its model or ACP agent of
+/// each of `files`, a draft's files, as a request decides it now.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AttachmentDeliveryParams {
+    pub session_id: SessionId,
+    #[schemars(length(max = 64))]
+    pub files: Vec<ArtifactRef>,
+    pub selection: crate::RunSelection,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct AttachmentDeliveryResult {
+    /// One per file asked about, in order.
+    pub files: Vec<AttachmentDelivery>,
+}
+
+/// What a request gives its model of one file.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct AttachmentDelivery {
+    pub sha256: String,
+    pub ending: AttachmentEnding,
+    /// The label the model gets, word for word
+    /// ([`crate::model_text::user_file_label`]).
+    pub label: String,
+    /// Why the request does not carry the file, such as `acme/text-only does
+    /// not accept images`; for `name_only`, also why no tool helps, such as
+    /// `no machine is attached to copy it to`. Absent for `included`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+/// How a file reaches the model: the label's ending.
+/// A value this build does not know reads as `unknown`: show the label.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+#[schemars(extend("x-open" = true))]
+pub enum AttachmentEnding {
+    /// The request carries the file after its label.
+    Included,
+    /// The label alone; `read_artifact` returns the file to the model.
+    ReadArtifact,
+    /// The label alone; `transfer` copies the file to a machine.
+    Transfer,
+    /// The label alone, and no tool of the request helps.
+    NameOnly,
+    #[serde(other)]
+    Unknown,
+}
+
+impl AttachmentEnding {
+    /// The ending of a label ending in `ending`.
+    #[must_use]
+    pub const fn of(ending: crate::model_text::FileLabelEnding) -> Self {
+        use crate::model_text::FileLabelEnding;
+        match ending {
+            FileLabelEnding::IncludedBelow => Self::Included,
+            FileLabelEnding::ReadArtifactReturnsIt => Self::ReadArtifact,
+            FileLabelEnding::UseTransfer => Self::Transfer,
+            FileLabelEnding::OnlyName => Self::NameOnly,
+        }
+    }
 }
 
 #[cfg(test)]

@@ -2080,6 +2080,25 @@ impl ServerProtocol for Server {
             manifest,
         ))
     }
+    async fn artifact_thumbnail(
+        &self,
+        params: cookie_agent_protocol::ArtifactThumbnailParams,
+    ) -> Result<cookie_agent_protocol::AssetThumbnailResult> {
+        self.engine
+            .artifact_thumbnail(params.session_id, &params.sha256)
+            .await
+            .map_err(protocol_fault)
+    }
+
+    async fn attachment_delivery(
+        &self,
+        params: cookie_agent_protocol::AttachmentDeliveryParams,
+    ) -> Result<cookie_agent_protocol::AttachmentDeliveryResult> {
+        self.engine
+            .attachment_delivery(params)
+            .await
+            .map_err(protocol_fault)
+    }
 
     async fn runtime_snapshot(&self, _: RuntimeSnapshotGetParams) -> Result<RuntimeSnapshotResult> {
         self.engine.runtime_snapshot().map_err(protocol_fault)

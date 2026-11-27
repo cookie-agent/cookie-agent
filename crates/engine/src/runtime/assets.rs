@@ -342,6 +342,132 @@ impl Engine {
         made
     }
 
+    /// `artifact.thumbnail` (`docs/site/specs/attachment-handling.md`
+    /// section 5.1): the thumbnail kept of artifact `sha256` of `session`'s
+    /// tree, or one drawn now, by the asset drawer and in its turn, and kept
+    /// beside the tree's blobs, which delete it with the blob or the tree.
+    pub async fn artifact_thumbnail(
+        &self,
+        session: SessionId,
+        sha256: &str,
+    ) -> Result<AssetThumbnailResult, EngineError> {
+        use super::artifacts::uploads::MediaError;
+        if !super::artifacts::is_digest_name_common(sha256) {
+            return Err(
+                MediaError::InvalidRequest("a digest is 64 lowercase hex digits".into()).into(),
+            );
+        }
+        self.inner.store.get(session)?;
+        let not_found = |reason: &str| MediaError::ArtifactNotFound {
+            sha256: sha256.to_owned(),
+            reason: reason.to_owned(),
+        };
+        // The whole blob is verified as it opens, and its head says what
+        // it is. A folder shows its main file
+        // (`docs/site/specs/folder-artifacts.md` section 4).
+        let found = {
+            let artifacts = Arc::clone(&self.inner.artifacts);
+            let digest = sha256.to_owned();
+            super::blocking_io::run(move || {
+                let Some(store) = artifacts.read_store(session)? else {
+                    return Ok(None);
+                };
+                let digest = match super::artifacts::read_folder_manifest(&store, &digest) {
+                    Ok(Some(manifest)) => manifest.main_entry().sha256.clone(),
+                    Ok(None) => digest,
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                        return Ok(None);
+                    }
+                    Err(error) => return Err(error),
+                };
+                let range = match store.read_range(&digest, 0, 1) {
+                    Ok(range) => range,
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                        return Ok(None);
+                    }
+                    Err(error) => return Err(error),
+                };
+                let media_type = cookie_agent_runtime_api::media::recognize_media_type(
+                    &range.head,
+                    range.total_bytes,
+                );
+                let kept = store.kept_thumbnail(&digest);
+                Ok(Some((store, digest, media_type, kept)))
+            })
+            .await
+            .map_err(|error| EngineError::ToolFailed(error.to_string()))?
+        };
+        let (store, drawn, media_type, kept) = match found {
+            Ok(Some(found)) => found,
+            Ok(None) => return Err(not_found("missing").into()),
+            Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {
+                return Err(not_found("its stored copy is damaged").into());
+            }
+            Err(error) => return Err(error.into()),
+        };
+        let made = match kept {
+            Some(kept) => Made::Picture(kept),
+            None => {
+                self.draw_artifact_thumbnail(store, &drawn, media_type)
+                    .await
+            }
+        };
+        let (picture, retry_later) = match made {
+            Made::Picture(picture) => (Some(picture), false),
+            Made::Cannot => (None, false),
+            Made::Unavailable => (None, true),
+        };
+        Ok(AssetThumbnailResult {
+            sha256: sha256.to_owned(),
+            thumbnail: picture.map(|picture| AssetThumbnail {
+                media_type: picture.format.media_type().to_owned(),
+                data: base64::engine::general_purpose::STANDARD.encode(&picture.bytes),
+                width: picture.width,
+                height: picture.height,
+            }),
+            retry_later,
+        })
+    }
+
+    /// Draws the thumbnail of artifact `sha256` of `store`, content of
+    /// `media_type`, and keeps it.
+    async fn draw_artifact_thumbnail(
+        &self,
+        store: Arc<super::artifacts::ArtifactStore>,
+        sha256: &str,
+        media_type: Option<&'static str>,
+    ) -> Made {
+        let stores = Arc::clone(&self.inner.assets);
+        let Some(drawer) = media_type.and_then(Drawer::of) else {
+            return Made::Cannot;
+        };
+        if stores.undrawable(sha256) {
+            return Made::Cannot;
+        }
+        let Some(_turn) = stores.draw_turn().await else {
+            return Made::Unavailable;
+        };
+        // Another request may have drawn it while this one waited.
+        if let Some(kept) = store.kept_thumbnail(sha256) {
+            return Made::Picture(kept);
+        }
+        let made = thumbnail::make(store.blob_file(sha256), drawer).await;
+        match &made {
+            Made::Picture(picture) => {
+                let kept = picture.clone();
+                let digest = sha256.to_owned();
+                let written =
+                    super::blocking_io::run(move || store.keep_thumbnail(&digest, &kept)).await;
+                if !matches!(written, Ok(Ok(()))) {
+                    eprintln!("cookie-agent: an artifact thumbnail was not kept");
+                }
+            }
+            Made::Cannot => stores.mark_undrawable(sha256),
+            Made::Unavailable => {}
+        }
+        made
+    }
+
     /// `asset.rename`.
     pub async fn rename_asset(
         &self,
