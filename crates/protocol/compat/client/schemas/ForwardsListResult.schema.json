@@ -1,0 +1,289 @@
+{
+  "$defs": {
+    "Forward": {
+      "description": "A forward as it is now (section 3).",
+      "properties": {
+        "address": {
+          "description": "Where it is reached: an `http` forward's path from the daemon's root\n(`p/<handle>/`), or the `bind:port` a TCP or UDP forward listens on.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "bytes_in": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "bytes_out": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "connections_open": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "connections_total": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "created": {
+          "$ref": "#/$defs/ForwardStamp"
+        },
+        "expires_at": {
+          "description": "When it ends; none for never.",
+          "format": "date-time",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "from": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ForwardListen"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Where a TCP or UDP forward listens."
+        },
+        "handle": {
+          "description": "`fw_` and 8 hex digits: what the model and the URL name it by.",
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/ForwardKind"
+        },
+        "owner": {
+          "description": "The root session whose tree made it; none for the user's own.",
+          "format": "uuid",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "recent": {
+          "description": "The latest connections, newest first, at most\n[`FORWARD_RECENT_MAX`].",
+          "items": {
+            "$ref": "#/$defs/ForwardConnection"
+          },
+          "type": "array"
+        },
+        "status": {
+          "$ref": "#/$defs/ForwardStatus"
+        },
+        "title": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "to": {
+          "$ref": "#/$defs/ForwardTarget"
+        }
+      },
+      "required": [
+        "id",
+        "handle",
+        "kind",
+        "to",
+        "created",
+        "status",
+        "connections_open",
+        "connections_total",
+        "bytes_in",
+        "bytes_out"
+      ],
+      "type": "object"
+    },
+    "ForwardConnection": {
+      "description": "One connection a forward carried, or carries.",
+      "properties": {
+        "at": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "bytes_in": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "bytes_out": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "ended": {
+          "description": "How it ended: closed, or why it failed.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "ended_at": {
+          "format": "date-time",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "peer": {
+          "description": "The address it came from: a browser's for `http`, or the peer the\nlistening machine saw.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "at",
+        "peer",
+        "bytes_in",
+        "bytes_out"
+      ],
+      "type": "object"
+    },
+    "ForwardKind": {
+      "description": "What a forward carries.",
+      "oneOf": [
+        {
+          "enum": [
+            "tcp",
+            "udp"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "http",
+          "description": "A web app, served under `/p/<handle>/` on the daemon's listener.",
+          "type": "string"
+        }
+      ]
+    },
+    "ForwardListen": {
+      "description": "Where a TCP or UDP forward listens: `bind:port` of `machine`.",
+      "properties": {
+        "bind": {
+          "type": "string"
+        },
+        "machine": {
+          "type": "string"
+        },
+        "port": {
+          "description": "`0` picks a free port, which [`Forward::address`] then names.",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "machine",
+        "bind",
+        "port"
+      ],
+      "type": "object"
+    },
+    "ForwardStamp": {
+      "description": "Who made a forward, and when.",
+      "properties": {
+        "agent": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[a-z0-9](?:[a-z0-9]|-(?=[a-z0-9]))*$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "at": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "session": {
+          "description": "The session whose call made it; none for the user's own.",
+          "format": "uuid",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "at"
+      ],
+      "type": "object"
+    },
+    "ForwardStatus": {
+      "description": "How a forward is doing now.",
+      "oneOf": [
+        {
+          "enum": [
+            "active",
+            "expired"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "waiting",
+          "description": "A machine it needs is not connected; it starts when it is.",
+          "type": "string"
+        },
+        {
+          "const": "failed",
+          "description": "Listening failed, such as on a port in use; `reason` says why.",
+          "type": "string"
+        }
+      ]
+    },
+    "ForwardTarget": {
+      "description": "Where a forward's connections go: `host:port` reached from `machine`.",
+      "properties": {
+        "host": {
+          "type": "string"
+        },
+        "machine": {
+          "description": "A machine, by the name the machines block and the clients show.",
+          "type": "string"
+        },
+        "port": {
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "machine",
+        "host",
+        "port"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "forwards": {
+      "items": {
+        "$ref": "#/$defs/Forward"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "forwards"
+  ],
+  "title": "ForwardsListResult",
+  "type": "object"
+}

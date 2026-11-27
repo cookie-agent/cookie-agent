@@ -29,6 +29,41 @@ pub(crate) struct McpHub {
     changes: tokio::sync::watch::Sender<u64>,
     failures: tokio::sync::broadcast::Sender<McpServerFailure>,
     acp: Arc<super::AcpHub>,
+    /// The forwards' relay of `net/*` notifications, once installed.
+    net: std::sync::OnceLock<Arc<dyn NetRelayHandler>>,
+}
+
+/// Where runtimes' `net/*` notifications go (`docs/site/specs/forwards.md`
+/// section 5): the engine's forwards, which relay them on.
+pub(crate) trait NetRelayHandler: Send + Sync {
+    fn accepted(
+        &self,
+        client: &super::RuntimeClient,
+        params: cookie_agent_protocol::runtime_protocol::NetAcceptedParams,
+    );
+    fn data(
+        &self,
+        client: &super::RuntimeClient,
+        params: cookie_agent_protocol::runtime_protocol::NetDataParams,
+    );
+    fn ack(
+        &self,
+        client: &super::RuntimeClient,
+        params: cookie_agent_protocol::runtime_protocol::NetAckParams,
+    );
+    fn close(
+        &self,
+        client: &super::RuntimeClient,
+        params: cookie_agent_protocol::runtime_protocol::NetCloseParams,
+    );
+    fn datagram(
+        &self,
+        client: &super::RuntimeClient,
+        params: cookie_agent_protocol::runtime_protocol::NetDatagramParams,
+    );
+    /// The runtime's connection ended, and with it its listeners and
+    /// connections.
+    fn connection_lost(&self, client: &super::RuntimeClient);
 }
 
 impl McpHub {
@@ -37,12 +72,22 @@ impl McpHub {
             changes: tokio::sync::watch::channel(0).0,
             failures: tokio::sync::broadcast::channel(64).0,
             acp: Arc::default(),
+            net: std::sync::OnceLock::new(),
         })
     }
 
     /// The runtimes' ACP relay.
     pub(crate) fn acp(&self) -> &Arc<super::AcpHub> {
         &self.acp
+    }
+
+    /// Installs the forwards' relay, once.
+    pub(crate) fn set_net_handler(&self, handler: Arc<dyn NetRelayHandler>) {
+        let _ = self.net.set(handler);
+    }
+
+    pub(crate) fn net_handler(&self) -> Option<Arc<dyn NetRelayHandler>> {
+        self.net.get().cloned()
     }
 
     pub(crate) fn changed(&self) {

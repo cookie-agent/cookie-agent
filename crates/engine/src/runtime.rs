@@ -69,6 +69,7 @@ pub(crate) mod configuration;
 pub mod content;
 pub(crate) mod delegation;
 mod exposure_api;
+pub(crate) mod forwards_api;
 mod frozen_context;
 mod helpers;
 mod internal_agents;
@@ -364,6 +365,9 @@ pub enum EngineError {
     /// A webhook request was refused or failed.
     #[error(transparent)]
     Webhook(#[from] crate::webhooks::store::WebhookError),
+    /// A forward request was refused or failed.
+    #[error(transparent)]
+    Forward(#[from] crate::forwards::ForwardError),
     #[error("plugin request rejected: {0}")]
     Plugin(String),
     #[error(transparent)]
@@ -1083,6 +1087,9 @@ pub(crate) struct Inner {
     pub(crate) assets: Arc<crate::assets::AssetStores>,
     /// The share links to assets.
     pub(crate) shares: Arc<crate::shares::ShareStore>,
+    /// Forwards (`docs/site/specs/forwards.md`): their store, live state,
+    /// and relay.
+    pub(crate) forwards: Arc<crate::forwards::Forwards>,
     /// The attachments of assistant messages in flight.
     pub(crate) message_attachments: message_attachments::MessageAttachments,
     /// The cron jobs.
@@ -1317,6 +1324,7 @@ impl Engine {
         )?);
         let assets = Arc::new(crate::assets::AssetStores::new(&options.data_dir));
         let shares = Arc::new(crate::shares::ShareStore::new(&options.data_dir));
+        let forwards = crate::forwards::Forwards::open(&options.data_dir)?;
         drop(restoring);
         let artifacts = ArtifactRouter::for_store(&store)?;
         // Every write belongs to the directory of the writing session's root.
@@ -1368,6 +1376,10 @@ impl Engine {
         reserve_provider_id(&mut provider_ids, webhook_tools.as_ref())?;
         mcp.reserve_provider(webhook_tools.as_ref())
             .map_err(|error| EngineError::ToolFailed(error.to_string()))?;
+        let forward_tools = Arc::new(crate::forward_tools::ForwardTools::new());
+        reserve_provider_id(&mut provider_ids, forward_tools.as_ref())?;
+        mcp.reserve_provider(forward_tools.as_ref())
+            .map_err(|error| EngineError::ToolFailed(error.to_string()))?;
         let asset_tools = Arc::new(crate::asset_tools::AssetTools::new());
         reserve_provider_id(&mut provider_ids, asset_tools.as_ref())?;
         mcp.reserve_provider(asset_tools.as_ref())
@@ -1388,6 +1400,7 @@ impl Engine {
         global_providers.push(machines_tool.clone());
         global_providers.push(cron_tools.clone());
         global_providers.push(webhook_tools.clone());
+        global_providers.push(forward_tools.clone());
         global_providers.push(asset_tools.clone());
         global_providers.push(agents_tool.clone());
         // Each plugin's tools compose under the plugin's name.
@@ -1461,6 +1474,7 @@ impl Engine {
                 projects,
                 assets,
                 shares,
+                forwards,
                 message_attachments: Default::default(),
                 crons,
                 star,
@@ -1511,6 +1525,7 @@ impl Engine {
         machines_tool.bind(&engine);
         cron_tools.bind(&engine);
         webhook_tools.bind(&engine);
+        forward_tools.bind(&engine);
         asset_tools.bind(&engine);
         agents_tool.bind(&engine);
         // Engine unit tests compose their own base-layer stand-ins.
@@ -1566,6 +1581,7 @@ impl Engine {
         engine.start_idle_runtime_watch();
         engine.start_cron_scheduler();
         engine.start_webhooks();
+        engine.start_forwards();
         engine.start_cache_expiry_scheduler();
         engine.install_acp();
         engine.publish_speech_status();

@@ -17,8 +17,8 @@ use std::fmt::Write as _;
 use cookie_agent_coding_runtime::{BuiltinTools, bash::bash_tool_description_for};
 use cookie_agent_engine::{
     agents_tool_spec, asset_tool_specs, base_layer_tool_specs, builtin_tool_groups,
-    cron_tool_specs, machines_tool_specs, memory_tool_specs, runtimes_tool_spec,
-    webhook_tool_specs,
+    cron_tool_specs, forward_tool_specs, machines_tool_specs, memory_tool_specs,
+    runtimes_tool_spec, webhook_tool_specs,
 };
 use cookie_agent_protocol::SessionId;
 use cookie_agent_runtime_api::{SessionToolContext, ToolProvider, ToolSpec, WorkspaceContext};
@@ -47,6 +47,7 @@ fn documented_specs() -> Vec<ToolSpec> {
     specs.extend(machines_tool_specs());
     specs.extend(cron_tool_specs());
     specs.extend(webhook_tool_specs());
+    specs.extend(forward_tool_specs());
     specs.extend(asset_tool_specs());
     specs
 }
@@ -134,6 +135,13 @@ fn availability(name: &str) -> Option<&'static str> {
         "webhook_list" => {
             "Only next to the other webhook tools. It needs no rule of its own: it lists the \
              webhooks whose target kind the `webhook` rules allow or ask for."
+        }
+        "forward_create" | "forward_list" | "forward_delete" => {
+            "Only when the session has the `global` runtime attached and no `\"*\": deny` for \
+             `forward` hides them. A root run of any agent but an internal one is asked about \
+             `forward_create` and `forward_delete` and allowed `forward_list`; a delegated run is \
+             denied them. A listener on an address that is not loopback is also checked as \
+             `public <machine>:<bind>`, which no default allows."
         }
         "share_link" => {
             "Only when the session has the `global` runtime attached and no `\"*\": deny` for \

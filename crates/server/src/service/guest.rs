@@ -83,6 +83,7 @@ fn access(method: &str) -> Access {
         | protocol::ARTIFACT_THUMBNAIL_METHOD
         | protocol::ATTACHMENT_DELIVERY_METHOD => Access::Read("session_id"),
         "approval.list" => Access::Read("root_session_id"),
+        protocol::FORWARDS_LIST_METHOD => Access::Read("session"),
         protocol::ASSET_GET_METHOD
         | protocol::ASSET_READ_METHOD
         | protocol::ASSET_MANIFEST_METHOD
@@ -509,6 +510,9 @@ mod tests {
         "crons.delete",
         "crons.run",
         "webhooks.list",
+        "forward.create",
+        "forward.update",
+        "forward.delete",
         "webhooks.create",
         "webhooks.update",
         "webhooks.delete",

@@ -823,6 +823,22 @@ error_codes! {
         hint: Some("See the details, then check that the cookie data directory is readable and writable."),
         description: "Reading or writing `crons.json`, or taking the memory lock, failed; nothing changed.",
     }
+    FORWARD_NOT_FOUND {
+        code: "forward_not_found",
+        rpc: APPLICATION_ERROR,
+        fields: [required("forward", "The forward's handle.")],
+        message: "There is no forward {forward}.",
+        hint: Some("See `forwards.list` for the forwards."),
+        description: "A `forward.*` request named a forward the daemon does not have.",
+    }
+    FORWARD_INVALID {
+        code: "forward_invalid",
+        rpc: APPLICATION_ERROR,
+        fields: [],
+        message: "The forward could not be made.",
+        hint: None,
+        description: "A `forward.create` or `forward.update` was refused: a machine it names is unknown, `from` is missing for `tcp` or `udp` or given for `http`, the title is too long, or forwards are off or at their limit.",
+    }
     WEBHOOK_NOT_FOUND {
         code: "webhook_not_found",
         rpc: APPLICATION_ERROR,

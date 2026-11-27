@@ -430,6 +430,12 @@ pub(crate) fn engine_fault(error: EngineError) -> RpcFault {
         }
         EngineError::Cron(error) => cron_error(error),
         EngineError::Webhook(error) => webhook_error(error),
+        EngineError::Forward(cookie_agent_engine::ForwardError::NotFound(forward)) => {
+            errors::FORWARD_NOT_FOUND.error().field("forward", forward)
+        }
+        EngineError::Forward(cookie_agent_engine::ForwardError::Invalid(reason)) => {
+            errors::FORWARD_INVALID.error().detail(reason.clone())
+        }
         EngineError::Mcp(reason) => errors::MCP_REJECTED
             .error()
             .field("reason", reason_text(reason)),

@@ -1986,6 +1986,49 @@ impl Client {
     }
 
     /// Every webhook with its state and history.
+    /// The forwards, every one or `session`'s tree's (`forwards.list`,
+    /// client protocol 1.109.0).
+    pub async fn list_forwards(
+        &self,
+        session: Option<cookie_agent_protocol::SessionId>,
+    ) -> Result<cookie_agent_protocol::ForwardsListResult, ClientError> {
+        self.call(
+            cookie_agent_protocol::FORWARDS_LIST_METHOD,
+            &cookie_agent_protocol::ForwardsListParams { session },
+        )
+        .await
+    }
+
+    /// Makes the user's forward (`forward.create`).
+    pub async fn create_forward(
+        &self,
+        params: cookie_agent_protocol::ForwardCreateParams,
+    ) -> Result<cookie_agent_protocol::ForwardResult, ClientError> {
+        self.call(cookie_agent_protocol::FORWARD_CREATE_METHOD, &params)
+            .await
+    }
+
+    /// Changes a forward's title or expiry (`forward.update`).
+    pub async fn update_forward(
+        &self,
+        params: cookie_agent_protocol::ForwardUpdateParams,
+    ) -> Result<cookie_agent_protocol::ForwardResult, ClientError> {
+        self.call(cookie_agent_protocol::FORWARD_UPDATE_METHOD, &params)
+            .await
+    }
+
+    /// Stops and deletes a forward (`forward.delete`).
+    pub async fn delete_forward(
+        &self,
+        forward: String,
+    ) -> Result<cookie_agent_protocol::ForwardDeleteResult, ClientError> {
+        self.call(
+            cookie_agent_protocol::FORWARD_DELETE_METHOD,
+            &cookie_agent_protocol::ForwardDeleteParams { forward },
+        )
+        .await
+    }
+
     pub async fn list_webhooks(
         &self,
     ) -> Result<cookie_agent_protocol::WebhooksListResult, ClientError> {

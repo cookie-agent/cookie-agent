@@ -374,6 +374,10 @@ fn client_methods() -> Vec<MethodSpec> {
         request!(CRONS_DELETE_METHOD, ToDaemon, CronDeleteParams => CronDeleteResult),
         request!(CRONS_RUN_METHOD, ToDaemon, CronRunParams => CronRunResult),
         request!(WEBHOOKS_LIST_METHOD, ToDaemon, WebhooksListParams => WebhooksListResult),
+        request!(FORWARDS_LIST_METHOD, ToDaemon, ForwardsListParams => ForwardsListResult),
+        request!(FORWARD_CREATE_METHOD, ToDaemon, ForwardCreateParams => ForwardResult),
+        request!(FORWARD_UPDATE_METHOD, ToDaemon, ForwardUpdateParams => ForwardResult),
+        request!(FORWARD_DELETE_METHOD, ToDaemon, ForwardDeleteParams => ForwardDeleteResult),
         request!(WEBHOOKS_CREATE_METHOD, ToDaemon, WebhookCreateParams => WebhookResult),
         request!(WEBHOOKS_UPDATE_METHOD, ToDaemon, WebhookUpdateParams => WebhookResult),
         request!(WEBHOOKS_DELETE_METHOD, ToDaemon, WebhookDeleteParams => WebhookDeleteResult),
@@ -502,6 +506,11 @@ fn client_methods() -> Vec<MethodSpec> {
             WEBHOOKS_CHANGED_METHOD,
             FromDaemon,
             WebhooksChangedNotification
+        ),
+        notification!(
+            FORWARDS_CHANGED_METHOD,
+            FromDaemon,
+            ForwardsChangedNotification
         ),
         notification!(
             NOTIFICATIONS_CHANGED_METHOD,

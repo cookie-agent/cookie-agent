@@ -63,6 +63,9 @@ block under the system prompt in the TUI transcript.
 | [`webhook_list`](#webhook_list) | *none* |
 | [`webhook_update`](#webhook_update) | `webhook` |
 | [`webhook_delete`](#webhook_delete) | `webhook` |
+| [`forward_create`](#forward_create) | `forward` |
+| [`forward_list`](#forward_list) | `forward` |
+| [`forward_delete`](#forward_delete) | `forward` |
 | [`write_asset`](#write_asset) | `asset` |
 | [`read_asset`](#read_asset) | `asset` |
 | [`list_assets`](#list_assets) | `asset` |
@@ -1084,6 +1087,7 @@ tools instead of in the system prompt.
 | `coding` | [`read`](#read), [`write`](#write), [`edit`](#edit), [`bash`](#bash) | no | The workspace: reading, writing, and editing files, and running shell commands. |
 | `cron` | [`cron_create`](#cron_create), [`cron_list`](#cron_list), [`cron_update`](#cron_update), [`cron_delete`](#cron_delete), [`cron_run`](#cron_run) | yes | Scheduled prompts: run a prompt once after a delay or on a cron schedule, in this session, a subagent's, or a new session. |
 | `delegation` | [`delegate_subagent`](#delegate_subagent), [`get_subagent_result`](#get_subagent_result) | no | Subagents: hand a focused task to another agent, and collect its result. |
+| `forwards` | [`forward_create`](#forward_create), [`forward_list`](#forward_list), [`forward_delete`](#forward_delete) | yes | Forwards: a machine's web app at the daemon's address, or a TCP or UDP port of one machine on another. |
 | `goal` | [`goal_get`](#goal_get), [`goal_set`](#goal_set), [`goal_update`](#goal_update) | yes | The session's goal and the checklist that tracks it. |
 | `machines` | [`attach_machine`](#attach_machine), [`detach_machine`](#detach_machine), [`transfer`](#transfer) | no | The user's machines: attach one to this session to work on it, detach it, or copy files between machines. |
 | `memory` | [`memory_search`](#memory_search), [`memory_read`](#memory_read), [`memory_write`](#memory_write), [`memory_edit`](#memory_edit), [`memory_delete`](#memory_delete) | yes | Durable notes across sessions: what the user prefers, project decisions, and facts about machines. |
@@ -3738,6 +3742,208 @@ Only when the session has the `global` runtime attached and no `"*": deny` for `
       },
       "required": [
         "id"
+      ],
+      "type": "object"
+    }
+    ```
+
+<!-- /generated -->
+
+## Forward tools
+
+The forward tools manage the daemon's forwards
+([forwards spec](../specs/forwards.md)): a machine's web app at the
+daemon's address under `/p/<handle>/`, or a TCP or UDP port of one machine
+on another, every byte relayed by the daemon. They are the `forwards` group
+of the `global` runtime, deferred by default, and are checked under
+`forward`, with the call's resource: `create`, `read`, or `delete`. A
+forward an agent makes belongs to its session's tree and goes with it, and
+lasts 24 hours unless `expires_in_hours` says otherwise.
+
+### `forward_create`
+
+<!-- generated: tool forward_create -->
+
+```text
+forward_create(expires_in_hours?: integer, from?: object, kind: "tcp" | "udp" | string, title?: string, to: object)
+```
+
+Description sent to the model:
+
+```text
+Forward a port, so the user or another machine reaches it. `kind` `http` serves a web app of a machine (`to`, such as a dev server on `127.0.0.1:5173`) at the daemon's own address under `/p/<handle>/`, WebSockets included, for the user to open where they open cookie; it runs on the cookie page's origin and can read its storage, so forward only apps you trust. `tcp` or `udp` listens on one machine (`from`, `127.0.0.1` and a free port unless you name them) and connects each connection, or UDP peer, to `to` reached from another, every byte relayed by the daemon, slowly for bulk copies. `machine` names a machine as the machines block does; omitted, the session's workspace machine. A forward lasts `expires_in_hours` (default 24; 0 or less never ends) and is deleted when this conversation is. Pages load from `/p/<handle>/`, not the root: start a dev server with that base path (Vite `--base`, Jupyter `--ServerApp.base_url`, TensorBoard `--path_prefix`), which the result names. Show an http forward to the user with `<attach forward="fw_3f9a1c2e" path="/"/>`.
+```
+
+Only when the session has the `global` runtime attached and no `"*": deny` for `forward` hides them. A root run of any agent but an internal one is asked about `forward_create` and `forward_delete` and allowed `forward_list`; a delegated run is denied them. A listener on an address that is not loopback is also checked as `public <machine>:<bind>`, which no default allows.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `expires_in_hours` | `integer` | no | Hours it lasts. Default 24; 0 or less never ends |
+| `from` | `object` | no | For tcp and udp: where to listen |
+| `kind` | `"tcp" \| "udp" \| string` | yes | "http", "tcp", or "udp" |
+| `title` | `string` | no | Shown with the forward |
+| `to` | `object` | yes | Where connections go |
+
+??? note "Parameters JSON Schema"
+
+    ```json
+    {
+      "$defs": {
+        "ForwardKind": {
+          "oneOf": [
+            {
+              "enum": [
+                "tcp",
+                "udp"
+              ],
+              "type": "string"
+            },
+            {
+              "const": "http",
+              "description": "A web app, served under `/p/<handle>/` on the daemon's listener.",
+              "type": "string"
+            }
+          ]
+        },
+        "ListenArg": {
+          "additionalProperties": false,
+          "properties": {
+            "bind": {
+              "description": "The address it listens on. Default: 127.0.0.1; any other is reachable from that machine's network and is always asked about",
+              "type": "string"
+            },
+            "machine": {
+              "description": "The machine that listens, as the machines block names it. Default: this session's workspace machine",
+              "type": "string"
+            },
+            "port": {
+              "description": "The port. Default: 0, a free one, which the result names",
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "type": "object"
+        },
+        "TargetArg": {
+          "additionalProperties": false,
+          "properties": {
+            "host": {
+              "description": "The host reached from that machine. Default: 127.0.0.1",
+              "type": "string"
+            },
+            "machine": {
+              "description": "The machine the target is reached from, as the machines block names it. Default: this session's workspace machine",
+              "type": "string"
+            },
+            "port": {
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "port"
+          ],
+          "type": "object"
+        }
+      },
+      "additionalProperties": false,
+      "properties": {
+        "expires_in_hours": {
+          "description": "Hours it lasts. Default 24; 0 or less never ends",
+          "format": "int64",
+          "type": "integer"
+        },
+        "from": {
+          "$ref": "#/$defs/ListenArg",
+          "description": "For tcp and udp: where to listen"
+        },
+        "kind": {
+          "$ref": "#/$defs/ForwardKind",
+          "description": "\"http\", \"tcp\", or \"udp\""
+        },
+        "title": {
+          "description": "Shown with the forward",
+          "type": "string"
+        },
+        "to": {
+          "$ref": "#/$defs/TargetArg",
+          "description": "Where connections go"
+        }
+      },
+      "required": [
+        "kind",
+        "to"
+      ],
+      "type": "object"
+    }
+    ```
+
+<!-- /generated -->
+
+### `forward_list`
+
+<!-- generated: tool forward_list -->
+
+```text
+forward_list()
+```
+
+Description sent to the model:
+
+```text
+List the forwards this conversation can use, its own and the user's, each with its handle, route, status, address, connections, and expiry.
+```
+
+Only when the session has the `global` runtime attached and no `"*": deny` for `forward` hides them. A root run of any agent but an internal one is asked about `forward_create` and `forward_delete` and allowed `forward_list`; a delegated run is denied them. A listener on an address that is not loopback is also checked as `public <machine>:<bind>`, which no default allows.
+
+??? note "Parameters JSON Schema"
+
+    ```json
+    {
+      "additionalProperties": false,
+      "type": "object"
+    }
+    ```
+
+<!-- /generated -->
+
+### `forward_delete`
+
+<!-- generated: tool forward_delete -->
+
+```text
+forward_delete(forward: string)
+```
+
+Description sent to the model:
+
+```text
+Stop a forward by its handle: its listener closes, its connections end, and its share links stop working.
+```
+
+Only when the session has the `global` runtime attached and no `"*": deny` for `forward` hides them. A root run of any agent but an internal one is asked about `forward_create` and `forward_delete` and allowed `forward_list`; a delegated run is denied them. A listener on an address that is not loopback is also checked as `public <machine>:<bind>`, which no default allows.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `forward` | `string` | yes | The forward's handle, such as fw_3f9a1c2e |
+
+??? note "Parameters JSON Schema"
+
+    ```json
+    {
+      "additionalProperties": false,
+      "properties": {
+        "forward": {
+          "description": "The forward's handle, such as fw_3f9a1c2e",
+          "type": "string"
+        }
+      },
+      "required": [
+        "forward"
       ],
       "type": "object"
     }

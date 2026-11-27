@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "`forward.delete`.",
+  "properties": {
+    "forward": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "forward"
+  ],
+  "title": "ForwardDeleteParams",
+  "type": "object"
+}

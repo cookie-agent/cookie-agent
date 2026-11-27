@@ -1,0 +1,111 @@
+{
+  "$defs": {
+    "ForwardKind": {
+      "description": "What a forward carries.",
+      "oneOf": [
+        {
+          "enum": [
+            "tcp",
+            "udp"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "http",
+          "description": "A web app, served under `/p/<handle>/` on the daemon's listener.",
+          "type": "string"
+        }
+      ]
+    },
+    "ForwardListen": {
+      "description": "Where a TCP or UDP forward listens: `bind:port` of `machine`.",
+      "properties": {
+        "bind": {
+          "type": "string"
+        },
+        "machine": {
+          "type": "string"
+        },
+        "port": {
+          "description": "`0` picks a free port, which [`Forward::address`] then names.",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "machine",
+        "bind",
+        "port"
+      ],
+      "type": "object"
+    },
+    "ForwardTarget": {
+      "description": "Where a forward's connections go: `host:port` reached from `machine`.",
+      "properties": {
+        "host": {
+          "type": "string"
+        },
+        "machine": {
+          "description": "A machine, by the name the machines block and the clients show.",
+          "type": "string"
+        },
+        "port": {
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "machine",
+        "host",
+        "port"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "`forward.create`: the user makes a forward, which belongs to no session.",
+  "properties": {
+    "expires_in_hours": {
+      "description": "Hours it lives; default 24; `0` or less never ends.",
+      "format": "int64",
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "from": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ForwardListen"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "For `tcp` and `udp`: where it listens."
+    },
+    "kind": {
+      "$ref": "#/$defs/ForwardKind"
+    },
+    "title": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "to": {
+      "$ref": "#/$defs/ForwardTarget"
+    }
+  },
+  "required": [
+    "kind",
+    "to"
+  ],
+  "title": "ForwardCreateParams",
+  "type": "object"
+}

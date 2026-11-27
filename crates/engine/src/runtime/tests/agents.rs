@@ -120,6 +120,9 @@ fn available_models_synthesize_default_agent_and_admit_sessions() {
             "detach_machine",
             "edit",
             "fixture_mcp",
+            "forward_create",
+            "forward_delete",
+            "forward_list",
             "list_agents",
             "list_assets",
             "list_runtimes",
@@ -277,6 +280,9 @@ fn tool_definitions_enforce_sparse_permissions_and_delegate_structure() {
             "delete_asset",
             "detach_machine",
             "fixture_mcp",
+            "forward_create",
+            "forward_delete",
+            "forward_list",
             "list_agents",
             "list_assets",
             "list_runtimes",
@@ -351,6 +357,9 @@ fn tool_definitions_enforce_sparse_permissions_and_delegate_structure() {
             "detach_machine",
             "edit",
             "fixture_mcp",
+            "forward_create",
+            "forward_delete",
+            "forward_list",
             "list_agents",
             "list_assets",
             "list_runtimes",
@@ -477,6 +486,9 @@ async fn published_tool_order_is_stable_across_registration_and_overlay_order() 
             "cron_update",
             "delete_asset",
             "detach_machine",
+            "forward_create",
+            "forward_delete",
+            "forward_list",
             "list_agents",
             "list_assets",
             "list_runtimes",
@@ -675,11 +687,11 @@ async fn root_run_preset_switch_freezes_replay_and_delegation_inheritance() {
     let (endpoint, server) = scripted_preset_switch_delegation_server().await;
     let (mut fixture, shared_selection) = custom_fixture_with_endpoint(&endpoint);
     fixture.engine.shutdown().await;
-    // Memory, cron, assets, and webhooks stay off: their prompt section and
+    // Memory, cron, assets, webhooks, and forwards stay off: their prompt section and
     // tools do not fit the small context the historical compaction below
     // works in.
     for agent in fixture.config.agents.values_mut() {
-        for key in ["memory", "cron", "asset", "webhook"] {
+        for key in ["memory", "cron", "asset", "webhook", "forward"] {
             agent.frontmatter.permissions.insert(
                 key.parse().expect("permission key"),
                 cookie_agent_config::PermissionValue::Effect(PermissionEffect::Deny),

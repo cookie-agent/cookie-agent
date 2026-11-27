@@ -795,7 +795,7 @@ adaptor_options = {{ request_endpoint = "responses" }}
     // fixture use.
     write_private_test_file(
         &agents.join("primary.md"),
-        "---\ndescription: Native compaction test\nmode: primary\nenabled: true\nmodels: [{ model: \"openai/gpt-test\", variant: base }]\npermissions: { memory: deny, cron: deny, share: deny, webhook: deny, asset: deny }\n---\nTest native compaction.\n",
+        "---\ndescription: Native compaction test\nmode: primary\nenabled: true\nmodels: [{ model: \"openai/gpt-test\", variant: base }]\npermissions: { memory: deny, cron: deny, share: deny, webhook: deny, forward: deny, asset: deny }\n---\nTest native compaction.\n",
     );
     let mut config = load_from_user_root(Some(&project)).expect("loaded config");
     config.runtime.session_title.generate_on_first_turn = false;

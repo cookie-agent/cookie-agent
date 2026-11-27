@@ -1,0 +1,6 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "`forwards.changed`: forwards were made, changed, deleted, or their\nstatus or counts moved; read them again with `forwards.list`.",
+  "title": "ForwardsChangedNotification",
+  "type": "object"
+}

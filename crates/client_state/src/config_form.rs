@@ -484,7 +484,8 @@ pub const SECTIONS: &[ConfigSection] = &[
                 "Always load",
                 "Built-in tool groups sent up front instead of deferred.",
                 FieldKind::Choices(&[
-                    "agents", "assets", "cron", "goal", "memory", "runtimes", "webhooks",
+                    "agents", "assets", "cron", "forwards", "goal", "memory", "runtimes",
+                    "webhooks",
                 ]),
                 FieldDefault::Note("none"),
             ),

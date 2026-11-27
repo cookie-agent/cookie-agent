@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "`forward.update`: a new title, or a new expiry counted from now.",
+  "properties": {
+    "expires_in_hours": {
+      "description": "Hours from now; `0` or less never ends.",
+      "format": "int64",
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "forward": {
+      "description": "Its handle.",
+      "type": "string"
+    },
+    "title": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "forward"
+  ],
+  "title": "ForwardUpdateParams",
+  "type": "object"
+}

@@ -869,6 +869,8 @@ struct ClientInner {
     /// The runtime answers transfers' `fs/*` requests, from its initialize
     /// reply.
     files: std::sync::atomic::AtomicBool,
+    /// The runtime answers `net/*` (runtime protocol 1.19.0).
+    net: std::sync::atomic::AtomicBool,
     /// The runtime takes MCP servers on demand (runtime protocol 1.17.0):
     /// it starts none until `mcp/wanted` names it.
     mcp_on_demand: std::sync::atomic::AtomicBool,
@@ -1064,6 +1066,7 @@ impl RuntimeClient {
             acp_agents: Mutex::default(),
             protocol_version: OnceLock::new(),
             files: std::sync::atomic::AtomicBool::new(false),
+            net: std::sync::atomic::AtomicBool::new(false),
             mcp_on_demand: std::sync::atomic::AtomicBool::new(false),
             shell_environment: Mutex::default(),
         });
@@ -1089,6 +1092,9 @@ impl RuntimeClient {
         inner
             .files
             .store(result.files, std::sync::atomic::Ordering::Release);
+        inner
+            .net
+            .store(result.net, std::sync::atomic::Ordering::Release);
         for feature in &result.features {
             if feature == protocol::MCP_ON_DEMAND {
                 inner
@@ -1290,6 +1296,7 @@ impl RuntimeClient {
             acp_agents: Mutex::default(),
             protocol_version: OnceLock::new(),
             files: std::sync::atomic::AtomicBool::new(false),
+            net: std::sync::atomic::AtomicBool::new(false),
             mcp_on_demand: std::sync::atomic::AtomicBool::new(false),
             shell_environment: Mutex::default(),
         });
@@ -2171,6 +2178,22 @@ impl ClientInner {
             | method::AGENT_MCP_CLOSED => {
                 self.relay(notification, &ignored);
             }
+            method::NET_ACCEPTED
+            | method::NET_DATA
+            | method::NET_ACK
+            | method::NET_CLOSE
+            | method::NET_DATAGRAM
+                if plugin =>
+            {
+                ignored(&"only a runtime sends it");
+            }
+            method::NET_ACCEPTED
+            | method::NET_DATA
+            | method::NET_ACK
+            | method::NET_CLOSE
+            | method::NET_DATAGRAM => {
+                self.relay_net(notification, &ignored);
+            }
             method::RUNTIME_MCP_CHANGED => match notification.params() {
                 Ok(RuntimeMcpChangedParams { servers, failures }) => {
                     lock(&self.mcp).runtime = servers;
@@ -2332,6 +2355,45 @@ impl ClientInner {
                 });
             }
             hub.acp().changed();
+            if let Some(handler) = hub.net_handler() {
+                handler.connection_lost(&RuntimeClient {
+                    inner: Arc::clone(self),
+                });
+            }
+        }
+    }
+
+    /// Hands a `net/*` notification to the engine's forwards.
+    fn relay_net(
+        self: &Arc<Self>,
+        notification: &IncomingNotification,
+        ignored: &dyn Fn(&dyn std::fmt::Display),
+    ) {
+        let Some(handler) = self.mcp_hub.as_ref().and_then(|hub| hub.net_handler()) else {
+            return;
+        };
+        let client = RuntimeClient {
+            inner: Arc::clone(self),
+        };
+        let result = match notification.method.as_str() {
+            method::NET_ACCEPTED => notification
+                .params()
+                .map(|params| handler.accepted(&client, params)),
+            method::NET_DATA => notification
+                .params()
+                .map(|params| handler.data(&client, params)),
+            method::NET_ACK => notification
+                .params()
+                .map(|params| handler.ack(&client, params)),
+            method::NET_CLOSE => notification
+                .params()
+                .map(|params| handler.close(&client, params)),
+            _ => notification
+                .params()
+                .map(|params| handler.datagram(&client, params)),
+        };
+        if let Err(error) = result {
+            ignored(&error);
         }
     }
 
@@ -2819,5 +2881,6 @@ impl PreparedExecutor for RemoteExecutor {
 #[cfg(test)]
 mod corpus_tests;
 mod files;
+mod net;
 #[cfg(test)]
 mod tests;

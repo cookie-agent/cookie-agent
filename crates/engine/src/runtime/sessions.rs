@@ -759,6 +759,7 @@ impl Engine {
         self.inner.store.forget_marks(deleted);
         self.delete_crons_targeting(deleted);
         self.delete_webhooks_targeting(deleted);
+        self.delete_forwards_owned_by(deleted);
         // A wait on a deleted subagent ends now rather than at its recheck.
         for session in deleted {
             self.subagent_changed(*session);

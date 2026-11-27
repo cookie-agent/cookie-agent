@@ -420,6 +420,46 @@
     {
       "direction": "to_daemon",
       "kind": "request",
+      "method": "forward.create",
+      "params": "ForwardCreateParams",
+      "params_role": "command",
+      "result": "ForwardResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "forward.delete",
+      "params": "ForwardDeleteParams",
+      "params_role": "command",
+      "result": "ForwardDeleteResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "forward.update",
+      "params": "ForwardUpdateParams",
+      "params_role": "command",
+      "result": "ForwardResult"
+    },
+    {
+      "direction": "from_daemon",
+      "kind": "notification",
+      "method": "forwards.changed",
+      "params": "ForwardsChangedNotification",
+      "params_role": "information",
+      "result": null
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "forwards.list",
+      "params": "ForwardsListParams",
+      "params_role": "command",
+      "result": "ForwardsListResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
       "method": "handshake",
       "params": "ClientHello",
       "params_role": "command",

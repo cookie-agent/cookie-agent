@@ -59,6 +59,7 @@ pub(crate) use dial_in::{DialInTemplate, not_connected};
 pub(crate) use liveness::Liveness;
 pub(crate) use mcp_hub::McpHub;
 pub use mcp_hub::McpServerFailure;
+pub(crate) use mcp_hub::NetRelayHandler;
 pub(crate) use per_session::PerSessionTemplate;
 pub(crate) use process::ProcessConnector;
 pub use registry::{

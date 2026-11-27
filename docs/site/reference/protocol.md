@@ -363,6 +363,10 @@ Idempotent redelivery resolves against the state preceding the original run.
 | `speech.transcribe.cancel` | `transcription_id` | Empty object |
 | `artifact.read` | Session ID, `sha256`, optional `path` (since 1.104.0; see [Folders](#folders)), `offset`, `length` (at most 1 MiB) | Base64 `data`, `total_bytes`, `media_type` |
 | `artifact.manifest` | Session ID, `sha256` of a folder (since 1.104.0; see [Folders](#folders)) | The folder's `sha256`, `main`, and `entries` |
+| `forwards.list` | `session?` (since 1.109.0; see [Forwards](#forwards)) | `forwards`, newest first |
+| `forward.create` | `kind`, `to`, `from?`, `title?`, `expires_in_hours?` (since 1.109.0) | The `forward` |
+| `forward.update` | `forward` (its handle), `title?`, `expires_in_hours?` (since 1.109.0) | The `forward` |
+| `forward.delete` | `forward` (since 1.109.0) | `{}` |
 | `content.urls` | `targets`: up to 64 of `{ type: "artifact", session_id, sha256, name? }` or `{ type: "asset", store, asset }` (since 1.108.0; see [Folders](#folders)) | `urls`, one per target: `{ path, sha256, main? }` or `null` |
 | `artifact.thumbnail` | Session ID, `sha256` (since 1.105.0; see [Media](#media)) | As `asset.thumbnail`: the `sha256`, its `thumbnail?`, and without one `retry_later` |
 | `attachment.delivery` | Session ID, `files` (`ArtifactRef`s, at most 64), the draft's `selection` (since 1.105.0; see [Media](#media)) | Per file, in order: `sha256`, `ending` (`included`, `read_artifact`, `transfer`, `name_only`), the `label` the model gets, and `reason?` |
@@ -1008,6 +1012,29 @@ the sandbox policy shared links' `raw` carries, and `?download` makes a
 file an attachment. A web page reads a file over HTTP first and over
 `artifact.read` or `asset.read` when HTTP fails. A share guest's
 connection is refused the method and reads over its connection.
+
+### Forwards
+
+Since 1.109.0 the daemon forwards ports ([spec](../specs/forwards.md)): an
+`http` forward serves a machine's web app under `/p/<handle>/` on the
+daemon's listener, and a `tcp` or `udp` forward listens on one machine and
+connects to `to` from another, the daemon relaying every byte over the
+runtimes' connections. A `Forward` has its `id`, its `handle` (`fw_` and 8
+hex digits), `kind`, `to` (`machine`, `host`, `port`), for `tcp` and `udp`
+`from` (`machine`, `bind`, `port`), `title?`, `owner?` (the root session
+whose tree made it; none for the user's), `created`, `expires_at?` (none
+for never), and its live `status` (`active`, `waiting` for a machine,
+`failed` with a `reason`, or `expired`), `address` (an `http` forward's
+path from the daemon's root, or the `bind:port` it listens on), counts of
+open and all connections, bytes in and out, and its `recent` connections.
+
+`forward.create` makes the user's forward, which belongs to no session and
+lasts `expires_in_hours` (default 24; 0 or less never ends);
+`forward.update` sets a new title or an expiry counted from now; deleting a
+session tree deletes the forwards it made. `forwards.changed` says to list
+them again, at most once a second. A guest lists its shared session's
+forwards and nothing else. Refusals are `forward_not_found` and
+`forward_invalid`, with the reason in `detail`.
 ### Share links
 
 Since 1.86.0 a share link is a public URL for one asset
@@ -1943,6 +1970,7 @@ subscriptions to the deleted sessions end with them: no further
 | `projects.changed` | A project was created, changed, or deleted; an empty object |
 | `crons.changed` | A cron job was created, changed, fired, or deleted; an empty object |
 | `webhooks.changed` | A webhook was created, changed, received an event, or was deleted; an empty object |
+| `forwards.changed` | A forward was made, changed, or deleted, or its status or counts moved, at most once a second (since 1.109.0); an empty object |
 | `notifications.changed` | A push subscription was added, changed, or removed (since 1.30.0); an empty object |
 | `daemon.status` | The daemon's status changed (since 1.65.0): the new status, as the `daemon.status` method answers it. At most one every 250 ms, but a phase change goes at once; see [Daemon status](#daemon-status) |
 | `daemon.restarting` | Only to clients before 1.65.0, which read the restart from `daemon.status` instead. A restart is scheduled: `when` (`idle` or `now`), the `active_runs` and `background_calls` (since 1.35.0, omitted when zero) it still waits for, and an optional `reason` to show (since 1.19.0; see [Restarting the daemon](#restarting-the-daemon)) |
@@ -1964,7 +1992,7 @@ notification, and a list that ends as it was last sent sends none.
 
 ### Daemon-wide changes
 
-`runtime.changed`, `sessions.changed`, `mcp.changed`, `runtimes.changed`, `plugins.changed`, `machines.changed`, `memory.changed`, `assets.changed`, `shares.changed`, `star.changed`, `projects.changed`, `crons.changed`, `webhooks.changed`, `notifications.changed`, `daemon.restarting`, and `onboarding.changed` reach every connection
+`runtime.changed`, `sessions.changed`, `mcp.changed`, `runtimes.changed`, `plugins.changed`, `machines.changed`, `memory.changed`, `assets.changed`, `shares.changed`, `star.changed`, `projects.changed`, `crons.changed`, `webhooks.changed`, `forwards.changed`, `notifications.changed`, `daemon.restarting`, and `onboarding.changed` reach every connection
 from its handshake on, whether or not it subscribed to any session, so each
 client sharing a daemon stays current with what the others do. Clients ignore
 notification methods they do not know.

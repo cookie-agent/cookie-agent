@@ -955,6 +955,26 @@ pub trait ServerProtocol: Send + Sync + 'static {
         &self,
         params: cookie_agent_protocol::WebhooksListParams,
     ) -> Result<cookie_agent_protocol::WebhooksListResult, ServerFault>;
+    /// Lists the forwards, every one or a session tree's.
+    async fn list_forwards(
+        &self,
+        params: cookie_agent_protocol::ForwardsListParams,
+    ) -> Result<cookie_agent_protocol::ForwardsListResult, ServerFault>;
+    /// Makes the user's forward.
+    async fn create_forward(
+        &self,
+        params: cookie_agent_protocol::ForwardCreateParams,
+    ) -> Result<cookie_agent_protocol::ForwardResult, ServerFault>;
+    /// Changes a forward's title or expiry.
+    async fn update_forward(
+        &self,
+        params: cookie_agent_protocol::ForwardUpdateParams,
+    ) -> Result<cookie_agent_protocol::ForwardResult, ServerFault>;
+    /// Stops and deletes a forward.
+    async fn delete_forward(
+        &self,
+        params: cookie_agent_protocol::ForwardDeleteParams,
+    ) -> Result<cookie_agent_protocol::ForwardDeleteResult, ServerFault>;
     /// Creates a webhook.
     async fn create_webhook(
         &self,
@@ -2278,6 +2298,18 @@ async fn dispatch<S: ServerProtocol>(
         cookie_agent_protocol::CRONS_RUN_METHOD => value(server.run_cron(decode(params)?).await?),
         cookie_agent_protocol::WEBHOOKS_LIST_METHOD => {
             value(server.list_webhooks(decode_default(params)?).await?)
+        }
+        cookie_agent_protocol::FORWARDS_LIST_METHOD => {
+            value(server.list_forwards(decode_default(params)?).await?)
+        }
+        cookie_agent_protocol::FORWARD_CREATE_METHOD => {
+            value(server.create_forward(decode(params)?).await?)
+        }
+        cookie_agent_protocol::FORWARD_UPDATE_METHOD => {
+            value(server.update_forward(decode(params)?).await?)
+        }
+        cookie_agent_protocol::FORWARD_DELETE_METHOD => {
+            value(server.delete_forward(decode(params)?).await?)
         }
         cookie_agent_protocol::WEBHOOKS_CREATE_METHOD => {
             value(server.create_webhook(decode(params)?).await?)

@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "`forwards.list`: every forward, or a session tree's.",
+  "properties": {
+    "session": {
+      "description": "Only the forwards of this session's tree.",
+      "format": "uuid",
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "title": "ForwardsListParams",
+  "type": "object"
+}

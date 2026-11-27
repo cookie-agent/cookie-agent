@@ -2331,8 +2331,8 @@ fn mode_defaults_follow_the_agent_mode() {
         |action: &str, resource: &str, effect| (action.to_owned(), resource.to_owned(), effect);
     let allow = PermissionEffect::Allow;
     let ask = PermissionEffect::Ask;
-    // Memory's, cron's, attach's, asset's, share's, and webhook's defaults
-    // depend on delegation too;
+    // Memory's, cron's, attach's, asset's, share's, webhook's, and
+    // forward's defaults depend on delegation too;
     // they have their own tests.
     let mode_rules = |mode| {
         let mut rules = root_rules(&agent_document("worker", mode, &[]));
@@ -2344,6 +2344,7 @@ fn mode_defaults_follow_the_agent_mode() {
                 && rule.action != PermissionAction::ASSET
                 && rule.action != PermissionAction::SHARE
                 && rule.action != PermissionAction::WEBHOOK
+                && rule.action != PermissionAction::FORWARD
         });
         rule_triples(&rules)
     };

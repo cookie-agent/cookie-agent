@@ -415,6 +415,36 @@ impl Server {
         });
     }
 
+    /// Signals forward changes to this connection; bursts coalesce.
+    pub(super) fn start_forward_notifications(&self, context: ServerContext) {
+        let mut receiver = self.engine.subscribe_forward_changes();
+        receiver.mark_unchanged();
+        tokio::spawn(async move {
+            let shutdown = context.shutdown();
+            loop {
+                tokio::select! {
+                    _ = shutdown.cancelled() => return,
+                    changed = receiver.changed() => if changed.is_err() {
+                        return;
+                    },
+                }
+                // Counts move with every connection: at most one a second.
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                receiver.mark_unchanged();
+                if context
+                    .notify(
+                        cookie_agent_protocol::FORWARDS_CHANGED_METHOD,
+                        &cookie_agent_protocol::ForwardsChangedNotification {},
+                    )
+                    .await
+                    .is_err()
+                {
+                    return;
+                }
+            }
+        });
+    }
+
     /// Signals push subscription changes to this connection; bursts
     /// coalesce.
     pub(super) fn start_push_notifications(&self, context: ServerContext) {

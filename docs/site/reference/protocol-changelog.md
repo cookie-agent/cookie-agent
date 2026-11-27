@@ -5,6 +5,13 @@ The client protocol's version is `MAJOR.MINOR.PATCH`
 adds and a major breaks; before it, every minor could break the wire (see the
 [compatibility spec](../specs/compatibility-v1.md) section 3).
 
+## 1.109.0
+
+- Forwards ([spec](../specs/forwards.md), [Forwards](protocol.md#forwards)):
+  `forwards.list`, `forward.create`, `forward.update`, and `forward.delete`,
+  the `forwards.changed` notification, and the `forward` permission action.
+  A 1.108.0 daemon does not know the methods.
+
 ## 1.108.0
 
 - Files over HTTP ([folder artifacts spec](../specs/folder-artifacts.md)

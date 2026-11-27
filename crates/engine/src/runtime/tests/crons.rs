@@ -1198,6 +1198,11 @@ async fn root_runs_get_the_cron_tools_and_list_agents_by_default() {
         WildcardPattern::new("*").unwrap(),
         PermissionEffect::Deny,
     ));
+    no_cron.agent.permissions.push(PermissionRule::new(
+        PermissionAction::FORWARD,
+        WildcardPattern::new("*").unwrap(),
+        PermissionEffect::Deny,
+    ));
     assert!(names(&no_cron).is_empty());
 
     // Rules for one kind show only that kind's jobs.
@@ -1330,10 +1335,10 @@ helper (all) — Helper test agent
   usable for: delegate, cron
   permissions as a root run:
     bash: ask
-    defaults: read, write, webfetch, mcp, delegate, list_runtimes, memory, memory_write, cron, attach, asset, share, webhook, message
+    defaults: read, write, webfetch, mcp, delegate, list_runtimes, memory, memory_write, cron, attach, asset, share, webhook, forward, message
   permissions as a subagent:
     bash: ask
-    defaults: read, write, webfetch, mcp, delegate, list_runtimes, memory, memory_write, asset, share, message
+    defaults: read, write, webfetch, mcp, delegate, list_runtimes, memory, memory_write, asset, share, forward, message
 primary (primary) — Primary test agent
   models: custom.test/group/model
   usable for: cron
@@ -1342,12 +1347,12 @@ primary (primary) — Primary test agent
     write: ${workspace_dir}/* allow; * ask
     memory_write: agent://primary allow
     delegate: worker allow; helper allow
-    defaults: webfetch, mcp, list_runtimes, memory, cron, attach, asset, share, webhook, message
+    defaults: webfetch, mcp, list_runtimes, memory, cron, attach, asset, share, webhook, forward, message
 worker (subagent) — Worker test agent
   models: custom.test/group/model
   usable for: delegate
   permissions:
-    defaults: read, write, webfetch, mcp, delegate, memory, memory_write, asset, share, message
+    defaults: read, write, webfetch, mcp, delegate, memory, memory_write, asset, share, forward, message
 
 Defaults (for actions an agent document names no key for):
   as a root run:
@@ -1364,6 +1369,7 @@ Defaults (for actions an agent document names no key for):
     asset: allow
     share: ask
     webhook: ask
+    forward: * ask; read allow
     message: as `delegate`: allow when a delegate rule allows, ask when one asks, else deny
   as a subagent:
     read: allow
@@ -1376,6 +1382,7 @@ Defaults (for actions an agent document names no key for):
     memory_write: agent://<agent id> allow
     asset: deny
     share: deny
+    forward: deny
     message: * allow; other_tree ask
   Internal agents are denied every action.
   Variables: ${session_machine} is each machine the session's attachments run on; ${session_project} is the session's project; ${workspace_dir} is the session's workspace.
@@ -1391,12 +1398,12 @@ helper (all) — Helper test agent
   usable for: delegate
   permissions:
     bash: ask
-    defaults: read, write, webfetch, mcp, delegate, list_runtimes, memory, memory_write, asset, share, message
+    defaults: read, write, webfetch, mcp, delegate, list_runtimes, memory, memory_write, asset, share, forward, message
 worker (subagent) — Worker test agent
   models: custom.test/group/model
   usable for: delegate
   permissions:
-    defaults: read, write, webfetch, mcp, delegate, memory, memory_write, asset, share, message
+    defaults: read, write, webfetch, mcp, delegate, memory, memory_write, asset, share, forward, message
 
 Defaults (for actions an agent document names no key for):
   as a subagent:
@@ -1410,6 +1417,7 @@ Defaults (for actions an agent document names no key for):
     memory_write: agent://<agent id> allow
     asset: deny
     share: deny
+    forward: deny
     message: * allow; other_tree ask
   Internal agents are denied every action.
   Variables: ${workspace_dir} is the session's workspace.

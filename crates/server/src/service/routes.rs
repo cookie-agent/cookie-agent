@@ -50,6 +50,7 @@ impl ServerProtocol for Server {
         self.start_star_notifications(context.clone());
         self.start_cron_notifications(context.clone());
         self.start_webhook_notifications(context.clone());
+        self.start_forward_notifications(context.clone());
         self.start_push_notifications(context.clone());
         self.start_restart_notifications(context.clone());
         self.start_background_notifications(context.clone());
@@ -1204,6 +1205,34 @@ impl ServerProtocol for Server {
         _params: cookie_agent_protocol::WebhooksListParams,
     ) -> Result<cookie_agent_protocol::WebhooksListResult> {
         Ok(self.engine.list_webhooks())
+    }
+
+    async fn list_forwards(
+        &self,
+        params: cookie_agent_protocol::ForwardsListParams,
+    ) -> Result<cookie_agent_protocol::ForwardsListResult> {
+        self.engine.list_forwards(params).map_err(protocol_fault)
+    }
+
+    async fn create_forward(
+        &self,
+        params: cookie_agent_protocol::ForwardCreateParams,
+    ) -> Result<cookie_agent_protocol::ForwardResult> {
+        self.engine.create_forward(params).map_err(protocol_fault)
+    }
+
+    async fn update_forward(
+        &self,
+        params: cookie_agent_protocol::ForwardUpdateParams,
+    ) -> Result<cookie_agent_protocol::ForwardResult> {
+        self.engine.update_forward(params).map_err(protocol_fault)
+    }
+
+    async fn delete_forward(
+        &self,
+        params: cookie_agent_protocol::ForwardDeleteParams,
+    ) -> Result<cookie_agent_protocol::ForwardDeleteResult> {
+        self.engine.delete_forward(params).map_err(protocol_fault)
     }
 
     async fn create_webhook(

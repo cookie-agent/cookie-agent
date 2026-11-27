@@ -410,3 +410,28 @@ Phase 1 (runtime protocol 1.19.0):
   other side shuts its writing half; any other reason is a reset. The
   daemon ends a connection both of whose directions ended with a
   `net/close` of its own.
+
+Phase 2 (client protocol 1.109.0):
+
+- **No `[forwards]` table yet.** The limits are fixed: 64 forwards and 256
+  open connections a forward. A table comes when a limit needs changing.
+- **An expired forward is removed** at the supervisor's next look, within
+  15 seconds, rather than shown as `expired` until an hourly sweep.
+- **The supervisor** looks again whenever a runtime connects or
+  disconnects, whenever the forwards change, and every 15 seconds; a
+  listener that failed is tried again after 30 seconds. A forward listens
+  only while both its machines are connected.
+- **A machine's runtime** is any of its connected runtimes that reports
+  `net`; the daemon's own machine has the local coding runtime.
+- **Each runtime connection has one outbox**, a queue the relay sends its
+  `net/*` notifications through in order, so a connection's bytes never
+  overtake each other. The daemon holds a connection's bytes only while
+  the target is being connected, at most the sender's 1 MiB window.
+- **A listener others reach** is checked as the resource
+  `public <machine>:<bind>` beside `create`. No default rule allows it,
+  so the user is asked unless a rule of theirs allows every `forward`
+  resource.
+- **`forwards.changed`** is sent at most once a second, since counts move
+  with every connection.
+- **An `http` forward** is active with its address once its machine is
+  connected; the daemon serves it from phase 3.

@@ -193,6 +193,10 @@ pub fn builtin_tool_groups(
             crate::asset_tools::AssetTools::GROUP,
             names(crate::asset_tools::asset_tool_specs()),
         ),
+        (
+            crate::forward_tools::ForwardTools::GROUP,
+            names(crate::forward_tools::forward_tool_specs()),
+        ),
     ]
 }
 

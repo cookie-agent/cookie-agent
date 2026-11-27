@@ -30,7 +30,7 @@ fn published_names(fixture: &Fixture, session: SessionId, policy: &FrozenRunPoli
 }
 
 /// `policy` with the default rules that publish the `global` runtime's
-/// memory tools, `list_runtimes`, the cron, attach, and webhook tools
+/// memory tools, `list_runtimes`, the cron, attach, webhook, and forward tools
 /// replaced by `*` denies, so they stay out of tests about other tools.
 fn without_memory(mut policy: FrozenRunPolicy) -> FrozenRunPolicy {
     use cookie_agent_protocol::PermissionAction;
@@ -43,6 +43,7 @@ fn without_memory(mut policy: FrozenRunPolicy) -> FrozenRunPolicy {
         PermissionAction::ASSET,
         PermissionAction::SHARE,
         PermissionAction::WEBHOOK,
+        PermissionAction::FORWARD,
     ];
     policy
         .agent

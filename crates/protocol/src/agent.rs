@@ -72,9 +72,15 @@ impl PermissionAction {
     /// `webhook_delete`); the resource is a webhook's target kind
     /// (`docs/site/specs/webhooks.md` section 9.1, client protocol 1.96.0).
     pub const WEBHOOK: Self = Self(Cow::Borrowed("webhook"));
+    /// Making, listing, and deleting forwards (`forward_create`,
+    /// `forward_list`, `forward_delete`); the resource is what the call
+    /// does, `create`, `read`, or `delete`, and a listener on an address
+    /// that is not loopback is also checked as `public`
+    /// (`docs/site/specs/forwards.md` section 7).
+    pub const FORWARD: Self = Self(Cow::Borrowed("forward"));
 
     /// The actions of the tools Cookie Agent ships, in display order.
-    pub const BUILT_IN: [Self; 15] = [
+    pub const BUILT_IN: [Self; 16] = [
         Self::READ,
         Self::WRITE,
         Self::BASH,
@@ -90,6 +96,7 @@ impl PermissionAction {
         Self::ASSET,
         Self::SHARE,
         Self::WEBHOOK,
+        Self::FORWARD,
     ];
 
     pub const MAX_LEN: usize = 32;

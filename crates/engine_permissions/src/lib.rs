@@ -1158,6 +1158,31 @@ pub fn webhook_default_rules(mode: AgentMode, delegated: bool) -> Vec<Permission
     )]
 }
 
+/// The `forward` default (`docs/site/specs/forwards.md` section 7): making
+/// and deleting a forward ask the user in a root run, listing is allowed,
+/// and a `delegated` run, at any depth, is denied them; an internal agent
+/// gets nothing. A listener others reach (`public …`) asks whatever allows
+/// `create`, since no default allows it.
+pub fn forward_default_rules(mode: AgentMode, delegated: bool) -> Vec<PermissionRule> {
+    if mode == AgentMode::Internal {
+        return Vec::new();
+    }
+    let rule = |pattern: &str, effect| {
+        PermissionRule::new(
+            PermissionAction::FORWARD,
+            WildcardPattern::new(pattern).expect("static default pattern"),
+            effect,
+        )
+    };
+    if delegated {
+        return vec![rule("*", PermissionEffect::Deny)];
+    }
+    vec![
+        rule("*", PermissionEffect::Ask),
+        rule("read", PermissionEffect::Allow),
+    ]
+}
+
 /// Every rule the daemon supplies to a run of an agent of `mode`, root or
 /// `delegated`, each for an action its document names no key for. Whatever
 /// no rule matches asks ([`MergedRules`]).
@@ -1189,6 +1214,7 @@ fn run_defaults_but_message(mode: AgentMode, delegated: bool) -> Vec<PermissionR
         .chain(asset_default_rules(mode, delegated))
         .chain(share_default_rules(mode, delegated))
         .chain(webhook_default_rules(mode, delegated))
+        .chain(forward_default_rules(mode, delegated))
         .collect()
 }
 

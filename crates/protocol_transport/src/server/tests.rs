@@ -901,6 +901,30 @@ impl ServerProtocol for StubServer {
     ) -> Result<cookie_agent_protocol::ArtifactReadResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
+    async fn list_forwards(
+        &self,
+        _: cookie_agent_protocol::ForwardsListParams,
+    ) -> Result<cookie_agent_protocol::ForwardsListResult, ServerFault> {
+        Err(ServerFault::method_not_found("stub"))
+    }
+    async fn create_forward(
+        &self,
+        _: cookie_agent_protocol::ForwardCreateParams,
+    ) -> Result<cookie_agent_protocol::ForwardResult, ServerFault> {
+        Err(ServerFault::method_not_found("stub"))
+    }
+    async fn update_forward(
+        &self,
+        _: cookie_agent_protocol::ForwardUpdateParams,
+    ) -> Result<cookie_agent_protocol::ForwardResult, ServerFault> {
+        Err(ServerFault::method_not_found("stub"))
+    }
+    async fn delete_forward(
+        &self,
+        _: cookie_agent_protocol::ForwardDeleteParams,
+    ) -> Result<cookie_agent_protocol::ForwardDeleteResult, ServerFault> {
+        Err(ServerFault::method_not_found("stub"))
+    }
     async fn content_urls(
         &self,
         _: cookie_agent_protocol::ContentUrlsParams,

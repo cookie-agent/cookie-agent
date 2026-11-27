@@ -1171,7 +1171,7 @@ async fn a_finished_compaction_takes_a_new_snapshot_at_the_next_run() {
     let (fixture, selection) = custom_fixture_with_endpoint_and_primary_agent(
         &endpoint,
         &agent(
-            "{ memory: allow, memory_write: deny, cron: deny, asset: deny, share: deny, webhook: deny }",
+            "{ memory: allow, memory_write: deny, cron: deny, asset: deny, share: deny, webhook: deny, forward: deny }",
         ),
     );
     let session = fixture
@@ -1250,7 +1250,7 @@ async fn a_compaction_that_records_nothing_leaves_memory_unseen() {
     let (fixture, selection) = custom_fixture_with_endpoint_and_primary_agent(
         &endpoint,
         &agent(
-            "{ memory: allow, memory_write: deny, cron: deny, asset: deny, share: deny, webhook: deny }",
+            "{ memory: allow, memory_write: deny, cron: deny, asset: deny, share: deny, webhook: deny, forward: deny }",
         ),
     );
     let session = fixture
