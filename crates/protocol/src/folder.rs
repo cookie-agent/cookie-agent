@@ -311,3 +311,57 @@ pub struct AssetManifestParams {
     pub store: crate::AssetStore,
     pub asset: crate::AssetId,
 }
+
+/// `content.urls` (client protocol 1.108.0,
+/// `docs/site/specs/folder-artifacts.md` section 6.1).
+pub const CONTENT_URLS_METHOD: &str = "content.urls";
+/// The most targets one `content.urls` names.
+pub const CONTENT_URLS_MAX: usize = 64;
+
+/// What `content.urls` makes a URL of: an artifact of a session's tree, or
+/// an asset's current content.
+#[derive(Clone, Debug, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ContentTarget {
+    Artifact {
+        session_id: SessionId,
+        #[schemars(length(min = 64, max = 64), regex(pattern = "^[0-9a-f]{64}$"))]
+        sha256: String,
+        /// The file's name, for the URL's last segment; the daemon ignores
+        /// it when it serves the URL.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+    },
+    Asset {
+        store: crate::AssetStore,
+        asset: crate::AssetId,
+    },
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ContentUrlsParams {
+    #[schemars(length(max = CONTENT_URLS_MAX))]
+    pub targets: Vec<ContentTarget>,
+}
+
+/// Where a file or a folder is served over HTTP.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct ContentUrl {
+    /// The path from the daemon's root, without a leading `/`: a file's
+    /// URL, or a folder's base, ending in `/`. Its zip is the base without
+    /// its `/` and with `.zip`.
+    pub path: String,
+    /// The content it names: a file's digest, or a folder's manifest's.
+    pub sha256: String,
+    /// The main file's path, for a folder.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub main: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct ContentUrlsResult {
+    /// One for each target, in order: `null` for one that does not
+    /// resolve, or for a connection that cannot read content over HTTP.
+    pub urls: Vec<Option<ContentUrl>>,
+}

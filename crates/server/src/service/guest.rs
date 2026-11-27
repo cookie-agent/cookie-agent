@@ -448,6 +448,8 @@ mod tests {
     /// [`access`], so somebody decides.
     const REFUSED: &[&str] = &[
         "handshake",
+        // A guest's page names its content below its share itself.
+        "content.urls",
         "run.start",
         "session.create",
         "session.list",

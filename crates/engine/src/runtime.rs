@@ -66,6 +66,7 @@ pub(crate) use background_tasks::{BackgroundActor, Stopped};
 mod blocking_io;
 pub(crate) mod compaction;
 pub(crate) mod configuration;
+pub mod content;
 pub(crate) mod delegation;
 mod exposure_api;
 mod frozen_context;

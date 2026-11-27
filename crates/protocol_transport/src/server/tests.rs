@@ -901,6 +901,13 @@ impl ServerProtocol for StubServer {
     ) -> Result<cookie_agent_protocol::ArtifactReadResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
+    async fn content_urls(
+        &self,
+        _: cookie_agent_protocol::ContentUrlsParams,
+        _: &ServerContext,
+    ) -> Result<cookie_agent_protocol::ContentUrlsResult, ServerFault> {
+        Err(ServerFault::method_not_found("stub"))
+    }
     async fn artifact_manifest(
         &self,
         _: cookie_agent_protocol::ArtifactManifestParams,

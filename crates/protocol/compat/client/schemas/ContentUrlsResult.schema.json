@@ -1,0 +1,51 @@
+{
+  "$defs": {
+    "ContentUrl": {
+      "description": "Where a file or a folder is served over HTTP.",
+      "properties": {
+        "main": {
+          "description": "The main file's path, for a folder.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "path": {
+          "description": "The path from the daemon's root, without a leading `/`: a file's\nURL, or a folder's base, ending in `/`. Its zip is the base without\nits `/` and with `.zip`.",
+          "type": "string"
+        },
+        "sha256": {
+          "description": "The content it names: a file's digest, or a folder's manifest's.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "sha256"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "urls": {
+      "description": "One for each target, in order: `null` for one that does not\nresolve, or for a connection that cannot read content over HTTP.",
+      "items": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/ContentUrl"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "urls"
+  ],
+  "title": "ContentUrlsResult",
+  "type": "object"
+}

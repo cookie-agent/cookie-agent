@@ -3445,6 +3445,56 @@ impl Workspace {
         }
     }
 
+    /// Where `targets` are served over HTTP (`content.urls`); a guest's page
+    /// reads over its connection instead.
+    pub async fn content_urls(
+        self,
+        targets: Vec<cookie_agent_protocol::ContentTarget>,
+    ) -> Result<Vec<Option<cookie_agent_protocol::ContentUrl>>, String> {
+        if self.guest.get_untracked().is_some() {
+            return Ok(vec![None; targets.len()]);
+        }
+        let Some(client) = self.client() else {
+            return Err("not connected".into());
+        };
+        client
+            .content_urls(cookie_agent_protocol::ContentUrlsParams { targets })
+            .await
+            .map(|result| result.urls)
+            .map_err(|error| crate::errors::describe_full(&error))
+    }
+
+    /// The files of folder asset `asset` (`asset.manifest`).
+    pub async fn asset_manifest(
+        self,
+        store: cookie_agent_protocol::AssetStore,
+        asset: cookie_agent_protocol::AssetId,
+    ) -> Result<cookie_agent_protocol::FolderManifestResult, String> {
+        let Some(client) = self.client() else {
+            return Err("not connected".into());
+        };
+        client
+            .asset_manifest(cookie_agent_protocol::AssetManifestParams { store, asset })
+            .await
+            .map_err(|error| crate::errors::describe_full(&error))
+    }
+
+    /// The files of folder artifact `sha256` of the open session's tree
+    /// (`artifact.manifest`).
+    pub async fn artifact_manifest(
+        self,
+        sha256: String,
+    ) -> Result<cookie_agent_protocol::FolderManifestResult, String> {
+        let (Some(client), Some(session_id)) = (self.client(), self.selected.get_untracked())
+        else {
+            return Err("not connected".into());
+        };
+        client
+            .artifact_manifest(cookie_agent_protocol::ArtifactManifestParams { session_id, sha256 })
+            .await
+            .map_err(|error| crate::errors::describe_full(&error))
+    }
+
     pub async fn read_media(self, sha256: String) -> Result<(Vec<u8>, String), String> {
         let (Some(client), Some(session_id)) = (self.client(), self.selected.get_untracked())
         else {

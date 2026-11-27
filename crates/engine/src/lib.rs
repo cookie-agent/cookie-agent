@@ -84,6 +84,7 @@ pub use runtime::chatgpt::CHATGPT_MAINTENANCE_INTERVAL;
 pub use runtime::configuration::{
     ConfigChange, ConfigDocumentText, ConfigDocuments, ConfigurationStatus, RestartRequiredPart,
 };
+pub use runtime::content::{ContentEntry, ContentFile, ContentStore};
 /// Stable `send_message:<code>` error strings carried by
 /// [`EngineError::Messaging`]. The tool layer surfaces them verbatim so sending
 /// models can react predictably (retry, back off, or give up).

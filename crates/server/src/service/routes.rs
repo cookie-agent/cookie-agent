@@ -2084,6 +2084,23 @@ impl ServerProtocol for Server {
         })
     }
 
+    async fn content_urls(
+        &self,
+        params: cookie_agent_protocol::ContentUrlsParams,
+        _context: &ServerContext,
+    ) -> Result<cookie_agent_protocol::ContentUrlsResult> {
+        let Some(token) = self.shared.token.get().cloned() else {
+            return Ok(cookie_agent_protocol::ContentUrlsResult {
+                urls: vec![None; params.targets.len()],
+            });
+        };
+        let mut urls = Vec::with_capacity(params.targets.len());
+        for target in params.targets {
+            urls.push(self.content_url(token.as_str(), target).await);
+        }
+        Ok(cookie_agent_protocol::ContentUrlsResult { urls })
+    }
+
     async fn artifact_manifest(
         &self,
         params: cookie_agent_protocol::ArtifactManifestParams,
@@ -2320,6 +2337,62 @@ fn count_view_events(
         view_events: Some(view_events),
         ..page
     })
+}
+
+impl Server {
+    /// Where `target` is served on the `/f/` route, for the user's page;
+    /// `None` when it does not resolve.
+    async fn content_url(
+        &self,
+        token: &str,
+        target: cookie_agent_protocol::ContentTarget,
+    ) -> Option<cookie_agent_protocol::ContentUrl> {
+        use cookie_agent_engine::{ContentEntry, ContentStore};
+        let (store, sha256, name) = match target {
+            cookie_agent_protocol::ContentTarget::Artifact {
+                session_id,
+                sha256,
+                name,
+            } => {
+                self.engine.session_meta(session_id).ok()?;
+                (
+                    ContentStore::Artifacts(self.engine.root_session_of(session_id)),
+                    sha256,
+                    name,
+                )
+            }
+            cookie_agent_protocol::ContentTarget::Asset { store, asset } => {
+                let asset = self
+                    .engine
+                    .get_asset(cookie_agent_protocol::AssetGetParams {
+                        store: store.clone(),
+                        asset,
+                    })
+                    .await
+                    .ok()?
+                    .asset;
+                let name = asset.filename.clone().unwrap_or(asset.title.clone());
+                (ContentStore::Assets(store), asset.sha256, Some(name))
+            }
+        };
+        let entry = self
+            .engine
+            .content_entry(store.clone(), sha256.clone())
+            .await
+            .ok()??;
+        let main = match &entry {
+            ContentEntry::Folder(manifest) => Some(manifest.main.clone()),
+            ContentEntry::File(_) => None,
+        };
+        let path = super::content_pages::content_path(
+            token,
+            &store,
+            &sha256,
+            main.is_some(),
+            name.as_deref().unwrap_or("file"),
+        );
+        Some(cookie_agent_protocol::ContentUrl { path, sha256, main })
+    }
 }
 
 fn protocol_fault(error: EngineError) -> ServerFault {

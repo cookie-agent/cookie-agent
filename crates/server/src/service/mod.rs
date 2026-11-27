@@ -1,3 +1,4 @@
+mod content_pages;
 mod guest;
 mod page;
 mod plugin_pages;
@@ -74,6 +75,9 @@ pub(crate) struct Shared {
     /// The page ticket of the token the daemon's listener serves with,
     /// which handshakes report once the daemon is ready.
     pub(crate) page_ticket: std::sync::RwLock<Option<String>>,
+    /// The token the daemon's listener serves with, from which the content
+    /// route's keys are derived (`content_pages::content_key`).
+    pub(crate) token: std::sync::OnceLock<Arc<Zeroizing<String>>>,
     /// The daemon's `[server] runtime_token`, which `/runtime` takes as
     /// well as the client token, and `/ws` never
     /// (`docs/site/specs/runtime-token.md`).
@@ -97,6 +101,7 @@ impl DaemonListener {
                 connections: Arc::new(tokio::sync::watch::Sender::new(())),
                 page_url: std::sync::RwLock::new(None),
                 page_ticket: std::sync::RwLock::new(None),
+                token: std::sync::OnceLock::new(),
                 runtime_token: std::sync::OnceLock::new(),
                 share_url: std::sync::RwLock::new(None),
             }),

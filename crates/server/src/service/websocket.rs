@@ -327,6 +327,7 @@ fn router(
         .write()
         .unwrap_or_else(|poisoned| poisoned.into_inner()) =
         Some(super::plugin_pages::page_ticket(token.as_str()));
+    let _ = shared.token.set(Arc::clone(&token));
     Router::new()
         .route("/ws", get(websocket_upgrade))
         .route("/runtime", get(runtime_upgrade))
@@ -337,6 +338,10 @@ fn router(
         .route(
             "/s/{*path}",
             axum::routing::any(super::share_pages::share_pages),
+        )
+        .route(
+            "/f/{*path}",
+            axum::routing::any(super::content_pages::content_pages),
         )
         .route(
             "/hooks/{token}",

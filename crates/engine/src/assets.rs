@@ -500,6 +500,53 @@ impl AssetStores {
         })
     }
 
+    /// What `sha256` is among `store`'s assets' current content, for the
+    /// `/f/` route: a file, or a folder; `None` when no asset has it now.
+    pub(crate) fn content_entry(
+        &self,
+        store: &AssetStore,
+        sha256: &str,
+    ) -> Result<Option<crate::runtime::content::ContentEntry>, AssetError> {
+        use crate::runtime::content::{ContentEntry, ContentFile};
+        self.locked(store, |dir| {
+            let index = self.index(dir)?;
+            let Some(record) = index.assets.iter().find(|record| record.sha256 == sha256) else {
+                return Ok(None);
+            };
+            Ok(Some(match record.folder {
+                Some(_) => ContentEntry::Folder(read_manifest(dir, sha256)?),
+                None => ContentEntry::File(ContentFile {
+                    digest: sha256.to_owned(),
+                    media_type: record.media_type.clone(),
+                    byte_length: record.byte_length,
+                }),
+            }))
+        })
+    }
+
+    /// Up to `length` bytes from `offset` of the blob `digest`, when an
+    /// asset of `store` has it as its content or as a file of its folder.
+    pub(crate) fn read_blob(
+        &self,
+        store: &AssetStore,
+        digest: &str,
+        offset: u64,
+        length: u64,
+    ) -> Result<Option<Vec<u8>>, AssetError> {
+        self.locked(store, |dir| {
+            let index = self.index(dir)?;
+            if !named_blobs(dir, &index)?.contains(digest) {
+                return Ok(None);
+            }
+            let blob = dir.join(BLOBS_DIR).join(digest);
+            match read_range(&blob, offset, length) {
+                Ok(bytes) => Ok(Some(bytes)),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+                Err(error) => Err(store_error(&blob)(error)),
+            }
+        })
+    }
+
     /// Stores `bytes` as a blob of `store` for a folder a later
     /// [`Self::write`] names, and returns its digest. A blob no write
     /// names by the daemon's next start is removed then.

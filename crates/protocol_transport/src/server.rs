@@ -1319,6 +1319,12 @@ pub trait ServerProtocol: Send + Sync + 'static {
         &self,
         params: cookie_agent_protocol::ArtifactReadParams,
     ) -> Result<cookie_agent_protocol::ArtifactReadResult, ServerFault>;
+    /// Where artifacts and assets are served over HTTP.
+    async fn content_urls(
+        &self,
+        params: cookie_agent_protocol::ContentUrlsParams,
+        context: &ServerContext,
+    ) -> Result<cookie_agent_protocol::ContentUrlsResult, ServerFault>;
     /// The files of a folder artifact in the store of a session's tree.
     async fn artifact_manifest(
         &self,
@@ -2425,6 +2431,16 @@ async fn dispatch<S: ServerProtocol>(
         }
         cookie_agent_protocol::ARTIFACT_MANIFEST_METHOD => {
             value(server.artifact_manifest(decode(params)?).await?)
+        }
+        cookie_agent_protocol::CONTENT_URLS_METHOD => {
+            let params: cookie_agent_protocol::ContentUrlsParams = decode(params)?;
+            if params.targets.len() > cookie_agent_protocol::CONTENT_URLS_MAX {
+                return Err(ServerFault::invalid_params(format!(
+                    "at most {} targets",
+                    cookie_agent_protocol::CONTENT_URLS_MAX
+                )));
+            }
+            value(server.content_urls(params, context).await?)
         }
         cookie_agent_protocol::ASSET_MANIFEST_METHOD => {
             value(server.asset_manifest(decode(params)?).await?)

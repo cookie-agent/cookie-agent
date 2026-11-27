@@ -31,6 +31,8 @@ fn Page(workspace: Workspace, asset: Asset) -> impl IntoView {
     let open = OpenAsset::of_asset(&asset);
     let source_only = open.source_only();
     let source = RwSignal::new(source_only);
+    // A folder's file list, in place of its preview or source.
+    let files = RwSignal::new(false);
     let full = RwSignal::new(false);
     let root = NodeRef::<html::Section>::new();
     let body = NodeRef::<html::Div>::new();
@@ -39,10 +41,15 @@ fn Page(workspace: Workspace, asset: Asset) -> impl IntoView {
         let open = open.clone();
         Effect::new(move |_| {
             let source = source.get();
+            let files = files.get();
             let Some(element) = body.get() else {
                 return;
             };
-            element.set_inner_html(&open.placeholder_html(source));
+            element.set_inner_html(&if files {
+                open.placeholder_view("files")
+            } else {
+                open.placeholder_html(source)
+            });
             crate::assets::show_within(&element, workspace);
         });
     }
@@ -121,7 +128,9 @@ fn Page(workspace: Workspace, asset: Asset) -> impl IntoView {
         }
     };
     let kind = cookie_agent_client_state::assets::AssetKind::of(&asset.media_type);
-    let has_tabs = open.has_source() && !source_only;
+    let folder = open.folder;
+    let has_source = open.has_source() && !source_only;
+    let has_tabs = has_source || folder;
     let fills = matches!(
         asset.media_type.as_str(),
         "text/html" | "text/markdown" | "application/pdf"
@@ -176,7 +185,7 @@ fn Page(workspace: Workspace, asset: Asset) -> impl IntoView {
         move || {
             format!(
                 "{TAB} {}",
-                if source.get() == is_source {
+                if !files.get() && source.get() == is_source {
                     TAB_ON
                 } else {
                     TAB_OFF
@@ -226,12 +235,19 @@ fn Page(workspace: Workspace, asset: Asset) -> impl IntoView {
                 </span>
                 <Show when=move || has_tabs>
                     <span class="flex shrink-0 gap-0.5 rounded-lg p-0.5 shadow-[inset_0_0_0_1px_var(--color-line-2)]" role="tablist">
-                        <button type="button" role="tab" id="asset-page-preview" class=tab(false) aria-selected=move || (!source.get()).to_string() on:click=move |_| source.set(false)>
+                        <button type="button" role="tab" id="asset-page-preview" class=tab(false) aria-selected=move || (!source.get() && !files.get()).to_string() on:click=move |_| { files.set(false); source.set(false); }>
                             "Preview"
                         </button>
-                        <button type="button" role="tab" id="asset-page-source" class=tab(true) aria-selected=move || source.get().to_string() on:click=move |_| source.set(true)>
-                            "Source"
-                        </button>
+                        <Show when=move || has_source>
+                            <button type="button" role="tab" id="asset-page-source" class=tab(true) aria-selected=move || (source.get() && !files.get()).to_string() on:click=move |_| { files.set(false); source.set(true); }>
+                                "Source"
+                            </button>
+                        </Show>
+                        <Show when=move || folder>
+                            <button type="button" role="tab" id="asset-page-files" class=move || format!("{} {}", TAB, if files.get() { TAB_ON } else { TAB_OFF }) aria-selected=move || files.get().to_string() on:click=move |_| files.set(true)>
+                                "Files"
+                            </button>
+                        </Show>
                     </span>
                     <span class="mx-1 hidden h-5 w-px bg-line-2 sm:block"></span>
                 </Show>

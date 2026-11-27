@@ -382,7 +382,7 @@ fn served_type(media_type: &str) -> String {
 
 /// `Content-Disposition` for `name`, with an ASCII fallback and the UTF-8
 /// name (RFC 6266).
-fn disposition(kind: &str, name: &str) -> String {
+pub(super) fn disposition(kind: &str, name: &str) -> String {
     let ascii = name
         .chars()
         .map(|character| {
@@ -409,11 +409,33 @@ fn bytes_response(
     total: u64,
     bytes: Vec<u8>,
 ) -> Response {
+    bytes_response_typed(
+        &served_type(media_type),
+        media_type,
+        name,
+        download,
+        part,
+        total,
+        bytes,
+    )
+}
+
+/// [`bytes_response`] served as `content_type` when inline, its policy
+/// chosen by `media_type`.
+pub(super) fn bytes_response_typed(
+    content_type: &str,
+    media_type: &str,
+    name: &str,
+    download: bool,
+    part: Part,
+    total: u64,
+    bytes: Vec<u8>,
+) -> Response {
     let mut headers = common_headers();
     let content_type = if download {
         "application/octet-stream".to_owned()
     } else {
-        served_type(media_type)
+        content_type.to_owned()
     };
     if let Ok(value) = HeaderValue::from_str(&content_type) {
         headers.insert(header::CONTENT_TYPE, value);
@@ -455,7 +477,7 @@ const MAX_RANGE_BYTES: u64 = 8 * 1024 * 1024;
 
 /// What of an asset a request wants.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Part {
+pub(super) enum Part {
     Whole,
     /// Inclusive of both ends.
     Range(u64, u64),
@@ -464,7 +486,7 @@ enum Part {
 
 impl Part {
     /// Where to read this part of `total` bytes, and how much.
-    fn extent(self, total: u64) -> (u64, u64) {
+    pub(super) fn extent(self, total: u64) -> (u64, u64) {
         match self {
             Self::Whole => (0, total),
             Self::Range(start, end) => (start, end - start + 1),
@@ -473,7 +495,7 @@ impl Part {
     }
 }
 
-fn wanted_part(request: &HeaderMap, total: u64) -> Part {
+pub(super) fn wanted_part(request: &HeaderMap, total: u64) -> Part {
     request
         .get(header::RANGE)
         .and_then(|value| value.to_str().ok())

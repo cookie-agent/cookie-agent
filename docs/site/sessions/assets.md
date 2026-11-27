@@ -81,6 +81,15 @@ on `write_asset`, names another.
   same for an attached folder, by the digest its `[folder …]` label names.
 - **Copying one:** `transfer` of a folder artifact writes the folder at
   the destination, its files with mode `0644`.
+- **In the web client** a folder shows as its main file, a page with its
+  relative references working, and the side panel's *Files* tab lists its
+  files, each opening in a tab of its own. *Download* saves a `.zip`.
+
+The web client reads every file it shows from the daemon over HTTP, so a
+video seeks and plays as it arrives and the browser caches what it read,
+and over its WebSocket connection when HTTP does not work, such as behind
+a proxy that forwards only `/ws`. A folder's page needs HTTP for its other
+files.
 
 See the [folder artifacts spec](../specs/folder-artifacts.md).
 

@@ -87,6 +87,12 @@ const PDF_VIEWER: &str = "pdf-viewer.html";
 #[derive(Clone)]
 struct Content {
     url: String,
+    /// Where a folder page's relative references resolve: the folder's base
+    /// with the main file's own folder, read over HTTP.
+    base: Option<String>,
+    /// The file's own URL over HTTP, for downloads: a file's, or a
+    /// folder's zip.
+    download: Option<String>,
     /// The bytes the URL names, to send a PDF to its viewer: the page's
     /// policy does not let it read its own `blob:` URLs back.
     blob: web_sys::Blob,
@@ -184,6 +190,8 @@ pub struct OpenAsset {
     pub title: String,
     pub media_type: String,
     pub shown_sha: String,
+    /// It is a folder, whose files the side panel lists.
+    pub folder: bool,
 }
 
 impl OpenAsset {
@@ -198,6 +206,7 @@ impl OpenAsset {
             title: shown.title,
             media_type: element.get_attribute("data-asset-type").unwrap_or_default(),
             shown_sha: shown.shown_sha,
+            folder: element.has_attribute("data-asset-folder"),
         })
     }
 
@@ -226,12 +235,18 @@ impl OpenAsset {
             title: asset.title.clone(),
             media_type: asset.media_type.clone(),
             shown_sha: asset.sha256.clone(),
+            folder: asset.folder.is_some(),
         }
     }
 
-    /// The side panel's placeholder of it: shown whole, or its `source`.
+    /// The side panel's placeholder of it: shown whole, its `source`, or a
+    /// folder's `files`.
     pub fn placeholder_html(&self, source: bool) -> String {
-        let view = if source { "source" } else { "panel" };
+        self.placeholder_view(if source { "source" } else { "panel" })
+    }
+
+    /// The side panel's placeholder showing it as `view`.
+    pub fn placeholder_view(&self, view: &str) -> String {
         let named = match &self.source {
             Source::Asset { store, asset } => format!(
                 "data-asset=\"{}\" data-asset-store=\"{}\" data-asset-handle=\"{}\"",
@@ -1304,6 +1319,10 @@ async fn fill(element: web_sys::Element, shown: Placeholder, workspace: Workspac
         let _ = element.set_attribute("data-shown", "yes");
         return;
     }
+    if shown.view == "files" {
+        files(&element, &asset, &shown, workspace).await;
+        return;
+    }
     let content = match content(&asset, &shown.source, workspace).await {
         Ok(content) => content,
         Err(error) => return failed(&element, error),
@@ -1315,7 +1334,12 @@ async fn fill(element: web_sys::Element, shown: Placeholder, workspace: Workspac
     match shown.view.as_str() {
         "thumb" => thumb(&target, &content, &asset),
         "page" => match &content.text {
-            Some(text) => frame(&target, text, Some(Fixed::Thumbnail)),
+            Some(text) => frame(
+                &target,
+                text,
+                Some(Fixed::Thumbnail),
+                content.base.as_deref(),
+            ),
             None => target.set_text_content(Some(&asset.title)),
         },
         "doc" => match &content.text {
@@ -1342,6 +1366,59 @@ async fn fill(element: web_sys::Element, shown: Placeholder, workspace: Workspac
     if !figure {
         card_state(&element, &asset, &shown);
     }
+    let _ = element.set_attribute("data-shown", "yes");
+}
+
+/// A folder's files, each opening in a tab of its own when the folder is
+/// served over HTTP (`docs/site/specs/folder-artifacts.md` section 5).
+async fn files(
+    element: &web_sys::Element,
+    asset: &Asset,
+    shown: &Placeholder,
+    workspace: Workspace,
+) {
+    let manifest = match &shown.source {
+        Source::Asset { store, asset } => workspace.asset_manifest(store.clone(), *asset).await,
+        Source::Artifact { sha256, .. } => workspace.artifact_manifest(sha256.clone()).await,
+    };
+    let target = body(element);
+    let manifest = match manifest {
+        Ok(manifest) => manifest,
+        Err(error) => {
+            target.set_text_content(Some(&format!("its files could not be read: {error}")));
+            let _ = element.set_attribute("data-shown", "failed");
+            return;
+        }
+    };
+    let http = http_content(asset, &shown.source, workspace).await;
+    let rows = manifest
+        .entries
+        .iter()
+        .map(|entry| {
+            let name = match &http {
+                Some(http) => format!(
+                    "<a class=\"truncate font-mono text-accent hover:underline\" href=\"{}{}\" target=\"_blank\" rel=\"noopener noreferrer\">{}</a>",
+                    escape(&http.url),
+                    escape(&encode_path(&entry.path)),
+                    escape(&entry.path)
+                ),
+                None => format!("<span class=\"truncate font-mono\">{}</span>", escape(&entry.path)),
+            };
+            let main = if entry.path == manifest.main {
+                "<span class=\"rounded-full bg-sunken px-1.5 text-[0.625rem] text-muted\">main</span>"
+            } else {
+                ""
+            };
+            format!(
+                "<li class=\"flex min-w-0 items-center gap-2 py-1\" data-folder-file>{name}{main}<span class=\"ml-auto shrink-0 {NOTE}\">{} · {}</span></li>",
+                escape(&cookie_agent_client_state::media_type_word(&entry.media_type)),
+                escape(&cookie_agent_protocol::human_bytes(entry.byte_length)),
+            )
+        })
+        .collect::<String>();
+    target.set_inner_html(&format!(
+        "<ul class=\"m-0 list-none divide-y divide-line p-3 text-xs\" data-folder-files>{rows}</ul>"
+    ));
     let _ = element.set_attribute("data-shown", "yes");
 }
 
@@ -1521,12 +1598,15 @@ fn figure_body(target: &web_sys::Element, content: &Content, asset: &Asset) {
         crate::media::show(target, &content.url, media, &asset.title);
     } else if media == "text/markdown" {
         match &content.text {
-            Some(text) if text.len() <= MAX_DOCUMENT_BYTES => document(target, text),
+            Some(text) if text.len() <= MAX_DOCUMENT_BYTES => {
+                document(target, text);
+                resolve_relative(target, content.base.as_deref());
+            }
             _ => download_card(target, asset, &content.url, Some("too large to show")),
         }
     } else if media == "text/html" {
         match &content.text {
-            Some(text) => frame(target, text, None),
+            Some(text) => frame(target, text, None, content.base.as_deref()),
             None => download_card(target, asset, &content.url, None),
         }
     } else {
@@ -1538,7 +1618,9 @@ fn figure_body(target: &web_sys::Element, content: &Content, asset: &Asset) {
 /// the transcript shows it, or a download.
 fn panel(target: &web_sys::Element, content: &Content, asset: &Asset) {
     match (content.media_type.as_str(), &content.text) {
-        ("text/html", Some(text)) => frame(target, text, Some(Fixed::Filling)),
+        ("text/html", Some(text)) => {
+            frame(target, text, Some(Fixed::Filling), content.base.as_deref())
+        }
         ("application/pdf", _) => pdf_frame(target, content),
         ("text/markdown", Some(text)) => {
             target.set_inner_html(&format!(
@@ -1546,6 +1628,7 @@ fn panel(target: &web_sys::Element, content: &Content, asset: &Asset) {
                 crate::render::markdown::markdown_html(text)
             ));
             crate::highlight::highlight_within(target);
+            resolve_relative(target, content.base.as_deref());
         }
         _ => {
             let _ = target.set_attribute("class", "flex min-h-0 flex-1 flex-col items-center p-3");
@@ -1736,7 +1819,7 @@ fn set_head(element: &web_sys::Element, asset: &Asset, shown: &Placeholder) {
             format!(
                 "<a download=\"{}\" href=\"{}\" class=\"{BUTTON}\" title=\"Download\">{}<span class=\"sr-only sm:not-sr-only\">Download</span></a>",
                 escape(&download_name(asset)),
-                escape(&content.url),
+                escape(content.download.as_deref().unwrap_or(&content.url)),
                 crate::icons::svg(icondata::LuDownload, "")
             )
         })
@@ -1801,6 +1884,47 @@ fn document(target: &web_sys::Element, text: &str) {
     }
 }
 
+/// Points a rendered document's relative image sources and links at its
+/// folder `base`; without one they stay as they are.
+fn resolve_relative(target: &web_sys::Element, base: Option<&str>) {
+    let Some(base) = base else {
+        return;
+    };
+    let relative = |value: &str| {
+        !(value.is_empty()
+            || value.starts_with('#')
+            || value.starts_with('/')
+            || value.contains(':'))
+    };
+    for (selector, attribute) in [
+        ("img[src]", "src"),
+        ("a[href]", "href"),
+        ("video[src]", "src"),
+    ] {
+        let Ok(found) = target.query_selector_all(selector) else {
+            continue;
+        };
+        for index in 0..found.length() {
+            let Some(element) = found
+                .item(index)
+                .and_then(|node| node.dyn_into::<web_sys::Element>().ok())
+            else {
+                continue;
+            };
+            let Some(value) = element.get_attribute(attribute) else {
+                continue;
+            };
+            if relative(&value) {
+                let _ = element.set_attribute(attribute, &format!("{base}{value}"));
+                if attribute == "href" {
+                    let _ = element.set_attribute("target", "_blank");
+                    let _ = element.set_attribute("rel", "noopener noreferrer");
+                }
+            }
+        }
+    }
+}
+
 /// Shows a cut document whole.
 fn uncut(document: &web_sys::Element) {
     let _ = document
@@ -1824,7 +1948,12 @@ enum Fixed {
 
 /// An HTML page in a frame of `viewer.html`, which gets the page once it
 /// loads, with this frame's token.
-fn frame(target: &web_sys::Element, text: &std::rc::Rc<str>, fixed: Option<Fixed>) {
+fn frame(
+    target: &web_sys::Element,
+    text: &std::rc::Rc<str>,
+    fixed: Option<Fixed>,
+    base: Option<&str>,
+) {
     let Some(document) = target.owner_document() else {
         return;
     };
@@ -1870,8 +1999,9 @@ fn frame(target: &web_sys::Element, text: &std::rc::Rc<str>, fixed: Option<Fixed
     let html = std::rc::Rc::clone(text);
     let sent = token.clone();
     let frame = iframe.clone();
+    let base = base.map(str::to_owned);
     let on_load = Closure::<dyn Fn()>::new(move || {
-        send_page(&frame, &html, &sent);
+        send_page(&frame, &html, &sent, base.as_deref());
     });
     let _ = iframe.add_event_listener_with_callback("load", on_load.as_ref().unchecked_ref());
     on_load.forget();
@@ -1993,7 +2123,7 @@ async fn send_pdf(frame: web_sys::Element, pdf: web_sys::Blob, token: String) {
     }
 }
 
-fn send_page(frame: &web_sys::Element, html: &str, token: &str) {
+fn send_page(frame: &web_sys::Element, html: &str, token: &str, base: Option<&str>) {
     let Some(window) = content_window(frame) else {
         return;
     };
@@ -2001,6 +2131,10 @@ fn send_page(frame: &web_sys::Element, html: &str, token: &str) {
     let _ = js_sys::Reflect::set(&message, &"type".into(), &"cookie-asset-page".into());
     let _ = js_sys::Reflect::set(&message, &"token".into(), &token.into());
     let _ = js_sys::Reflect::set(&message, &"html".into(), &html.into());
+    // A folder's page: its relative references resolve to its folder.
+    if let Some(base) = base {
+        let _ = js_sys::Reflect::set(&message, &"base".into(), &base.into());
+    }
     let post = js_sys::Reflect::get(&window, &"postMessage".into())
         .ok()
         .and_then(|post| post.dyn_into::<js_sys::Function>().ok());
@@ -2136,7 +2270,7 @@ fn full_screen(figure: &web_sys::Element) {
     ));
     let body = body(&overlay);
     if content.media_type == "text/html" {
-        frame(&body, &text, None);
+        frame(&body, &text, None, content.base.as_deref());
         if let Ok(Some(iframe)) = body.query_selector("iframe")
             && let Some(iframe) = iframe.dyn_ref::<web_sys::HtmlElement>()
         {
@@ -2193,12 +2327,49 @@ async fn content(asset: &Asset, source: &Source, workspace: Workspace) -> Result
     if let Some(content) = CONTENTS.with(|contents| contents.borrow_mut().get(&asset.sha256)) {
         return Ok(content);
     }
-    let (bytes, sha256, media_type) = match source {
-        Source::Asset { store, asset } => workspace.read_asset_bytes(store.clone(), *asset).await?,
+    let http = http_content(asset, source, workspace).await;
+    let shown_type = match source {
+        Source::Asset { .. } => asset.media_type.clone(),
+        Source::Artifact { media_type, .. } => media_type.clone(),
+    };
+    // Video and audio play from their URL, which seeks with ranges, rather
+    // than read whole first.
+    if let Some(http) = &http
+        && http.main.is_none()
+        && (shown_type.starts_with("video/") || shown_type.starts_with("audio/"))
+    {
+        return Ok(Content {
+            url: http.url.clone(),
+            base: None,
+            download: Some(http.download(&download_name(asset))),
+            blob: web_sys::Blob::new().map_err(|_| "the asset could not be shown".to_owned())?,
+            text: None,
+            media_type: shown_type,
+        });
+    }
+    let fetched = match &http {
+        Some(http) => match fetch_bytes(&http.shown()).await {
+            Ok(bytes) => Some(bytes),
+            Err(_) => {
+                HTTP_FAILED.with(|failed| failed.set(true));
+                None
+            }
+        },
+        None => None,
+    };
+    let http = http.filter(|_| fetched.is_some());
+    let (bytes, sha256, media_type) = match (fetched, source) {
+        (Some(bytes), _) => (bytes, asset.sha256.clone(), shown_type),
+        (None, Source::Asset { store, asset }) => {
+            workspace.read_asset_bytes(store.clone(), *asset).await?
+        }
         // A stored file's type is what its attachment found it to be.
-        Source::Artifact {
-            sha256, media_type, ..
-        } => {
+        (
+            None,
+            Source::Artifact {
+                sha256, media_type, ..
+            },
+        ) => {
             let (bytes, _) = workspace.read_media(sha256.clone()).await?;
             (bytes, sha256.clone(), media_type.clone())
         }
@@ -2214,6 +2385,10 @@ async fn content(asset: &Asset, source: &Source, workspace: Workspace) -> Result
         blob_url(&bytes, &media_type).map_err(|_| "the asset could not be shown".to_owned())?;
     let content = Content {
         url,
+        base: http.as_ref().and_then(HttpContent::base),
+        download: http
+            .as_ref()
+            .map(|http| http.download(&download_name(asset))),
         blob,
         text,
         media_type,
@@ -2230,6 +2405,120 @@ async fn content(asset: &Asset, source: &Source, workspace: Workspace) -> Result
         let _ = web_sys::Url::revoke_object_url(&left.url);
     }
     Ok(content)
+}
+
+thread_local! {
+    /// Whether HTTP failed on this connection; it is tried again on the
+    /// next (`docs/site/specs/folder-artifacts.md` section 6.6).
+    static HTTP_FAILED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// The URLs `content.urls` gave on this connection, by content.
+    static HTTP_URLS: RefCell<HashMap<String, Option<HttpContent>>> = RefCell::new(HashMap::new());
+}
+
+/// Where content is served over HTTP.
+#[derive(Clone, Debug)]
+struct HttpContent {
+    /// A file's URL, or a folder's base (ending in `/`).
+    url: String,
+    /// A folder's main file.
+    main: Option<String>,
+}
+
+impl HttpContent {
+    /// The URL of the file a card shows: the file, or a folder's main file.
+    fn shown(&self) -> String {
+        match &self.main {
+            Some(main) => format!("{}{}", self.url, encode_path(main)),
+            None => self.url.clone(),
+        }
+    }
+
+    /// Where the shown file's relative references resolve, for a folder.
+    fn base(&self) -> Option<String> {
+        let main = self.main.as_ref()?;
+        let folder = main.rsplit_once('/').map_or("", |(folder, _)| folder);
+        Some(if folder.is_empty() {
+            self.url.clone()
+        } else {
+            format!("{}{}/", self.url, encode_path(folder))
+        })
+    }
+
+    /// The URL that downloads it: a file as an attachment, a folder as a
+    /// zip named `name`.
+    fn download(&self, name: &str) -> String {
+        match &self.main {
+            Some(_) => format!(
+                "{}.zip?name={}",
+                self.url.trim_end_matches('/'),
+                js_sys::encode_uri_component(name)
+            ),
+            None => format!("{}?download", self.url),
+        }
+    }
+}
+
+/// `path` with each segment escaped for a URL.
+fn encode_path(path: &str) -> String {
+    path.split('/')
+        .map(|part| String::from(js_sys::encode_uri_component(part)))
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+/// Forgets what HTTP did on the last connection: a new one tries it again.
+pub fn reset_http() {
+    HTTP_FAILED.with(|failed| failed.set(false));
+    HTTP_URLS.with(|urls| urls.borrow_mut().clear());
+}
+
+/// Where `asset`, read from `source`, is served over HTTP; `None` once HTTP
+/// failed on this connection, for a guest, or when the daemon has no URL.
+async fn http_content(asset: &Asset, source: &Source, workspace: Workspace) -> Option<HttpContent> {
+    if HTTP_FAILED.with(std::cell::Cell::get) {
+        return None;
+    }
+    let key = format!("{source:?}:{}", asset.sha256);
+    if let Some(known) = HTTP_URLS.with(|urls| urls.borrow().get(&key).cloned()) {
+        return known;
+    }
+    let base = workspace.share_page_base.get_untracked();
+    if base.is_empty() {
+        return None;
+    }
+    let target = match source {
+        Source::Asset { store, asset } => cookie_agent_protocol::ContentTarget::Asset {
+            store: store.clone(),
+            asset: *asset,
+        },
+        Source::Artifact { sha256, name, .. } => cookie_agent_protocol::ContentTarget::Artifact {
+            session_id: workspace.selected.get_untracked()?,
+            sha256: sha256.clone(),
+            name: Some(name.clone()).filter(|name| !name.is_empty()),
+        },
+    };
+    let found = workspace
+        .content_urls(vec![target])
+        .await
+        .ok()?
+        .into_iter()
+        .next()
+        .flatten()
+        // An asset written since names other content: read it as it is.
+        .filter(|url| url.sha256 == asset.sha256)
+        .map(|url| HttpContent {
+            url: format!("{base}{}", url.path),
+            main: url.main,
+        });
+    HTTP_URLS.with(|urls| urls.borrow_mut().insert(key, found.clone()));
+    found
+}
+
+/// The bytes at `url`, read over HTTP.
+async fn fetch_bytes(url: &str) -> Result<Vec<u8>, JsValue> {
+    let blob = fetch_blob(url).await?;
+    let buffer = wasm_bindgen_futures::JsFuture::from(blob.array_buffer()).await?;
+    Ok(js_sys::Uint8Array::new(&buffer).to_vec())
 }
 
 /// A `Blob` of `bytes` and its URL.
@@ -2262,9 +2551,9 @@ pub fn download(workspace: Workspace, asset: Asset) {
 fn download_from(workspace: Workspace, asset: Asset, source: Source) {
     spawn_local(async move {
         let url = match CONTENTS.with(|contents| contents.borrow_mut().get(&asset.sha256)) {
-            Some(content) => content.url,
+            Some(content) => content.download.unwrap_or(content.url),
             None => match content(&asset, &source, workspace).await {
-                Ok(content) => content.url,
+                Ok(content) => content.download.unwrap_or(content.url),
                 Err(error) => {
                     workspace
                         .status

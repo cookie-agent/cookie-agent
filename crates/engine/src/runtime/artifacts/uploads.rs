@@ -960,7 +960,7 @@ fn check_stored_media(
 /// What `artifact.read` says a blob is: the media type its content is
 /// recognized as, `text/plain` when its head is UTF-8, and
 /// `application/octet-stream` otherwise.
-fn content_media_type(head: &[u8], total_bytes: u64) -> &'static str {
+pub(crate) fn content_media_type(head: &[u8], total_bytes: u64) -> &'static str {
     if let Some(media_type) = runtime_media::recognize_media_type(head, total_bytes) {
         return media_type;
     }

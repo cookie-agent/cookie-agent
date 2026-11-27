@@ -363,6 +363,7 @@ Idempotent redelivery resolves against the state preceding the original run.
 | `speech.transcribe.cancel` | `transcription_id` | Empty object |
 | `artifact.read` | Session ID, `sha256`, optional `path` (since 1.104.0; see [Folders](#folders)), `offset`, `length` (at most 1 MiB) | Base64 `data`, `total_bytes`, `media_type` |
 | `artifact.manifest` | Session ID, `sha256` of a folder (since 1.104.0; see [Folders](#folders)) | The folder's `sha256`, `main`, and `entries` |
+| `content.urls` | `targets`: up to 64 of `{ type: "artifact", session_id, sha256, name? }` or `{ type: "asset", store, asset }` (since 1.108.0; see [Folders](#folders)) | `urls`, one per target: `{ path, sha256, main? }` or `null` |
 | `artifact.thumbnail` | Session ID, `sha256` (since 1.105.0; see [Media](#media)) | As `asset.thumbnail`: the `sha256`, its `thumbnail?`, and without one `retry_later` |
 | `attachment.delivery` | Session ID, `files` (`ArtifactRef`s, at most 64), the draft's `selection` (since 1.105.0; see [Media](#media)) | Per file, in order: `sha256`, `ending` (`included`, `read_artifact`, `transfer`, `name_only`), the `label` the model gets, and `reason?` |
 | `assets.list` | `store` (since 1.67.0; see [Assets](#assets)) | The store's `assets`, newest first |
@@ -994,6 +995,19 @@ one given for a file, is `bad_params` with `field` `path`.
 `artifact.manifest` and `asset.manifest` return the folder's `entries`,
 each `{ path, sha256, byte_length, media_type }`, sorted by path; asked of a
 file, they are `bad_params`.
+
+Since 1.108.0 the daemon serves artifacts and assets over HTTP, files and
+folders alike, on its `/f/` route: `content.urls` returns, for each target,
+the `path` from the daemon's root (`f/<store>/<sha256>/<key>/<name>` for a
+file, or a folder's base ending in `/`, whose files are below it by their
+paths and whose zip is the base with `.zip` for its last `/`), the `sha256`
+it names, and a folder's `main`. The key is an HMAC of the daemon token, so
+a URL needs no token and holds until the content is gone or the token
+changes. Answers allow any origin without credentials, HTML and SVG carry
+the sandbox policy shared links' `raw` carries, and `?download` makes a
+file an attachment. A web page reads a file over HTTP first and over
+`artifact.read` or `asset.read` when HTTP fails. A share guest's
+connection is refused the method and reads over its connection.
 ### Share links
 
 Since 1.86.0 a share link is a public URL for one asset

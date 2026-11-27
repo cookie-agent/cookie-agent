@@ -5,6 +5,14 @@ The client protocol's version is `MAJOR.MINOR.PATCH`
 adds and a major breaks; before it, every minor could break the wire (see the
 [compatibility spec](../specs/compatibility-v1.md) section 3).
 
+## 1.108.0
+
+- Files over HTTP ([folder artifacts spec](../specs/folder-artifacts.md)
+  section 6, [Folders](protocol.md#folders)): `content.urls` gives, for up
+  to 64 artifacts or assets, where the daemon serves each on its `/f/`
+  route (a file's URL, or a folder's base and main file), or `null`. A
+  1.107.0 daemon does not know the method.
+
 ## 1.107.0
 
 - The attachment tag's `src` may name a folder, and `AttachSource.path`

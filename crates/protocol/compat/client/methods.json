@@ -274,6 +274,14 @@
       "result": "ConfigReloadResult"
     },
     {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "content.urls",
+      "params": "ContentUrlsParams",
+      "params_role": "command",
+      "result": "ContentUrlsResult"
+    },
+    {
       "direction": "from_daemon",
       "kind": "notification",
       "method": "crons.changed",

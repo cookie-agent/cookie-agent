@@ -148,6 +148,8 @@ fn Divider(
 #[component]
 fn Panel(workspace: Workspace, open: OpenAsset) -> impl IntoView {
     let source = RwSignal::new(false);
+    // A folder's file list, in place of its preview or source.
+    let files = RwSignal::new(false);
     let full = RwSignal::new(false);
     let body = NodeRef::<html::Div>::new();
     let root = NodeRef::<html::Aside>::new();
@@ -160,10 +162,15 @@ fn Panel(workspace: Workspace, open: OpenAsset) -> impl IntoView {
         let open = open.clone();
         Effect::new(move |_| {
             let source = source.get();
+            let files = files.get();
             let Some(element) = body.get() else {
                 return;
             };
-            element.set_inner_html(&open.placeholder_html(source));
+            element.set_inner_html(&if files {
+                open.placeholder_view("files")
+            } else {
+                open.placeholder_html(source)
+            });
             crate::assets::show_within(&element, workspace);
         });
     }
@@ -174,6 +181,7 @@ fn Panel(workspace: Workspace, open: OpenAsset) -> impl IntoView {
         }
     });
     let has_source = open.has_source();
+    let folder = open.folder;
     let title = open.title.clone();
     let label = title.clone();
     let handle = open.handle.clone();
@@ -189,7 +197,7 @@ fn Panel(workspace: Workspace, open: OpenAsset) -> impl IntoView {
         move || {
             format!(
                 "{TAB} {}",
-                if source.get() == is_source {
+                if !files.get() && source.get() == is_source {
                     TAB_ON
                 } else {
                     TAB_OFF
@@ -197,6 +205,7 @@ fn Panel(workspace: Workspace, open: OpenAsset) -> impl IntoView {
             )
         }
     };
+    let files_tab = move || format!("{TAB} {}", if files.get() { TAB_ON } else { TAB_OFF });
     let class = move || {
         if full.get() {
             "fixed inset-0 z-50 flex flex-col bg-surface-2 outline-none"
@@ -240,28 +249,48 @@ fn Panel(workspace: Workspace, open: OpenAsset) -> impl IntoView {
                         {handle}
                     </span>
                 </span>
-                <Show when=move || has_source>
+                <Show when=move || has_source || folder>
                     <span class="flex shrink-0 gap-1" role="tablist">
                         <button
                             type="button"
                             role="tab"
                             id="asset-panel-preview"
                             class=tab(false)
-                            aria-selected=move || (!source.get()).to_string()
-                            on:click=move |_| source.set(false)
+                            aria-selected=move || (!source.get() && !files.get()).to_string()
+                            on:click=move |_| {
+                                files.set(false);
+                                source.set(false);
+                            }
                         >
                             "Preview"
                         </button>
-                        <button
-                            type="button"
-                            role="tab"
-                            id="asset-panel-source"
-                            class=tab(true)
-                            aria-selected=move || source.get().to_string()
-                            on:click=move |_| source.set(true)
-                        >
-                            "Source"
-                        </button>
+                        <Show when=move || has_source>
+                            <button
+                                type="button"
+                                role="tab"
+                                id="asset-panel-source"
+                                class=tab(true)
+                                aria-selected=move || (source.get() && !files.get()).to_string()
+                                on:click=move |_| {
+                                    files.set(false);
+                                    source.set(true);
+                                }
+                            >
+                                "Source"
+                            </button>
+                        </Show>
+                        <Show when=move || folder>
+                            <button
+                                type="button"
+                                role="tab"
+                                id="asset-panel-files"
+                                class=files_tab
+                                aria-selected=move || files.get().to_string()
+                                on:click=move |_| files.set(true)
+                            >
+                                "Files"
+                            </button>
+                        </Show>
                     </span>
                 </Show>
                 // A stored file has no handle to copy.

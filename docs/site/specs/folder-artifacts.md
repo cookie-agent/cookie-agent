@@ -592,3 +592,26 @@ Phase 2 (client protocol 1.107.0, plugin protocol 1.50.0):
 - **A `transfer` of a folder artifact** builds its tar stream in a
   temporary file first, so the stream's SHA-256 is known before it is
   sent, as the runtime's commit checks it.
+
+Phase 3 (client protocol 1.108.0):
+
+- **`content.urls` targets are tagged** (`{ type: "artifact", … }` or
+  `{ type: "asset", … }`) and return a `path` from the daemon's root, which
+  the page puts after its own base, so a page under a sub-path or on a
+  static host builds the URL from the address it reached the daemon at.
+- **The key is derived from the daemon token** as section 6.1 decides; the
+  daemon's listener keeps the token for it beside the page ticket.
+- **A zip stores its files** as they are, without deflating them, and
+  carries no `Content-Length`. Folders are at most 200 MiB, and most of a
+  report's bytes are pictures and video already compressed.
+- **The *Files* tab** lists the files, and each opens in a tab of its own
+  over HTTP (an HTML or SVG file under the sandbox policy), rather than in
+  the panel as a single file of its type.
+- **Guests read over their connection** until phase 4: `content.urls` is
+  refused to a share guest, whose page falls back to `artifact.read` and
+  `asset.read`. A folder's page shows its main file without its other files
+  there.
+- **Video and audio play from their URL**, and every other kind is read
+  over HTTP whole, as it was over the WebSocket, so the card code is the
+  same; a read that fails over HTTP marks HTTP failed for the connection.
+

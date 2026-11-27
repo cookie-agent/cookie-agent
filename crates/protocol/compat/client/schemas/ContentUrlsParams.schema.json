@@ -1,0 +1,135 @@
+{
+  "$defs": {
+    "AssetStore": {
+      "description": "Where an asset is kept (section 4.1). A store's assets are listed,\nread, and changed together; an asset never moves between stores.",
+      "oneOf": [
+        {
+          "description": "A session tree's own assets (scope `session`), named by the tree's\nroot. They are deleted with the tree.",
+          "properties": {
+            "session": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": {
+              "const": "session",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "session"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A project's assets (scope `project`).",
+          "properties": {
+            "project": {
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^[a-z0-9][a-z0-9-]{0,63}$",
+              "type": "string"
+            },
+            "type": {
+              "const": "project",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "project"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The assets of every session in no project (scope `project`).",
+          "properties": {
+            "type": {
+              "const": "shared",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ContentTarget": {
+      "description": "What `content.urls` makes a URL of: an artifact of a session's tree, or\nan asset's current content.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "name": {
+              "description": "The file's name, for the URL's last segment; the daemon ignores\nit when it serves the URL.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "session_id": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "sha256": {
+              "maxLength": 64,
+              "minLength": 64,
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            "type": {
+              "const": "artifact",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "session_id",
+            "sha256"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "asset": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "store": {
+              "$ref": "#/$defs/AssetStore"
+            },
+            "type": {
+              "const": "asset",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "store",
+            "asset"
+          ],
+          "type": "object"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "targets": {
+      "items": {
+        "$ref": "#/$defs/ContentTarget"
+      },
+      "maxItems": 64,
+      "type": "array"
+    }
+  },
+  "required": [
+    "targets"
+  ],
+  "title": "ContentUrlsParams",
+  "type": "object"
+}

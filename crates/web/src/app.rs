@@ -282,6 +282,8 @@ impl Connection {
         self.workspace
             .share_page_base
             .set(cookie_agent_client_state::shares::page_base(url).unwrap_or_default());
+        // A new connection tries HTTP again for files it shows.
+        crate::assets::reset_http();
         // The page waited for the daemon to be ready; what it is busy with
         // comes in its notifications from here on.
         self.daemon.set(

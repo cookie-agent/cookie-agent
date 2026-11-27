@@ -1358,6 +1358,16 @@ impl Client {
             .await
     }
 
+    /// Where artifacts and assets are served over HTTP (`content.urls`,
+    /// client protocol 1.108.0).
+    pub async fn content_urls(
+        &self,
+        params: cookie_agent_protocol::ContentUrlsParams,
+    ) -> Result<cookie_agent_protocol::ContentUrlsResult, ClientError> {
+        self.call(cookie_agent_protocol::CONTENT_URLS_METHOD, &params)
+            .await
+    }
+
     /// The files of a folder artifact of a session's tree
     /// (`artifact.manifest`, client protocol 1.104.0).
     pub async fn artifact_manifest(

@@ -100,6 +100,8 @@ pub struct CardFile {
     /// The model saw the file by its name and size alone: a user's file
     /// stored as a file.
     pub name_only: bool,
+    /// A folder's main file and files; `byte_length` is then its files'.
+    pub folder: Option<cookie_agent_protocol::FolderInfo>,
     source: CardSource,
 }
 
@@ -119,9 +121,13 @@ impl CardFile {
         Self {
             title: block.title.clone(),
             media_type: block.media_type.clone(),
-            byte_length: block.byte_length,
+            byte_length: block
+                .folder
+                .as_ref()
+                .map_or(block.byte_length, |folder| folder.bytes),
             filename: block.filename.clone(),
             name_only: false,
+            folder: block.folder.clone(),
             source: CardSource::Asset(block.clone()),
         }
     }
@@ -149,6 +155,7 @@ impl CardFile {
             byte_length,
             filename: filename.map(str::to_owned),
             name_only: false,
+            folder: None,
             source: CardSource::Artifact {
                 sha256: sha256.to_owned(),
                 key: None,
@@ -174,8 +181,19 @@ impl CardFile {
     /// The attributes every placeholder carries: what it shows, what it
     /// was when shown, and how to fill it.
     fn placeholder(&self, view: &str) -> String {
+        let folder = self
+            .folder
+            .as_ref()
+            .map(|folder| {
+                format!(
+                    " data-asset-folder=\"{}\" data-asset-main=\"{}\"",
+                    folder.files,
+                    escape(&folder.main)
+                )
+            })
+            .unwrap_or_default();
         let common = format!(
-            "data-asset-title=\"{}\" data-asset-type=\"{}\" data-asset-view=\"{view}\"",
+            "data-asset-title=\"{}\" data-asset-type=\"{}\" data-asset-view=\"{view}\"{folder}",
             escape(&self.title),
             escape(&self.media_type),
         );
@@ -320,9 +338,13 @@ impl CardState {
                 } => Self::Ready(Box::new(CardFile {
                     title: label,
                     media_type: file.media_type.as_str().to_owned(),
-                    byte_length: *byte_length,
+                    byte_length: file
+                        .folder
+                        .as_ref()
+                        .map_or(*byte_length, |folder| folder.bytes),
                     filename: file.filename.clone(),
                     name_only: false,
+                    folder: file.folder.clone(),
                     source: CardSource::Artifact {
                         sha256: sha256.as_str().to_owned(),
                         key: Some(key),
@@ -651,9 +673,14 @@ fn file_html(file: &CardFile) -> String {
         escape(&label),
         escape(name),
         escape(&file.media_type),
-        escape(&cookie_agent_client_state::media_type_word(
-            &file.media_type
-        )),
+        escape(&match &file.folder {
+            Some(folder) => format!(
+                "{} · {} files",
+                cookie_agent_client_state::media_type_word(&file.media_type),
+                folder.files
+            ),
+            None => cookie_agent_client_state::media_type_word(&file.media_type),
+        }),
         escape(&cookie_agent_protocol::human_bytes(file.byte_length)),
         file.share_button(SHARE_IN_ROW),
         file.corner_button(CORNER_IN_ROW),
