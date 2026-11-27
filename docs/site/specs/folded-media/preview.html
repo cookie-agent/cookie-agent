@@ -1,0 +1,243 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Media the agent saw, in folded work</title>
+<style>
+:root { --bg: #fafafa; --fg: #09090b; --muted: #71717a; --faint: #a1a1aa; --line: rgb(9 9 11 / 0.1); --card: #fff; --sunken: #f4f4f5; --accent: #5b5bd6; --accent-soft: rgb(91 91 214 / 0.14); --warn: #b45309; color-scheme: light; }
+html.dark { --bg: #0a0a0c; --fg: #ededef; --muted: #86868f; --faint: #5c5c66; --line: rgb(255 255 255 / 0.1); --card: #141417; --sunken: #1b1b1f; --accent: #8b8bff; --accent-soft: rgb(139 139 255 / 0.16); --warn: #f59e0b; color-scheme: dark; }
+html, body { margin: 0; background: var(--bg); color: var(--fg); }
+body { font: 15px/1.5 Inter, system-ui, -apple-system, "Segoe UI", sans-serif; }
+.top { position: sticky; top: 0; z-index: 5; display: flex; align-items: baseline; gap: 1rem; flex-wrap: wrap; padding: 0.75rem 1.5rem; background: color-mix(in srgb, var(--bg) 88%, transparent); backdrop-filter: blur(8px); border-bottom: 1px solid var(--line); }
+.top h1 { font-size: 1.05rem; margin: 0; }
+.sub { color: var(--muted); font-size: 0.85rem; }
+.sw { margin-left: auto; display: flex; gap: 0.25rem; }
+button.t { border: 1px solid var(--line); background: var(--card); color: var(--fg); border-radius: 999px; padding: 0.25rem 0.75rem; font: inherit; font-size: 0.85rem; cursor: pointer; }
+button.t[aria-pressed=true] { background: var(--accent); color: #fff; border-color: var(--accent); }
+.wrap { max-width: 1100px; margin: 0 auto; padding: 1rem 1.5rem 4rem; }
+h2 { font-size: 1.1rem; margin: 2rem 0 0.25rem; }
+p.lead { color: var(--muted); margin: 0 0 1rem; max-width: 52rem; }
+code { font: 0.85em ui-monospace, monospace; background: var(--line); padding: 0.05em 0.3em; border-radius: 4px; }
+.cols { display: flex; gap: 1.5rem; flex-wrap: wrap; align-items: flex-start; }
+.pane { background: var(--card); border-radius: 12px; box-shadow: 0 0 0 1px var(--line), 0 12px 40px -18px rgb(0 0 0 / 0.35); padding: 1.25rem 1.5rem; flex: 1 1 34rem; min-width: 0; }
+.pane.phone { flex: 0 0 340px; padding: 1rem; }
+.cap { font-size: 0.85rem; color: var(--muted); margin: 0.4rem 0 0; }
+
+/* transcript */
+.user { margin-left: auto; width: fit-content; max-width: 80%; background: var(--sunken); border-radius: 14px; padding: 0.5rem 0.85rem; margin-bottom: 1rem; }
+.who { display: flex; gap: 0.5rem; align-items: center; font-size: 0.85rem; color: var(--muted); margin-bottom: 0.25rem; }
+.who b { color: var(--fg); font-weight: 600; }
+.av { width: 18px; height: 18px; border-radius: 5px; background: var(--accent); display: inline-block; }
+.work { margin: 0.15rem 0 0.6rem; }
+.wrow { display: block; color: var(--muted); font-size: 0.875rem; cursor: pointer; user-select: none; }
+.wrow > span { margin-right: 0.3rem; }
+.wrow:hover { color: var(--fg); }
+.chev { display: inline-block; width: 1em; transition: transform 160ms; }
+.open > .wrow .chev { transform: rotate(90deg); }
+.count { color: var(--muted); }
+.live { padding-left: 1.4rem; font-size: 0.875rem; color: var(--muted); }
+.live .call { font: 0.78rem ui-monospace, monospace; color: var(--faint); }
+.live div { min-height: 1.35em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.rise { animation: rise 280ms ease-out; }
+@keyframes rise { from { opacity: 0; filter: blur(4px); transform: translateY(4px); } }
+.spin { display: inline-block; vertical-align: -1px; width: 11px; height: 11px; border: 2px solid var(--line); border-top-color: var(--accent); border-radius: 50%; animation: sp 0.8s linear infinite; }
+@keyframes sp { to { transform: rotate(360deg); } }
+
+.strip { display: flex; gap: 8px; padding: 0.4rem 0 0.2rem 1.4rem; overflow: hidden; }
+.phone .strip { overflow-x: auto; scrollbar-width: none; }
+.th { position: relative; height: 64px; flex: 0 0 auto; border-radius: 8px; overflow: hidden; cursor: zoom-in; box-shadow: 0 0 0 1px var(--line); background: var(--sunken); }
+.th img { height: 64px; display: block; }
+.th:hover { box-shadow: 0 0 0 2px var(--accent); }
+.th .play { position: absolute; inset: 0; display: grid; place-items: center; color: #fff; font-size: 18px; text-shadow: 0 1px 4px rgb(0 0 0 / 0.6); }
+.th .dur { position: absolute; right: 4px; bottom: 3px; font: 10px ui-monospace, monospace; color: #fff; background: rgb(0 0 0 / 0.55); border-radius: 4px; padding: 0 3px; }
+.th .nm { position: absolute; left: 4px; top: 3px; width: 16px; height: 16px; border-radius: 50%; background: rgb(0 0 0 / 0.6); color: #fff; display: grid; place-items: center; font-size: 10px; }
+.more { height: 64px; min-width: 56px; border-radius: 8px; display: grid; place-items: center; background: var(--sunken); box-shadow: 0 0 0 1px var(--line); color: var(--muted); font-size: 0.9rem; cursor: pointer; flex: 0 0 auto; }
+.more:hover { color: var(--fg); }
+.tip { position: fixed; z-index: 30; pointer-events: none; background: var(--fg); color: var(--bg); font: 0.75rem ui-monospace, monospace; padding: 0.2rem 0.45rem; border-radius: 6px; white-space: nowrap; }
+
+.calls { padding-left: 1.4rem; margin-top: 0.35rem; display: none; }
+.open .calls { display: block; }
+.open .strip { display: none; }
+.tool { font: 0.8rem ui-monospace, monospace; color: var(--muted); padding: 0.2rem 0.5rem; border-radius: 6px; margin: 0.1rem 0; }
+.tool b { color: var(--fg); font-weight: 500; }
+.tool img { display: block; max-height: 140px; border-radius: 6px; margin: 0.35rem 0 0.2rem; box-shadow: 0 0 0 1px var(--line); }
+.tool.flash { animation: fl 1.2s ease-out; }
+@keyframes fl { 0%, 30% { background: var(--accent-soft); } 100% { background: transparent; } }
+.think { font-size: 0.85rem; color: var(--muted); font-style: italic; padding: 0.2rem 0.5rem; }
+.reply { margin: 0.2rem 0 0.4rem; }
+.foot { font-size: 0.78rem; color: var(--faint); }
+
+/* viewer */
+.viewer { position: fixed; inset: 0; z-index: 40; background: rgb(0 0 0 / 0.86); display: none; flex-direction: column; align-items: center; justify-content: center; gap: 0.75rem; }
+.viewer.on { display: flex; }
+.viewer img { max-width: min(86vw, 900px); max-height: 70vh; border-radius: 8px; box-shadow: 0 10px 40px rgb(0 0 0 / 0.5); }
+.vcap { display: flex; align-items: center; gap: 0.75rem; color: #e4e4e7; font-size: 0.9rem; }
+.vcap code { background: rgb(255 255 255 / 0.12); color: #fff; }
+.vbtn { border: 1px solid rgb(255 255 255 / 0.25); background: rgb(255 255 255 / 0.08); color: #fff; border-radius: 999px; padding: 0.25rem 0.8rem; font: inherit; font-size: 0.85rem; cursor: pointer; }
+.vbtn:hover { background: rgb(255 255 255 / 0.18); }
+.vnav { position: absolute; top: 50%; transform: translateY(-50%); font-size: 2rem; color: #fff; background: none; border: 0; cursor: pointer; padding: 1rem; opacity: 0.8; }
+.vnav:hover { opacity: 1; }
+.vclose { position: absolute; top: 1rem; right: 1.25rem; }
+
+/* tui */
+.term { background: #111114; color: #d4d4d8; font: 13px/1.45 ui-monospace, "JetBrains Mono", Menlo, monospace; border-radius: 10px; padding: 0.9rem 1rem; white-space: pre; overflow-x: auto; box-shadow: 0 0 0 1px var(--line); }
+.term .m { color: #8a8a94; } .term .u { color: #c4b5fd; } .term .a { color: #a5b4fc; text-decoration: underline; cursor: pointer; } .term .a:hover { background: #2a2a40; }
+.term .h { color: #fafafa; } .term .dim { color: #5c5c66; }
+ul.notes { padding-left: 1.25rem; margin: 0.25rem 0; } ul.notes li { margin: 0.2rem 0; }
+</style></head><body>
+<div class="top"><h1>Media the agent saw, in folded work</h1>
+<span class="sub">2026-11-26 · draft for <code>docs/site/specs/folded-media.md</code> · a hand-made mock-up; pictures are drawn by the page</span>
+<div class="sw"><button class="t" data-theme="light" onclick="setTheme('light')">Light</button><button class="t" data-theme="dark" onclick="setTheme('dark')">Dark</button></div></div>
+<div class="wrap">
+
+<h2>Web: a finished reply</h2>
+<p class="lead">The folded row counts what the agent saw and shows it as a strip. Click a thumbnail: the viewer steps through the strip, and <b>Show call</b> opens the fold at the call that returned it. Click the row itself to open the fold, where the strip hides because every call shows its own media.</p>
+<div class="cols">
+  <div class="pane" id="sealed"></div>
+  <div class="pane phone" id="sealed-phone"></div>
+</div>
+<p class="cap">Left: desktop. Right: a phone, where the strip scrolls sideways. The fourth picture carries the "not shown to the model" mark (the model took no images in tool results).</p>
+
+<h2>Web: while the agent works</h2>
+<p class="lead">Thumbnails rise in as calls return them, under the two live lines. Once the strip is full, older ones slide into the <code>+N</code> tile so the row never grows. <button class="t" onclick="restartLive()">Replay</button></p>
+<div class="pane" id="live"></div>
+
+<h2>TUI</h2>
+<p class="lead">Text only: one line of names under the row. Each name opens that picture in the web page; <code>↗ open</code> opens the first. A <code>°</code> marks a picture the model never saw.</p>
+<div class="term" id="tui"></div>
+<p class="cap">Sealed row above, live row below (the names line updates in place; a new name draws dim for one step).</p>
+
+<h2>What counts</h2>
+<ul class="notes">
+<li>Pictures and videos in a tool call's <code>Media</code> blocks: <code>read</code>, <code>read_artifact</code>, MCP tools, an ACP agent's own Read. Not PDFs or audio, not the user's attachments, not <code>&lt;attach/&gt;</code> cards (they never fold).</li>
+<li>Failed calls add nothing. The same picture read twice shows once. Order is call order; one run's fold lists the whole run.</li>
+</ul>
+</div>
+
+<div class="viewer" id="viewer">
+  <button class="vbtn vclose" onclick="closeViewer()">✕ Close</button>
+  <button class="vnav" style="left:1rem" onclick="step(-1)">‹</button>
+  <img id="vimg" alt="">
+  <div class="vcap"><span id="vidx"></span><code id="vcall"></code><span id="vnote" style="color:#fbbf24"></span><button class="vbtn" onclick="showCall()">Show call</button></div>
+  <button class="vnav" style="right:1rem" onclick="step(1)">›</button>
+</div>
+<div class="tip" id="tip" hidden></div>
+
+<script>
+function setTheme(t) { document.documentElement.classList.toggle('dark', t === 'dark'); document.querySelectorAll('[data-theme]').forEach(b => b.setAttribute('aria-pressed', b.dataset.theme === t)); }
+setTheme(matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+
+// Pictures, drawn here so the page needs no files.
+function draw(w, h, paint) { const c = document.createElement('canvas'); c.width = w; c.height = h; paint(c.getContext('2d'), w, h); return c.toDataURL('image/png'); }
+const PICS = {
+  loss: draw(480, 300, (g, w, h) => { g.fillStyle = '#fff'; g.fillRect(0, 0, w, h); g.strokeStyle = '#e4e4e7'; for (let i = 1; i < 6; i++) { g.beginPath(); g.moveTo(40, i * 48); g.lineTo(w - 10, i * 48); g.stroke(); } [['#5b5bd6', 0.9], ['#ef4444', 1.2], ['#10b981', 0.7]].forEach(([col, k]) => { g.strokeStyle = col; g.lineWidth = 3; g.beginPath(); for (let x = 0; x < w - 50; x += 4) { const y = 30 + 220 * Math.exp(-x / (90 * k)) + 8 * Math.sin(x / 7 + k * 5) * Math.exp(-x / 300); x ? g.lineTo(40 + x, y) : g.moveTo(40, y); } g.stroke(); }); g.fillStyle = '#18181b'; g.font = 'bold 16px sans-serif'; g.fillText('loss', 48, 22); }),
+  shot: draw(520, 330, (g, w, h) => { g.fillStyle = '#f4f4f5'; g.fillRect(0, 0, w, h); g.fillStyle = '#e4e4e7'; g.fillRect(0, 0, w, 28); ['#ef4444', '#f59e0b', '#10b981'].forEach((c, i) => { g.fillStyle = c; g.beginPath(); g.arc(14 + i * 16, 14, 5, 0, 7); g.fill(); }); g.fillStyle = '#fff'; g.fillRect(80, 7, 300, 14); g.fillStyle = '#18181b'; g.fillRect(0, 28, 120, h); g.fillStyle = '#3f3f46'; for (let i = 0; i < 7; i++) g.fillRect(14, 48 + i * 26, 80, 10); g.fillStyle = '#5b5bd6'; g.fillRect(14, 48 + 2 * 26, 80, 10); g.fillStyle = '#fff'; g.fillRect(140, 48, 360, 120); g.fillRect(140, 180, 170, 130); g.fillRect(320, 180, 180, 130); g.fillStyle = '#d4d4d8'; for (let i = 0; i < 5; i++) g.fillRect(156, 64 + i * 18, 300 - i * 40, 8); g.fillStyle = '#5b5bd6'; g.fillRect(156, 200, 120, 70); g.fillStyle = '#a5b4fc'; g.fillRect(336, 200, 140, 90); }),
+  heat: draw(300, 300, (g, w, h) => { for (let y = 0; y < h; y += 6) for (let x = 0; x < w; x += 6) { const v = (Math.sin(x / 31) + Math.cos(y / 23) + Math.sin((x + y) / 47)) / 3; g.fillStyle = `hsl(${250 - 200 * (v + 1) / 2} 70% ${35 + 30 * (v + 1) / 2}%)`; g.fillRect(x, y, 6, 6); } }),
+  frame: draw(480, 270, (g, w, h) => { const s = g.createLinearGradient(0, 0, 0, h); s.addColorStop(0, '#7dd3fc'); s.addColorStop(0.6, '#e0f2fe'); s.addColorStop(0.61, '#a3a3a3'); s.addColorStop(1, '#737373'); g.fillStyle = s; g.fillRect(0, 0, w, h); g.fillStyle = '#27272a'; g.fillRect(180, 120, 90, 46); g.fillStyle = '#52525b'; g.fillRect(150, 100, 30, 70); g.fillStyle = '#f59e0b'; g.beginPath(); g.arc(310, 150, 14, 0, 7); g.fill(); g.strokeStyle = '#18181b'; g.lineWidth = 6; g.beginPath(); g.moveTo(180, 120); g.lineTo(150, 100); g.stroke(); }),
+  depth: draw(400, 300, (g, w, h) => { const r = g.createRadialGradient(200, 150, 10, 200, 150, 220); r.addColorStop(0, '#fde68a'); r.addColorStop(0.5, '#f97316'); r.addColorStop(1, '#1e1b4b'); g.fillStyle = r; g.fillRect(0, 0, w, h); g.fillStyle = 'rgba(0,0,0,.35)'; g.fillRect(120, 160, 160, 80); }),
+  mask: draw(360, 300, (g, w, h) => { g.fillStyle = '#000'; g.fillRect(0, 0, w, h); g.fillStyle = '#fff'; g.beginPath(); g.ellipse(170, 150, 90, 60, 0.4, 0, 7); g.fill(); g.beginPath(); g.arc(280, 80, 30, 0, 7); g.fill(); }),
+};
+const SEEN = [
+  { pic: 'shot', call: 'browser_screenshot localhost:5173/settings', name: 'screenshot.png' },
+  { pic: 'loss', call: 'Read runs/14/loss.png', name: 'loss.png' },
+  { pic: 'heat', call: 'read_artifact 5f2c81d0', name: 'attn_heatmap.png' },
+  { pic: 'frame', call: 'Read /tmp/frames/frame_0012.png', name: 'frame_0012.png', hidden: 'claude-x does not accept images in tool results' },
+  { pic: 'frame', call: 'Read renders/rollout.mp4', name: 'rollout.mp4', video: '0:14' },
+];
+
+const tip = document.getElementById('tip');
+function thumb(item, onClick) {
+  const el = document.createElement('div'); el.className = 'th';
+  el.innerHTML = `<img src="${PICS[item.pic]}" alt="">` + (item.video ? `<span class="play">▶</span><span class="dur">${item.video}</span>` : '') + (item.hidden ? '<span class="nm" title="">⌀</span>' : '');
+  el.onclick = onClick;
+  el.onmousemove = e => { tip.hidden = false; tip.textContent = item.call + (item.hidden ? '  ·  not shown to the model: ' + item.hidden : ''); tip.style.left = e.clientX + 12 + 'px'; tip.style.top = e.clientY + 14 + 'px'; };
+  el.onmouseleave = () => tip.hidden = true;
+  return el;
+}
+function label(items) {
+  const v = items.filter(i => i.video).length, p = items.length - v;
+  const parts = []; if (p) parts.push(`${p} image${p > 1 ? 's' : ''}`); if (v) parts.push(`${v} video${v > 1 ? 's' : ''}`);
+  return parts.length ? ' · ' + parts.join(', ') : '';
+}
+
+// Viewer
+let deck = [], at = 0, deckRoot = null;
+function openViewer(items, i, root) { deck = items; at = i; deckRoot = root; render(); document.getElementById('viewer').classList.add('on'); tip.hidden = true; }
+function render() { const it = deck[at]; document.getElementById('vimg').src = PICS[it.pic]; document.getElementById('vidx').textContent = `${at + 1} / ${deck.length}`; document.getElementById('vcall').textContent = it.call; document.getElementById('vnote').textContent = it.hidden ? 'not shown to the model' : ''; }
+function step(d) { at = (at + d + deck.length) % deck.length; render(); }
+function closeViewer() { document.getElementById('viewer').classList.remove('on'); }
+function showCall() { closeViewer(); const work = deckRoot.querySelector('.work'); work.classList.add('open'); const row = work.querySelectorAll('.tool.media')[at]; row.scrollIntoView({ block: 'center', behavior: 'smooth' }); row.classList.remove('flash'); void row.offsetWidth; row.classList.add('flash'); }
+addEventListener('keydown', e => { if (!document.getElementById('viewer').classList.contains('on')) return; if (e.key === 'Escape') closeViewer(); if (e.key === 'ArrowRight') step(1); if (e.key === 'ArrowLeft') step(-1); });
+
+function sealed(root, fit) {
+  root.innerHTML = `<div class="user">Why does the settings page look off on narrow screens? Check the latest run too.</div>
+  <div class="who"><span class="av"></span><b>claude</b> Claude Code</div>
+  <div class="work"><div class="wrow"><span class="chev">▸</span><span>Worked for 1m 23s</span><span class="count">· 9 tool calls${label(SEEN)}</span></div>
+  <div class="strip"></div><div class="calls"></div></div>
+  <div class="reply">The sidebar keeps its desktop width below 640 px, so the cards wrap under it. Run 14's loss is fine; its rollout drifts after 10 s.</div>
+  <div class="foot">⚡ 61.2 tps · 48.1K ctx · $0.0412</div>`;
+  const work = root.querySelector('.work'), strip = root.querySelector('.strip'), calls = root.querySelector('.calls');
+  root.querySelector('.wrow').onclick = () => work.classList.toggle('open');
+  const shown = SEEN.slice(0, fit);
+  shown.forEach((it, i) => strip.append(thumb(it, () => openViewer(SEEN, i, root))));
+  if (SEEN.length > fit) { const m = document.createElement('div'); m.className = 'more'; m.textContent = `+${SEEN.length - fit}`; m.onclick = () => openViewer(SEEN, fit, root); strip.append(m); }
+  const rows = ['<div class="think">Looking at the settings page first.</div>'];
+  SEEN.forEach((it, i) => { rows.push(`<div class="tool media"><b>${it.call.split(' ')[0]}</b> ${it.call.split(' ').slice(1).join(' ')}<img src="${PICS[it.pic]}" alt=""></div>`); if (i === 1) rows.push('<div class="tool"><b>bash</b> rg -n "sidebar" web/src</div><div class="tool"><b>Read</b> web/src/views/sidebar.rs</div>'); if (i === 3) rows.push('<div class="tool"><b>bash</b> ffmpeg -i renders/rollout.mp4 -vf fps=1 /tmp/frames/frame_%04d.png</div>'); });
+  calls.innerHTML = rows.join('');
+}
+sealed(document.getElementById('sealed'), 5);
+sealed(document.getElementById('sealed-phone'), 5);
+
+// Live
+const LIVE_SEEN = [
+  { pic: 'shot', call: 'browser_screenshot localhost:5173' }, { pic: 'loss', call: 'Read runs/14/loss.png' },
+  { pic: 'depth', call: 'Read renders/depth_000.png' }, { pic: 'mask', call: 'Read renders/mask_000.png' },
+  { pic: 'heat', call: 'Read renders/attn.png' }, { pic: 'frame', call: 'Read /tmp/frames/frame_0003.png' },
+  { pic: 'depth', call: 'Read renders/depth_001.png' }, { pic: 'mask', call: 'Read renders/mask_001.png' },
+  { pic: 'frame', call: 'Read /tmp/frames/frame_0007.png' }, { pic: 'heat', call: 'Read renders/attn_2.png' },
+];
+const STEPS = ['Checking the page at a phone width.', 'Comparing the run against the baseline.', 'Rendering the depth and mask for frame 0.', 'Looking at the attention map.', 'Stepping through the rollout frames.', 'Comparing the next render.'];
+let liveTimer = null;
+function restartLive() {
+  clearInterval(liveTimer);
+  const root = document.getElementById('live');
+  root.innerHTML = `<div class="user">Render the first frames and tell me where the depth goes wrong.</div>
+  <div class="who"><span class="av"></span><b>claude</b> Claude Code</div>
+  <div class="work"><div class="wrow"><span class="spin"></span><span>Working… <span class="el">0s</span></span><span class="count lc"></span></div>
+  <div class="live"><div class="t"></div><div class="call"></div></div><div class="strip"></div><div class="calls"></div></div>`;
+  const strip = root.querySelector('.strip'), el = root.querySelector('.el'), lc = root.querySelector('.lc'), t = root.querySelector('.t'), call = root.querySelector('.call');
+  const FIT = Math.max(3, Math.floor((root.clientWidth - 140) / 110));
+  let n = 0, sec = 0; const got = [];
+  function line(node, text) { if (node.textContent === text) return; node.textContent = text; node.classList.remove('rise'); void node.offsetWidth; node.classList.add('rise'); }
+  function paint() {
+    strip.innerHTML = '';
+    const hidden = Math.max(0, got.length - (FIT - 1));
+    const shownFrom = got.length > FIT ? hidden : 0;
+    if (got.length > FIT) { const m = document.createElement('div'); m.className = 'more'; m.textContent = `+${hidden}`; m.onclick = () => openViewer(got, 0, root); strip.append(m); }
+    got.slice(shownFrom).forEach((it, k) => { const th = thumb(it, () => openViewer(got, shownFrom + k, root)); if (shownFrom + k === got.length - 1) th.classList.add('rise'); strip.append(th); });
+    lc.textContent = got.length ? label(got) : '';
+  }
+  line(t, 'Starting…'); line(call, 'No tool calls yet');
+  liveTimer = setInterval(() => {
+    sec++; el.textContent = sec + 's';
+    if (sec % 2 === 0 && n < LIVE_SEEN.length) { const it = LIVE_SEEN[n++]; line(t, STEPS[Math.min(STEPS.length - 1, Math.floor(n / 2))]); line(call, '↳ ' + it.call); got.push(it); paint(); }
+    if (n >= LIVE_SEEN.length && sec > 2 * LIVE_SEEN.length + 2) { clearInterval(liveTimer); root.querySelector('.wrow').innerHTML = `<span class="chev">▸</span><span>Worked for ${sec}s</span><span class="count">· ${n + 3} tool calls${label(got)}</span>`; root.querySelector('.live').remove(); }
+  }, 600);
+}
+restartLive();
+
+// TUI
+document.getElementById('tui').innerHTML =
+`<span class="u">▌ Why does the settings page look off on narrow screens? Check the latest run too.</span>
+
+<span class="h">● claude</span> <span class="m">Claude Code</span>
+<span class="m">▸ Worked for 1m 23s · 9 tool calls · 4 images, 1 video</span>
+<span class="m">  🖼 </span><span class="a">screenshot.png</span><span class="m"> · </span><span class="a">loss.png</span><span class="m"> · </span><span class="a">attn_heatmap.png</span><span class="m"> · </span><span class="a">frame_0012.png</span><span class="m">° · </span><span class="a">rollout.mp4</span><span class="m">  </span><span class="a">↗ open</span>
+The sidebar keeps its desktop width below 640 px, so the cards wrap under it.
+<span class="dim">⚡ 61.2 tps · 48.1K ctx · $0.0412</span>
+
+<span class="h">● claude</span> <span class="m">Claude Code</span>
+<span class="m">▸ Working… 18s · 4 images</span>
+<span class="m">  Rendering the depth and mask for frame 0.</span>
+<span class="dim">  ↳ Read renders/mask_000.png</span>
+<span class="m">  🖼 </span><span class="a">screenshot.png</span><span class="m"> · </span><span class="a">loss.png</span><span class="m"> · </span><span class="a">depth_000.png</span><span class="m"> · </span><span class="dim">mask_000.png</span><span class="m">  </span><span class="a">↗ open</span>`;
+</script>
+</body></html>

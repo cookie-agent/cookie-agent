@@ -225,6 +225,7 @@ nav:
       - Drafts and records:
           - "Temporary runtimes: one runtime per session tree": specs/temporary-runtimes.md
           - "Attachments: recognition, delivery, and display": specs/attachment-handling.md
+          - "Media the agent saw, in folded work": specs/folded-media.md
           - Session tool groups and skills: specs/session-tool-groups.md
           - Responsive session loading and storage v3: specs/session-storage-v3.md
           - Session store locks and durability: specs/store-locks-and-durability.md
