@@ -3,7 +3,8 @@
 //! children brought up to date, and text keeps its node with the new text.
 //! A block that streams keeps its header button under the pointer, so the
 //! hover stays and a click that starts on it ends on it. An element with a
-//! `data-key` keeps its node only while the key stays.
+//! `data-key` keeps its node only while the key stays; one also marked
+//! `data-keep` is then left exactly as the page made it.
 
 use wasm_bindgen::JsCast;
 
@@ -76,6 +77,11 @@ fn patch_node(old: &web_sys::Node, new: &web_sys::Node) -> bool {
             // animation as it arrives.
             if old.get_attribute("data-key") != new.get_attribute("data-key") {
                 return false;
+            }
+            // A keyed element the page fills in itself (`data-keep`, such
+            // as a work row's thumbnail) stays as it is while its key does.
+            if old.has_attribute("data-key") && new.has_attribute("data-keep") {
+                return true;
             }
             patch_attributes(old, new);
             patch_children(old, new);

@@ -706,6 +706,40 @@ body {
   animation: work-line-in 280ms cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
+/* A work row's strip of the media its calls returned
+   (docs/site/specs/folded-media.md): a thumbnail that joins it while the
+   work goes on rises in as a new line does. On a phone the strip scrolls
+   sideways, its bar hidden. */
+.seen-rise {
+  animation: work-line-in 280ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@media (max-width: 639px) {
+  .seen-strip {
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+}
+
+/* The call row Show call leads to flashes once. */
+@keyframes seen-flash {
+  0%,
+  30% {
+    outline-color: var(--color-accent);
+    box-shadow: 0 0 0 6px var(--color-accent-soft);
+  }
+  100% {
+    outline-color: transparent;
+    box-shadow: 0 0 0 6px transparent;
+  }
+}
+
+.seen-flash {
+  outline: 2px solid transparent;
+  outline-offset: 1px;
+  animation: seen-flash 1.4s ease-out;
+}
+
 /* The pinned copy of an open work row (`[data-work-pinned]`) takes the
    rounding of the box it sits in. */
 [data-work-pinned] > button {
@@ -859,6 +893,10 @@ body {
 
 @media (prefers-reduced-motion: reduce) {
   .work-line {
+    animation: none;
+  }
+
+  .seen-rise {
     animation: none;
   }
 

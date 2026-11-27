@@ -945,6 +945,30 @@ fn Viewer(workspace: Workspace, viewing: Viewing) -> impl IntoView {
                 </Show>
             })}
             </div>
+            // A file from a work row's strip names the call that returned
+            // it, and leads to it (`docs/site/specs/folded-media.md`).
+            {viewing.call.clone().map(|seen| {
+                let crate::media::SeenCall { header, call_id, block_key, not_shown } = seen;
+                view! {
+                    <div id="media-viewer-caption" class="flex shrink-0 flex-wrap items-center justify-center gap-x-3 gap-y-1 px-3 pb-2 text-sm">
+                        <code class="max-w-full truncate rounded-md bg-white/10 px-1.5 py-0.5 font-mono text-xs text-white" data-viewer-call>{header}</code>
+                        {not_shown.map(|reason| view! {
+                            <span class="inline-flex items-center gap-1 text-xs text-white/70" title=reason>
+                                <Glyph icon=icondata::LuEyeOff />
+                                "not shown to the model"
+                            </span>
+                        })}
+                        <button
+                            type="button"
+                            id="media-viewer-show-call"
+                            class="inline-flex min-h-9 items-center rounded-full border border-white/25 bg-white/10 px-3 text-sm hover:bg-white/20 active:bg-white/25"
+                            on:click=move |_| crate::assets::show_call(workspace, block_key.clone(), call_id.clone())
+                        >
+                            "Show call"
+                        </button>
+                    </div>
+                }
+            })}
             {stepping.then(|| view! {
                 <div id="media-viewer-strip" class="flex shrink-0 justify-center gap-2 overflow-x-auto px-2 pb-2">
                     {group

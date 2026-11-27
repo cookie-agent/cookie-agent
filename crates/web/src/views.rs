@@ -2622,6 +2622,7 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
             if fitted_width.try_get_value() != Some(width) {
                 fitted_width.set_value(width);
                 crate::badges::fit_work_machines(&column);
+                crate::assets::fit_seen(&column);
             }
         }
         history.update_value(|history| history.resized(at));
@@ -2878,6 +2879,8 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
                         alt: target.get_attribute("data-alt").unwrap_or_default(),
                         handle: None,
                         asset: None,
+                        stored: None,
+                        call: None,
                     }));
                 }
             }
@@ -6676,6 +6679,7 @@ fn agent_modes_sheet(
 /// Fills in the code and media of `row`, a transcript row or part of one.
 fn fill_row(row: &web_sys::Element, workspace: Workspace) {
     crate::badges::fit_work_machines(row);
+    crate::assets::fit_seen(row);
     crate::highlight::highlight_within(row);
     crate::assets::show_within(row, workspace);
 }

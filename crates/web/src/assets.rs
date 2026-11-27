@@ -30,7 +30,7 @@ use std::{cell::RefCell, collections::HashMap};
 
 use cookie_agent_protocol::{Asset, AssetId, AssetStore};
 use leptos::{
-    prelude::{Set as _, Update as _, WithUntracked as _},
+    prelude::{GetUntracked as _, Set as _, Update as _, WithUntracked as _},
     task::spawn_local,
 };
 use wasm_bindgen::{JsCast as _, JsValue, closure::Closure};
@@ -328,6 +328,8 @@ pub fn viewing_of(asset: &Asset) -> crate::media::Viewing {
         alt: asset.title.clone(),
         handle: Some(asset.handle.to_string()),
         asset: Some((asset.store.clone(), asset.id)),
+        stored: None,
+        call: None,
     }
 }
 
@@ -335,11 +337,29 @@ pub fn viewing_of(asset: &Asset) -> crate::media::Viewing {
 /// and shows it in the viewer's deck, and in the viewer while it still
 /// shows it.
 pub fn load_viewing(viewing: crate::media::Viewing, workspace: Workspace) {
-    let Some((store, id)) = viewing.asset.clone() else {
+    if viewing.asset.is_none() && viewing.stored.is_none() {
         return;
-    };
+    }
     spawn_local(async move {
         let read = async {
+            if let Some((sha256, name)) = viewing.stored.clone() {
+                // A stored file, from a work row's strip.
+                let shown = Placeholder {
+                    source: Source::Artifact {
+                        sha256,
+                        media_type: viewing.media_type.clone(),
+                        name,
+                    },
+                    shown_sha: String::new(),
+                    title: viewing.alt.clone(),
+                    view: "thumb".into(),
+                };
+                let asset = shown
+                    .artifact_asset()
+                    .ok_or_else(|| "it names no file".to_owned())?;
+                return content(&asset, &shown.source, workspace).await;
+            }
+            let (store, id) = viewing.asset.clone().ok_or_else(String::new)?;
             let asset = workspace
                 .get_asset(store.clone(), id)
                 .await?
@@ -432,7 +452,7 @@ pub fn show_within(root: &web_sys::Element, workspace: Workspace) {
         };
         let reads_whole = matches!(
             element.get_attribute("data-asset-view").as_deref(),
-            Some("thumb" | "audio")
+            Some("thumb" | "audio" | "seen")
         );
         if reads_whole && crate::near_view::watch_card(&element) {
             let _ = element.set_attribute("data-near", "");
@@ -571,6 +591,29 @@ pub fn act(
         "asset-deck" => {
             if let Ok(Some(card)) = clicked.unwrap_or(target).closest("[data-index]") {
                 open_deck(&card, workspace);
+            }
+        }
+        "asset-seen" => {
+            if let Ok(Some(tile)) = target.closest("[data-seen-tile]") {
+                open_seen(&tile, workspace);
+            }
+        }
+        // The `+N` tile opens the first file it stands for.
+        "asset-seen-more" => {
+            let first = target
+                .get_attribute("data-seen-from")
+                .and_then(|from| from.parse::<u32>().ok())
+                .zip(target.closest("[data-seen-strip]").ok().flatten())
+                .and_then(|(from, strip)| {
+                    strip
+                        .query_selector_all(":scope > [data-seen-tile]")
+                        .ok()?
+                        .item(from)?
+                        .dyn_into::<web_sys::Element>()
+                        .ok()
+                });
+            if let Some(tile) = first {
+                open_seen(&tile, workspace);
             }
         }
         "asset-download" => {
@@ -771,6 +814,8 @@ fn show_deck(card: &web_sys::Element, scope: &web_sys::Element, workspace: Works
                 Some(Source::Asset { store, asset }) => Some((store, asset)),
                 _ => None,
             },
+            stored: None,
+            call: None,
         });
     }
     let Some(first) = start.and_then(|start| group.get(start).cloned()) else {
@@ -779,6 +824,285 @@ fn show_deck(card: &web_sys::Element, scope: &web_sys::Element, workspace: Works
     };
     workspace.media_group.set(group);
     workspace.media_viewer.set(Some(first));
+}
+
+/// Opens the thumbnail `tile` of a work row's strip
+/// (`docs/site/specs/folded-media.md` section 4.1): a PDF beside the chat,
+/// a picture or video in the media viewer, which steps through every
+/// picture and video of the strip, those the `+N` tile stands for too. One
+/// not read whole yet is read as the viewer comes to it.
+fn open_seen(tile: &web_sys::Element, workspace: Workspace) {
+    if tile.get_attribute("data-asset-type").as_deref() == Some("application/pdf") {
+        workspace.asset_panel.set(OpenAsset::of(tile));
+        return;
+    }
+    let Some(strip) = tile.closest("[data-seen-strip]").ok().flatten() else {
+        return;
+    };
+    let block_key = strip.get_attribute("data-block-key").unwrap_or_default();
+    let Ok(tiles) = strip.query_selector_all(":scope > [data-seen-tile][data-index]") else {
+        return;
+    };
+    let mut group = Vec::new();
+    let mut start = None;
+    for at in 0..tiles.length() {
+        let Some(each) = tiles
+            .item(at)
+            .and_then(|node| node.dyn_into::<web_sys::Element>().ok())
+        else {
+            continue;
+        };
+        let attribute = |name: &str| each.get_attribute(name).unwrap_or_default();
+        let sha256 = attribute("data-artifact-sha");
+        let url = CONTENTS
+            .with(|contents| contents.borrow_mut().get(&sha256))
+            .map(|content| content.url)
+            .unwrap_or_default();
+        if each == *tile {
+            start = Some(group.len());
+        }
+        group.push(crate::media::Viewing {
+            url,
+            media_type: attribute("data-asset-type"),
+            alt: attribute("data-asset-title"),
+            handle: None,
+            asset: None,
+            stored: Some((sha256, attribute("data-asset-name"))),
+            call: Some(crate::media::SeenCall {
+                header: attribute("data-seen-header"),
+                call_id: attribute("data-seen-call"),
+                block_key: block_key.clone(),
+                not_shown: each.get_attribute("data-seen-not-shown"),
+            }),
+        });
+    }
+    let Some(first) = start.and_then(|start| group.get(start).cloned()) else {
+        return;
+    };
+    workspace.media_group.set(group);
+    workspace.media_viewer.set(Some(first));
+}
+
+/// The media viewer's *Show call*: closes the viewer, opens the work row
+/// `block_key` when it is folded, and brings the row of the call `call_id`
+/// into view, flashing it once.
+pub fn show_call(workspace: Workspace, block_key: String, call_id: String) {
+    workspace.media_viewer.set(None);
+    let open = workspace.selected.get_untracked().is_some_and(|session| {
+        workspace.expanded.with_untracked(|expanded| {
+            expanded
+                .get(&session)
+                .is_some_and(|expanded| expanded.block(&block_key))
+        })
+    });
+    if !open {
+        workspace.toggle_expanded(block_key);
+    }
+    spawn_local(async move {
+        let call_id = call_id.replace(['"', '\\'], "");
+        let Some(document) = web_sys::window().and_then(|window| window.document()) else {
+            return;
+        };
+        // The fold draws its rows at the next frames.
+        for _ in 0..40 {
+            gloo_timers::future::sleep(std::time::Duration::from_millis(50)).await;
+            let Ok(Some(row)) =
+                document.query_selector(&format!("#transcript [data-tool=\"{call_id}\"]"))
+            else {
+                continue;
+            };
+            let options = web_sys::ScrollIntoViewOptions::new();
+            options.set_block(web_sys::ScrollLogicalPosition::Center);
+            row.scroll_into_view_with_scroll_into_view_options(&options);
+            // Again from its start, when it flashed before.
+            let _ = row.class_list().remove_1("seen-flash");
+            if let Some(row) = row.dyn_ref::<web_sys::HtmlElement>() {
+                let _ = row.offset_width();
+            }
+            let _ = row.class_list().add_1("seen-flash");
+            return;
+        }
+    });
+}
+
+/// The narrowest screen whose strips show the `+N` tile; a narrower one,
+/// a phone's, scrolls them sideways instead.
+const SEEN_FIT_FROM: &str = "(min-width: 640px)";
+
+/// Fits every work row strip under `within` to its one line
+/// (`docs/site/specs/folded-media.md` section 4): the thumbnails that do
+/// not fit hide, and the `+N` tile says how many; the newest stay in view
+/// while the work goes on, the first once it ended. On a phone the strip
+/// scrolls sideways, at its newest while the work goes on.
+pub fn fit_seen(within: &web_sys::Element) {
+    let Ok(strips) = within.query_selector_all("[data-seen-strip]") else {
+        return;
+    };
+    let fits_tile = web_sys::window()
+        .and_then(|window| window.match_media(SEEN_FIT_FROM).ok().flatten())
+        .is_some_and(|query| query.matches());
+    for at in 0..strips.length() {
+        if let Some(strip) = strips
+            .item(at)
+            .and_then(|node| node.dyn_into::<web_sys::HtmlElement>().ok())
+        {
+            fit_strip(&strip, fits_tile);
+        }
+    }
+}
+
+/// [`fit_seen`] of the one strip `strip`.
+fn fit_strip(strip: &web_sys::HtmlElement, fits_tile: bool) {
+    /// The strip's gap, and the `+N` tile's room.
+    const GAP: i32 = 8;
+    const MORE: i32 = 56;
+    let Ok(list) = strip.query_selector_all(":scope > [data-seen-tile]") else {
+        return;
+    };
+    let tiles = (0..list.length())
+        .filter_map(|at| list.item(at)?.dyn_into::<web_sys::HtmlElement>().ok())
+        .collect::<Vec<_>>();
+    let Some(more) = strip
+        .query_selector(":scope > [data-seen-more]")
+        .ok()
+        .flatten()
+        .and_then(|more| more.dyn_into::<web_sys::HtmlElement>().ok())
+    else {
+        return;
+    };
+    for tile in &tiles {
+        tile.set_hidden(false);
+    }
+    more.set_hidden(true);
+    let live = strip.has_attribute("data-seen-live");
+    let room = strip.client_width();
+    if !fits_tile || room <= 0 {
+        if live {
+            strip.set_scroll_left(strip.scroll_width());
+        }
+        return;
+    }
+    let widths = tiles
+        .iter()
+        .map(|tile| tile.offset_width())
+        .collect::<Vec<_>>();
+    let all = widths.iter().sum::<i32>() + GAP * (widths.len() as i32 - 1).max(0);
+    if all <= room {
+        return;
+    }
+    // As many as fit beside the tile: from the newest back while the work
+    // goes on, from the first once it ended.
+    let mut used = MORE;
+    let mut shown = 0;
+    let order: Box<dyn Iterator<Item = &i32>> = if live {
+        Box::new(widths.iter().rev())
+    } else {
+        Box::new(widths.iter())
+    };
+    for width in order {
+        if used + GAP + width > room {
+            break;
+        }
+        used += GAP + width;
+        shown += 1;
+    }
+    let hidden = tiles.len() - shown;
+    let hidden_range = if live { 0..hidden } else { shown..tiles.len() };
+    for tile in &tiles[hidden_range.clone()] {
+        tile.set_hidden(true);
+    }
+    more.set_text_content(Some(&format!("+{hidden}")));
+    let _ = more.set_attribute("data-seen-from", &hidden_range.start.to_string());
+    let _ = more.set_attribute(
+        "aria-label",
+        &format!("{hidden} more; open the first of them"),
+    );
+    more.set_hidden(false);
+}
+
+/// Fills the thumbnail `element` of a work row's strip: the daemon's
+/// thumbnail of a video, a PDF, or a picture over 1 MiB, else the picture
+/// itself; a PDF without one shows its icon and name, a video its icon.
+/// The strip fits again once the picture is drawn, at its own shape.
+async fn fill_seen(
+    element: &web_sys::Element,
+    asset: &Asset,
+    source: &Source,
+    workspace: Workspace,
+) {
+    let media_type = asset.media_type.as_str();
+    let pdf = media_type == "application/pdf";
+    let video = media_type.starts_with("video/");
+    let url = if thumbnail_first(element, source) || pdf {
+        artifact_thumbnail_url(&asset.sha256, workspace).await
+    } else {
+        None
+    };
+    let url = match url {
+        Some(url) => Some(url),
+        None if pdf => {
+            let target = body(element);
+            let _ = target.set_attribute(
+                "class",
+                "flex h-16 w-28 flex-col items-center justify-center gap-1 px-2 text-muted",
+            );
+            target.set_inner_html(&format!(
+                "{}<span class=\"w-full truncate text-center text-[0.6875rem]\">{}</span>",
+                crate::icons::svg(icondata::LuFileText, "text-xl"),
+                escape(&asset.title)
+            ));
+            // Its icon and name say it is a PDF.
+            if let Ok(Some(badge)) = element.query_selector("[data-seen-pdf]") {
+                badge.remove();
+            }
+            None
+        }
+        // A video is never read whole for its strip.
+        None if video => None,
+        None => match content(asset, source, workspace).await {
+            Ok(content) => Some(content.url),
+            Err(_) => {
+                let _ = element.set_attribute("data-shown", "failed");
+                return;
+            }
+        },
+    };
+    let _ = element.set_attribute("data-asset-current", &asset.sha256);
+    let _ = element.set_attribute("data-shown", "yes");
+    let Some(url) = url else {
+        return;
+    };
+    let target = body(element);
+    let _ = target.set_attribute("class", "block h-16");
+    let svg_ground = if media_type == "image/svg+xml" {
+        " bg-white"
+    } else {
+        ""
+    };
+    target.set_inner_html(&format!(
+        "<img src=\"{}\" alt=\"\" draggable=\"false\" class=\"pointer-events-none block h-16 w-auto min-w-8 max-w-32 object-cover{svg_ground}\">",
+        escape(&url)
+    ));
+    // A video's first frame plays.
+    if let Ok(Some(play)) = element.query_selector("[data-seen-play]")
+        && let Some(play) = play.dyn_ref::<web_sys::HtmlElement>()
+    {
+        play.set_hidden(false);
+    }
+    // Drawn, the picture has its width: the strip fits to it.
+    if let Ok(Some(image)) = target.query_selector("img")
+        && let Ok(image) = image.dyn_into::<web_sys::HtmlImageElement>()
+    {
+        let _ = wasm_bindgen_futures::JsFuture::from(image.decode()).await;
+    }
+    if let Some(strip) = element
+        .closest("[data-seen-strip]")
+        .ok()
+        .flatten()
+        .and_then(|strip| strip.parent_element())
+    {
+        fit_seen(&strip);
+    }
 }
 
 /// The attachment `target` names, `turn:content:ordinal`.
@@ -924,6 +1248,9 @@ async fn fill(element: web_sys::Element, shown: Placeholder, workspace: Workspac
             Err(error) => return failed(&element, error.to_string()),
         },
     };
+    if shown.view == "seen" {
+        return fill_seen(&element, &asset, &shown.source, workspace).await;
+    }
     // A file's chip shows what the asset is, not what it holds; a stored
     // PDF's, its first page.
     if shown.view == "file" {

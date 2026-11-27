@@ -120,6 +120,25 @@ pub struct Viewing {
         cookie_agent_protocol::AssetStore,
         cookie_agent_protocol::AssetId,
     )>,
+    /// The session's stored file it is, read when `url` is empty: its
+    /// digest and name.
+    pub stored: Option<(String, String)>,
+    /// The call that returned it to the agent, when it opened from a work
+    /// row's strip (`docs/site/specs/folded-media.md` section 4.1).
+    pub call: Option<SeenCall>,
+}
+
+/// The call a file of a work row's strip came from, which the viewer's
+/// caption names and its *Show call* opens the fold at.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SeenCall {
+    /// The call's header, as its row shows it.
+    pub header: String,
+    pub call_id: String,
+    /// The work row's block key.
+    pub block_key: String,
+    /// Why the model never saw the file, when it did not.
+    pub not_shown: Option<String>,
 }
 
 impl Viewing {

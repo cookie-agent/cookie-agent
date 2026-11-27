@@ -596,6 +596,18 @@ buttons.
     it is done and reads `Worked for`, and the work after it folds into a
     row of its own. Text of only ellipses (`…`), as Kimi models write
     between calls, folds into the work.
+    The pictures, videos, and PDFs the agent's calls returned to it
+    (`read`, `read_artifact`, MCP tools, an ACP agent's own Read) are
+    counted on the row (`· 3 images, 1 video, 1 PDF`) and show under it
+    as a strip of thumbnails, each file once, filling in as the calls
+    return them. The strip is one line: a `+5` tile stands for those that
+    do not fit (while the agent works, the oldest, so the newest stays in
+    view), and on a phone it scrolls sideways. A thumbnail's tooltip is
+    the call that returned it. Clicking one opens it in the media viewer,
+    which steps through every picture and video of the strip and names
+    the call under the file; **Show call** opens the work at that call and
+    flashes it. A PDF opens beside the chat. The strip hides while the
+    work is open, where each call shows its own.
     Click the row to open the work. A call waiting for your approval stays
     outside the fold. Settings › Display switches to the
     full transcript, which shows every thinking block and tool call; the

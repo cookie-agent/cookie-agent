@@ -351,16 +351,6 @@ impl<'a, 'v> Pass<'a, 'v> {
             .work_row(view.state, key, view.now, WORK_LINE_ROOM)
     }
 
-    /// The HTML of the work row of the fold `key`.
-    fn work_row(&self, key: WorkKey) -> Option<String> {
-        Some(work_row_html(
-            key,
-            &self.row(key)?,
-            self.open(key),
-            self.view.machines,
-        ))
-    }
-
     /// Hashes what a call's row shows besides the call's own revision.
     fn hash_tool(&self, call_id: &ToolCallId, hasher: &mut impl std::hash::Hasher) {
         let view = self.view;
@@ -1314,12 +1304,27 @@ fn reply_parts(
     };
     for (index, child) in children.iter().enumerate() {
         if let ChildFold::Work { key, starts: true } = place(index)
-            && let Some(row) = pass.work_row(key)
+            && let Some(row) = pass.row(key)
         {
+            let open = pass.open(key);
             parts.push((
                 foldhash::fast::FixedState::default().hash_one((8u8, key)),
-                PartHtml::Html(Arc::from(row)),
+                PartHtml::Html(Arc::from(work_row_html(
+                    key,
+                    &row,
+                    open,
+                    pass.view.machines,
+                ))),
             ));
+            // The media the work saw, under its row while it is folded: a
+            // part of its own, which draws again only as the media change,
+            // not as a live row's time ticks.
+            if !open && !row.summary.seen.is_empty() {
+                parts.push((
+                    foldhash::fast::FixedState::default().hash_one((9u8, key)),
+                    PartHtml::Html(Arc::from(seen_strip_html(pass.view, key, &row.summary))),
+                ));
+            }
         }
         if shown(index, child) {
             parts.push({
@@ -1454,6 +1459,16 @@ fn work_row_html(
     } else {
         (failed, String::new())
     };
+    // The media its calls returned, after the calls (and a live row's time).
+    let label_seen = summary
+        .seen_label()
+        .map(|seen| {
+            format!(
+                "<span class=\"min-w-0 truncate\" data-work-seen>{}</span>",
+                escape(&seen)
+            )
+        })
+        .unwrap_or_default();
     // What it last said, then its last call, a little smaller. Each line is
     // keyed by its text: a new one is a new node, which settles in
     // (`.work-line`), while the label's ticking time keeps the nodes.
@@ -1522,10 +1537,114 @@ fn work_row_html(
         ("", "rounded-lg hover:bg-hover")
     };
     format!(
-        "<div class=\"collapsible-row\" data-work=\"{}\" data-block-key=\"{block}\"{open_attribute}><button type=\"button\" data-action=\"toggle-block\" data-block-key=\"{block}\" aria-expanded=\"{open}\" class=\"flex min-h-11 w-full min-w-0 flex-col justify-center gap-0.5 {surface} px-2 py-1 text-left text-sm text-muted active:bg-press\"><span class=\"flex min-w-0 items-center gap-2\">{}{spinner}<span class=\"min-w-0 truncate\" data-work-label>{}</span>{label_failed}{touched}</span>{lines}</button></div>",
+        "<div class=\"collapsible-row\" data-work=\"{}\" data-block-key=\"{block}\"{open_attribute}><button type=\"button\" data-action=\"toggle-block\" data-block-key=\"{block}\" aria-expanded=\"{open}\" class=\"flex min-h-11 w-full min-w-0 flex-col justify-center gap-0.5 {surface} px-2 py-1 text-left text-sm text-muted active:bg-press\"><span class=\"flex min-w-0 items-center gap-2\">{}{spinner}<span class=\"min-w-0 truncate\" data-work-label>{}</span>{label_failed}{label_seen}{touched}</span>{lines}</button></div>",
         if summary.live { "live" } else { "done" },
         svg(chevron, "text-[0.625rem] opacity-70"),
         escape(&summary.label()),
+    )
+}
+
+/// The strip of the media a folded work row's calls returned to the agent
+/// (`docs/site/specs/folded-media.md` section 4), under the row: a 64 px
+/// thumbnail each, in call order, which the page fills as the row nears
+/// the view (`data-asset-view="seen"`, `crate::assets`). It is one line:
+/// the page hides the thumbnails that do not fit and shows how many in the
+/// `+N` tile (`crate::assets::fit_seen`), the newest kept in view while the
+/// work goes on; on a phone the strip scrolls sideways instead. Each
+/// thumbnail keeps its node while its place and file stay (`data-keep`),
+/// so a live row's strip does not fill again as a new one joins it, and a
+/// new one rises in.
+fn seen_strip_html(
+    view: &TranscriptView<'_>,
+    key: WorkKey,
+    summary: &transcript_mode::WorkSummary,
+) -> String {
+    use cookie_agent_client_state::transcript_mode::SeenKind;
+    let mut tiles = String::new();
+    // Each kind's files so far, for the names of unnamed ones.
+    let mut ordinals = [0usize; 3];
+    // The pictures and videos so far, which the media viewer steps through.
+    let mut deck = 0usize;
+    for (position, seen) in summary.seen.iter().enumerate() {
+        let kind = seen.kind();
+        let slot = match kind {
+            SeenKind::Image => 0,
+            SeenKind::Video => 1,
+            SeenKind::Pdf => 2,
+        };
+        ordinals[slot] += 1;
+        let label = seen.label(ordinals[slot]);
+        let header = view
+            .state
+            .tools
+            .get(&seen.call_id)
+            .map_or_else(|| seen.header.clone(), |tool| tool_header_text(view, tool));
+        let artifact = &seen.artifact;
+        let index = match kind {
+            SeenKind::Pdf => String::new(),
+            _ => {
+                deck += 1;
+                format!(" data-index=\"{}\"", deck - 1)
+            }
+        };
+        let (icon, overlay, open) = match kind {
+            SeenKind::Image => (icondata::LuImage, String::new(), "cursor-zoom-in"),
+            SeenKind::Video => (
+                icondata::LuFilm,
+                format!(
+                    "<span class=\"pointer-events-none absolute inset-0 flex items-center justify-center\" data-seen-play hidden>{}</span>",
+                    svg(icondata::LuCirclePlay, "text-2xl text-white/90 drop-shadow")
+                ),
+                "cursor-zoom-in",
+            ),
+            SeenKind::Pdf => (
+                icondata::LuFileText,
+                "<span class=\"pointer-events-none absolute right-1 bottom-1 rounded bg-black/60 px-1 font-mono text-[0.625rem] leading-4 text-white\" data-seen-pdf>PDF</span>".to_owned(),
+                "cursor-pointer",
+            ),
+        };
+        let (not_shown, badge) = match &seen.not_shown {
+            Some(reason) => (
+                format!(" data-seen-not-shown=\"{}\"", escape(reason)),
+                format!(
+                    "<span class=\"absolute top-1 left-1 z-20 inline-flex size-5 items-center justify-center rounded-full bg-black/60 text-[0.6875rem] text-white\" title=\"Not shown to the model: {}\" data-seen-unseen>{}</span>",
+                    escape(reason),
+                    svg(icondata::LuEyeOff, "")
+                ),
+            ),
+            None => (String::new(), String::new()),
+        };
+        let aria = match kind {
+            SeenKind::Pdf => format!("Open {label} beside the chat"),
+            _ => format!("Open {label}"),
+        };
+        let tooltip = match &seen.not_shown {
+            Some(reason) => format!("{header} · not shown to the model: {reason}"),
+            None => header.clone(),
+        };
+        tiles.push_str(&format!(
+            "<span class=\"seen-tile{rise} relative flex h-16 shrink-0 overflow-hidden rounded-lg bg-sunken shadow-[0_0_0_1px_var(--color-line)] transition-shadow hover:shadow-[0_0_0_2px_var(--color-accent)] focus-within:shadow-[0_0_0_2px_var(--color-accent)]\" data-key=\"{position}-{sha8}\" data-keep data-seen-tile data-asset=\"artifact\" data-asset-sha=\"{sha}\" data-artifact-sha=\"{sha}\" data-artifact-bytes=\"{bytes}\" data-asset-name=\"{name}\" data-asset-title=\"{title}\" data-asset-type=\"{media_type}\" data-asset-view=\"seen\"{index} data-seen-call=\"{call}\" data-seen-header=\"{header}\"{not_shown}><span class=\"flex h-16 w-16 items-center justify-center text-xl text-muted\" data-asset-body>{icon}</span>{overlay}{badge}<button type=\"button\" data-action=\"asset-seen\" class=\"absolute inset-0 z-10 rounded-lg {open} focus-visible:outline-none\" aria-label=\"{aria}\" title=\"{tooltip}\"></button></span>",
+            rise = if summary.live { " seen-rise" } else { "" },
+            sha8 = escape(artifact.sha256.get(..8).unwrap_or(&artifact.sha256)),
+            sha = escape(&artifact.sha256),
+            bytes = artifact.byte_length,
+            name = escape(artifact.filename.as_deref().unwrap_or(&label)),
+            title = escape(&label),
+            media_type = escape(&artifact.media_type),
+            call = escape(&seen.call_id.to_string()),
+            header = escape(&header),
+            icon = svg(icon, ""),
+            aria = escape(&aria),
+            tooltip = escape(&tooltip),
+        ));
+    }
+    // While the work goes on the oldest go into the tile, before the
+    // newest; once it ended the last ones, after the first.
+    let more_order = if summary.live { " order-first" } else { "" };
+    format!(
+        "<div class=\"pt-1 pb-0.5 pl-7\" data-seen-row><div class=\"seen-strip flex min-w-0 gap-2 overflow-hidden\" data-seen-strip data-block-key=\"{block}\"{live}>{tiles}<button type=\"button\" data-action=\"asset-seen-more\" data-seen-more hidden class=\"flex h-16 min-w-14 shrink-0 items-center justify-center rounded-lg bg-sunken px-2 text-sm text-muted shadow-[0_0_0_1px_var(--color-line)] hover:text-fg hover:shadow-[0_0_0_2px_var(--color-accent)]{more_order}\"></button></div></div>",
+        block = work_key(key),
+        live = if summary.live { " data-seen-live" } else { "" },
     )
 }
 
@@ -2793,6 +2912,7 @@ mod tests {
                         .iter()
                         .map(|id| cookie_agent_protocol::RuntimeId::new(*id).unwrap())
                         .collect(),
+                    seen: Vec::new(),
                 },
                 lines: None,
             };
