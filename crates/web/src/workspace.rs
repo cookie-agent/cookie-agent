@@ -66,7 +66,7 @@ mod webhook;
 
 use drafts::ComposerSlot;
 
-pub use attachments::AttachOffer;
+pub use attachments::{AttachOffer, draft_thumbnail};
 pub use cards::CardSet;
 pub use cron::CronForm;
 pub use history::{MenuAnchor, PointAction, UserMenu};

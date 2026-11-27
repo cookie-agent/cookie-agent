@@ -1177,13 +1177,13 @@ def near_view(browser):
     highlighted = count(browser, code + "[data-highlighted]")
     assert not first_highlighted(), "code far from the view waits"
     assert highlighted < total, "only what is near is highlighted: %d of %d" % (highlighted, total)
-    waiting_media = count(browser, "#transcript [data-media]:not([data-shown])")
+    waiting_media = count(browser, "#transcript [data-asset]:not([data-shown])")
     print("far from the view: %d of %d code blocks highlighted, %d media not read" % (highlighted, total, waiting_media))
     browser.script("document.querySelector('#transcript').scrollTop = -1e9")
     browser.wait("the code near the view", first_highlighted)
     if waiting_media:
         browser.wait("the media near the view",
-                     lambda: count(browser, "#transcript [data-media]:not([data-shown])") < waiting_media)
+                     lambda: count(browser, "#transcript [data-asset]:not([data-shown])") < waiting_media)
     browser.check()
     print("scrolled to, the code is highlighted and the media read")
 
@@ -1616,7 +1616,7 @@ def media_viewer(browser):
     """A click on a picture in the transcript opens the media viewer, which
     zooms (its buttons, the wheel) and closes on Escape; a video in it
     plays, seeks, and steps a frame."""
-    browser.click("#transcript .user-message .media-open")
+    browser.click("#transcript .user-message [data-action=\"asset-deck\"]")
     browser.wait("the media viewer", lambda: count(browser, "#media-viewer img#media-viewer-file") == 1)
     browser.wait("the picture's size", lambda: browser.text("#media-viewer-size") == "64×48")
     percent = lambda: int(browser.text("#media-viewer-fit").rstrip("%"))
@@ -2436,7 +2436,7 @@ def session_depth(browser):
     send(browser, "look at these")
     browser.wait(
         "the attached images",
-        lambda: count(browser, "#transcript .user-message .media img") >= 2,
+        lambda: count(browser, "#transcript .user-message [data-asset-view=\"thumb\"] img") >= 2,
     )
     print("attached an image and a downscaled one; both show in the message")
     browser.shot("attached")
@@ -2450,7 +2450,7 @@ def session_depth(browser):
     )
     browser.wait(
         "the media block",
-        lambda: count(browser, "#transcript [data-tool] .media img") >= 1,
+        lambda: count(browser, "#transcript [data-tool] [data-asset-view=\"thumb\"] img") >= 1,
     )
     print("a read's media block shows inline")
     browser.shot("media-block")
@@ -4172,7 +4172,7 @@ def draft_first_message(browser):
     browser.wait("the session", lambda: browser.text("#session-title") != "New session" and answers(browser) >= 1, timeout=60)
     assert count(browser, "#new-session") == 0
     browser.wait("the message", lambda: "the first message" in browser.text("#transcript .user-message"))
-    browser.wait("its picture", lambda: count(browser, "#transcript .user-message .media img") >= 1)
+    browser.wait("its picture", lambda: count(browser, "#transcript .user-message [data-asset-view=\"thumb\"] img") >= 1)
     assert count(browser, "#draft-files") == 0 and count(browser, "#draft-error") == 0
     assert count(browser, "aside [data-session-row]") == sessions_before + 1
     browser.shot("draft-created")
@@ -7070,7 +7070,7 @@ def acp_agents(browser):
     browser.wait("the agent's picture", lambda: "A picture." in browser.text("#transcript"), timeout=60)
     browser.wait(
         "the picture as media of the reply",
-        lambda: count(browser, '#transcript .media[data-media-type="image/png"]') >= 1,
+        lambda: count(browser, '#transcript [data-artifact-sha][data-asset-type="image/png"]') >= 1,
     )
     print("an image in the agent's reply shows as media")
 

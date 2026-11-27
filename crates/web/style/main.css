@@ -516,6 +516,30 @@ body {
     aspect-ratio: 16 / 9;
   }
 }
+/* A user's, a tool's, or a model's files (render/attachments.rs
+   `files_html`): the same cards, small, a row of thumbnails at most 12 rem
+   tall; under a user's message they line up at its end. */
+[data-compact] .attach-gallery {
+  display: flex;
+  flex-wrap: wrap;
+}
+[data-compact] .attach-gallery > * {
+  width: 10rem;
+}
+[data-compact] .attach-gallery[data-gallery="1"] > * {
+  width: auto;
+  min-width: 10rem;
+  max-width: min(100%, 24rem);
+}
+[data-compact] .attach-gallery[data-gallery="1"] [data-tile-frame] {
+  min-height: 6rem;
+}
+[data-compact="end"],
+[data-compact="end"] .attach-gallery,
+[data-compact="end"] .attach-others {
+  align-items: flex-end;
+  justify-content: flex-end;
+}
 /* A card whose asset was deleted. */
 [data-asset][data-shown="deleted"]:not([data-asset-view="figure"]) {
   opacity: 0.6;

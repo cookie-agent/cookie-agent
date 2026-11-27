@@ -2,7 +2,7 @@
 //! reply's end, from the icons under them or (on a touch screen) their
 //! menu, and a compaction's revert; and `/compact` with its cancel.
 
-use cookie_agent_client_state::{TranscriptItem, cut_points::CutPoint};
+use cookie_agent_client_state::cut_points::CutPoint;
 use cookie_agent_protocol::{
     ClientForkId, SafeDisplayText, SessionCompactCancelParams, SessionCompactParams,
     SessionForkParams, SessionId, SessionRevertParams,
@@ -76,16 +76,10 @@ impl Workspace {
             return;
         };
         let text = self.store.with_value(|store| {
-            store.sessions.get(&session_id).and_then(|state| {
-                state.transcript.iter().find_map(|item| match item {
-                    TranscriptItem::User {
-                        seq: item_seq,
-                        markdown,
-                        ..
-                    } if *item_seq == seq => Some(markdown.as_str().to_owned()),
-                    _ => None,
-                })
-            })
+            store
+                .sessions
+                .get(&session_id)
+                .and_then(|state| state.user_message_text(seq))
         });
         let Some(text) = text else {
             self.status
@@ -100,16 +94,10 @@ impl Workspace {
     fn user_point(self, seq: u64) -> Option<(SessionId, CutPoint)> {
         let session_id = self.selected.get_untracked()?;
         let text = self.store.with_value(|store| {
-            store.sessions.get(&session_id).and_then(|state| {
-                state.transcript.iter().find_map(|item| match item {
-                    TranscriptItem::User {
-                        seq: item_seq,
-                        markdown,
-                        ..
-                    } if *item_seq == seq => Some(markdown.as_str().to_owned()),
-                    _ => None,
-                })
-            })
+            store
+                .sessions
+                .get(&session_id)
+                .and_then(|state| state.user_message_text(seq))
         })?;
         Some((session_id, CutPoint::UserMessage { seq, text }))
     }

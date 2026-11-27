@@ -38,20 +38,6 @@ const PRE: &str =
     "overflow-x-auto whitespace-pre rounded border border-line bg-surface p-2 font-mono text-sm";
 const NOTE: &str = "text-xs text-muted";
 
-/// A stored file shown inline: a placeholder the page fills with the
-/// artifact's image, video, audio, or download link once it is read.
-pub fn media_html(sha256: &str, media_type: &str, byte_length: u64, label: Option<&str>) -> String {
-    format!(
-        "<div class=\"media\" data-media=\"{}\" data-media-type=\"{}\" data-alt=\"{}\"><span class=\"{NOTE}\">{} ({}, {})</span></div>",
-        escape(sha256),
-        escape(media_type),
-        escape(label.unwrap_or_default()),
-        escape(label.unwrap_or("media")),
-        escape(media_type),
-        escape(&cookie_agent_protocol::human_bytes(byte_length)),
-    )
-}
-
 /// An asset shown as a figure: a placeholder the page fills with the asset
 /// as it is now (`crate::assets`), saying what it was when it was shown
 /// until then.
@@ -209,11 +195,15 @@ pub fn block_html(block: &DisplayBlock, place: BlockPlace<'_>) -> String {
             "<pre class=\"{PRE}\"><code class=\"language-json\">{}</code></pre>",
             escape(&serde_json::to_string_pretty(value).unwrap_or_default())
         ),
-        DisplayBlock::Media { artifact, alt } => media_html(
-            &artifact.sha256,
-            &artifact.media_type,
-            artifact.byte_length,
-            alt.as_deref().or(artifact.filename.as_deref()),
+        DisplayBlock::Media { artifact, alt } => super::attachments::files_html(
+            vec![super::attachments::CardFile::stored(
+                &artifact.sha256,
+                &artifact.media_type,
+                artifact.byte_length,
+                artifact.filename.as_deref(),
+                alt.as_deref(),
+            )],
+            super::attachments::FilesAt::Reply,
         ),
         // A memory URL opens the memory in the Memory view.
         DisplayBlock::Link { url, label }
@@ -614,11 +604,12 @@ mod tests {
             artifact: artifact(),
             alt: Some("a cat".into()),
         });
+        // Media is a card of the stored file, which the page fills in.
         assert!(
-            media.contains(&format!("data-media=\"{}\"", "a".repeat(64))),
+            media.contains(&format!("data-artifact-sha=\"{}\"", "a".repeat(64))),
             "{media}"
         );
-        assert!(media.contains("data-media-type=\"image/png\""), "{media}");
+        assert!(media.contains("data-asset-type=\"image/png\""), "{media}");
 
         // An asset is a placeholder naming its store, the asset, and what it
         // was when shown; the page fills it with the asset as it is now.

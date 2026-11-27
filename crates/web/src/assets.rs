@@ -412,10 +412,14 @@ fn mark_card(card: &web_sys::Element, shared: &std::collections::HashSet<String>
     }
 }
 
-/// Fills every asset placeholder under `root` not filled yet.
+/// Fills every asset placeholder under `root` not filled yet. A card that
+/// reads its file whole, a picture's, a video's, or a player's, waits in the
+/// transcript until it is within a screen of the view (`data-near`); a
+/// file's chip reads nothing.
 pub fn show_within(root: &web_sys::Element, workspace: Workspace) {
     listen();
-    let Ok(blocks) = root.query_selector_all("[data-asset]:not([data-shown])") else {
+    let Ok(blocks) = root.query_selector_all("[data-asset]:not([data-shown]):not([data-near])")
+    else {
         return;
     };
     for index in 0..blocks.length() {
@@ -425,20 +429,40 @@ pub fn show_within(root: &web_sys::Element, workspace: Workspace) {
         else {
             continue;
         };
-        let Some(shown) = placeholder(&element) else {
+        let reads_whole = matches!(
+            element.get_attribute("data-asset-view").as_deref(),
+            Some("thumb" | "audio")
+        );
+        if reads_whole && crate::near_view::watch_card(&element) {
+            let _ = element.set_attribute("data-near", "");
             continue;
-        };
-        let _ = element.set_attribute("data-shown", "loading");
-        let shared =
-            leptos::prelude::WithUntracked::with_untracked(&workspace.share_list, |list| {
-                list.as_ref()
-                    .and_then(|list| list.as_ref().ok())
-                    .map(|list| shared_ids(&list.shares))
-                    .unwrap_or_default()
-            });
-        mark_card(&element, &shared);
-        spawn_local(fill(element, shown, workspace));
+        }
+        start_fill(element, workspace);
     }
+}
+
+/// Fills the card `element` [`show_within`] left waiting, now near.
+pub fn fill_card(element: &web_sys::Element, workspace: Workspace) {
+    let _ = element.remove_attribute("data-near");
+    if !element.has_attribute("data-shown") {
+        start_fill(element.clone(), workspace);
+    }
+}
+
+/// Starts filling the placeholder `element`.
+fn start_fill(element: web_sys::Element, workspace: Workspace) {
+    let Some(shown) = placeholder(&element) else {
+        return;
+    };
+    let _ = element.set_attribute("data-shown", "loading");
+    let shared = leptos::prelude::WithUntracked::with_untracked(&workspace.share_list, |list| {
+        list.as_ref()
+            .and_then(|list| list.as_ref().ok())
+            .map(|list| shared_ids(&list.shares))
+            .unwrap_or_default()
+    });
+    mark_card(&element, &shared);
+    spawn_local(fill(element, shown, workspace));
 }
 
 /// Brings the newest card of the asset `handle` into view and opens it as
@@ -452,7 +476,7 @@ pub fn reveal(handle: String, workspace: Workspace) {
             gloo_timers::future::sleep(std::time::Duration::from_millis(250)).await;
             if let Some(card) = card_of(&handle) {
                 card.scroll_into_view();
-                open_card(&card, None, workspace);
+                open_card(&card, workspace);
                 return;
             }
             let Some(figure) = last(&format!(
@@ -487,10 +511,13 @@ fn last(selector: &str) -> Option<web_sys::Element> {
         .and_then(|node| node.dyn_into::<web_sys::Element>().ok())
 }
 
+/// What finds a shelf card once filled, or waiting to come near.
+const SETTLED: &str = ":is([data-shown]:not([data-shown=\"loading\"]), [data-near])";
+
 /// The newest shelf card of the asset `handle`, once filled.
 fn card_of(handle: &str) -> Option<web_sys::Element> {
     last(&format!(
-        "#transcript [data-attach-row] [data-asset][data-asset-handle=\"{}\"][data-shown]:not([data-shown=\"loading\"])",
+        "#transcript [data-attach-row] [data-asset][data-asset-handle=\"{}\"]{SETTLED}",
         handle.replace(['"', '\\'], "")
     ))
 }
@@ -537,20 +564,12 @@ pub fn act(
         }
         "asset-panel" => {
             if let Some(card) = card() {
-                open_card(&card, None, workspace);
+                open_card(&card, workspace);
             }
         }
         "asset-deck" => {
-            let index = clicked
-                .unwrap_or(target)
-                .closest("[data-index]")
-                .ok()
-                .flatten()
-                .and_then(|card| card.get_attribute("data-index"))
-                .and_then(|index| index.parse().ok())
-                .unwrap_or(0);
-            if let Ok(Some(gallery)) = target.closest("[data-deck]") {
-                open_deck(&gallery, index, workspace);
+            if let Ok(Some(card)) = clicked.unwrap_or(target).closest("[data-index]") {
+                open_deck(&card, workspace);
             }
         }
         "asset-download" => {
@@ -622,28 +641,42 @@ pub fn act(
             .get_attribute("data-asset-handle")
             .and_then(|handle| card_of(&handle))
         {
-            Some(card) => open_card(&card, None, workspace),
+            Some(card) => open_card(&card, workspace),
             None => workspace.status.set("that asset is not shown here".into()),
         },
         _ => {}
     }
 }
 
-/// Opens the card `card` as a click on it does: a deck's at the card, a
-/// page or a document in the side panel; any other comes into view.
-fn open_card(card: &web_sys::Element, index: Option<usize>, workspace: Workspace) {
+/// Opens the card `card` as a click on it does: a picture's or video's in
+/// the media viewer, a page or a document in the side panel; any other
+/// comes into view. A picture still waiting to come near is brought into
+/// view and read first.
+fn open_card(card: &web_sys::Element, workspace: Workspace) {
     if card.get_attribute("data-shown").as_deref() == Some("deleted") {
         workspace.status.set("that asset was deleted".into());
         return;
     }
     match card.get_attribute("data-asset-view").as_deref() {
+        Some("thumb") if card.get_attribute("data-shown").as_deref() == Some("yes") => {
+            open_deck(card, workspace);
+        }
         Some("thumb") => {
-            let index = index
-                .or_else(|| card.get_attribute("data-index")?.parse().ok())
-                .unwrap_or(0);
-            if let Ok(Some(deck)) = card.closest("[data-deck]") {
-                open_deck(&deck, index, workspace);
-            }
+            let options = web_sys::ScrollIntoViewOptions::new();
+            options.set_block(web_sys::ScrollLogicalPosition::Center);
+            card.scroll_into_view_with_scroll_into_view_options(&options);
+            fill_card(card, workspace);
+            let card = card.clone();
+            spawn_local(async move {
+                for _ in 0..40 {
+                    gloo_timers::future::sleep(std::time::Duration::from_millis(250)).await;
+                    match card.get_attribute("data-shown").as_deref() {
+                        Some("yes") => return open_deck(&card, workspace),
+                        Some("loading") => {}
+                        _ => return,
+                    }
+                }
+            });
         }
         Some("page" | "doc") => workspace.asset_panel.set(OpenAsset::of(card)),
         _ => {
@@ -654,60 +687,51 @@ fn open_card(card: &web_sys::Element, index: Option<usize>, workspace: Workspace
     }
 }
 
-/// Opens the deck `deck` in the media viewer at its card `index`, to step
-/// through every card filled.
-fn open_deck(deck: &web_sys::Element, index: usize, workspace: Workspace) {
-    let Ok(cards) = deck.query_selector_all("[data-asset][data-index]") else {
+/// Opens the media viewer at the picture or video card `card`, to step
+/// through every one filled of its message: its row's in the transcript,
+/// its gallery's elsewhere, in the order they show.
+fn open_deck(card: &web_sys::Element, workspace: Workspace) {
+    let scope = card
+        .closest(".transcript-item")
+        .ok()
+        .flatten()
+        .or_else(|| card.closest("[data-deck]").ok().flatten())
+        .unwrap_or_else(|| card.clone());
+    let Ok(cards) = scope.query_selector_all("[data-asset][data-index]") else {
         return;
     };
     let mut group = Vec::new();
-    let mut start = 0;
+    let mut start = None;
     for at in 0..cards.length() {
-        let Some(card) = cards
+        let Some(each) = cards
             .item(at)
             .and_then(|node| node.dyn_into::<web_sys::Element>().ok())
         else {
             continue;
         };
-        let content = card
+        let content = each
             .get_attribute("data-asset-current")
-            .filter(|_| card.get_attribute("data-shown").as_deref() == Some("yes"))
+            .filter(|_| each.get_attribute("data-shown").as_deref() == Some("yes"))
             .and_then(|sha| CONTENTS.with(|contents| contents.borrow_mut().get(&sha)));
         let Some(content) = content else {
             continue;
         };
-        let card_index: usize = card
-            .get_attribute("data-index")
-            .and_then(|index| index.parse().ok())
-            .unwrap_or(0);
-        group.push((
-            card_index,
-            crate::media::Viewing {
-                url: content.url,
-                media_type: content.media_type,
-                alt: card.get_attribute("data-asset-title").unwrap_or_default(),
-                handle: card.get_attribute("data-asset-handle"),
-                asset: match placeholder(&card).map(|shown| shown.source) {
-                    Some(Source::Asset { store, asset }) => Some((store, asset)),
-                    _ => None,
-                },
+        if each == *card {
+            start = Some(group.len());
+        }
+        group.push(crate::media::Viewing {
+            url: content.url,
+            media_type: content.media_type,
+            alt: each.get_attribute("data-asset-title").unwrap_or_default(),
+            handle: each.get_attribute("data-asset-handle"),
+            asset: match placeholder(&each).map(|shown| shown.source) {
+                Some(Source::Asset { store, asset }) => Some((store, asset)),
+                _ => None,
             },
-        ));
+        });
     }
-    // Drawn back to front: in the order shown again.
-    group.sort_by_key(|(card_index, _)| *card_index);
-    if let Some(at) = group
-        .iter()
-        .position(|(card_index, _)| *card_index == index)
-    {
-        start = at;
-    }
-    let group = group
-        .into_iter()
-        .map(|(_, viewing)| viewing)
-        .collect::<Vec<_>>();
-    let Some(first) = group.get(start).cloned() else {
-        workspace.status.set("the deck is still loading".into());
+    let Some(first) = start.and_then(|start| group.get(start).cloned()) else {
+        workspace.status.set("the picture is still loading".into());
         return;
     };
     workspace.media_group.set(group);
@@ -734,10 +758,10 @@ pub fn reveal_attachment(sha256: String, workspace: Workspace) {
         for _ in 0..120 {
             gloo_timers::future::sleep(std::time::Duration::from_millis(250)).await;
             if let Some(card) = last(&format!(
-                "#transcript [data-attach-row] [data-artifact-sha=\"{sha256}\"][data-shown]:not([data-shown=\"loading\"])"
+                "#transcript [data-attach-row] [data-artifact-sha=\"{sha256}\"]{SETTLED}"
             )) {
                 card.scroll_into_view();
-                open_card(&card, None, workspace);
+                open_card(&card, workspace);
                 return;
             }
         }
@@ -1097,7 +1121,11 @@ fn thumb(target: &web_sys::Element, content: &Content, asset: &Asset) {
         .ok()
         .flatten()
         .is_some();
-    let size = if alone {
+    // A user's, a tool's, or a model's files show small.
+    let compact = target.closest("[data-compact]").ok().flatten().is_some();
+    let size = if alone && compact {
+        "block max-h-48 w-auto max-w-full object-contain"
+    } else if alone {
         "block max-h-96 w-auto max-w-full object-contain"
     } else if content.media_type == "image/svg+xml" {
         "h-full w-full object-contain"

@@ -53,6 +53,18 @@ fn files_ahead_of(files: Vec<ArtifactRef>, typed: &mut Vec<ArtifactRef>) {
 }
 
 impl Workspace {
+    /// Whether a draft put aside attaches the file `sha256`.
+    pub(super) fn parked_draft_attaches(self, sha256: &str) -> bool {
+        self.composer_drafts.with_value(|drafts| {
+            drafts.parked.values().any(|draft| {
+                draft
+                    .attachments
+                    .iter()
+                    .any(|attached| attached.sha256 == sha256)
+            })
+        })
+    }
+
     /// Whose draft the composer should hold: the new session's while the
     /// page composes one, else the open session's.
     pub(super) fn composer_slot(self) -> Option<ComposerSlot> {

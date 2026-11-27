@@ -29,7 +29,7 @@ use cookie_agent_protocol::{
 };
 
 use super::{
-    blocks::{BlockPlace, display_html, media_html},
+    blocks::{BlockPlace, display_html},
     budget::{ALL_OUTPUT_LINES, OUTPUT_LINES, within_budget},
     escape,
     markdown::{block_html, document_html},
@@ -535,24 +535,30 @@ fn item_html_in(
             ..
         } => history_html(*before, *skipped, *loading, failed.as_deref()),
         TranscriptItem::User { markdown, seq, .. } => {
+            // Its files are cards under the bubble, as a reply's
+            // attachments are; the bubble's text no longer names them.
             let files = view
                 .state
                 .user_files
                 .get(seq)
                 .map(|files| {
-                    files
-                        .iter()
-                        .map(|file| {
-                            media_html(
-                                &file.sha256,
-                                &file.media_type,
-                                file.byte_length,
-                                file.filename.as_deref(),
-                            )
-                        })
-                        .collect::<String>()
+                    super::attachments::files_html(
+                        files
+                            .iter()
+                            .map(super::attachments::CardFile::user_file)
+                            .collect(),
+                        super::attachments::FilesAt::UserMessage,
+                    )
                 })
                 .unwrap_or_default();
+            let bubble = if markdown.as_str().trim().is_empty() {
+                String::new()
+            } else {
+                format!(
+                    "<div class=\"min-w-0 rounded-2xl rounded-tr-sm bg-sunken px-3 py-2\" data-bubble><div class=\"markdown\">{}</div></div>",
+                    document_html(markdown)
+                )
+            };
             let guest = view
                 .state
                 .guest_labels
@@ -576,8 +582,7 @@ fn item_html_in(
                 // Under the bubble, its icons, which show while a mouse is
                 // over the row (style/main.css) and keep their room; a
                 // touch screen long-presses the bubble instead.
-                "<div class=\"user-row flex flex-col items-end\" data-seq=\"{seq}\">{guest}{thread}<div class=\"user-message ml-auto flex w-fit max-w-[80%] justify-end\" data-seq=\"{seq}\"><div class=\"min-w-0 rounded-2xl rounded-tr-sm bg-sunken px-3 py-2\" data-bubble><div class=\"markdown\">{}</div>{files}</div></div>{}</div>",
-                document_html(markdown),
+                "<div class=\"user-row flex flex-col items-end\" data-seq=\"{seq}\">{guest}{thread}<div class=\"user-message ml-auto flex w-fit max-w-[80%] flex-col items-end gap-1.5\" data-seq=\"{seq}\">{bubble}{files}</div>{}</div>",
                 point_actions_html(
                     "message",
                     &format!("data-seq=\"{seq}\""),
@@ -1011,11 +1016,10 @@ pub fn part_element_id(row: u64, part: u64) -> String {
 }
 
 /// Whether HTML holds what the page fills in after drawing it: a code
-/// block to highlight, media or an asset to read, or a work row's machines
-/// to fit.
+/// block to highlight, a card of an asset or a stored file to read, or a
+/// work row's machines to fit.
 pub fn fills_in(html: &str) -> bool {
     html.contains("language-")
-        || html.contains("data-media")
         || html.contains("data-asset")
         || html.contains("data-work-machines-fit")
 }
@@ -1894,11 +1898,15 @@ fn child_html(view: &TranscriptView<'_>, item_id: u64, child: &AssistantChild) -
                 byte_length,
                 sha256,
                 ..
-            } => media_html(
-                sha256.as_str(),
-                file.media_type.as_str(),
-                *byte_length,
-                file.filename.as_deref(),
+            } => super::attachments::files_html(
+                vec![super::attachments::CardFile::stored(
+                    sha256.as_str(),
+                    file.media_type.as_str(),
+                    *byte_length,
+                    file.filename.as_deref(),
+                    None,
+                )],
+                super::attachments::FilesAt::Reply,
             ),
             PersistedFileSource::Url { url } if super::safe_link(url) => format!(
                 "<a href=\"{}\" target=\"_blank\" rel=\"noopener noreferrer\" class=\"text-accent underline hover:text-fg\">{}</a>",

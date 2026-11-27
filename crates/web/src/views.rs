@@ -2669,7 +2669,11 @@ fn Transcript(workspace: Workspace) -> impl IntoView {
         if watching.with_value(|watching| watching.as_ref() == Some(&scroller)) {
             return;
         }
-        crate::near_view::start(&scroller, move |row| fill_row(row, workspace));
+        crate::near_view::start(
+            &scroller,
+            move |row| fill_row(row, workspace),
+            move |card| crate::assets::fill_card(card, workspace),
+        );
         watching.set_value(Some(scroller));
     });
     on_cleanup(move || {
@@ -3674,9 +3678,9 @@ impl MessagePress {
         self.timer.set_value(timer);
     }
 
-    /// What a press starting at `target` is on: a user message's bubble, or
-    /// a finished reply's text or footer, but not a link, button, or player
-    /// in it, which keep their own press.
+    /// What a press starting at `target` is on: a user message's bubble or
+    /// files, or a finished reply's text or footer, but not a link, button,
+    /// or player in them, which keep their own press.
     fn pressed(self, target: &web_sys::Element) -> Option<Pressed> {
         let closest = |selector: &str| target.closest(selector).ok().flatten();
         if let Some(bubble) = closest("[data-bubble]") {
@@ -3691,6 +3695,14 @@ impl MessagePress {
         }
         if closest("a, button, [data-action], video, audio").is_some() {
             return None;
+        }
+        // A message of files alone has no bubble: its cards' room is.
+        if let Some(message) = closest(".user-message") {
+            return message
+                .get_attribute("data-seq")?
+                .parse()
+                .ok()
+                .map(Pressed::Message);
         }
         let block = closest(".markdown[data-part], [data-reply-footer]")?
             .closest("[data-reply-block]")
@@ -6571,6 +6583,5 @@ fn agent_modes_sheet(
 fn fill_row(row: &web_sys::Element, workspace: Workspace) {
     crate::badges::fit_work_machines(row);
     crate::highlight::highlight_within(row);
-    crate::media::show_within(row, workspace);
     crate::assets::show_within(row, workspace);
 }

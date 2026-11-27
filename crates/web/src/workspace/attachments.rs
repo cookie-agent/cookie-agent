@@ -21,6 +21,47 @@ use crate::attach::{
 /// How many smaller sizes a downscale tries before it gives up.
 const DOWNSCALE_TRIES: usize = 6;
 
+thread_local! {
+    /// The `Blob` URL of each draft picture's bytes, by the digest its chip
+    /// names, for the chip's thumbnail; revoked once no draft attaches it.
+    static THUMBNAILS: std::cell::RefCell<std::collections::HashMap<String, String>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+/// The thumbnail URL of the draft's picture `sha256`, while it has one.
+pub fn draft_thumbnail(sha256: &str) -> Option<String> {
+    THUMBNAILS.with(|thumbnails| thumbnails.borrow().get(sha256).cloned())
+}
+
+/// Keeps a thumbnail URL of `bytes` for the chip of `sha256` when they are
+/// a picture.
+fn keep_thumbnail(sha256: &str, bytes: &[u8]) {
+    let Some(media_type) = validate_upload(bytes)
+        .ok()
+        .filter(|upload| upload.kind == "image")
+        .map(|upload| upload.media_type)
+    else {
+        return;
+    };
+    let array = js_sys::Uint8Array::from(bytes);
+    let options = web_sys::BlobPropertyBag::new();
+    options.set_type(media_type);
+    let Ok(blob) = web_sys::Blob::new_with_u8_array_sequence_and_options(
+        &js_sys::Array::of1(&array),
+        &options,
+    ) else {
+        return;
+    };
+    let Ok(url) = web_sys::Url::create_object_url_with_blob(&blob) else {
+        return;
+    };
+    if let Some(before) =
+        THUMBNAILS.with(|thumbnails| thumbnails.borrow_mut().insert(sha256.to_owned(), url))
+    {
+        let _ = web_sys::Url::revoke_object_url(&before);
+    }
+}
+
 /// A file a new session's draft attaches: a chip at once, under a stand-in
 /// reference, and uploaded once the first message created the session.
 #[derive(Clone)]
@@ -257,6 +298,7 @@ impl Workspace {
             match upload(&client, session_id, &name, Some(name.clone()), &bytes, kind).await {
                 // It joins its session's draft, shown or put aside.
                 Ok(artifact) => {
+                    keep_thumbnail(&artifact.sha256, &bytes);
                     self.status.set(note.unwrap_or_else(|| {
                         format!(
                             "attached {}",
@@ -318,6 +360,7 @@ impl Workspace {
             "attached {}; it is uploaded with the first message",
             cookie_agent_client_state::attachment_chip(&artifact)
         ));
+        keep_thumbnail(&artifact.sha256, &bytes);
         self.add_attachment(artifact.clone());
         self.draft_files.update_value(|held| {
             held.push(DraftFile {
@@ -375,6 +418,28 @@ impl Workspace {
         }
         self.draft_files.set_value(Vec::new());
         if refused { Err(uploaded) } else { Ok(uploaded) }
+    }
+
+    /// Revokes the chip thumbnails of files no draft attaches any more:
+    /// neither the composer's, `attached`, nor one put aside.
+    pub fn prune_draft_thumbnails(self, attached: &[ArtifactRef]) {
+        let gone = THUMBNAILS.with(|thumbnails| {
+            let mut thumbnails = thumbnails.borrow_mut();
+            let gone = thumbnails
+                .keys()
+                .filter(|sha256| {
+                    !attached.iter().any(|file| file.sha256 == **sha256)
+                        && !self.parked_draft_attaches(sha256)
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            gone.into_iter()
+                .filter_map(|sha256| thumbnails.remove(&sha256))
+                .collect::<Vec<_>>()
+        });
+        for url in gone {
+            let _ = web_sys::Url::revoke_object_url(&url);
+        }
     }
 
     /// Forgets the files a new session's draft kept.

@@ -10,7 +10,9 @@
 //! (`data-asset`) the page fills in after drawing it (`crate::assets`), in
 //! the way its `data-asset-view` names: an asset's live, an attached file's
 //! from the session's artifacts. Handles of shown assets the text names
-//! become chips that open their card.
+//! become chips that open their card. A user's files, a tool's media, and
+//! the files a model produced are the same cards, smaller ([`files_html`],
+//! `docs/site/specs/attachment-handling.md` section 5.1).
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -87,20 +89,29 @@ impl AttachKey {
     }
 }
 
-/// A file a card shows: an asset, live, or a file an attachment stored.
+/// A file a card shows: an asset, live, or a stored file: one an
+/// attachment stored, a user's, a tool's, or a model's.
 #[derive(Clone, Debug)]
 pub struct CardFile {
     pub title: String,
     pub media_type: String,
     pub byte_length: u64,
     pub filename: Option<String>,
+    /// The model saw the file by its name and size alone: a user's file
+    /// stored as a file.
+    pub name_only: bool,
     source: CardSource,
 }
 
 #[derive(Clone, Debug)]
 enum CardSource {
     Asset(AssetBlock),
-    Artifact { sha256: String, key: AttachKey },
+    /// A stored file; `key` names the `<attach/>` tag that stored it, which
+    /// saving it as an asset and sharing it go through.
+    Artifact {
+        sha256: String,
+        key: Option<AttachKey>,
+    },
 }
 
 impl CardFile {
@@ -110,7 +121,53 @@ impl CardFile {
             media_type: block.media_type.clone(),
             byte_length: block.byte_length,
             filename: block.filename.clone(),
+            name_only: false,
             source: CardSource::Asset(block.clone()),
+        }
+    }
+
+    /// A stored file no `<attach/>` tag names: a user's file, a tool's
+    /// media, or a file a model produced. Its card has no corner buttons.
+    #[must_use]
+    pub fn stored(
+        sha256: &str,
+        media_type: &str,
+        byte_length: u64,
+        filename: Option<&str>,
+        title: Option<&str>,
+    ) -> Self {
+        let title = title
+            .or(filename)
+            .filter(|title| !title.is_empty())
+            .map_or_else(
+                || cookie_agent_client_state::media_type_word(media_type),
+                str::to_owned,
+            );
+        Self {
+            title,
+            media_type: media_type.to_owned(),
+            byte_length,
+            filename: filename.map(str::to_owned),
+            name_only: false,
+            source: CardSource::Artifact {
+                sha256: sha256.to_owned(),
+                key: None,
+            },
+        }
+    }
+
+    /// A user's file, marked when it was stored as a file.
+    #[must_use]
+    pub fn user_file(artifact: &cookie_agent_protocol::ArtifactRef) -> Self {
+        Self {
+            name_only: cookie_agent_client_state::stored_as_file(artifact),
+            ..Self::stored(
+                &artifact.sha256,
+                &artifact.media_type,
+                artifact.byte_length,
+                artifact.filename.as_deref(),
+                Some(artifact.display_name()),
+            )
         }
     }
 
@@ -131,8 +188,9 @@ impl CardFile {
                 escape(block.handle.as_str()),
             ),
             CardSource::Artifact { sha256, key } => format!(
-                "data-asset=\"artifact\" data-asset-sha=\"{sha}\" data-artifact-sha=\"{sha}\" data-attach-key=\"{}\" data-asset-name=\"{}\" {common}",
-                key.attribute(),
+                "data-asset=\"artifact\" data-asset-sha=\"{sha}\" data-artifact-sha=\"{sha}\"{} data-asset-name=\"{}\" {common}",
+                key.map(|key| format!(" data-attach-key=\"{}\"", key.attribute()))
+                    .unwrap_or_default(),
                 escape(self.filename.as_deref().unwrap_or(&self.title)),
                 sha = escape(sha256),
             ),
@@ -140,7 +198,7 @@ impl CardFile {
     }
 
     /// The card's corner: *Copy handle* for an asset, *Save as asset* for
-    /// a stored file, and beside it *Share link*
+    /// a file an attachment stored, and beside it *Share link*
     /// (`docs/site/specs/share-links.md` section 7.1).
     fn corner(&self) -> String {
         format!(
@@ -150,7 +208,8 @@ impl CardFile {
         )
     }
 
-    /// [`Self::corner`]'s first button with the classes `class`.
+    /// [`Self::corner`]'s first button with the classes `class`; none for
+    /// a stored file no tag names.
     fn corner_button(&self, class: &str) -> String {
         match &self.source {
             CardSource::Asset(block) => {
@@ -160,24 +219,27 @@ impl CardFile {
                     svg(icondata::LuCopy, ""),
                 )
             }
-            CardSource::Artifact { key, .. } => format!(
+            CardSource::Artifact { key: Some(key), .. } => format!(
                 "<button type=\"button\" data-action=\"attachment-save\" data-attach-key=\"{}\" class=\"{class}\" aria-label=\"Save as asset\" title=\"Save as asset\">{}</button>",
                 key.attribute(),
                 svg(icondata::LuBookmark, ""),
             ),
+            CardSource::Artifact { key: None, .. } => String::new(),
         }
     }
 
     /// The card's *Share link* button with the classes `class`: an asset's
     /// opens the share dialog, a stored file's saves it as an asset of the
     /// session first. A shared asset's card keeps it shown, in the accent.
+    /// None for a stored file no tag names.
     fn share_button(&self, class: &str) -> String {
         let action = match &self.source {
             CardSource::Asset(_) => "data-action=\"asset-share\"".to_owned(),
-            CardSource::Artifact { key, .. } => format!(
+            CardSource::Artifact { key: Some(key), .. } => format!(
                 "data-action=\"attachment-share\" data-attach-key=\"{}\"",
                 key.attribute()
             ),
+            CardSource::Artifact { key: None, .. } => return String::new(),
         };
         format!(
             "<button type=\"button\" {action} class=\"{class}\" aria-label=\"Share link\" title=\"Share link\">{}</button>",
@@ -224,7 +286,7 @@ enum CardState {
         label: String,
         reason: String,
     },
-    Ready(CardFile),
+    Ready(Box<CardFile>),
 }
 
 impl CardState {
@@ -246,22 +308,25 @@ impl CardState {
                 label,
                 reason: reason.clone(),
             },
-            (AttachmentOutcome::Shown { asset }, _) => Self::Ready(CardFile::asset(asset)),
+            (AttachmentOutcome::Shown { asset }, _) => {
+                Self::Ready(Box::new(CardFile::asset(asset)))
+            }
             (AttachmentOutcome::Attached { file }, Some(key)) => match &file.source {
                 PersistedFileSource::Artifact {
                     byte_length,
                     sha256,
                     ..
-                } => Self::Ready(CardFile {
+                } => Self::Ready(Box::new(CardFile {
                     title: label,
                     media_type: file.media_type.as_str().to_owned(),
                     byte_length: *byte_length,
                     filename: file.filename.clone(),
+                    name_only: false,
                     source: CardSource::Artifact {
                         sha256: sha256.as_str().to_owned(),
-                        key,
+                        key: Some(key),
                     },
-                }),
+                })),
                 _ => Self::Failed {
                     label,
                     reason: "it holds no stored file".to_owned(),
@@ -311,7 +376,7 @@ pub fn with_attachments(html: &str, part: &PartAttachments<'_>, next: &mut u32) 
                 None => break,
             }
         }
-        out.push_str(&row_html(&states));
+        out.push_str(&row_html(&states, ""));
     }
     out.push_str(rest);
     Some(out)
@@ -333,27 +398,60 @@ fn state(part: &PartAttachments<'_>, next: &mut u32) -> CardState {
     )
 }
 
+/// Where a row of [`files_html`] stands: under a user's message, at its
+/// end, or in a reply or a tool's output.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FilesAt {
+    UserMessage,
+    Reply,
+}
+
+/// Stored files no `<attach/>` tag names, a user's message's, a tool's, or
+/// a model's, as one row of cards the way a tag's are: a compact gallery of
+/// the pictures and videos, whose thumbnails stay at most 12 rem tall, and
+/// each other file as its card. Empty for no files.
+#[must_use]
+pub fn files_html(files: Vec<CardFile>, at: FilesAt) -> String {
+    if files.is_empty() {
+        return String::new();
+    }
+    let states = files
+        .into_iter()
+        .map(|file| CardState::Ready(Box::new(file)))
+        .collect::<Vec<_>>();
+    row_html(
+        &states,
+        match at {
+            FilesAt::UserMessage => " data-compact=\"end\"",
+            FilesAt::Reply => " data-compact=\"start\"",
+        },
+    )
+}
+
 /// A row of cards: the gallery of its pictures, videos, pages, and
-/// documents, then each other card in a row of its own.
-fn row_html(states: &[CardState]) -> String {
+/// documents, then each other card in a row of its own; `compact`, the
+/// row's `data-compact` attribute or empty, lays it out small.
+fn row_html(states: &[CardState], compact: &str) -> String {
     let mut gallery = Vec::new();
     let mut others = Vec::new();
     for state in states {
         match state {
             CardState::Ready(file) => match Card::of(&file.media_type) {
-                card @ (Card::Media | Card::Page | Card::Document) => gallery.push((card, file)),
+                card @ (Card::Media | Card::Page | Card::Document) => {
+                    gallery.push((card, &**file));
+                }
                 card => others.push((card, state)),
             },
             _ => others.push((Card::File, state)),
         }
     }
     let mut html =
-        String::from("<span class=\"attach-row my-1 flex flex-col gap-3\" data-attach-row>");
+        format!("<span class=\"attach-row my-1 flex flex-col gap-3\" data-attach-row{compact}>");
     if !gallery.is_empty() {
         html.push_str(&gallery_html(&gallery));
     }
     if !others.is_empty() {
-        html.push_str("<span class=\"flex flex-wrap items-start gap-3.5\">");
+        html.push_str("<span class=\"attach-others flex flex-wrap items-start gap-3.5\">");
         for (card, state) in others {
             let (body, kind) = match (card, state) {
                 (Card::Audio, CardState::Ready(file)) => (audio_html(file), "audio"),
@@ -531,16 +629,30 @@ fn audio_html(file: &CardFile) -> String {
     )
 }
 
-/// Any other file's chip: its type, name, and size, and a download.
+/// Any other file's chip: its type, name, type word, and size, and a
+/// download; nothing of it is read until the download. A user's file the
+/// model saw only by its name says so.
 fn file_html(file: &CardFile) -> String {
     let label = file.type_label();
     let hue = crate::badges::hue_class(Some(cookie_agent_client_state::badges::badge_hue(&label)));
     let name = file.filename.as_deref().unwrap_or(&file.title);
+    let name_only = if file.name_only {
+        format!(
+            "<span class=\"name-only ml-1.5 rounded-full bg-sunken px-1.5 text-[0.625rem] text-muted\" title=\"{}\">name only</span>",
+            escape(cookie_agent_client_state::STORED_AS_FILE_NOTE)
+        )
+    } else {
+        String::new()
+    };
     format!(
-        "<span class=\"{SURFACE} items-center gap-2.5 px-2.5 py-2\" {}><span class=\"grid h-9 w-9 shrink-0 place-items-center rounded-lg border font-mono text-[0.625rem] font-bold {hue}\">{}</span><span class=\"flex min-w-0 flex-1 flex-col\"><span class=\"truncate text-sm\" data-asset-title>{}</span><span class=\"truncate text-[0.6875rem] text-muted\" data-asset-note>{}</span></span>{}{}<button type=\"button\" data-action=\"asset-download\" class=\"inline-flex size-9 shrink-0 items-center justify-center rounded-md text-accent hover:bg-hover\" aria-label=\"Download {}\" title=\"Download\">{}</button></span>",
+        "<span class=\"{SURFACE} items-center gap-2.5 px-2.5 py-2\" {}><span class=\"grid h-9 w-9 shrink-0 place-items-center rounded-lg border font-mono text-[0.625rem] font-bold {hue}\">{}</span><span class=\"flex min-w-0 flex-1 flex-col\"><span class=\"truncate text-sm\" data-asset-title>{}</span><span class=\"truncate text-[0.6875rem] text-muted\" title=\"{}\"><span data-asset-note>{} · {}</span>{name_only}</span></span>{}{}<button type=\"button\" data-action=\"asset-download\" class=\"inline-flex size-9 shrink-0 items-center justify-center rounded-md text-accent hover:bg-hover\" aria-label=\"Download {}\" title=\"Download\">{}</button></span>",
         file.placeholder("file"),
         escape(&label),
         escape(name),
+        escape(&file.media_type),
+        escape(&cookie_agent_client_state::media_type_word(
+            &file.media_type
+        )),
         escape(&cookie_agent_protocol::human_bytes(file.byte_length)),
         file.share_button(SHARE_IN_ROW),
         file.corner_button(CORNER_IN_ROW),

@@ -5,9 +5,9 @@
 use std::time::Duration;
 
 use cookie_agent_client_state::{
-    attachment_chip,
     cut_points::CutPoint,
     format::format_clock_elapsed,
+    media_type_word,
     permissions::{PermissionRow, parse_rule_key, rule_runtimes, takes_runtime},
     uploads::name_only_reason,
 };
@@ -86,18 +86,37 @@ pub fn DraftFiles(workspace: Workspace) -> impl IntoView {
         <Show when=move || !workspace.attachments.with(Vec::is_empty)>
             <div id="draft-files" class="flex flex-wrap gap-1 border-t border-line px-3 py-1">
                 {move || {
-                    workspace
-                        .attachments
-                        .get()
+                    let attached = workspace.attachments.get();
+                    // A picture's chip shows it from its bytes in the page,
+                    // kept while a draft attaches it.
+                    workspace.prune_draft_thumbnails(&attached);
+                    attached
                         .into_iter()
                         .map(|artifact| {
                             let sha256 = artifact.sha256.clone();
                             let accepted = workspace.accepted_media();
                             let name_only = name_only_reason(&artifact, accepted.as_ref());
+                            let thumbnail = crate::workspace::draft_thumbnail(&artifact.sha256);
+                            let label = format!(
+                                "{} · {} · {}",
+                                artifact.display_name(),
+                                media_type_word(&artifact.media_type),
+                                cookie_agent_protocol::human_bytes(artifact.byte_length),
+                            );
+                            let pad = if thumbnail.is_some() { "pl-1" } else { "pl-3" };
                             view! {
-                                <span class="attachment-chip flex items-center gap-1 rounded-full bg-sunken pl-3 font-mono text-xs">
-                                    <Glyph icon=icondata::LuPaperclip class="opacity-70" />
-                                    {attachment_chip(&artifact)}
+                                <span
+                                    class=format!("attachment-chip flex items-center gap-1.5 rounded-full bg-sunken {pad} font-mono text-xs")
+                                    title=artifact.media_type.clone()
+                                >
+                                    {match thumbnail {
+                                        Some(url) => view! {
+                                            <img src=url alt="" draggable="false" class="size-8 shrink-0 rounded-full object-cover" data-chip-thumbnail />
+                                        }
+                                            .into_any(),
+                                        None => view! { <Glyph icon=icondata::LuPaperclip class="opacity-70" /> }.into_any(),
+                                    }}
+                                    <span class="min-w-0 truncate">{label}</span>
                                     {name_only.map(|reason| view! {
                                         <span class="name-only rounded-full bg-surface-2 px-2 text-muted" title=reason>
                                             "name only"
