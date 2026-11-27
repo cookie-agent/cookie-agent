@@ -223,6 +223,7 @@ nav:
           - Tree-local sessions: specs/tree-local-sessions.md
           - Store lock retention: specs/store-lock-retention.md
       - Drafts and records:
+          - Asking for a GitHub star: specs/github-star.md
           - "Temporary runtimes: one runtime per session tree": specs/temporary-runtimes.md
           - "Attachments: recognition, delivery, and display": specs/attachment-handling.md
           - "Media the agent saw, in folded work": specs/folded-media.md
