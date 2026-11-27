@@ -81,7 +81,7 @@ A runtime hosts ACP agents, external coding agents that take a session's or
 a subagent's turns over the Agent Client Protocol (see the
 [ACP agents spec](../specs/acp-agents.md), and the
 [ACP agents guide](../extend/acp-agents.md) for setting up Claude Code,
-Codex, and Gemini CLI). Declare them exactly where MCP
+Codex, and Antigravity CLI). Declare them exactly where MCP
 servers go: `[runtimes.local.acp.agents.<agent>]` for the daemon's machine,
 and `[runtimes.<id>.acp.agents.<agent>]` for a template or a runtime that
 dials in.
