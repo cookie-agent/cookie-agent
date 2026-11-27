@@ -5,6 +5,7 @@ mod assistant;
 mod blocks;
 mod diff;
 mod events;
+mod files;
 mod items;
 mod output;
 mod sgr;
@@ -17,6 +18,7 @@ use blocks::*;
 use diff::*;
 pub(super) use events::producer_summary;
 use events::*;
+use files::*;
 use items::*;
 use output::*;
 use tool_rows::*;
@@ -416,8 +418,20 @@ pub(super) enum BlockId {
         call_id: cookie_agent_protocol::ToolCallId,
         block: u32,
     },
-    /// An attachment's link into the web page, which opens it there.
+    /// An attachment's line, whose `↗ open` opens it in the web page.
     AttachmentOpen(AttachmentKey),
+    /// The line of the file at `index` of the user message `seq`, whose
+    /// `↗ open` opens it in the web page.
+    UserFile {
+        seq: u64,
+        index: u32,
+    },
+    /// The line of a call's `media` display block at this index, whose
+    /// `↗ open` opens it in the web page.
+    ToolMedia {
+        call_id: cookie_agent_protocol::ToolCallId,
+        block: u32,
+    },
     /// *Allow* and *Deny* of an attachment that waits for the user.
     AttachmentAllow(AttachmentKey),
     AttachmentDeny(AttachmentKey),
@@ -425,6 +439,18 @@ pub(super) enum BlockId {
         turn_seq: u64,
         content_index: u32,
     },
+}
+
+/// Whether the region `id` is a file's line, whose `↗ open` opens the file
+/// in the web page.
+pub(super) fn opens_file(id: BlockId) -> bool {
+    matches!(
+        id,
+        BlockId::AttachmentOpen(_)
+            | BlockId::UserFile { .. }
+            | BlockId::ToolMedia { .. }
+            | BlockId::MediaFile { .. }
+    )
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -820,6 +846,8 @@ impl LayoutCache {
                                 | BlockId::ToolSession { .. }
                                 | BlockId::ToolMemory { .. }
                                 | BlockId::AttachmentOpen(_)
+                                | BlockId::UserFile { .. }
+                                | BlockId::ToolMedia { .. }
                                 | BlockId::AttachmentAllow(_)
                                 | BlockId::AttachmentDeny(_)
                         )
@@ -1138,23 +1166,10 @@ pub(super) struct FigureLinks<'a> {
 }
 
 impl FigureLinks<'_> {
-    /// The link that shows the stored file `sha256` an attachment kept,
-    /// when there is a page.
-    pub(super) fn attachment(&self, sha256: &str) -> Option<String> {
-        Some(cookie_agent_client_state::assets::attachment_link(
-            self.page_url?,
-            self.session?,
-            sha256,
-        ))
-    }
-
-    /// The link that shows the asset `handle`, when there is a page.
-    pub(super) fn link(&self, handle: &cookie_agent_protocol::AssetHandle) -> Option<String> {
-        Some(cookie_agent_client_state::assets::asset_link(
-            self.page_url?,
-            self.session?,
-            handle,
-        ))
+    /// Whether a file can be linked: the TUI knows the page and the
+    /// session.
+    pub(super) fn linkable(&self) -> bool {
+        self.page_url.is_some() && self.session.is_some()
     }
 }
 
@@ -2498,11 +2513,107 @@ impl App {
         }
     }
 
+    /// Opens the file whose line is the region `id` ([`opens_file`]) in the
+    /// web page, as its `↗ open` does.
+    pub(super) fn open_file(&mut self, id: BlockId) {
+        use cookie_agent_protocol::{
+            AttachmentOutcome, DisplayBlock, Open, PersistedFilePart, PersistedFileSource,
+        };
+        let (Some(session_id), Some(page)) = (self.selected, self.page_url.as_deref()) else {
+            return;
+        };
+        let Some(state) = self.store.sessions.get(&session_id) else {
+            return;
+        };
+        let stored = |file: &PersistedFilePart| match &file.source {
+            PersistedFileSource::Artifact { sha256, .. } => Some((
+                file.filename
+                    .clone()
+                    .unwrap_or_else(|| "the file".to_owned()),
+                sha256.as_str().to_owned(),
+            )),
+            _ => None,
+        };
+        let artifact = |file: &cookie_agent_protocol::ArtifactRef| {
+            (file.display_name().to_owned(), file.sha256.clone())
+        };
+        let file = match id {
+            BlockId::AttachmentOpen(key) => {
+                match state
+                    .attachments
+                    .get(&(key.model_turn_seq, key.content_index))
+                    .and_then(|attachments| attachments.get(&key.ordinal))
+                    .map(|attachment| &attachment.outcome)
+                {
+                    Some(AttachmentOutcome::Shown { asset }) => {
+                        let link = cookie_agent_client_state::assets::asset_link(
+                            page,
+                            session_id,
+                            &asset.handle,
+                        );
+                        let name = asset.handle.to_string();
+                        self.open_in_browser(&name, &link);
+                        return;
+                    }
+                    Some(AttachmentOutcome::Attached { file }) => stored(file),
+                    _ => None,
+                }
+            }
+            BlockId::UserFile { seq, index } => state
+                .user_files
+                .get(&seq)
+                .and_then(|files| files.get(index as usize))
+                .map(artifact),
+            BlockId::ToolMedia { call_id, block } => state.tools.get(&call_id).and_then(|tool| {
+                match tool.shown_display().get(block as usize) {
+                    Some(Open::Known(DisplayBlock::Media { artifact: file, .. })) => {
+                        Some(artifact(file))
+                    }
+                    _ => None,
+                }
+            }),
+            BlockId::MediaFile {
+                turn_seq,
+                content_index,
+            } => state.transcript.iter().find_map(|item| match item {
+                TranscriptItem::Assistant { children, .. } => {
+                    children.iter().find_map(|child| match child {
+                        AssistantChild::MediaFile {
+                            turn_seq: at,
+                            content_index: index,
+                            file,
+                        } if *at == turn_seq && *index == content_index => stored(file),
+                        _ => None,
+                    })
+                }
+                _ => None,
+            }),
+            _ => None,
+        };
+        if let Some((name, sha256)) = file {
+            let link =
+                cookie_agent_client_state::assets::attachment_link(page, session_id, &sha256);
+            self.open_in_browser(&name, &link);
+        }
+    }
+
+    /// Opens `link`, which shows `name`, in the browser, saying so.
+    fn open_in_browser(&mut self, name: &str, link: &str) {
+        self.status = match crate::ui::open_link::open(link) {
+            Ok(()) => format!("Opened {name} in the browser"),
+            Err(error) => format!("The browser did not open ({error}): {link}"),
+        };
+    }
+
     pub(super) fn toggle_block(&mut self, block_id: BlockId) {
         let Some(session_id) = self.selected else {
             return;
         };
         match block_id {
+            BlockId::AttachmentOpen(_) | BlockId::UserFile { .. } | BlockId::ToolMedia { .. } => {
+                self.open_file(block_id);
+                return;
+            }
             BlockId::ToolFull { call_id, block } => {
                 self.toggle_full_content(session_id, call_id, block as usize);
                 return;
@@ -2517,45 +2628,6 @@ impl App {
             }
             BlockId::ToolSession { session, .. } => {
                 self.watch_session(session);
-                return;
-            }
-            BlockId::AttachmentOpen(key) => {
-                use cookie_agent_protocol::{AttachmentOutcome, PersistedFileSource};
-                let outcome = self.store.sessions.get(&session_id).and_then(|state| {
-                    state
-                        .attachments
-                        .get(&(key.model_turn_seq, key.content_index))
-                        .and_then(|attachments| attachments.get(&key.ordinal))
-                        .map(|attachment| attachment.outcome.clone())
-                });
-                let link = match (outcome, self.page_url.as_deref()) {
-                    (Some(AttachmentOutcome::Shown { asset }), Some(page)) => Some((
-                        asset.handle.to_string(),
-                        cookie_agent_client_state::assets::asset_link(
-                            page,
-                            session_id,
-                            &asset.handle,
-                        ),
-                    )),
-                    (Some(AttachmentOutcome::Attached { file }), Some(page)) => match file.source {
-                        PersistedFileSource::Artifact { sha256, .. } => Some((
-                            file.filename.unwrap_or_else(|| "the file".to_owned()),
-                            cookie_agent_client_state::assets::attachment_link(
-                                page,
-                                session_id,
-                                sha256.as_str(),
-                            ),
-                        )),
-                        _ => None,
-                    },
-                    _ => None,
-                };
-                if let Some((name, link)) = link {
-                    self.status = match crate::ui::open_link::open(&link) {
-                        Ok(()) => format!("Opened {name} in the browser"),
-                        Err(error) => format!("The browser did not open ({error}): {link}"),
-                    };
-                }
                 return;
             }
             BlockId::AttachmentAllow(key) | BlockId::AttachmentDeny(key) => {
@@ -3245,6 +3317,32 @@ pub(super) fn block_hit_at<'a>(
                 ))
             })
         }
+        // A file's `↗ open` ends its line: a produced file's header row, or
+        // the line of a file that is nothing else.
+        id if opens_file(id) => {
+            let last = if matches!(id, BlockId::MediaFile { .. }) {
+                header_end
+            } else {
+                end
+            };
+            (start..last).find_map(|index| {
+                let text = line_at(index)?
+                    .spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>();
+                let at = open_link_at(&text)?;
+                let column = UnicodeWidthStr::width(&text[..at]);
+                Some(Rect::new(
+                    viewport
+                        .x
+                        .saturating_add(u16::try_from(column).unwrap_or(u16::MAX)),
+                    viewport.y + u16::try_from(index - scroll_offset).unwrap_or(u16::MAX),
+                    u16::try_from(UnicodeWidthStr::width(OPEN_LINK)).unwrap_or(u16::MAX),
+                    1,
+                ))
+            })
+        }
         _ => None,
     };
     // A memory URL the title row names links to the Memory panel.
@@ -3300,7 +3398,13 @@ pub(super) fn block_hit_at<'a>(
             u16::try_from(end - start).unwrap_or(u16::MAX),
         ),
         id: region.id,
+        // A file's line opens only at its `↗ open`.
         toggle_rect: if matches!(
+            region.id,
+            BlockId::AttachmentOpen(_) | BlockId::UserFile { .. } | BlockId::ToolMedia { .. }
+        ) {
+            None
+        } else if matches!(
             region.id,
             BlockId::ToolOutput { .. }
                 | BlockId::ToolFull { .. }
@@ -3308,7 +3412,6 @@ pub(super) fn block_hit_at<'a>(
                 | BlockId::History(_)
                 | BlockId::ToolSession { .. }
                 | BlockId::ToolMemory { .. }
-                | BlockId::AttachmentOpen(_)
                 | BlockId::AttachmentAllow(_)
                 | BlockId::AttachmentDeny(_)
         ) {

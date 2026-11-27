@@ -48,6 +48,7 @@ pub(in crate::ui) fn approval_presentation_rows(
         highlighter,
         // One column of margin, one of slack before the panel's edge.
         width: width.saturating_sub(2).max(1),
+        links: false,
     };
     let mut lines = display_rows(&presentation.arguments, &[], &style, &mut sink);
     let preview = display_rows(&presentation.preview, &[], &style, &mut sink);

@@ -352,8 +352,9 @@ pub(super) fn transcript_item_layout(
             failed,
             ..
         } => super::events::history_layout(*before, *skipped, *loading, failed.as_deref(), context),
-        TranscriptItem::User { markdown, seq, .. } => ItemLayout {
-            lines: {
+        TranscriptItem::User { markdown, seq, .. } => {
+            let mut regions = Vec::new();
+            let lines = {
                 let width = context.width;
                 let theme = context.theme;
                 let mut lines = role_block(Role::User, Vec::new(), width, theme);
@@ -379,11 +380,49 @@ pub(super) fn transcript_item_layout(
                     .into_iter()
                     .flat_map(|line| markdown_body_line(line, width, theme.user())),
                 );
+                // Its files, a line each (the markdown leaves them out).
+                let link = context.figure_links.linkable();
+                for (index, file) in state.user_files.get(seq).into_iter().flatten().enumerate() {
+                    let label = FileLabel {
+                        name: file.display_name(),
+                        media_type: &file.media_type,
+                        byte_length: Some(file.byte_length),
+                        name_only: cookie_agent_client_state::stored_as_file(file),
+                        alt: None,
+                        link,
+                    };
+                    let start_line = lines.len();
+                    let gutter = if width >= 3 {
+                        vec![Span::styled("│ ", theme.user())]
+                    } else {
+                        Vec::new()
+                    };
+                    lines.extend(repeated_prefixed_wrapped_line(
+                        gutter,
+                        file_line("", &label, theme),
+                        width,
+                    ));
+                    if link {
+                        regions.push(BlockRegion {
+                            id: BlockId::UserFile {
+                                seq: *seq,
+                                index: u32::try_from(index).unwrap_or(u32::MAX),
+                            },
+                            start_line,
+                            end_line: lines.len(),
+                            header_lines: None,
+                            header_gutter: Some(u16::from(width >= 3) * 2),
+                        });
+                    }
+                }
                 lines
-            },
-            regions: Vec::new(),
-            user_seq: Some(*seq),
-        },
+            };
+            ItemLayout {
+                lines,
+                regions,
+                user_seq: Some(*seq),
+            }
+        }
         TranscriptItem::Assistant {
             id,
             attribution,

@@ -639,6 +639,9 @@ pub(super) enum PointerTarget {
     MemoryLink(cookie_agent_protocol::ToolCallId),
     /// The expanded tools row's link: opens the deferred tools prompt.
     DeferredPromptLink,
+    /// The `↗ open` that ends a file's line, by the line's region: opens
+    /// the file in the web page.
+    FileOpen(BlockId),
     TranscriptBlock(BlockId),
     /// A tree row's expand/collapse marker.
     TreeExpand(SessionId),

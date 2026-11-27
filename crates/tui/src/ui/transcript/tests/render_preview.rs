@@ -61,6 +61,8 @@ async fn render_preview() {
     }
     app.selected = Some(session);
     app.tree_root = Some(session);
+    // `PREVIEW_PAGE_URL` gives the web page files' lines link into.
+    app.page_url = std::env::var("PREVIEW_PAGE_URL").ok();
     let state = &app.store.sessions[&session];
     // Every call open, unless `PREVIEW_FOLDED` asks to see their headers.
     let mut expanded = state

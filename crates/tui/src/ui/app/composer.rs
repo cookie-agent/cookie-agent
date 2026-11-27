@@ -849,14 +849,12 @@ impl App {
         let Some(session_id) = self.selected else {
             return;
         };
-        let text = self.store.sessions.get(&session_id).and_then(|state| {
-            state.transcript.iter().find_map(|item| match item {
-                TranscriptItem::User { seq, markdown, .. } if *seq == hit.seq => {
-                    Some(markdown.as_str().to_owned())
-                }
-                _ => None,
-            })
-        });
+        // Its text and a line for each of its files, as a copy reads it.
+        let text = self
+            .store
+            .sessions
+            .get(&session_id)
+            .and_then(|state| state.user_message_text(hit.seq));
         let Some(text) = text else {
             self.status = "message is no longer in the visible branch".into();
             return;

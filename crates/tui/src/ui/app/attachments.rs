@@ -440,7 +440,7 @@ impl App {
     }
 
     /// The draft's attachments as chips on the composer's bottom border,
-    /// `📎 name · type · size` each, `· name only` after one the model sees
+    /// `📎 name · type word · size` each, `· name only` after one the model sees
     /// by its label alone, as many as fit and a count of the rest.
     /// Draws the attachment chips into the composer's bottom border, and
     /// returns how many columns they take.
@@ -458,7 +458,12 @@ impl App {
             let name_only =
                 cookie_agent_client_state::uploads::name_only_reason(artifact, accepted.as_ref())
                     .map_or("", |_| " · name only");
-            let chip = format!(" {}{name_only} ", crate::state::attachment_chip(artifact));
+            let chip = format!(
+                " 📎 {} · {} · {}{name_only} ",
+                artifact.display_name(),
+                cookie_agent_client_state::media_type_word(&artifact.media_type),
+                cookie_agent_protocol::human_bytes(artifact.byte_length),
+            );
             let rest = self.attachments.len() - index - 1;
             let more = if rest > 0 {
                 format!(" +{rest} ")

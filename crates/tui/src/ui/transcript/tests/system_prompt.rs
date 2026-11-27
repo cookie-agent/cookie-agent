@@ -265,10 +265,7 @@ fn new_transcript_blocks_are_visible_at_default_threshold_and_expand() {
         rendered.contains("🧹 ▸ context compacted (internal summary, 9000→1200 tokens)"),
         "{rendered}"
     );
-    assert!(
-        rendered.contains("📎 ▸ image/png · chart.png"),
-        "{rendered}"
-    );
+    assert!(rendered.contains("▸ 📎 chart.png"), "{rendered}");
     assert!(!rendered.contains("plugin first"), "{rendered}");
     assert!(!rendered.contains("summary first"), "{rendered}");
     assert!(!rendered.contains("byte size: 4096"), "{rendered}");

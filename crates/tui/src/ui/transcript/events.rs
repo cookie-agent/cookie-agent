@@ -867,10 +867,23 @@ pub(super) fn media_file_layout(
         .is_some_and(|blocks| blocks.contains(&block_id));
     let chevron = if is_expanded { '▾' } else { '▸' };
     let filename = safe_display_text(file.filename.as_deref().unwrap_or("unnamed"));
-    let mut body = vec![Line::styled(
-        format!("📎 {chevron} {} · {filename}", file.media_type),
-        context.theme.internal(),
-    )];
+    let (bytes, stored) = match &file.source {
+        cookie_agent_protocol::PersistedFileSource::Artifact { byte_length, .. } => {
+            (Some(*byte_length), true)
+        }
+        _ => (None, false),
+    };
+    let label = FileLabel {
+        name: &filename,
+        media_type: file.media_type.as_str(),
+        byte_length: bytes,
+        name_only: false,
+        alt: None,
+        link: stored && context.figure_links.linkable(),
+    };
+    let mut body = vec![
+        file_line(&format!("{chevron} "), &label, context.theme).style(context.theme.internal()),
+    ];
     if is_expanded {
         let mut details = vec![
             format!("media type: {}", file.media_type),

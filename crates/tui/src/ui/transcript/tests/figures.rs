@@ -78,13 +78,12 @@ async fn app_showing(
 #[tokio::test]
 async fn an_attached_file_is_named_in_the_text_and_linked_under_it() {
     let (mut app, session) = app_showing(Some(attached())).await;
-    // Without a page to link to, it says where to see the file.
+    // Without a page to link to, its line has no link.
     let frame = rendered_frame(&mut app, WIDTH, HEIGHT);
-    // Named in the text, and on its line under it.
+    // Named in the text, and on its line under it, with its size.
     assert_eq!(frame.matches("Loss curves").count(), 2, "{frame}");
     assert!(!frame.contains("<attach"), "{frame}");
-    assert!(frame.contains("loss.html (text/html, 48 KB)"), "{frame}");
-    assert!(frame.contains("Open the web client to see it"), "{frame}");
+    assert!(frame.contains("48 KB"), "{frame}");
     assert!(
         !app.hit_map
             .blocks
@@ -93,20 +92,23 @@ async fn an_attached_file_is_named_in_the_text_and_linked_under_it() {
         "no link, no target"
     );
 
-    // With one, the link names the session and the stored file.
+    // With one, the line's `↗ open` is a target of its own, which opens
+    // the page at the session's stored file.
     app.page_url = Some("http://127.0.0.1:7419/".into());
     app.layout_cache = Default::default();
-    let frame = rendered_frame(&mut app, WIDTH, HEIGHT);
-    // The link wraps at this width; it starts with the session.
-    let link = format!("http://127.0.0.1:7419/#session={session}&attachment=cccc");
-    assert!(frame.contains(&link), "{frame}");
+    rendered_frame(&mut app, WIDTH, HEIGHT);
     let target = app
         .hit_map
         .blocks
         .iter()
         .find(|hit| matches!(hit.id, BlockId::AttachmentOpen(key) if key.ordinal == 0 && key.model_turn_seq == 4))
         .expect("the link's target");
-    assert!(target.toggle_rect.is_some(), "a click row");
+    assert!(target.action_rect.is_some(), "an open button");
+    assert!(
+        target.toggle_rect.is_none(),
+        "the rest of the line is no button"
+    );
+    let _ = session;
 }
 
 #[tokio::test]

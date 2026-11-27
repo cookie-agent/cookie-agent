@@ -89,6 +89,7 @@ fn kind(target: PointerTarget) -> &'static str {
         PointerTarget::CompactionRevert(_) => "compaction revert",
         PointerTarget::MemoryLink(_) => "memory link",
         PointerTarget::DeferredPromptLink => "deferred prompt link",
+        PointerTarget::FileOpen(_) => "file open",
         PointerTarget::TranscriptBlock(_) => "transcript block",
         PointerTarget::TreeExpand(_) => "tree expand",
         PointerTarget::TreeRow(_) => "tree row",
@@ -104,6 +105,7 @@ fn is_transcript(target: PointerTarget) -> bool {
             | PointerTarget::CompactionRevert(_)
             | PointerTarget::MemoryLink(_)
             | PointerTarget::DeferredPromptLink
+            | PointerTarget::FileOpen(_)
             | PointerTarget::UserMessage(_)
     )
 }
@@ -666,6 +668,7 @@ async fn every_clickable_element_hovers_visibly() {
         "compaction revert",
         "memory link",
         "deferred prompt link",
+        "file open",
         "transcript block",
         "tree expand",
         "tree row",

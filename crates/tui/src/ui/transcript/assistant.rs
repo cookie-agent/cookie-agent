@@ -169,17 +169,6 @@ fn attachment_layout(
             ordinal,
         });
         let label = flatten_header_argument(&tag.label());
-        let about = |name: &str, media_type: &str, bytes: u64| {
-            format!(
-                " — {} ({media_type}, {})",
-                flatten_header_argument(name),
-                cookie_agent_protocol::human_bytes(bytes)
-            )
-        };
-        let link = |url: Option<String>| match url {
-            Some(url) => Line::styled(format!("   ↗ {url}"), theme.link()),
-            None => Line::styled("   Open the web client to see it", theme.muted()),
-        };
         match attachments
             .and_then(|attachments| attachments.get(&ordinal))
             .map(|attachment| &attachment.outcome)
@@ -226,47 +215,33 @@ fn attachment_layout(
                         byte_length,
                         sha256,
                         ..
-                    } => (*byte_length, Some(sha256.as_str().to_owned())),
-                    _ => (0, None),
+                    } => (Some(*byte_length), Some(sha256.as_str())),
+                    _ => (None, None),
                 };
-                target(
-                    &mut lines,
-                    Line::from(vec![
-                        Span::raw(format!(" 📎 {label}")),
-                        Span::styled(
-                            about(
-                                file.filename.as_deref().unwrap_or(&label),
-                                file.media_type.as_str(),
-                                bytes,
-                            ),
-                            theme.muted(),
-                        ),
-                    ]),
-                    None,
-                );
-                let url = sha256.and_then(|sha256| context.figure_links.attachment(&sha256));
-                let id = url.as_ref().and(key).map(BlockId::AttachmentOpen);
-                target(&mut lines, link(url), id);
+                let link = sha256.is_some() && context.figure_links.linkable();
+                let label = FileLabel {
+                    name: &label,
+                    media_type: file.media_type.as_str(),
+                    byte_length: bytes,
+                    name_only: false,
+                    alt: None,
+                    link,
+                };
+                let id = key.filter(|_| link).map(BlockId::AttachmentOpen);
+                target(&mut lines, file_line(" ", &label, theme), id);
             }
             Some(AttachmentOutcome::Shown { asset }) => {
-                target(
-                    &mut lines,
-                    Line::from(vec![
-                        Span::raw(format!(" 📎 {}", flatten_header_argument(&asset.title))),
-                        Span::styled(
-                            about(
-                                asset.filename.as_deref().unwrap_or(asset.handle.as_str()),
-                                &asset.media_type,
-                                asset.byte_length,
-                            ),
-                            theme.muted(),
-                        ),
-                    ]),
-                    None,
-                );
-                let url = context.figure_links.link(&asset.handle);
-                let id = url.as_ref().and(key).map(BlockId::AttachmentOpen);
-                target(&mut lines, link(url), id);
+                let link = context.figure_links.linkable();
+                let label = FileLabel {
+                    name: &asset.title,
+                    media_type: &asset.media_type,
+                    byte_length: Some(asset.byte_length),
+                    name_only: false,
+                    alt: None,
+                    link,
+                };
+                let id = key.filter(|_| link).map(BlockId::AttachmentOpen);
+                target(&mut lines, file_line(" ", &label, theme), id);
             }
         }
     }

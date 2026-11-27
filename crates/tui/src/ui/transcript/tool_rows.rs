@@ -385,6 +385,7 @@ pub(super) fn tool_child_layout(
             theme: context.theme,
             highlighter: context.highlighter,
             width: panel_text_width(context.width),
+            links: context.figure_links.linkable(),
         };
         let mut panel =
             argument_section_lines(tool, &style, context.minimum_event_level, !padded, has_body);
@@ -734,6 +735,8 @@ pub(super) enum ToolRowAction {
     OpenSession(SessionId),
     /// Opens the memory the `link` block at this index names.
     OpenMemory(usize),
+    /// Opens the `media` block at this index in the web page.
+    OpenMedia(usize),
     /// Reads the result the display view cut, whole.
     LoadCut,
 }
@@ -749,6 +752,10 @@ impl ToolRowAction {
             },
             Self::OpenSession(session) => BlockId::ToolSession { call_id, session },
             Self::OpenMemory(block) => BlockId::ToolMemory {
+                call_id,
+                block: u32::try_from(block).unwrap_or(u32::MAX),
+            },
+            Self::OpenMedia(block) => BlockId::ToolMedia {
                 call_id,
                 block: u32::try_from(block).unwrap_or(u32::MAX),
             },

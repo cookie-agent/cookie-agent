@@ -113,6 +113,13 @@ impl App {
     /// viewport, which bounds every transcript target.
     fn transcript_target_at(&self, over: impl Fn(Rect) -> bool) -> Option<PointerTarget> {
         let hits = &self.hit_map;
+        // A file's `↗ open`, a user message's file's among them, opens the
+        // file; the rest of its line is what the line is part of.
+        if let Some(hit) = hits.blocks.iter().rev().find(|hit| {
+            crate::ui::transcript::opens_file(hit.id) && hit.action_rect.is_some_and(&over)
+        }) {
+            return Some(PointerTarget::FileOpen(hit.id));
+        }
         // Past user-message rows open the copy/revert/fork menu — never
         // assistant/tool rows, which keep their expand/collapse toggle.
         if let Some(hit) = hits.user_messages.iter().find(|hit| over(hit.rect)) {
@@ -604,6 +611,7 @@ impl App {
             PointerTarget::CompactionRevert(seq) => self.confirm_compaction_revert(seq),
             PointerTarget::MemoryLink(call_id) => self.open_tool_memory(call_id),
             PointerTarget::DeferredPromptLink => self.open_deferred_prompt(),
+            PointerTarget::FileOpen(id) => self.open_file(id),
             PointerTarget::TranscriptBlock(id) => self.toggle_block(id),
             PointerTarget::TreeExpand(session_id) => self.toggle_tree_session(session_id),
             PointerTarget::TreeRow(session_id) => {
@@ -717,6 +725,18 @@ impl App {
                     .iter()
                     .find(|hit| hit.id == BlockId::ModelTools)
                     .and_then(|hit| hit.link_rect)
+                    .map(|rect| match hits.conversation {
+                        Some(viewport) => rect.intersection(viewport),
+                        None => rect,
+                    })),
+                text_style,
+            ),
+            PointerTarget::FileOpen(id) => (
+                one(hits
+                    .blocks
+                    .iter()
+                    .find(|hit| hit.id == id)
+                    .and_then(|hit| hit.action_rect)
                     .map(|rect| match hits.conversation {
                         Some(viewport) => rect.intersection(viewport),
                         None => rect,

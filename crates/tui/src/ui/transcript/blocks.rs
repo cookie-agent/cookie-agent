@@ -17,6 +17,8 @@ pub(super) struct BlockStyle<'a> {
     pub(super) highlighter: &'a dyn crate::markdown::Highlighter,
     /// Columns a row's text gets once its gutters and margins are taken.
     pub(super) width: u16,
+    /// A file's row can link into the web page ([`FigureLinks::linkable`]).
+    pub(super) links: bool,
 }
 
 /// The source lines one block list takes from a render budget, and how many
@@ -348,16 +350,23 @@ fn block_rows(
             out.extend(numbered_rows(rows, Some("json"), style));
         }
         DisplayBlock::Media { artifact, alt } => {
-            let chip = crate::state::attachment_chip(artifact);
-            if let Some(chip) = sink.line(&chip) {
-                let mut spans = vec![Span::raw(chip)];
-                if let Some(alt) = alt.as_deref().filter(|alt| !alt.is_empty()) {
-                    spans.push(Span::styled(
-                        format!(" — {}", flatten_header_argument(alt)),
-                        theme.muted(),
-                    ));
-                }
-                out.push(ToolBodyLine::wrapped(Line::from(spans)));
+            let label = FileLabel {
+                name: artifact.display_name(),
+                media_type: &artifact.media_type,
+                byte_length: Some(artifact.byte_length),
+                name_only: false,
+                alt: alt.as_deref(),
+                link: style.links,
+            };
+            let line = file_line("", &label, theme);
+            // The line counts against the budget like any other.
+            if sink.line(&line.to_string()).is_some() {
+                let row = ToolBodyLine::wrapped(line);
+                out.push(if style.links {
+                    row.with_action(ToolRowAction::OpenMedia(index))
+                } else {
+                    row
+                });
             }
         }
         // A memory URL opens the memory in the Memory panel.
