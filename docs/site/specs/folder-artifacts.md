@@ -1,6 +1,6 @@
 # Folder artifacts: a page with its files, and every file over HTTP
 
-Status: **approved** (2026-11-26), being implemented. Decisions are in
+Status: **approved** (2026-11-26), implemented (2026-11-27). Decisions are in
 [section 11](#11-decisions); where the code differs, see the
 [implementation notes](#implementation-notes).
 
@@ -614,4 +614,19 @@ Phase 3 (client protocol 1.108.0):
 - **Video and audio play from their URL**, and every other kind is read
   over HTTP whole, as it was over the WebSocket, so the card code is the
   same; a read that fails over HTTP marks HTTP failed for the connection.
+
+Phase 4 (no protocol change):
+
+- **A share guest's page names its own content** below its share,
+  `<share base>/s/<id>/f/<store>/<sha256>/<path>`, without asking the
+  daemon: `content.urls` stays refused to guests, since a connection does
+  not tell the daemon which link it came through, and the page already
+  reaches the daemon below its share. A folder's zip is
+  `…/f/<store>/<sha256>.zip`. The daemon checks the link is live and the
+  content is the shared tree's (its artifacts or session assets) or a
+  project's or the shared store's, whose content a guest can name only by
+  a digest of it.
+- **A folder share's `raw/`** serves its main file without a path, and
+  `download/` its zip named after the link's title. The landing page's
+  Markdown preview resolves its relative images and links below `raw/`.
 

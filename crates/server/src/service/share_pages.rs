@@ -54,6 +54,9 @@ enum Wanted {
     Slash(ShareId),
     Raw(ShareId),
     Download(ShareId),
+    /// A guest's content, below `f/` (`docs/site/specs/folder-artifacts.md`
+    /// section 6.5).
+    Content(ShareId),
     Font,
     /// A file of the guest page.
     App(String),
@@ -85,6 +88,7 @@ fn wanted(path: &str) -> Option<Wanted> {
             match kind {
                 "raw" => Some(Wanted::Raw(id)),
                 "download" => Some(Wanted::Download(id)),
+                "f" => Some(Wanted::Content(id)),
                 "ws" if rest == "/ws" => Some(Wanted::Socket(id)),
                 _ => None,
             }
@@ -115,9 +119,11 @@ pub(crate) async fn share_pages(State(state): State<WebSocketState>, request: Re
     };
     let engine = &server.engine;
     let id = match &wanted {
-        Wanted::Landing(id) | Wanted::Slash(id) | Wanted::Raw(id) | Wanted::Download(id) => {
-            id.clone()
-        }
+        Wanted::Landing(id)
+        | Wanted::Slash(id)
+        | Wanted::Raw(id)
+        | Wanted::Download(id)
+        | Wanted::Content(id) => id.clone(),
         Wanted::Font | Wanted::App(_) | Wanted::Socket(_) => unreachable!("answered above"),
     };
     let open = match engine.open_share(id.clone()).await {
@@ -126,11 +132,56 @@ pub(crate) async fn share_pages(State(state): State<WebSocketState>, request: Re
             return match wanted {
                 Wanted::Slash(id) => redirect(&format!("../{id}")),
                 Wanted::Landing(_) => guest_page(engine, &link),
+                Wanted::Content(_) => {
+                    let below = after(&request, &id, "f").to_owned();
+                    guest_content(
+                        engine,
+                        &link,
+                        request.uri().query(),
+                        request.headers(),
+                        &below,
+                    )
+                    .await
+                }
                 _ => gone(),
             };
         }
         _ => return gone(),
     };
+    // A folder's files are below `raw/`, and its zip is its download.
+    if let Some(folder) = open.asset.folder.clone()
+        && matches!(wanted, Wanted::Raw(_) | Wanted::Download(_))
+    {
+        let download = matches!(wanted, Wanted::Download(_));
+        let rest = if download {
+            String::new()
+        } else {
+            match super::content_pages::decoded(after(&request, &id, "raw")) {
+                Some(rest) if !rest.is_empty() => rest,
+                Some(_) => folder.main.clone(),
+                None => return gone(),
+            }
+        };
+        let store = cookie_agent_engine::ContentStore::Assets(open.asset.store.clone());
+        let wanted = super::content_pages::Wanted {
+            store: store.label(),
+            sha256: open.asset.sha256.clone(),
+            key: String::new(),
+            zip: download,
+            rest,
+        };
+        let name = open.share.title.replace(['/', '\\'], "_");
+        return super::content_pages::serve(
+            engine,
+            store,
+            &wanted,
+            false,
+            Some(name),
+            request.headers(),
+            true,
+        )
+        .await;
+    }
     match wanted {
         Wanted::Slash(id) => redirect(&format!("../{id}")),
         Wanted::Landing(_) => {
@@ -146,7 +197,26 @@ pub(crate) async fn share_pages(State(state): State<WebSocketState>, request: Re
             if method == Method::GET {
                 engine.count_share_view(&id);
             }
-            let page = share_landing::page(&open, kind, content.as_deref(), jiff::Timestamp::now());
+            let manifest = match open.asset.folder {
+                Some(_) => match engine
+                    .content_entry(
+                        cookie_agent_engine::ContentStore::Assets(open.asset.store.clone()),
+                        open.asset.sha256.clone(),
+                    )
+                    .await
+                {
+                    Ok(Some(cookie_agent_engine::ContentEntry::Folder(manifest))) => Some(manifest),
+                    _ => return gone(),
+                },
+                None => None,
+            };
+            let page = share_landing::page_of(
+                &open,
+                kind,
+                content.as_deref(),
+                manifest.as_ref(),
+                jiff::Timestamp::now(),
+            );
             let mut headers = common_headers();
             headers.insert(
                 header::CONTENT_TYPE,
@@ -179,8 +249,58 @@ pub(crate) async fn share_pages(State(state): State<WebSocketState>, request: Re
                 bytes,
             )
         }
+        Wanted::Content(_) => gone(),
         Wanted::Font | Wanted::App(_) | Wanted::Socket(_) => unreachable!("answered above"),
     }
+}
+
+/// The path after `/s/<id>/<kind>/` of `request`, as it was sent.
+fn after<'a>(request: &'a Request, id: &ShareId, kind: &str) -> &'a str {
+    let prefix = format!("{PREFIX}{id}/{kind}/");
+    request
+        .uri()
+        .path()
+        .strip_prefix(prefix.as_str())
+        .unwrap_or_default()
+}
+
+/// A guest's content: a file or a folder of the shared session's tree, or
+/// of an asset store its transcript can show (`docs/site/specs/
+/// folder-artifacts.md` section 6.5). The share is the key, so it ends with
+/// the share.
+async fn guest_content(
+    engine: &Engine,
+    link: &cookie_agent_engine::GuestLink,
+    query: Option<&str>,
+    headers: &HeaderMap,
+    below: &str,
+) -> Response {
+    use cookie_agent_engine::ContentStore;
+    use cookie_agent_protocol::AssetStore;
+    let Some(wanted) = super::content_pages::wanted_shared(below) else {
+        return gone();
+    };
+    let Some(store) = ContentStore::parse(&wanted.store) else {
+        return gone();
+    };
+    let shows = match &store {
+        ContentStore::Artifacts(root) => *root == link.session,
+        ContentStore::Assets(AssetStore::Session { session }) => *session == link.session,
+        // Named only by content nobody can guess, as `asset.read` names
+        // them by IDs nobody can guess.
+        ContentStore::Assets(AssetStore::Project { .. } | AssetStore::Shared) => true,
+    };
+    if !shows {
+        return gone();
+    }
+    let download = query.is_some_and(|query| query.split('&').any(|pair| pair == "download"));
+    let name = query.and_then(|query| {
+        query
+            .split('&')
+            .find_map(|pair| pair.strip_prefix("name="))
+            .and_then(super::content_pages::decoded)
+    });
+    super::content_pages::serve(engine, store, &wanted, download, name, headers, true).await
 }
 
 /// A file of the guest page. Its page has an opaque origin, so every file it

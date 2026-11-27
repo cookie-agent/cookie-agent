@@ -95,6 +95,31 @@ pub(crate) fn wanted(below: &str) -> Option<Wanted> {
     })
 }
 
+/// What a path below a share's `f/` asks for: `<store>/<sha256>/<path>`,
+/// with no key, since the share is the key.
+pub(crate) fn wanted_shared(below: &str) -> Option<Wanted> {
+    let mut parts = below.splitn(3, '/');
+    let store = parts.next()?.to_owned();
+    let sha256 = parts.next()?;
+    let rest = parts.next();
+    let (sha256, zip) = match (sha256.strip_suffix(".zip"), rest) {
+        (Some(sha256), None) => (sha256.to_owned(), true),
+        _ => (sha256.to_owned(), false),
+    };
+    Some(Wanted {
+        store,
+        sha256,
+        key: String::new(),
+        zip,
+        rest: percent_decode(rest.unwrap_or_default())?,
+    })
+}
+
+/// A path's rest as a file's name or a folder's path, decoded.
+pub(crate) fn decoded(rest: &str) -> Option<String> {
+    percent_decode(rest)
+}
+
 /// Serves a path below `/f/`.
 pub(crate) async fn content_pages(
     State(state): State<WebSocketState>,

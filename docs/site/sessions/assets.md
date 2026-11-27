@@ -91,6 +91,9 @@ and over its WebSocket connection when HTTP does not work, such as behind
 a proxy that forwards only `/ws`. A folder's page needs HTTP for its other
 files.
 
+A [share link](sharing.md) to a folder asset shows its main file and lists
+its files, each at the link's `raw/<path>`, and downloads as a zip.
+
 See the [folder artifacts spec](../specs/folder-artifacts.md).
 
 ## Session and project assets

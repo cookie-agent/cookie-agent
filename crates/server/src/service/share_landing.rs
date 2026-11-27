@@ -188,16 +188,61 @@ fn time_left(now: jiff::Timestamp, at: jiff::Timestamp) -> String {
     }
 }
 
-/// Markdown rendered to HTML, with raw HTML in the source escaped as text.
-fn markdown(source: &str) -> String {
-    use pulldown_cmark::{Event, Options, Parser, html};
+/// Where a folder's file `main` is below the link `id`'s `raw/`, as a
+/// relative URL's base: its folder, ending in `/`.
+fn raw_folder(id: &str, main: &str) -> String {
+    let folder = main.rsplit_once('/').map_or("", |(folder, _)| folder);
+    let mut base = format!("{id}/raw/");
+    for part in folder.split('/').filter(|part| !part.is_empty()) {
+        base.push_str(&percent_encode(part));
+        base.push('/');
+    }
+    base
+}
+
+/// Markdown rendered to HTML, with raw HTML in the source escaped as text,
+/// and its relative image sources and links resolving below `base`, a
+/// folder's.
+fn markdown_at(source: &str, base: Option<&str>) -> String {
+    use pulldown_cmark::{CowStr, Event, Options, Parser, Tag, html};
 
     let options = Options::ENABLE_TABLES
         | Options::ENABLE_STRIKETHROUGH
         | Options::ENABLE_TASKLISTS
         | Options::ENABLE_FOOTNOTES;
+    let relative = |url: &str| {
+        !(url.is_empty() || url.starts_with('#') || url.starts_with('/') || url.contains(':'))
+    };
+    let resolve = |url: CowStr<'_>| -> CowStr<'static> {
+        match base {
+            Some(base) if relative(&url) => CowStr::from(format!("{base}{url}")),
+            _ => CowStr::from(url.into_string()),
+        }
+    };
     let events = Parser::new_ext(source, options).map(|event| match event {
         Event::Html(text) | Event::InlineHtml(text) => Event::Text(text),
+        Event::Start(Tag::Image {
+            link_type,
+            dest_url,
+            title,
+            id,
+        }) => Event::Start(Tag::Image {
+            link_type,
+            dest_url: resolve(dest_url),
+            title,
+            id,
+        }),
+        Event::Start(Tag::Link {
+            link_type,
+            dest_url,
+            title,
+            id,
+        }) => Event::Start(Tag::Link {
+            link_type,
+            dest_url: resolve(dest_url),
+            title,
+            id,
+        }),
         other => other,
     });
     let mut rendered = String::new();
@@ -322,24 +367,61 @@ pub(super) const GONE_PAGE: &str = concat!(
 
 /// The landing page of `open` at `now`; `content` is the asset's bytes
 /// when its kind [reads content](Kind::reads_content).
+#[cfg(test)]
 pub(super) fn page(
     open: &OpenShare,
     kind: Kind,
     content: Option<&[u8]>,
     now: jiff::Timestamp,
 ) -> String {
+    page_of(open, kind, content, None, now)
+}
+
+/// [`page`] of a folder asset, whose files `folder` lists: its preview is
+/// its main file's, below `raw/` with its other files, and its download a
+/// zip (`docs/site/specs/folder-artifacts.md` section 6.4).
+pub(super) fn page_of(
+    open: &OpenShare,
+    kind: Kind,
+    content: Option<&[u8]>,
+    folder: Option<&cookie_agent_protocol::FolderManifest>,
+    now: jiff::Timestamp,
+) -> String {
     let share = &open.share;
     let asset = &open.asset;
-    let name = file_name(asset);
-    let encoded = percent_encode(&name);
+    let name = match folder {
+        Some(folder) => folder.main.clone(),
+        None => file_name(asset),
+    };
+    let encoded = match folder {
+        Some(_) => name
+            .split('/')
+            .map(percent_encode)
+            .collect::<Vec<_>>()
+            .join("/"),
+        None => percent_encode(&name),
+    };
     let raw = format!("{}/raw/{encoded}", share.id);
-    let download = format!("{}/download/{encoded}", share.id);
+    let download = match folder {
+        Some(_) => format!(
+            "{}/download/{}.zip",
+            share.id,
+            percent_encode(&share.title.replace(['/', '\\'], "_"))
+        ),
+        None => format!("{}/download/{encoded}", share.id),
+    };
     let title = escape(&share.title);
 
     let mut meta = vec![
         kind.label(&asset.media_type),
-        human_bytes(asset.byte_length),
+        human_bytes(folder.map_or(
+            asset.byte_length,
+            cookie_agent_protocol::FolderManifest::byte_length,
+        )),
     ];
+    if let Some(folder) = folder {
+        meta.push(format!("{} files", folder.entries.len()));
+    }
     if name != share.title {
         meta.push(name.clone());
     }
@@ -376,7 +458,12 @@ pub(super) fn page(
         Kind::Markdown => match content.and_then(text_preview) {
             Some((text, cut)) => format!(
                 r#"<article class="doc">{}</article>{}"#,
-                markdown(text),
+                markdown_at(
+                    text,
+                    folder
+                        .map(|_| raw_folder(&share.id.to_string(), &name))
+                        .as_deref()
+                ),
                 cut_note(cut)
             ),
             None => file_card(asset, &name, &download),
@@ -392,6 +479,37 @@ pub(super) fn page(
         Kind::File => file_card(asset, &name, &download),
     };
 
+    let preview = match folder {
+        Some(folder) => {
+            let rows = folder
+                .entries
+                .iter()
+                .map(|entry| {
+                    let href = format!(
+                        "{}/raw/{}",
+                        share.id,
+                        entry
+                            .path
+                            .split('/')
+                            .map(percent_encode)
+                            .collect::<Vec<_>>()
+                            .join("/")
+                    );
+                    format!(
+                        r#"<li><a href="{}" target="_blank" rel="noopener noreferrer">{}</a> <span class="muted">{}</span></li>"#,
+                        escape(&href),
+                        escape(&entry.path),
+                        escape(&human_bytes(entry.byte_length))
+                    )
+                })
+                .collect::<String>();
+            format!(
+                r#"{preview}<details class="files"><summary>{} files</summary><ul>{rows}</ul></details>"#,
+                folder.entries.len()
+            )
+        }
+        None => preview,
+    };
     let expiry = share.expires_at.map_or_else(String::new, |at| {
         let date = at
             .to_zoned(jiff::tz::TimeZone::UTC)

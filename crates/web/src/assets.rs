@@ -108,6 +108,8 @@ struct Placeholder {
     shown_sha: String,
     title: String,
     view: String,
+    /// A stored folder's main file and files, from its card.
+    folder: Option<cookie_agent_protocol::FolderInfo>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -144,6 +146,19 @@ fn placeholder(element: &web_sys::Element) -> Option<Placeholder> {
         view: element
             .get_attribute("data-asset-view")
             .unwrap_or_else(|| "figure".to_owned()),
+        folder: element.get_attribute("data-asset-main").map(|main| {
+            cookie_agent_protocol::FolderInfo {
+                main,
+                files: element
+                    .get_attribute("data-asset-folder")
+                    .and_then(|files| files.parse().ok())
+                    .unwrap_or(0),
+                bytes: element
+                    .get_attribute("data-artifact-bytes")
+                    .and_then(|bytes| bytes.parse().ok())
+                    .unwrap_or(0),
+            }
+        }),
     })
 }
 
@@ -175,7 +190,7 @@ impl Placeholder {
             filename: Some(name.clone()).filter(|name| !name.is_empty()),
             created: stamp.clone(),
             updated: stamp,
-            folder: None,
+            folder: self.folder.clone(),
         })
     }
 }
@@ -368,6 +383,7 @@ pub fn load_viewing(viewing: crate::media::Viewing, workspace: Workspace) {
                     shown_sha: String::new(),
                     title: viewing.alt.clone(),
                     view: "thumb".into(),
+                    folder: None,
                 };
                 let asset = shown
                     .artifact_asset()
@@ -1172,6 +1188,7 @@ pub fn download_source(workspace: Workspace, source: Source, title: String) {
             shown_sha: String::new(),
             title,
             view: "file".into(),
+            folder: None,
         };
         if let Some(asset) = shown.artifact_asset() {
             download_from(workspace, asset, source);
@@ -2466,6 +2483,16 @@ fn encode_path(path: &str) -> String {
         .join("/")
 }
 
+/// A store as the content route names it: `s_<root>`, `p_<project>`, or
+/// `shared`.
+fn store_label(store: &AssetStore) -> String {
+    match store {
+        AssetStore::Session { session } => format!("s_{session}"),
+        AssetStore::Project { project } => format!("p_{}", project.as_str()),
+        AssetStore::Shared => "shared".to_owned(),
+    }
+}
+
 /// Forgets what HTTP did on the last connection: a new one tries it again.
 pub fn reset_http() {
     HTTP_FAILED.with(|failed| failed.set(false));
@@ -2485,6 +2512,22 @@ async fn http_content(asset: &Asset, source: &Source, workspace: Workspace) -> O
     let base = workspace.share_page_base.get_untracked();
     if base.is_empty() {
         return None;
+    }
+    // A guest reaches the daemon below its share, which serves the shared
+    // session's content without a key (`docs/site/specs/folder-artifacts.md`
+    // section 6.5).
+    if let Some(guest) = workspace.guest.get_untracked() {
+        let label = match source {
+            Source::Asset { store, .. } => store_label(store),
+            Source::Artifact { .. } => format!("a_{}", guest.session_id),
+        };
+        let main = asset.folder.as_ref().map(|folder| folder.main.clone());
+        let name = asset.filename.clone().unwrap_or_else(|| "file".to_owned());
+        let url = match &main {
+            Some(_) => format!("{base}f/{label}/{}/", asset.sha256),
+            None => format!("{base}f/{label}/{}/{}", asset.sha256, encode_path(&name)),
+        };
+        return Some(HttpContent { url, main });
     }
     let target = match source {
         Source::Asset { store, asset } => cookie_agent_protocol::ContentTarget::Asset {
