@@ -18,6 +18,26 @@ pub(in crate::ui) struct AttachOffer {
     pub(in crate::ui) path: PathBuf,
     /// The pasted text, typed into the composer if the offer is declined.
     pub(in crate::ui) pasted: String,
+    /// Why the file, which starts like media, could not be read as it: the
+    /// offer is then to attach it as a file the model sees by its label
+    /// (`docs/site/specs/attachment-handling.md` section 3.2).
+    pub(in crate::ui) unreadable: Option<String>,
+}
+
+/// Why an upload did not join the draft.
+#[derive(Debug)]
+pub(in crate::ui) enum AttachError {
+    /// It failed, for this reason.
+    Failed(String),
+    /// The file at `path` starts like media but does not parse: the user is
+    /// asked before it goes up as a file.
+    Unreadable { path: PathBuf, reason: String },
+}
+
+impl From<String> for AttachError {
+    fn from(reason: String) -> Self {
+        Self::Failed(reason)
+    }
 }
 
 pub(in crate::ui) use cookie_agent_client_state::uploads::AcceptedMedia;
@@ -100,14 +120,15 @@ async fn upload_file(
     session_id: SessionId,
     path: PathBuf,
     accepted: AcceptedMedia,
-) -> Result<Uploaded, String> {
+    force_file: bool,
+) -> Result<Uploaded, AttachError> {
     let shown = path.display().to_string();
     let name = upload_name(&path).unwrap_or_else(|| shown.clone());
     let bytes = tokio::fs::read(&path)
         .await
         .map_err(|error| format!("could not read {shown}: {error}"))?;
     if bytes.is_empty() {
-        return Err(format!("{name} is empty"));
+        return Err(format!("{name} is empty").into());
     }
     // What the model cannot take inline is attached as a file: the model
     // sees its label and can copy it to a machine with `transfer`.
@@ -127,7 +148,11 @@ async fn upload_file(
             accepted.kinds()
         )),
         Err(UploadRejection::Malformed { media_type }) => {
-            Some(format!("it starts like {media_type} but is not valid"))
+            let reason = format!("{name} starts like {media_type} but could not be read");
+            if !force_file {
+                return Err(AttachError::Unreadable { path, reason });
+            }
+            Some(reason)
         }
         Err(UploadRejection::TooLarge {
             kind,
@@ -157,7 +182,7 @@ async fn upload_file(
         kind,
     )
     .await
-    .map_err(|failure| failure.message)?;
+    .map_err(|failure| AttachError::Failed(failure.message))?;
     Ok(Uploaded {
         artifact,
         note: as_file.map(|reason| attached_as_file(&name, &reason)),
@@ -211,6 +236,12 @@ impl App {
     /// file larger than the daemon's upload limit; what the model does not
     /// take inline goes up as a file.
     pub(in crate::ui) async fn attach_file(&mut self, path: &str) {
+        self.attach_file_as(path, false).await;
+    }
+
+    /// [`Self::attach_file`], uploading a file that starts like media but
+    /// does not parse as a file when `force_file`, else asking first.
+    async fn attach_file_as(&mut self, path: &str, force_file: bool) {
         let Some(path) = expand_home(path.trim()) else {
             self.status = "cannot expand ~ without HOME".into();
             return;
@@ -258,7 +289,7 @@ impl App {
         let client = self.client.clone();
         let updates = self.rpc_updates_tx.clone();
         self.spawn_rpc(async move {
-            let result = upload_file(client, session_id, path, accepted).await;
+            let result = upload_file(client, session_id, path, accepted, force_file).await;
             let _ = updates.send(RpcUpdate::AttachmentUploaded {
                 session_id,
                 name,
@@ -274,7 +305,7 @@ impl App {
         &mut self,
         session_id: SessionId,
         name: String,
-        result: Result<Uploaded, String>,
+        result: Result<Uploaded, AttachError>,
     ) {
         match result {
             Ok(Uploaded { artifact, note }) if self.selected == Some(session_id) => {
@@ -292,7 +323,17 @@ impl App {
             Ok(_) => {
                 self.status = format!("{name} was uploaded for another session; attach it again");
             }
-            Err(error) => {
+            Err(AttachError::Unreadable { path, reason }) => {
+                if self.selected == Some(session_id) {
+                    self.attach_offer = Some(AttachOffer {
+                        path,
+                        pasted: String::new(),
+                        unreadable: Some(reason),
+                    });
+                    self.modal = Modal::AttachConfirm;
+                }
+            }
+            Err(AttachError::Failed(error)) => {
                 self.session_errors.record(&error);
                 self.status = error;
             }
@@ -318,7 +359,8 @@ impl App {
         };
         match button {
             ConfirmButton::Confirm => {
-                self.attach_file(&offer.path.to_string_lossy()).await;
+                self.attach_file_as(&offer.path.to_string_lossy(), offer.unreadable.is_some())
+                    .await;
             }
             ConfirmButton::Cancel => {
                 self.mutate_input(|input| input.insert_text(&offer.pasted));
@@ -352,6 +394,31 @@ impl App {
             .map(|accepted| format!("{} accepts {}.", accepted.model, accepted.kinds()))
             .unwrap_or_default();
         let path = offer.path.display().to_string();
+        if let Some(reason) = offer.unreadable.clone() {
+            let body = |width: u16| {
+                let mut lines = wrapped_line(
+                    Line::styled(format!("{reason}. Attach it as a file?"), theme.heading()),
+                    width,
+                );
+                lines.push(Line::default());
+                lines.extend(wrapped_line(
+                    Line::styled(path.clone(), theme.muted()),
+                    width,
+                ));
+                lines.push(Line::default());
+                lines.extend(wrapped_line(
+                    Line::styled(
+                        "The model sees its name and size, and can copy it to a machine.",
+                        theme.muted_text(),
+                    ),
+                    width,
+                ));
+                lines
+            };
+            self.hit_map.confirm_buttons =
+                render_confirm_panel(frame, screen, "Attach as file", body, theme);
+            return;
+        }
         let body = |width: u16| {
             let mut lines = vec![
                 Line::styled(format!("Attach {name} ({size})?"), theme.heading()),
@@ -373,7 +440,8 @@ impl App {
     }
 
     /// The draft's attachments as chips on the composer's bottom border,
-    /// `📎 name · type · size` each, as many as fit and a count of the rest.
+    /// `📎 name · type · size` each, `· name only` after one the model sees
+    /// by its label alone, as many as fit and a count of the rest.
     /// Draws the attachment chips into the composer's bottom border, and
     /// returns how many columns they take.
     pub(super) fn render_attachment_chips(&self, frame: &mut ratatui::Frame, area: Rect) -> u16 {
@@ -384,8 +452,13 @@ impl App {
         let style = self.theme.user();
         let mut spans = Vec::new();
         let mut used = 0;
+        let accepted = self.accepted_media();
         for (index, artifact) in self.attachments.iter().enumerate() {
-            let chip = format!(" {} ", crate::state::attachment_chip(artifact));
+            // A file the model sees by its label alone says so.
+            let name_only =
+                cookie_agent_client_state::uploads::name_only_reason(artifact, accepted.as_ref())
+                    .map_or("", |_| " · name only");
+            let chip = format!(" {}{name_only} ", crate::state::attachment_chip(artifact));
             let rest = self.attachments.len() - index - 1;
             let more = if rest > 0 {
                 format!(" +{rest} ")

@@ -324,6 +324,7 @@ impl App {
             self.attach_offer = Some(super::attachments::AttachOffer {
                 path,
                 pasted: normalized,
+                unreadable: None,
             });
             self.modal = Modal::AttachConfirm;
             return;

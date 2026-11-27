@@ -92,7 +92,7 @@ impl Workspace {
             .unwrap_or_default();
         self.composer.set(restored.text);
         self.attachments.set(restored.attachments);
-        self.downscale_offer.set(None);
+        self.attach_offer.set(None);
     }
 
     /// Whose draft the composer shows: its holder's, else, before any view

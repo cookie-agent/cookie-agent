@@ -1257,7 +1257,7 @@ pub(in crate::ui) enum RpcUpdate {
     AttachmentUploaded {
         session_id: SessionId,
         name: String,
-        result: Result<attachments::Uploaded, String>,
+        result: Result<attachments::Uploaded, attachments::AttachError>,
     },
     /// A revert RPC committed; the `rewound` notification rebuilds the
     /// transcript, and a reverted message's text is owed back to the

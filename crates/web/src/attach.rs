@@ -84,6 +84,10 @@ pub enum Assessment {
     /// The model does not take it inline, for `0`: upload it as a file,
     /// which the model sees as its label and can copy to a machine.
     AsFile(String),
+    /// It starts like media but does not parse, for `0`: ask before
+    /// uploading it as a file, since the user may expect the model to see it
+    /// (`docs/site/specs/attachment-handling.md` section 3.2).
+    OfferAsFile(String),
     /// It cannot be attached, for `0`.
     Refuse(String),
 }
@@ -159,9 +163,9 @@ pub fn assess(name: &str, bytes: &[u8], accepted: &AcceptedMedia) -> Assessment 
             accepted.model,
             accepted.kinds()
         )),
-        Err(UploadRejection::Malformed { media_type }) => {
-            Assessment::AsFile(format!("it starts like {media_type} but is not valid"))
-        }
+        Err(UploadRejection::Malformed { media_type }) => Assessment::OfferAsFile(format!(
+            "{name} starts like {media_type} but could not be read"
+        )),
         Err(UploadRejection::TooLarge {
             kind,
             byte_length,

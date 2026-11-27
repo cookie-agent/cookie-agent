@@ -91,6 +91,35 @@ pub fn attached_as_file(name: &str, reason: &str) -> String {
     )
 }
 
+/// Why the model `accepted` describes sees `artifact` by its label alone,
+/// or `None` when it takes the file inline. A `kind: file` upload is always
+/// seen by its label (`docs/site/specs/attachment-handling.md` section 3.2).
+pub fn name_only_reason(
+    artifact: &ArtifactRef,
+    accepted: Option<&AcceptedMedia>,
+) -> Option<String> {
+    use cookie_agent_protocol::media_sniff::{TEXT_MEDIA_TYPE, media_kind};
+    if artifact.media_type == cookie_agent_protocol::FILE_UPLOAD_MEDIA_TYPE {
+        return Some("attached as a file: the model sees its name and size".into());
+    }
+    let accepted = accepted?;
+    let kind = if artifact.media_type == TEXT_MEDIA_TYPE {
+        "text"
+    } else {
+        media_kind(&artifact.media_type)?
+    };
+    accepted
+        .check(
+            artifact.display_name(),
+            kind,
+            &artifact.media_type,
+            artifact.byte_length,
+            None,
+        )
+        .err()
+        .map(|reason| format!("{reason}: the model sees its name and size"))
+}
+
 /// Why a file of `bytes` is refused for being over `max_bytes`.
 pub fn too_large(name: &str, kind: &str, bytes: u64, max_bytes: u64) -> String {
     format!(

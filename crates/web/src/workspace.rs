@@ -66,7 +66,7 @@ mod webhook;
 
 use drafts::ComposerSlot;
 
-pub use attachments::DownscaleOffer;
+pub use attachments::AttachOffer;
 pub use cards::CardSet;
 pub use cron::CronForm;
 pub use history::{MenuAnchor, PointAction, UserMenu};
@@ -393,7 +393,7 @@ pub struct Workspace {
     /// and `attachments` are.
     composer_drafts: StoredValue<drafts::ComposerDrafts>,
     next_draft_file: StoredValue<u64>,
-    pub downscale_offer: RwSignal<Option<DownscaleOffer>>,
+    pub attach_offer: RwSignal<Option<AttachOffer>>,
     offer_bytes: StoredValue<Vec<u8>>,
     /// `runtimes.list`: read on connect and whenever runtimes or machines
     /// change, for the runtime cards and every runtime's home.
@@ -767,7 +767,7 @@ impl Workspace {
             draft_files: StoredValue::new(Vec::new()),
             composer_drafts: StoredValue::new(drafts::ComposerDrafts::default()),
             next_draft_file: StoredValue::new(0),
-            downscale_offer: RwSignal::new(None),
+            attach_offer: RwSignal::new(None),
             offer_bytes: StoredValue::new(Vec::new()),
             runtimes,
             runtime_homes,

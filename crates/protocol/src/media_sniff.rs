@@ -394,7 +394,9 @@ fn valid_dimensions(width: u32, height: u32) -> bool {
         && u64::from(width) * u64::from(height) <= MAX_IMAGE_PIXELS
 }
 
-/// Walks every chunk (CRC-checked) and returns the `IHDR` dimensions of a complete PNG.
+/// Walks every chunk (CRC-checked) up to `IEND` and returns the `IHDR`
+/// dimensions of a complete PNG. Bytes after `IEND` are ignored, as decoders
+/// ignore them.
 fn png_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
     let mut offset = 8_usize;
     let mut header = None;
@@ -425,12 +427,11 @@ fn png_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
         saw_idat |= chunk_type == b"IDAT";
         saw_iend = chunk_type == b"IEND" && length == 0;
         offset = chunk_end;
+        if saw_iend {
+            break;
+        }
     }
-    if saw_idat && saw_iend && offset == bytes.len() {
-        header
-    } else {
-        None
-    }
+    if saw_idat && saw_iend { header } else { None }
 }
 
 fn png_header(data: &[u8]) -> Option<(u32, u32)> {
@@ -449,7 +450,10 @@ fn png_header(data: &[u8]) -> Option<(u32, u32)> {
     ))
 }
 
-/// Walks the marker segments of a complete JPEG and returns the frame header dimensions.
+/// Walks the marker segments of a complete JPEG up to its end-of-image
+/// marker and returns the frame header dimensions. Bytes after the marker
+/// are ignored, as decoders ignore them: phones put a Samsung SEF trailer, a
+/// Motion Photo's video, or an Ultra HDR gain map there.
 fn jpeg_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
     let mut offset = 2_usize;
     let mut in_scan = false;
@@ -468,7 +472,7 @@ fn jpeg_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
         match marker {
             0x00 if in_scan => {}
             0xd0..=0xd7 if in_scan => {}
-            0xd9 => return dimensions.filter(|_| offset == bytes.len()),
+            0xd9 => return dimensions,
             0x01 if !in_scan => {}
             0xd8 | 0x00 | 0xd0..=0xd7 => return None,
             _ => {
@@ -602,7 +606,8 @@ fn gif_screen(bytes: &[u8]) -> (u32, u32) {
     )
 }
 
-/// Walks the blocks of a complete GIF and returns its image (frame) count.
+/// Walks the blocks of a complete GIF up to its trailer and returns its
+/// image (frame) count. Bytes after the trailer are ignored.
 fn gif_frame_count(bytes: &[u8]) -> Option<usize> {
     if bytes.len() < 14 {
         return None;
@@ -645,7 +650,7 @@ fn gif_frame_count(bytes: &[u8]) -> Option<usize> {
                 }
                 offset = gif_sub_blocks(bytes, offset + 2)?;
             }
-            0x3b => return (images != 0 && offset + 1 == bytes.len()).then_some(images),
+            0x3b => return (images != 0).then_some(images),
             _ => return None,
         }
     }

@@ -31,13 +31,16 @@ pub(super) struct DraftFile {
     kind: UploadKind,
 }
 
-/// An image the page offers to downscale and attach.
+/// A file the page cannot attach as it is, and what it offers instead.
 #[derive(Clone, Debug, PartialEq)]
-pub struct DownscaleOffer {
+pub struct AttachOffer {
     pub name: String,
     /// Why it cannot be attached as it is.
     pub reason: String,
-    pub limits: ImageLimits,
+    /// The image limits a downscale must meet, or `None` for a file that
+    /// starts like media but does not parse, offered as a file the model
+    /// sees by its label (`docs/site/specs/attachment-handling.md` 3.2).
+    pub limits: Option<ImageLimits>,
 }
 
 impl Workspace {
@@ -107,6 +110,7 @@ impl Workspace {
                 let note = attached_as_file(&name, &reason);
                 self.upload(name, bytes, UploadKind::File, Some(note));
             }
+            Assessment::OfferAsFile(reason) => self.offer_as_file(name, reason, bytes),
             Assessment::Refuse(reason) => self.status.set(reason),
         }
     }
@@ -117,30 +121,58 @@ impl Workspace {
 
     fn offer_downscale(self, name: String, reason: String, limits: ImageLimits, bytes: Vec<u8>) {
         self.offer_bytes.set_value(bytes);
-        self.downscale_offer.set(Some(DownscaleOffer {
+        self.attach_offer.set(Some(AttachOffer {
             name,
             reason,
-            limits,
+            limits: Some(limits),
         }));
     }
 
-    /// Declines the downscale offer.
-    pub fn dismiss_downscale(self) {
-        self.downscale_offer.set(None);
-        self.offer_bytes.set_value(Vec::new());
+    /// Offers `name`, which could not be read as the media it starts like,
+    /// as a file instead.
+    fn offer_as_file(self, name: String, reason: String, bytes: Vec<u8>) {
+        self.offer_bytes.set_value(bytes);
+        self.attach_offer.set(Some(AttachOffer {
+            name,
+            reason,
+            limits: None,
+        }));
     }
 
-    /// Accepts the downscale offer: re-encodes the image smaller until it
-    /// fits, then attaches it.
-    pub fn accept_downscale(self) {
-        let Some(offer) = self.downscale_offer.get_untracked() else {
+    /// Accepts the offer to attach an unreadable file as a file.
+    pub fn accept_as_file(self) {
+        let Some(offer) = self.attach_offer.get_untracked() else {
             return;
         };
         let bytes = self
             .offer_bytes
             .try_update_value(std::mem::take)
             .unwrap_or_default();
-        self.downscale_offer.set(None);
+        self.attach_offer.set(None);
+        let note = attached_as_file(&offer.name, &offer.reason);
+        self.upload(offer.name, bytes, UploadKind::File, Some(note));
+    }
+
+    /// Declines the offer.
+    pub fn dismiss_offer(self) {
+        self.attach_offer.set(None);
+        self.offer_bytes.set_value(Vec::new());
+    }
+
+    /// Accepts the downscale offer: re-encodes the image smaller until it
+    /// fits, then attaches it.
+    pub fn accept_downscale(self) {
+        let Some(offer) = self.attach_offer.get_untracked() else {
+            return;
+        };
+        let Some(limits) = offer.limits else {
+            return;
+        };
+        let bytes = self
+            .offer_bytes
+            .try_update_value(std::mem::take)
+            .unwrap_or_default();
+        self.attach_offer.set(None);
         let Some(accepted) = self.accepted_media_untracked() else {
             return;
         };
@@ -170,7 +202,7 @@ impl Workspace {
                 }
             };
             let (width, height) = (image.natural_width(), image.natural_height());
-            let mut size = downscale_target(width, height, bytes.len() as u64, offer.limits)
+            let mut size = downscale_target(width, height, bytes.len() as u64, limits)
                 .unwrap_or_else(|| shrink_again(width, height));
             for _ in 0..DOWNSCALE_TRIES {
                 let encoded = match crate::files::encode_image(&image, size, encoding) {
@@ -180,7 +212,7 @@ impl Workspace {
                         return;
                     }
                 };
-                let fits = encoded.len() as u64 <= offer.limits.max_bytes;
+                let fits = encoded.len() as u64 <= limits.max_bytes;
                 match assess(&name, &encoded, &accepted) {
                     Assessment::Attach if fits => {
                         self.status.set(format!(
@@ -190,7 +222,9 @@ impl Workspace {
                         self.upload(name, encoded, UploadKind::Media, None);
                         return;
                     }
-                    Assessment::Refuse(reason) | Assessment::AsFile(reason) => {
+                    Assessment::Refuse(reason)
+                    | Assessment::AsFile(reason)
+                    | Assessment::OfferAsFile(reason) => {
                         self.status.set(reason);
                         return;
                     }

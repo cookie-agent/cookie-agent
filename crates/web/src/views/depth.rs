@@ -9,6 +9,7 @@ use cookie_agent_client_state::{
     cut_points::CutPoint,
     format::format_clock_elapsed,
     permissions::{PermissionRow, parse_rule_key, rule_runtimes, takes_runtime},
+    uploads::name_only_reason,
 };
 use leptos::{ev, prelude::*};
 
@@ -30,31 +31,52 @@ const ATTACH_BUTTON: &str = "hit-area inline-flex h-9 w-9 shrink-0 items-center 
 const BAR: &str = "flex flex-wrap items-center gap-2 border-t border-line px-3 py-1 text-sm";
 pub(super) const FIELD: &str = "min-h-11 rounded-lg bg-surface px-3 font-mono text-[0.8125rem] shadow-[inset_0_0_0_1px_var(--color-line-2)] transition-shadow placeholder:text-faint hover:shadow-[inset_0_0_0_1px_var(--color-faint)] focus:shadow-[inset_0_0_0_1px_var(--color-accent),0_0_0_3px_var(--color-accent-soft)] focus:outline-none lg:min-h-9";
 
-/// The draft's files as chips, and an offer to downscale an image too
-/// large to attach.
+/// The draft's files as chips, each marked when the model sees only its
+/// name, and an offer to downscale an image too large to attach or to
+/// attach a file that could not be read as a file.
 #[component]
 pub fn DraftFiles(workspace: Workspace) -> impl IntoView {
     view! {
         {move || {
             workspace
-                .downscale_offer
+                .attach_offer
                 .get()
                 .map(|offer| {
+                    let downscale = offer.limits.is_some();
+                    let question = if downscale { "Downscale and attach?" } else { "Attach it as a file?" };
                     view! {
                         <div id="downscale-offer" class=format!("{BAR} bg-surface-2")>
                             <Glyph icon=icondata::LuTriangleAlert class="text-accent" />
                             <span class="min-w-0 flex-1">
-                                {format!("{}. Downscale and attach?", offer.reason.trim_end_matches('.'))}
+                                {format!("{}. {question}", offer.reason.trim_end_matches('.'))}
                             </span>
-                            <button
-                                type="button"
-                                id="downscale-accept"
-                                class=PRIMARY
-                                on:click=move |_| workspace.accept_downscale()
-                            >
-                                "Downscale and attach"
-                            </button>
-                            <button type="button" class=BUTTON on:click=move |_| workspace.dismiss_downscale()>
+                            {if downscale {
+                                view! {
+                                    <button
+                                        type="button"
+                                        id="downscale-accept"
+                                        class=PRIMARY
+                                        on:click=move |_| workspace.accept_downscale()
+                                    >
+                                        "Downscale and attach"
+                                    </button>
+                                }
+                                    .into_any()
+                            } else {
+                                view! {
+                                    <button
+                                        type="button"
+                                        id="file-offer-accept"
+                                        class=PRIMARY
+                                        title="The model sees its name and size, and can copy it to a machine"
+                                        on:click=move |_| workspace.accept_as_file()
+                                    >
+                                        "Attach as file"
+                                    </button>
+                                }
+                                    .into_any()
+                            }}
+                            <button type="button" class=BUTTON on:click=move |_| workspace.dismiss_offer()>
                                 "Dismiss"
                             </button>
                         </div>
@@ -70,10 +92,17 @@ pub fn DraftFiles(workspace: Workspace) -> impl IntoView {
                         .into_iter()
                         .map(|artifact| {
                             let sha256 = artifact.sha256.clone();
+                            let accepted = workspace.accepted_media();
+                            let name_only = name_only_reason(&artifact, accepted.as_ref());
                             view! {
                                 <span class="attachment-chip flex items-center gap-1 rounded-full bg-sunken pl-3 font-mono text-xs">
                                     <Glyph icon=icondata::LuPaperclip class="opacity-70" />
                                     {attachment_chip(&artifact)}
+                                    {name_only.map(|reason| view! {
+                                        <span class="name-only rounded-full bg-surface-2 px-2 text-muted" title=reason>
+                                            "name only"
+                                        </span>
+                                    })}
                                     <button
                                         type="button"
                                         class="inline-flex min-h-11 min-w-11 items-center justify-center rounded-full hover:bg-press active:bg-press"
