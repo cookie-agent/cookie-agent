@@ -151,13 +151,16 @@ fn merge(base: Parts, mapping: serde_yaml::Mapping, body: String) -> Parts {
             && let (Some(serde_yaml::Value::Mapping(inherited)), serde_yaml::Value::Mapping(own)) =
                 (yaml.get_mut(&key), &value)
         {
+            let action = |key: &serde_yaml::Value| {
+                key.as_str()
+                    .map(|key| key.split('@').next().unwrap_or(key).to_owned())
+            };
+            // An action the document writes replaces the inherited keys of
+            // that action, runtime selectors included; the document's own
+            // keys (`bash` and `bash@labserver`) never replace each other.
+            let replaced = own.keys().map(action).collect::<Vec<_>>();
+            inherited.retain(|inherited_key, _| !replaced.contains(&action(inherited_key)));
             for (own_key, own_value) in own {
-                let action = |key: &serde_yaml::Value| {
-                    key.as_str()
-                        .map(|key| key.split('@').next().unwrap_or(key).to_owned())
-                };
-                let replaced = action(own_key);
-                inherited.retain(|inherited_key, _| action(inherited_key) != replaced);
                 inherited.insert(own_key.clone(), own_value.clone());
             }
             continue;

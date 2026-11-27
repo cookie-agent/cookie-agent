@@ -443,33 +443,61 @@ fn pick(blocks: &[Vec<Top>]) -> Vec<Entry> {
                     else {
                         unreachable!()
                     };
-                    // As the loader does: each action removes every key of
-                    // its action kept so far, then is added.
-                    for block in actions {
-                        let name = action(&block.key);
-                        let mut replaced = Vec::new();
-                        let mut first = None;
-                        let mut index = 0;
-                        placed.retain(|old| {
-                            let keep = action(&old.block.key) != name;
-                            if !keep {
-                                first.get_or_insert(index);
-                                replaced.push(old.block.content());
-                            } else {
-                                index += 1;
-                            }
-                            keep
-                        });
-                        let new = Placed {
-                            block: block.clone(),
-                            source,
-                            replaced: (!replaced.is_empty()).then(|| replaced.join("\n")),
-                        };
-                        match first {
-                            Some(at) => placed.insert(at, new),
-                            None => placed.push(new),
+                    // As the loader does: the document's actions remove the
+                    // inherited keys of their actions, never one another.
+                    // Each takes the place of the first key it replaced.
+                    let names = actions
+                        .iter()
+                        .map(|block| action(&block.key).to_owned())
+                        .collect::<Vec<_>>();
+                    let mut kept = Vec::new();
+                    // By action: where its first replaced key was, and what
+                    // it replaced.
+                    let mut slots: Vec<(String, usize, Vec<String>)> = Vec::new();
+                    for old in placed.drain(..) {
+                        let name = action(&old.block.key).to_owned();
+                        if !names.contains(&name) {
+                            kept.push(old);
+                            continue;
+                        }
+                        match slots.iter_mut().find(|(each, _, _)| *each == name) {
+                            Some((_, _, replaced)) => replaced.push(old.block.content()),
+                            None => slots.push((name, kept.len(), vec![old.block.content()])),
                         }
                     }
+                    // The actions with a place, from the last place back so
+                    // each place still points where it did; then the rest.
+                    let mut appended = Vec::new();
+                    let mut inserted: Vec<(usize, Vec<Placed>)> = Vec::new();
+                    for block in actions {
+                        let name = action(&block.key);
+                        let slot = slots.iter_mut().find(|(each, _, _)| each == name);
+                        let mut new = Placed {
+                            block: block.clone(),
+                            source,
+                            replaced: None,
+                        };
+                        match slot {
+                            Some((_, at, replaced)) => {
+                                // The first of its action carries what it
+                                // replaced.
+                                if !replaced.is_empty() {
+                                    new.replaced = Some(std::mem::take(replaced).join("\n"));
+                                }
+                                match inserted.iter_mut().find(|(each, _)| each == at) {
+                                    Some((_, group)) => group.push(new),
+                                    None => inserted.push((*at, vec![new])),
+                                }
+                            }
+                            None => appended.push(new),
+                        }
+                    }
+                    inserted.sort_by_key(|group| std::cmp::Reverse(group.0));
+                    for (at, group) in inserted {
+                        kept.splice(at..at, group);
+                    }
+                    kept.extend(appended);
+                    *placed = kept;
                 }
             }
         }

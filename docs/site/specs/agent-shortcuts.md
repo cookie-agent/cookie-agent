@@ -246,7 +246,9 @@ check it.
   both a `{{default_prompt}}` that expanded and a body left empty, which
   takes the inherited body whole. The fold under the prompt's first
   lines reads "Show N more lines".
-- **The loader's quirk, kept.** A document that writes both `bash` and
-  `bash@<runtime>` keeps only the later of them, because each action
-  removes every key of its kind kept so far, those of the same document
-  among them. Resolved shows what the loader does.
+- **A loader fix found on the way** (2026-11-26, at the user's request).
+  A document that wrote both `bash` and `bash@<runtime>` kept only the
+  later of them, because each action removed every key of its kind kept
+  so far, those of the same document among them. A document's actions now
+  remove only the keys it inherits, never one another, and Resolved
+  follows.

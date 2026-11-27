@@ -756,7 +756,8 @@ models:
   are refreshed.
 - **`permissions`** are replaced per action: a `bash` key replaces the
   inherited `bash` keys, runtime selectors included, and the other actions
-  stay as inherited. A new action is added.
+  stay as inherited. A new action is added. A document may write both
+  `bash` and `bash@<runtime>`; neither replaces the other.
 - **The body:** an empty body is the inherited prompt; any other body is
   used as written, with `{{default_prompt}}` standing for the inherited
   prompt.
