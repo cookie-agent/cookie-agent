@@ -530,7 +530,10 @@ buttons.
     finished shows under its parent, dimmed, so it sits in its place. When
     nothing runs, nothing shows under the session.
   - **Expanded:** the whole hierarchy, finished subagents included; the
-    chevron beside a subagent folds its own.
+    chevron before a subagent's task folds its own.
+
+  Each subagent's status mark (running, done, failed, and so on) sits
+  inline before its agent's name.
 - **Transcript.** Markdown is rendered with any HTML in it shown as text.
   Links open in a new tab, but only `http`, `https`, and `mailto` links;
   images show as links.

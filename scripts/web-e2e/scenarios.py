@@ -2069,7 +2069,7 @@ def session_depth(browser):
     browser.click(nested)
     browser.wait("the running child session", lambda: "child task" in browser.text("#transcript"))
     browser.wait("the child's answer", lambda: "word59" in browser.text("#transcript"), timeout=60)
-    browser.wait("the child's end", lambda: count(browser, nested + " svg") == 0, timeout=30)
+    browser.wait("the child's end", lambda: count(browser, nested + " [data-session-activity=running]") == 0, timeout=30)
     time.sleep(1)
     assert "word59" in browser.text("#transcript"), "the finished subagent's transcript went blank"
     print("a subagent opened while it runs keeps its transcript when it finishes")
@@ -2082,8 +2082,8 @@ def session_depth(browser):
     click_row(browser, open_row(browser))
     browser.wait("the expanded tree", lambda: tree_state(browser) == "expanded" and count(browser, nested) == 1)
     assert browser.script("return document.querySelector(arguments[0]).getAttribute('aria-expanded')", open_row(browser)) == "true"
-    # A finished subagent shows no status mark, as a finished session does.
-    assert count(browser, nested + " svg") == 0, "a finished subagent shows a status mark"
+    # A finished subagent still shows its status mark.
+    assert count(browser, nested + " [data-session-activity=completed]") == 1, "a finished subagent shows no status mark"
     browser.shot("subagent-tree")
     root_title = browser.text("#session-title")
     root = browser.script("return document.querySelector(arguments[0]).dataset.session", open_row(browser))

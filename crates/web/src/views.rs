@@ -1879,55 +1879,59 @@ fn Subagents(workspace: Workspace) -> impl IntoView {
                     .map(|row| {
                         let session_id = row.session_id;
                         let current = move || workspace.selected.get() == Some(session_id);
-                        // As on session rows: a mark only while it runs or
-                        // when its last run went wrong.
-                        let mark = icons::row_status_of(row.status);
-                        let task_indent = if mark.is_some() { "pl-5" } else { "" };
-                        let indent = format!("{}rem", 0.75 * (row.depth - 1) as f64);
-                        let fold = if expanded && row.has_children {
+                        // Every subagent shows its status, a finished one
+                        // too: whether it is done or went wrong is what a
+                        // glance at the tree is for. It sits inline before
+                        // the agent's name, with no slot of its own.
+                        let mark = icons::session_status(row.status);
+                        let indent = format!("{}rem", 1.375 + 1.0 * (row.depth - 1) as f64);
+                        // As on the root's row, the chevron that folds a
+                        // subagent's own sits before its task, so rows with
+                        // and without one line up.
+                        let fold = (expanded && row.has_children).then(|| {
+                            let collapsed = row.collapsed;
                             view! {
-                                <button
-                                    type="button"
-                                    class=ICON_BUTTON
-                                    aria-label="Fold"
-                                    title=if row.collapsed { "Show its subagents" } else { "Hide its subagents" }
-                                    aria-expanded=(!row.collapsed).to_string()
-                                    on:click=move |_| workspace.toggle_folded(session_id)
+                                <span
+                                    class="hit-area relative inline-flex shrink-0 opacity-70 transition-transform hover:opacity-100"
+                                    class:rotate-90=!collapsed
+                                    data-tree-fold=if collapsed { "folded" } else { "open" }
+                                    title=if collapsed { "Show its subagents" } else { "Hide its subagents" }
+                                    on:click=move |event: ev::MouseEvent| {
+                                        event.stop_propagation();
+                                        workspace.toggle_folded(session_id);
+                                    }
                                 >
-                                    <Glyph
-                                        icon=if row.collapsed { icondata::LuChevronRight } else { icondata::LuChevronDown }
-                                        class="text-xs"
-                                    />
-                                </button>
+                                    <Glyph icon=icondata::LuChevronRight class="text-[0.625rem]" />
+                                </span>
                             }
-                            .into_any()
-                        } else {
-                            view! { <span class="w-11 shrink-0" aria-hidden="true"></span> }.into_any()
-                        };
+                        });
                         let dimmed = row.dimmed;
                         view! {
-                            <div class="flex items-start" class:opacity-60=dimmed data-dimmed=dimmed.then_some("true") style:padding-left=indent>
-                                {fold}
+                            <div class:opacity-60=dimmed data-dimmed=dimmed.then_some("true") style:padding-left=indent>
                                 <button
                                     type="button"
-                                    class=ROW.replace("w-full", "min-w-0 flex-1")
+                                    class=ROW
                                     class:bg-sel=current
                                     aria-current=move || current().then_some("true")
+                                    aria-expanded=(expanded && row.has_children).then(|| (!row.collapsed).to_string())
                                     data-tree-session=session_id.to_string()
                                     on:click=move |_| workspace.open_session(session_id)
                                 >
-                                    <span class="flex w-full min-w-0 items-center gap-2 text-sm">
-                                        {mark.map(|mark| view! {
+                                    <span class="flex w-full min-w-0 items-center gap-1.5 text-sm">
+                                        <span class="inline-flex shrink-0" data-session-activity=mark.label title=mark.label>
                                             <Glyph icon=mark.icon class=mark.class("text-xs") />
-                                            <span class="sr-only">{format!("{}: ", mark.label)}</span>
-                                        })}
+                                        </span>
+                                        <span class="sr-only">{format!("{}: ", mark.label)}</span>
                                         // The handle gives way before the agent's name.
                                         <span class="max-w-[75%] shrink-0 truncate font-semibold">{row.agent.clone()}</span>
                                         {row.handle.clone().map(|handle| view! {
                                             <span class=format!("min-w-0 truncate font-mono {NOTE}") data-handle>{handle}</span>
                                         })}
                                     </span>
-                                    <span class=format!("w-full truncate {task_indent} {NOTE}")>{row.task.clone()}</span>
+                                    <span class=format!("flex w-full min-w-0 items-center gap-1.5 {NOTE}")>
+                                        {fold}
+                                        <span class="min-w-0 flex-1 truncate">{row.task.clone()}</span>
+                                    </span>
                                 </button>
                             </div>
                         }

@@ -270,20 +270,6 @@ pub fn waiting_icon(kind: &cookie_agent_protocol::WaitingOn) -> Icon {
     }
 }
 
-/// [`row_status`] of a row that knows only its status, such as a
-/// subagent's in the tree: subagents report no producer they wait on.
-pub fn row_status_of(status: SessionStatus) -> Option<StatusMark> {
-    row_status(&match status {
-        SessionStatus::Running => SessionActivity::Running,
-        SessionStatus::Failed | SessionStatus::Cancelled | SessionStatus::Interrupted => {
-            SessionActivity::Problem(status)
-        }
-        SessionStatus::Idle | SessionStatus::Completed | SessionStatus::Unknown => {
-            SessionActivity::None
-        }
-    })
-}
-
 /// The theme button's icon: the theme the page is in, or half a circle for
 /// the system's.
 pub fn theme_icon(preference: ThemePreference) -> Icon {
