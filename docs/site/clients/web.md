@@ -783,16 +783,25 @@ buttons.
   in the page and upload once the first message has created the session.
   - Every file is offered once a model is selected; the camera only for a
     model that takes images.
-  - The page reads each file's type from its content, as the daemon does. A
-    file the model takes goes up as media; any other (an archive, a kind
-    the model does not accept, a file over its limit) goes up as a file,
-    and the status line says why. The model sees a file's label, `[file
-    report.zip attached to this user message · application/octet-stream ·
-    3.2 MB · artifact 5f2c81d0 · not included; use transfer to copy it to a
-    machine you work on]`, and can copy it to a machine with `transfer`. Only a file over the daemon's 25 MB upload limit is
-    refused.
+  - The page reads each file's type from its content, as the daemon does.
+    An image, PDF, audio, video, or text file goes up with its own type,
+    even when the model does not take it (the status line says why); each
+    request sends it to a model that takes it. Content the daemon does not
+    recognize, such as an archive, goes up as a file. The model sees a
+    file it does not get by its label, `[file report.zip attached to this
+    user message · application/octet-stream · 3.2 MB · artifact 5f2c81d0 ·
+    not included; use transfer to copy it to a machine you work on]`, and
+    can copy it to a machine with `transfer`. Only a file over the daemon's
+    25 MB upload limit is refused.
+  - A chip says what the model will get, as the daemon answers
+    (`attachment.delivery`) for the draft's model or agent and the
+    session's runtimes: nothing for a file it gets, **name only** for one it
+    sees by its label but can fetch with `read_artifact` or `transfer`, and
+    a warning, **model can't read it**, for one nothing it has can read.
+    The tooltip gives the reason and the label. The file is still sent.
   - An image too large for the model or the daemon is offered as
     **Downscale and attach**: the page redraws it smaller and attaches that.
+    **Dismiss** attaches it as it is, for the model to see by its label.
     Video is never downscaled.
 - **Skills.** **Skills** lists the skills you can run, searched as you
   type. Pick one, give its arguments, and run it. Each has a switch: off
@@ -893,7 +902,10 @@ a card's size; two share a line; three or more make a grid, three across
 
 - **Images, SVG, and video** open the media viewer at the card clicked;
   its arrows, ← and → on an image, its filmstrip, and a swipe step through
-  the gallery's images and video.
+  the gallery's images and video. A stored image over 1 MiB and a video
+  show the daemon's thumbnail (`artifact.thumbnail`, kept in the browser
+  like asset thumbnails), and the file itself is read only when the viewer
+  opens it; a stored PDF's chip shows its first page.
 - **An HTML page** is a card with a live thumbnail of the page. A click
   opens it in the side panel.
 - **A Markdown document** is a card with its first lines. A click opens it

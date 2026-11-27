@@ -98,17 +98,22 @@ continued.
 the path of one existing file, as a terminal pastes a file dropped on it,
 asks whether to attach that file; Cancel pastes the path as text instead. The
 TUI uploads the file to the daemon, which may run on another machine, so the
-path only needs to exist where the TUI runs. A file the selected model takes
-(images, PDFs, audio, or video within its limits) goes up as media. Any
-other file, such as an archive, a kind the model does not accept, or one over
-its byte or pixel limit, goes up as a file: the status line says why, and the
-model sees its label, `[file report.zip attached to this user message ·
+path only needs to exist where the TUI runs. An image, PDF, audio, video, or
+text file goes up with its own type, even when the selected model does not
+take it (a kind it does not accept, or one over its byte or pixel limit):
+the status line says why, and each request then sends the file to a model
+that takes it and its label to one that does not. Content the daemon does
+not recognize, such as an archive, goes up as a file, and the model sees its
+label, `[file report.zip attached to this user message ·
 application/octet-stream · 3.2 MB · artifact 5f2c81d0 · not included; use
 transfer to copy it to a machine you work on]`, and can copy it to a machine
 with `transfer`. Only a file over the daemon's
 25 MB upload limit is refused. The TUI does not shrink images. Each attachment shows on the composer's
-bottom border as `📎 name · type · size`; Backspace at the start of the draft
-removes the newest one. A message may be attachments alone. A message taken
+bottom border as `📎 name · type · size`, followed by ` · name only` when the
+model sees only its label but `read_artifact` or `transfer` can get at it,
+or ` · can't read` when nothing the model has can; the daemon says which
+(`attachment.delivery`), and the status line gives the reason when the file
+is attached. Backspace at the start of the draft removes the newest one. A message may be attachments alone. A message taken
 back from the pending strip, or handed back after it failed to send, returns
 its attachments with its text.
 

@@ -1,7 +1,9 @@
 # Attachments: recognition, delivery, and display
 
-Status: **approved** (2026-11-26), with the user's decisions in
-[section 10](#10-decisions-2026-11-26). Builds on
+Status: **implemented** (2026-11-26; client protocol 1.105.0), with the
+user's decisions in [section 10](#10-decisions-2026-11-26) and what the
+implementation does differently in the
+[implementation notes](#implementation-notes). Builds on
 [compatibility v1](compatibility-v1.md) section 11.3 (uploads, media
 input), [machines on demand](machines-on-demand.md) section 6.4 (file
 labels, `kind: file` uploads), [ACP agents](acp-agents.md) section 15
@@ -266,7 +268,7 @@ Every attachment, whatever its source, is one line:
 |---|---|
 | `media_sniff` accepts data after end markers | None (behaviour) |
 | Label format, ACP label blocks, `read_artifact` media, bridge media | None (model input and tool behaviour); bridge media can be turned off per agent with `acp.bridge_media` (config) |
-| `artifact.thumbnail` (optional, Q4) | Client protocol minor |
+| `artifact.thumbnail` (Q4) and `attachment.delivery` (decision of 2026-11-26) | Client protocol minor (1.105.0) |
 
 History stays readable both ways. No event changes shape (Q2b needs no
 field).
@@ -355,6 +357,12 @@ field).
   own type, and each request decides whether its model gets the bytes.
 - Files already stored as `application/octet-stream` are left as they are.
   The web does not sniff them to draw them as images.
+- **A draft file nothing can read** (later on 2026-11-26): a draft file
+  whose ending would be `name_only` (not included, and no tool of the
+  request helps) is still attachable and sendable, but its chip warns with
+  the reason. A new method, `attachment.delivery`, answers the chip: for
+  each draft file, the ending the request would give it, the label, and
+  why.
 
 ## Implementation notes
 
@@ -401,3 +409,67 @@ sections above, or adds:
   and `mimeType`.
 - **No `acp.bridge_media`** (section 4.3): bridge replies carry media
   blocks to every agent; no declaration key turns them off.
+
+Phase 4 (thumbnails and real types, client protocol 1.105.0):
+
+- **Q2b in the clients.** The web's `assess` and the TUI's upload upload
+  recognized media (and UTF-8 text within the 1 MiB text cap) the model
+  does not take as `kind: media`, with its own type, and the status line
+  says the model sees its name only. The downscale offer stays for an image
+  too large for the model; **Dismiss** now attaches it as it is (as a file
+  when the daemon's own limits refuse it as media). `kind: file` stays for
+  unrecognized content, text over the cap, and an unreadable file the user
+  attaches as a file.
+- **Admission** (`admit_input_media`) checks only that each artifact is in
+  the store and, for a recognized media type or `text/plain`, that its
+  content is that media within the daemon-wide upload limits. It no longer
+  takes the model: `media_unsupported`, `media_limit_exceeded`, and the
+  model's `media_too_large` are no longer sent for an input (the registry
+  keeps the codes, marked so).
+- **Fitting.** `fit_media` also drops a user file of no media kind (text)
+  that the model lists no `text` entry for, which is every native model:
+  `[text omitted: … does not accept text files (…)]` follows its label, which
+  ends `not included; read_artifact returns it`. `elide_excess_media` no
+  longer fails a request whose latest message alone is over a kind's
+  `max_count`: every older part of the kind goes, and the message keeps its
+  first parts up to the count. Per-model image dimensions need no check of
+  their own: every model's limit is the daemon-wide one uploads enforce.
+- **ACP prompts** check a file's size as well as its kind and type against
+  the agent's prompt capabilities (`prompt_misfit`, the same fit as a
+  model's). The bridge tools a label's ending counts are the session's
+  latest recorded list; before one is recorded, what the run's policy
+  bridges.
+- **`attachment.delivery`** (`runtime/artifacts/delivery.rs`) freezes the
+  draft's selection as a run start does (root or delegated, the fallback
+  the session reached, the ACP agent placed on its runtime), and decides
+  each file with the shared code: `user_files_fit` (the misfit reason
+  `fit_media` gives, and the latest message's count rule) and
+  `missing_file_ending` with the tools `compose_for_policy` offers, at once
+  or deferred; an ACP agent's caps come from what it last advertised on
+  its runtime (`KnownAgent.input_media`). A `name_only` reason adds `no
+  machine is attached to copy it to` when no attached machine takes files,
+  else `transfer is off in this session`. The web asks 150 ms after the
+  draft's files, model or agent, or the session's runtimes change; the TUI
+  asks when that key changes as it draws. A new session's draft, and a
+  daemon before 1.105.0, keep the client-side check (`name_only_reason`).
+  The ending is an open enum (`unknown` for a newer one).
+- **Chips.** `included` has no badge; `read_artifact` and `transfer` the
+  neutral **name only**; `name_only` a warning **model can't read it**, its
+  tooltip the reason and the label. TUI chips end ` · name only` or ` ·
+  can't read`, and the status line gives the reason of a file just attached
+  once the answer comes.
+- **`artifact.thumbnail`** draws with the asset drawer, in its turn, and
+  shares its memory of content that does not draw (both are keyed by
+  content digest). A tree keeps its thumbnails in `thumbnails/` beside its
+  `blobs/`, so deleting the tree deletes them; `ArtifactStore::remove`,
+  which both the lease sweep and a revert's sweep use, deletes a blob's
+  thumbnail with it. A fork does not copy thumbnails; it draws its own. A
+  [folder artifact](folder-artifacts.md) shows its main file's thumbnail,
+  and `attachment.delivery` reports a folder as not included ("it is a
+  folder of N files"), since a model only ever gets a folder's label.
+- **Web cards.** A stored picture over 1 MiB and a video show the thumbnail
+  (kept in Cache Storage by digest, as asset thumbnails are) and are read
+  whole only when the media viewer opens them; a stored PDF's file chip
+  shows its first page in place of its type square. Without a thumbnail
+  (none drawn, or an older daemon), a picture card reads the file as
+  before.
