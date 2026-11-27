@@ -1,8 +1,8 @@
 # Forwards: a machine's web app at the daemon's address, and ports between machines
 
-Status: **approved** (2026-11-26), being implemented. The
-user's decisions are in
-[section 12](#12-decisions-2026-11-26).
+Status: **implemented** (2026-11-27). The user's decisions are in
+[section 12](#12-decisions-2026-11-26), and what the implementation
+settled in the [implementation notes](#implementation-notes).
 
 ## 1. Problem
 
@@ -478,3 +478,19 @@ Phase 4 (web):
   panel on the Forwards tab, where the row opens the app.
 - **The title bar's badge** counts the session tree's active forwards and
   opens that tab.
+
+Phase 5 (TUI and CLI):
+
+- **`/forwards`** lists the forwards with their status, expiry, traffic,
+  and address. *Open* opens a web forward's app itself, which the browser
+  reaches once it has opened the daemon's web page. *Change expiry* (`e`)
+  steps to the next of 1 hour, 24 hours, 7 days, and never; *Share* (`s`)
+  makes a 7-day link and copies it; *New* (`n`) opens a `key: value` form
+  in the editor. The bottom bar shows `⇄ <count>` while any forward is
+  active, beside the next cron fire.
+- **`cookie forward`** also has `expires` for a new expiry; `share` takes
+  the link's expiry, and `cookie share list` and `cookie share revoke` cover
+  forward links. A new forward is printed once it has started, after at
+  most two seconds.
+- **`forward_invalid`** carries the reason in a `reason` field, so the
+  message says why, as `goal_rejected` does.

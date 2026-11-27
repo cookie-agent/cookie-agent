@@ -43,6 +43,7 @@ fn kind(target: PointerTarget) -> &'static str {
         PointerTarget::PermissionRow(_) => "permission row",
         PointerTarget::BackgroundRow(_) => "background row",
         PointerTarget::BackgroundStop(_) => "background stop",
+        PointerTarget::ForwardRow(_) => "forward row",
         PointerTarget::RuntimeTab(_) => "runtime tab",
         PointerTarget::MachineRow(_) => "machine row",
         PointerTarget::MachineAction(_) => "machine action",

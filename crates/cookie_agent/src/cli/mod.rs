@@ -22,6 +22,7 @@ mod config;
 mod connect;
 mod cron;
 mod daemon;
+mod forward;
 mod frontend;
 mod headless;
 mod machine;
@@ -293,6 +294,26 @@ enum Command {
     Webhook {
         #[command(subcommand)]
         command: webhook::WebhookCommand,
+        /// The daemon's client URL; `[server] url` in this machine's
+        /// `config.toml`, or the local daemon, when omitted.
+        #[arg(long, global = true)]
+        url: Option<String>,
+        /// The daemon's bearer token; `[server] token` in this machine's
+        /// `config.toml` when omitted.
+        #[arg(
+            long,
+            global = true,
+            env = "COOKIE_DAEMON_TOKEN",
+            hide_env_values = true,
+            allow_hyphen_values = true
+        )]
+        token: Option<String>,
+    },
+    /// List, make, share, and delete a daemon's forwards: a machine's web
+    /// app at the daemon's address, and TCP or UDP ports between machines.
+    Forward {
+        #[command(subcommand)]
+        command: forward::ForwardCommand,
         /// The daemon's client URL; `[server] url` in this machine's
         /// `config.toml`, or the local daemon, when omitted.
         #[arg(long, global = true)]
@@ -596,6 +617,14 @@ pub(crate) async fn dispatch(cli: Cli, launch: &mut Launch) -> anyhow::Result<()
             let target = daemon_target(url, token)?;
             webhook::run_webhook(&target.url, &target.token, command).await
         }
+        Some(Command::Forward {
+            command,
+            url,
+            token,
+        }) => {
+            let target = daemon_target(url, token)?;
+            forward::run_forward(&target.url, &target.token, command).await
+        }
         Some(Command::Share {
             command,
             url,
@@ -637,6 +666,7 @@ fn local_workspace(
                 | Command::Project { .. }
                 | Command::Cron { .. }
                 | Command::Webhook { .. }
+                | Command::Forward { .. }
                 | Command::Share { .. }
                 | Command::Runtime { .. }
                 | Command::Update(_),

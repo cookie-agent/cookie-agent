@@ -526,6 +526,7 @@ impl App {
             | Modal::Memory
             | Modal::Cron
             | Modal::Webhooks
+            | Modal::Forwards
             | Modal::None => 0,
         }
     }

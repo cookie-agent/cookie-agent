@@ -313,6 +313,13 @@ impl App {
                     return Some(PointerTarget::SessionPickerAction(*action));
                 }
             }
+            Modal::Forwards => {
+                return hits
+                    .forward_rows
+                    .iter()
+                    .find(|(rect, _)| over(*rect))
+                    .map(|(_, index)| PointerTarget::ForwardRow(*index));
+            }
             Modal::Background => {
                 if let Some((_, index)) = hits.background_stops.iter().find(|(rect, _)| over(*rect))
                 {
@@ -456,6 +463,7 @@ impl App {
                 }
             }
             PointerTarget::BackgroundRow(index) => self.background_panel.selected = index,
+            PointerTarget::ForwardRow(index) => self.forward_panel.selected = index,
             PointerTarget::RuntimeTab(view) => self.show_runtime_view(view),
             PointerTarget::MachineRow(index) => {
                 self.runtime_panel.machine_selection.select(Some(index));
@@ -798,6 +806,9 @@ impl App {
             }
             PointerTarget::BackgroundRow(index) => {
                 (one(indexed_rect(&hits.background_rows, index)), text_style)
+            }
+            PointerTarget::ForwardRow(index) => {
+                (one(indexed_rect(&hits.forward_rows, index)), text_style)
             }
             PointerTarget::BackgroundStop(index) => {
                 (one(indexed_rect(&hits.background_stops, index)), fill_style)

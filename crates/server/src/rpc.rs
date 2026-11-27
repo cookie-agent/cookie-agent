@@ -434,7 +434,7 @@ pub(crate) fn engine_fault(error: EngineError) -> RpcFault {
             errors::FORWARD_NOT_FOUND.error().field("forward", forward)
         }
         EngineError::Forward(cookie_agent_engine::ForwardError::Invalid(reason)) => {
-            errors::FORWARD_INVALID.error().detail(reason.clone())
+            errors::FORWARD_INVALID.error().field("reason", reason)
         }
         EngineError::Mcp(reason) => errors::MCP_REJECTED
             .error()

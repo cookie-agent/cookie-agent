@@ -1288,7 +1288,8 @@ impl App {
             | Modal::Onboarding
             | Modal::Memory
             | Modal::Cron
-            | Modal::Webhooks => {}
+            | Modal::Webhooks
+            | Modal::Forwards => {}
             Modal::Projects => self.choose_project_entry(index),
             Modal::AgentOptions => self.choose_agent_option(index),
             Modal::None => {}

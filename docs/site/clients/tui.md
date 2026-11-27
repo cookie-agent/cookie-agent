@@ -852,6 +852,29 @@ thread prompt in a transcript is labelled with the webhook or cron job that
 sent it instead of as yours. A daemon older than client protocol 1.96 keeps
 no webhooks: `/webhooks` says so, and `/webhooks new` is not offered.
 
+## Forwards
+
+`/forwards` opens the daemon's [forwards](../sessions/forwards.md): a
+machine's web app served at the daemon's address, and TCP or UDP ports of
+one machine carried to another. Each forward shows its handle, kind, title
+(or route), status, when it ends, its connections and bytes, and where it
+is reached. The list refreshes whenever a forward changes, and the bottom
+bar shows `⇄ <count>` while any forward is active.
+
+Up and Down select a forward, or click its row:
+
+| Key | Action |
+|---|---|
+| Enter or `o` | Open a web forward's app in the browser; the browser reaches it once it has opened cookie's web page |
+| `e` | Change when it ends: the next of 1 hour, 24 hours, 7 days, and never, counted from now |
+| `s` | Make a 7-day public link to a web forward and copy it |
+| `d` | Delete it, after a second `d`; its connections close and its links end |
+| `n` | Make a forward: a form in your editor, with its kind, target, where a TCP or UDP one listens, its title, and its expiry |
+| Esc | Close the panel |
+
+A daemon older than client protocol 1.109 keeps no forwards: `/forwards`
+says so.
+
 ## Background calls
 
 A running call of a tool that supports the background (such as `bash` or

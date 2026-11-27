@@ -18,6 +18,7 @@ pub(in crate::ui) mod config_panel;
 pub(in crate::ui) mod cron_panel;
 mod draw;
 mod emoji_backend;
+pub(in crate::ui) mod forward_panel;
 mod keys;
 mod machines;
 pub(in crate::ui) mod memory_panel;
@@ -198,6 +199,8 @@ pub(super) enum Modal {
     Cron,
     /// `/webhooks`: the daemon's webhooks.
     Webhooks,
+    /// `/forwards`: the daemon's forwards.
+    Forwards,
     /// `/project` or the bottom bar's project: the project picker.
     Projects,
     /// `/options`: the session's ACP agent options, then the values of
@@ -562,6 +565,8 @@ pub(super) enum PointerTarget {
     PermissionRow(usize),
     /// A background panel row (selects it) and its stop button.
     BackgroundRow(usize),
+    /// A `/forwards` panel row (selects it).
+    ForwardRow(usize),
     BackgroundStop(usize),
     /// A `/runtime` panel view tab.
     RuntimeTab(crate::ui::management::RuntimeView),
@@ -739,6 +744,7 @@ pub(super) struct UiHitMap {
     pub(super) background_bar: Option<Rect>,
     /// The background panel's rows and their stop buttons, by list index.
     pub(super) background_rows: Vec<(Rect, usize)>,
+    pub(super) forward_rows: Vec<(Rect, usize)>,
     pub(super) background_stops: Vec<(Rect, usize)>,
 }
 
@@ -784,6 +790,7 @@ impl UiHitMap {
         self.goal_close = None;
         self.background_bar = None;
         self.background_rows.clear();
+        self.forward_rows.clear();
         self.background_stops.clear();
     }
 }
@@ -1038,6 +1045,10 @@ pub struct App {
     pub(super) webhook_panel: webhook_panel::WebhookPanelState,
     /// A webhook form the event loop opens in the editor next.
     pub(super) pending_webhook_editor: Option<webhook_panel::WebhookEditRequest>,
+    /// The daemon's forwards, read on connect and on every change.
+    pub(super) forward_panel: forward_panel::ForwardPanelState,
+    /// A new forward's form the event loop opens in the editor next.
+    pub(super) pending_forward_editor: Option<forward_panel::ForwardEditRequest>,
     /// Ctrl+Z asked the event loop to suspend the TUI (Unix job control).
     pub(super) pending_suspend: bool,
     pub(super) goal_focus: Option<GoalBarAction>,
@@ -1458,6 +1469,13 @@ pub(in crate::ui) enum RpcUpdate {
     },
     WebhooksListed {
         result: Result<cookie_agent_protocol::WebhooksListResult, String>,
+    },
+    ForwardsListed {
+        result: Result<cookie_agent_protocol::ForwardsListResult, String>,
+    },
+    /// A share link to a forward was made: its address.
+    ForwardShared {
+        link: String,
     },
     /// A webhook form was created or saved (with the secret a create
     /// made), or why the daemon refused it.
@@ -1902,6 +1920,8 @@ impl App {
             pending_cron_editor: None,
             webhook_panel: webhook_panel::WebhookPanelState::default(),
             pending_webhook_editor: None,
+            forward_panel: forward_panel::ForwardPanelState::default(),
+            pending_forward_editor: None,
             pending_suspend: false,
             goal_focus: None,
             picker_state: ListState::default().with_selected(Some(0)),
@@ -2496,7 +2516,7 @@ async fn event_loop(
             (None, Some(request), _, _) => Some(EditorJob::Memory(request)),
             (None, None, Some(request), _) => Some(EditorJob::Cron(Box::new(request))),
             (None, None, None, Some(request)) => Some(EditorJob::Webhook(Box::new(request))),
-            (None, None, None, None) => None,
+            (None, None, None, None) => app.pending_forward_editor.take().map(EditorJob::Forward),
         };
         if let Some(job) = editing {
             drop(events);
@@ -2514,6 +2534,9 @@ async fn event_loop(
                 EditorJob::Webhook(request) => {
                     edit_blocking(|| config_panel::run_editor("webhook.md", &request.text))
                 }
+                EditorJob::Forward(request) => {
+                    edit_blocking(|| config_panel::run_editor("forward.txt", &request.text))
+                }
             };
             let resumed = resume_terminal().context("resume the terminal");
             // Clear before the event stream reads stdin again, so it cannot
@@ -2527,6 +2550,7 @@ async fn event_loop(
                 EditorJob::Memory(request) => app.finish_memory_edit(request, edited),
                 EditorJob::Cron(request) => app.finish_cron_edit(*request, edited),
                 EditorJob::Webhook(request) => app.finish_webhook_edit(*request, edited),
+                EditorJob::Forward(request) => app.finish_forward_edit(request, edited),
             }
             render.mark_immediate();
         }
@@ -2706,6 +2730,7 @@ enum EditorJob {
     Memory(memory_panel::MemoryEditRequest),
     Cron(Box<cron_panel::CronEditRequest>),
     Webhook(Box<webhook_panel::WebhookEditRequest>),
+    Forward(forward_panel::ForwardEditRequest),
 }
 
 /// Runs the editor, letting the runtime's other work go on meanwhile when it

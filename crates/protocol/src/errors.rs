@@ -834,8 +834,8 @@ error_codes! {
     FORWARD_INVALID {
         code: "forward_invalid",
         rpc: APPLICATION_ERROR,
-        fields: [],
-        message: "The forward could not be made.",
+        fields: [required("reason", "Why, in the daemon's words.")],
+        message: "The forward could not be made or changed: {reason}.",
         hint: None,
         description: "A `forward.create` or `forward.update` was refused: a machine it names is unknown, `from` is missing for `tcp` or `udp` or given for `http`, the title is too long, or forwards are off or at their limit.",
     }

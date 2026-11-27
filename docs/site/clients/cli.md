@@ -28,6 +28,7 @@ attaching clients to it.
 | [`cookie project`](#cookie-project) | List, create, rename, delete, and edit the daemon's projects |
 | [`cookie cron`](#cookie-cron) | List, create, edit, run, and delete the daemon's cron jobs |
 | [`cookie webhook`](#cookie-webhook) | List, create, edit, test, rotate, and delete the daemon's webhooks |
+| [`cookie forward`](#cookie-forward) | List, make, share, and delete the daemon's forwards |
 | [`cookie share`](#cookie-share) | List, make, and revoke the daemon's share links |
 | [`cookie skills`](#cookie-skills) | List the daemon's skills, refresh the official ones, and check skills |
 | [`cookie agents`](#cookie-agents) | List the daemon's agents, refresh the official ones, and check agent documents |
@@ -776,6 +777,82 @@ filter, and the limits; it counts toward neither the hourly limit nor the
 failures. `--body` reads the body from a file, or from standard input for
 `-`; `--content-type` names its type, such as `application/json`; each
 `--header` adds a request header.
+
+### `cookie forward`
+
+```text
+cookie forward <COMMAND> [--url <URL>] [--token <TOKEN>]
+```
+
+Lists, makes, shares, and deletes the daemon's
+[forwards](../sessions/forwards.md): a machine's web app served at the
+daemon's address, and TCP or UDP ports of one machine carried to another.
+It connects to the daemon as [`cookie share`](#cookie-share) does. An
+endpoint is `<machine>:<port>`, or `<machine>:<host>:<port>` for a host other
+than `127.0.0.1`; the machine is a name `cookie machine list` prints.
+
+#### `cookie forward list`
+
+Prints one line per forward: its handle, kind, title, route, status, where it
+is reached, when it ends, and its connections and bytes.
+
+#### `cookie forward http`
+
+```text
+cookie forward http <TARGET> [--title <TITLE>] [--expires 1h|24h|7d|never]
+```
+
+Serves the web app at `<TARGET>`, reached from its machine, at the daemon's
+address below `/p/<handle>/`, and prints the forward with its URL. The app
+shares the web page's origin and can read its token, so forward only apps you
+trust. `--expires` is `24h` when omitted.
+
+#### `cookie forward tcp`
+
+```text
+cookie forward tcp <FROM> <TO> [--title <TITLE>] [--expires 1h|24h|7d|never]
+```
+
+Listens on `<FROM>` and carries each connection to `<TO>`, reached from its
+machine. Port 0 in `<FROM>` picks a free port, which `cookie forward list`
+then shows. A bind address other than `127.0.0.1` opens the port to that
+machine's network.
+
+#### `cookie forward udp`
+
+```text
+cookie forward udp <FROM> <TO> [--title <TITLE>] [--expires 1h|24h|7d|never]
+```
+
+As `tcp`, for UDP datagrams.
+
+#### `cookie forward expires`
+
+```text
+cookie forward expires <FORWARD> 1h|24h|7d|never
+```
+
+Gives the forward `<FORWARD>`, a handle such as `fw_3f9a1c2e`, a new expiry
+counted from now.
+
+#### `cookie forward share`
+
+```text
+cookie forward share <FORWARD> [--expires 1d|7d|30d|never]
+```
+
+Makes a public link to the web forward `<FORWARD>` and prints it. Anyone with
+the link reaches the app, whether or not it has a login of its own, until the
+link or the forward ends. `--expires` is `7d` when omitted;
+`cookie share revoke` revokes the link.
+
+#### `cookie forward delete`
+
+```text
+cookie forward delete <FORWARD>
+```
+
+Stops and deletes the forward. Its connections close and its share links end.
 
 ### `cookie share`
 

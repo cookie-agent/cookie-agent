@@ -228,6 +228,10 @@ buttons.
   - **Webhooks** lists the same three groups of webhooks, each as a row of
     the [Webhooks](#webhooks) view (a click opens its page there); then
     **Add a webhook** for this session and **Open Webhooks**.
+  - **Forwards** lists the forwards the session's agents made, each as a
+    row of the [Forwards](#forwards) view with **Open** for a web app; then
+    **Open Forwards**. The title bar counts the active ones, and a click on
+    the count opens this tab.
   Browser Back (a phone's Back gesture too) closes the sheet first.
 - **Right-click.** With a mouse, right-clicking a session's row opens its
   actions at the pointer (rename, pin, move, mark read or unread, delete),
@@ -735,14 +739,14 @@ buttons.
   **Goal**, **Schedule a prompt** (which opens the job form in
   [Schedules](#schedules) instead), **Add a webhook** (the webhook form, in
   [Webhooks](#webhooks)), **Skills**, **Background calls**,
-  **Schedules**, **Webhooks**, **Runtimes**, **Permission rules**,
-  **Usage**, **Diagnostics**, and **Agent preset**. The others
+  **Schedules**, **Webhooks**, **Forwards**, **Runtimes**, **Permission
+  rules**, **Usage**, **Diagnostics**, and **Agent preset**. The others
   have their place in the page: the bottom bar picks the agent, model, and
   permission mode; the composer attaches, sends, and stops; and the
   sidebar starts and opens sessions and has the daemon's views. **Goal**,
-  **Background calls**, **Schedules**, **Webhooks**, **Runtimes**,
-  **Permission rules**, **Usage**, and **Diagnostics** open the session
-  panel at their tab.
+  **Background calls**, **Schedules**, **Webhooks**, **Forwards**,
+  **Runtimes**, **Permission rules**, **Usage**, and **Diagnostics** open
+  the session panel at their tab.
 - **Approvals.** When a tool call needs an answer, the title bar's amber
   badge says how many wait.
   Open it to approve once, approve for the session tree, or reject. A
@@ -1366,6 +1370,28 @@ webhook**. The view reads `webhooks.list` again whenever a webhook changes
   mark before its title; a click opens its webhook. In a transcript, a
   [thread prompt](../sessions/webhooks.md) shows `from webhook <name>` (or
   `from cron job <name>`) above its message, in place of you.
+
+## Forwards
+
+**Forwards** in the sidebar opens the daemon's
+[forwards](../sessions/forwards.md). Each row shows the forward's title (or
+its route), its kind, its status, its connections and bytes, and when it
+ends, with **Open** for a web app, which opens it in a new tab. A click
+opens its page:
+
+- **Overview** gives its route, its address with **Copy address** (and
+  **Open** for a web app), its status and traffic, who made it, and when it
+  ends, with a picker that counts a new expiry from now. A web forward's
+  **Share links** lists its links with **Copy** and **Revoke** and makes a
+  new one with its expiry; anyone with a link reaches the app. **Delete…**
+  asks first.
+- **Connections** lists its latest connections, newest first, with where
+  each came from, its bytes, and how it ended.
+
+**New forward** opens a form: the kind (HTTP, TCP, or UDP), the machine and
+host and port the connections go to, for TCP and UDP the machine, bind
+address, and port it listens on (empty picks a free port), a title, and
+when it ends. The **Sharing** view lists forward links beside the others.
 
 ## Phones
 

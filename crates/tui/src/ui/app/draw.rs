@@ -354,6 +354,7 @@ impl App {
             Modal::Memory => self.render_memory_panel(frame),
             Modal::Cron => self.render_cron_panel(frame),
             Modal::Webhooks => self.render_webhook_panel(frame),
+            Modal::Forwards => self.render_forward_panel(frame),
             Modal::Projects => self.render_project_picker(frame),
             Modal::Sessions => {
                 let area = centered(frame.area(), 72, 60);
@@ -728,6 +729,13 @@ impl App {
                     )
                 })
         });
+        // The active forwards, beside the next fire
+        // (docs/site/specs/forwards.md section 8.2).
+        let fire = match (fire, self.active_forwards()) {
+            (fire, 0) => fire,
+            (None, count) => Some(format!("⇄ {count}")),
+            (Some(fire), count) => Some(format!("{fire}  ⇄ {count}")),
+        };
         #[derive(Clone, Copy)]
         struct Candidate<'a> {
             fire: Option<&'a str>,
@@ -1154,6 +1162,7 @@ impl App {
                 self.daemon_has_crons() && self.viewed_session().is_some()
             }
             PaletteAction::Run(SlashCommand::Webhooks) => self.daemon_has_webhooks(),
+            PaletteAction::Run(SlashCommand::Forwards) => self.daemon_has_forwards(),
             PaletteAction::Run(SlashCommand::WebhooksNew) => {
                 self.daemon_has_webhooks() && self.viewed_session().is_some()
             }

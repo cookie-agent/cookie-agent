@@ -54,6 +54,7 @@ pub(crate) enum SlashCommand {
     CronNew,
     Webhooks,
     WebhooksNew,
+    Forwards,
     Permissions,
     Usage,
     /// `/copy-id`: copies the session's ID, which other sessions and the
@@ -279,6 +280,13 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         description: "make a webhook that delivers into this session",
         action: PaletteAction::Run(SlashCommand::WebhooksNew),
         writes_session: true,
+    },
+    CommandSpec {
+        name: "forwards",
+        aliases: &["forward"],
+        description: "list, open, share, and delete the daemon's forwards, or make one",
+        action: PaletteAction::Run(SlashCommand::Forwards),
+        writes_session: false,
     },
     CommandSpec {
         name: "background",

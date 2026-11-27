@@ -3,7 +3,10 @@
 //! expiry, and traffic in words, the expiries the form offers, and the
 //! forwards of a session's tree.
 
-use cookie_agent_protocol::{Forward, ForwardKind, ForwardStatus, SemVer, SessionId, human_bytes};
+use cookie_agent_protocol::{
+    Forward, ForwardCreateParams, ForwardKind, ForwardListen, ForwardStatus, ForwardTarget, SemVer,
+    SessionId, human_bytes,
+};
 use jiff::Timestamp;
 
 use crate::format::relative_time;
@@ -146,4 +149,135 @@ pub fn active_count(forwards: &[Forward]) -> usize {
         .iter()
         .filter(|forward| forward.status == ForwardStatus::Active)
         .count()
+}
+
+/// `<machine>:<port>` or `<machine>:<host>:<port>` (a bracketed IPv6 host
+/// too) as the machine, the host (127.0.0.1 when omitted), and the port;
+/// `what` names it in errors.
+pub fn parse_endpoint(text: &str, what: &str) -> Result<(String, String, u16), String> {
+    let text = text.trim();
+    let Some((machine, rest)) = text.split_once(':') else {
+        return Err(format!(
+            "{what} is <machine>:<port> or <machine>:<host>:<port>, not {text:?}"
+        ));
+    };
+    let (host, port) = match rest.rsplit_once(':') {
+        Some((host, port)) => (host.trim_start_matches('[').trim_end_matches(']'), port),
+        None => ("127.0.0.1", rest),
+    };
+    let port = port
+        .trim()
+        .parse::<u16>()
+        .map_err(|_| format!("{what}'s port is a number from 0 to 65535, not {port:?}"))?;
+    if machine.trim().is_empty() {
+        return Err(format!("{what} names no machine"));
+    }
+    if host.trim().is_empty() {
+        return Err(format!("{what} names no host"));
+    }
+    Ok((machine.trim().to_owned(), host.trim().to_owned(), port))
+}
+
+/// Where a forward's connections go, from `<machine>:[<host>:]<port>`.
+pub fn parse_target(text: &str) -> Result<ForwardTarget, String> {
+    let (machine, host, port) = parse_endpoint(text, "the target")?;
+    if port == 0 {
+        return Err("the target's port is 0".to_owned());
+    }
+    Ok(ForwardTarget {
+        machine,
+        host,
+        port,
+    })
+}
+
+/// Where a TCP or UDP forward listens, from `<machine>:[<bind>:]<port>`.
+pub fn parse_listen(text: &str) -> Result<ForwardListen, String> {
+    let (machine, bind, port) = parse_endpoint(text, "where it listens")?;
+    Ok(ForwardListen {
+        machine,
+        bind,
+        port,
+    })
+}
+
+/// The New forward form as the TUI's editor shows it, its target on
+/// `machine` when one is known.
+pub fn form_text(machine: Option<&str>) -> String {
+    format!(
+        "# A new forward: save and close to make it, or empty the file to drop it.\n\
+         # Lines starting with # are ignored.\n\
+         #\n\
+         # kind: http (a web app at the daemon's address), tcp, or udp\n\
+         kind: http\n\
+         # to: where it goes, reached from its machine:\n\
+         #   <machine>:<port>, or <machine>:<host>:<port>\n\
+         to: {}:\n\
+         # from: where a tcp or udp forward listens: <machine>:<port>, or\n\
+         #   <machine>:<bind>:<port>; port 0 picks a free one\n\
+         from:\n\
+         title:\n\
+         # expires: 1h, 24h, 7d, or never\n\
+         expires: 24h\n",
+        machine.unwrap_or("")
+    )
+}
+
+/// The New forward form `text` as `forward.create` takes it.
+pub fn parse_form(text: &str) -> Result<ForwardCreateParams, String> {
+    let mut fields = std::collections::HashMap::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let Some((key, value)) = line.split_once(':') else {
+            return Err(format!("{line:?} is not `key: value`"));
+        };
+        let key = key.trim().to_ascii_lowercase();
+        if !matches!(key.as_str(), "kind" | "to" | "from" | "title" | "expires") {
+            return Err(format!("unknown field {key:?}"));
+        }
+        fields.insert(key, value.trim().to_owned());
+    }
+    let field = |key: &str| {
+        fields
+            .get(key)
+            .map(String::as_str)
+            .filter(|value| !value.is_empty())
+    };
+    let kind = match field("kind").unwrap_or("http") {
+        "http" => ForwardKind::Http,
+        "tcp" => ForwardKind::Tcp,
+        "udp" => ForwardKind::Udp,
+        other => return Err(format!("kind is http, tcp, or udp, not {other:?}")),
+    };
+    let to = parse_target(field("to").ok_or("name where it goes in `to`")?)?;
+    let from = match (kind, field("from")) {
+        (ForwardKind::Http, None) => None,
+        (ForwardKind::Http, Some(_)) => {
+            return Err(
+                "an http forward is served at the daemon's address: leave `from` empty".to_owned(),
+            );
+        }
+        (_, Some(from)) => Some(parse_listen(from)?),
+        (_, None) => {
+            return Err(format!(
+                "a {} forward listens somewhere: fill in `from`",
+                kind.as_str()
+            ));
+        }
+    };
+    let expires = match field("expires") {
+        None => ForwardLifetime::default(),
+        Some(code) => ForwardLifetime::from_code(code)
+            .ok_or_else(|| format!("expires is 1h, 24h, 7d, or never, not {code:?}"))?,
+    };
+    Ok(ForwardCreateParams {
+        kind,
+        to,
+        from,
+        title: field("title").map(str::to_owned),
+        expires_in_hours: Some(expires.hours()),
+    })
 }

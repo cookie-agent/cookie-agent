@@ -184,7 +184,8 @@ pub(crate) async fn run_share_with<I: MemoryIo>(
             if !listed.enabled {
                 io.write_line("Share links are off ([share] enabled = false): no link works.")?;
             }
-            if listed.shares.is_empty() && listed.sessions.is_empty() {
+            if listed.shares.is_empty() && listed.sessions.is_empty() && listed.forwards.is_empty()
+            {
                 return io.write_line("No share links.");
             }
             for share in &listed.sessions {
@@ -192,6 +193,22 @@ pub(crate) async fn run_share_with<I: MemoryIo>(
             }
             for share in &listed.shares {
                 io.write_line(&share_line(share, page, &zone))?;
+            }
+            for share in &listed.forwards {
+                io.write_line(&format!(
+                    "{}  {:?}  forward {}  {}  {} view{}  {}",
+                    share.id,
+                    share.title,
+                    share.forward,
+                    expiry_line(share.expires_at, &zone),
+                    share.views,
+                    if share.views == 1 { "" } else { "s" },
+                    cookie_agent_client_state::shares::link_address(
+                        share.url.as_deref(),
+                        &share.path,
+                        page
+                    ),
+                ))?;
             }
             Ok(())
         }

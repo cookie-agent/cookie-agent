@@ -93,6 +93,7 @@ impl App {
         self.poll_runtime_homes();
         self.poll_projects();
         self.poll_crons();
+        self.poll_forwards();
     }
 
     /// Fetches the runtimes' homes in the background, from a daemon that
@@ -813,6 +814,8 @@ impl App {
             }
             RpcUpdate::CronChanged { result } => self.install_cron_change(result),
             RpcUpdate::WebhooksListed { result } => self.install_webhook_listing(result),
+            RpcUpdate::ForwardsListed { result } => self.install_forward_listing(result),
+            RpcUpdate::ForwardShared { link } => self.install_forward_share(link),
             RpcUpdate::WebhookSaved { request, result } => {
                 self.install_webhook_save(*request, *result);
             }
@@ -1282,6 +1285,7 @@ impl App {
                 | ClientDelivery::MemoryChanged(_)
                 | ClientDelivery::CronsChanged(_)
                 | ClientDelivery::WebhooksChanged(_)
+                | ClientDelivery::ForwardsChanged(_)
                 | ClientDelivery::PluginsChanged(_)
                 | ClientDelivery::ProjectsChanged(_)
         ) && self.modal == Modal::None;
@@ -1337,6 +1341,9 @@ impl App {
         }
         if matches!(delivery, ClientDelivery::WebhooksChanged(_)) {
             self.poll_webhooks();
+        }
+        if matches!(delivery, ClientDelivery::ForwardsChanged(_)) {
+            self.poll_forwards();
         }
         if let ClientDelivery::OnboardingChanged(status) = &delivery {
             self.note_onboarding_changed((**status).clone());

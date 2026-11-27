@@ -1241,6 +1241,7 @@ impl App {
             SlashCommand::CronNew => self.schedule_in_session(),
             SlashCommand::Webhooks => self.open_webhook_panel(),
             SlashCommand::WebhooksNew => self.webhook_for_session(),
+            SlashCommand::Forwards => self.open_forward_panel(),
             SlashCommand::Project => self.open_project_picker(),
             SlashCommand::Runtime => {
                 if self.new_session_draft.is_some() {
