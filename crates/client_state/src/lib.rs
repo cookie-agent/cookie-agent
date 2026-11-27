@@ -25,6 +25,7 @@ pub mod effort;
 pub mod elicitation;
 pub mod exposure;
 pub mod format;
+pub mod forward;
 pub mod held;
 pub mod history;
 pub mod markdown;
@@ -2387,6 +2388,7 @@ impl StateStore {
             | ClientDelivery::ProjectsChanged(_)
             | ClientDelivery::CronsChanged(_)
             | ClientDelivery::WebhooksChanged(_)
+            | ClientDelivery::ForwardsChanged(_)
             | ClientDelivery::NotificationsChanged(_)
             | ClientDelivery::DaemonRestarting(_)
             | ClientDelivery::DaemonStatus(_) => DeliveryOutcome::Applied,

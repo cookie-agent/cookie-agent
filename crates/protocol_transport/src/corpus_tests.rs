@@ -491,6 +491,7 @@ fn delivery_kind(delivery: &ClientDelivery) -> Option<&'static str> {
         ClientDelivery::ProjectsChanged(_) => "projects_changed",
         ClientDelivery::CronsChanged(_) => "crons_changed",
         ClientDelivery::WebhooksChanged(_) => "webhooks_changed",
+        ClientDelivery::ForwardsChanged(_) => "forwards_changed",
         ClientDelivery::NotificationsChanged(_) => "notifications_changed",
         ClientDelivery::DaemonRestarting(_) => "daemon_restarting",
         ClientDelivery::DaemonStatus(_) => "daemon_status",

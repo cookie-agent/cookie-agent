@@ -124,7 +124,12 @@ pub use cookie_agent_client_state::presence::daemon_has_push;
 pub fn fragment_without_session(fragment: &str) -> String {
     let fragment = fragment.strip_prefix('#').unwrap_or(fragment);
     let rest = url::form_urlencoded::parse(fragment.as_bytes())
-        .filter(|(name, _)| name != "session" && name != "asset" && name != "attachment")
+        .filter(|(name, _)| {
+            !matches!(
+                name.as_ref(),
+                "session" | "asset" | "attachment" | "forward"
+            )
+        })
         .collect::<Vec<_>>();
     if rest.is_empty() {
         return String::new();
@@ -153,6 +158,9 @@ pub enum LinkTarget {
     /// `attachment=<sha256>`: a file a reply attached
     /// (`docs/site/specs/message-attachments.md` section 6).
     Attachment(String),
+    /// `forward=<handle>`: a forward of the session's tree
+    /// (`docs/site/specs/forwards.md` section 7.1).
+    Forward(String),
 }
 
 /// What a page's `location.hash` asks to show, with its session, as
@@ -168,6 +176,7 @@ pub fn link_target(fragment: &str) -> Option<LinkTarget> {
         match name.as_ref() {
             "asset" => Some(LinkTarget::Asset(value)),
             "attachment" => Some(LinkTarget::Attachment(value)),
+            "forward" => Some(LinkTarget::Forward(value)),
             _ => None,
         }
     })

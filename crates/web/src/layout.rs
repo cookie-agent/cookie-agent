@@ -26,6 +26,8 @@ pub enum View {
     Cron,
     /// The daemon's webhooks (client protocol 1.96.0).
     Webhooks,
+    /// The daemon's forwards (client protocol 1.109.0).
+    Forwards,
     /// A project's assets (client protocol 1.67.0).
     Assets,
     /// The live share links (client protocol 1.86.0).
@@ -35,7 +37,7 @@ pub enum View {
 impl View {
     /// The views in the sidebar's order: Chat is the session list itself,
     /// and Settings comes at the sidebar's foot, after every other view.
-    pub const ALL: [Self; 11] = [
+    pub const ALL: [Self; 12] = [
         Self::Chat,
         Self::Assets,
         Self::Sharing,
@@ -46,6 +48,7 @@ impl View {
         Self::Memory,
         Self::Cron,
         Self::Webhooks,
+        Self::Forwards,
         Self::Settings,
     ];
 
@@ -61,6 +64,7 @@ impl View {
             Self::Memory => "Memory",
             Self::Cron => "Schedules",
             Self::Webhooks => "Webhooks",
+            Self::Forwards => "Forwards",
             Self::Assets => "Assets",
             Self::Sharing => "Sharing",
         }
@@ -75,9 +79,12 @@ impl View {
     pub const fn phone_list(self) -> Option<PhoneList> {
         match self {
             Self::Chat => Some(PhoneList::Sidebar),
-            Self::Agents | Self::Settings | Self::Memory | Self::Cron | Self::Webhooks => {
-                Some(PhoneList::Page)
-            }
+            Self::Agents
+            | Self::Settings
+            | Self::Memory
+            | Self::Cron
+            | Self::Webhooks
+            | Self::Forwards => Some(PhoneList::Page),
             Self::Skills | Self::Mcp | Self::Machines | Self::Assets | Self::Sharing => None,
         }
     }
@@ -94,6 +101,7 @@ impl View {
             Self::Memory => "memory",
             Self::Cron => "cron",
             Self::Webhooks => "webhooks",
+            Self::Forwards => "forwards",
             Self::Assets => "assets",
             Self::Sharing => "sharing",
         }

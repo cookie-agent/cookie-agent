@@ -36,6 +36,8 @@ pub enum Command {
     Schedules,
     /// The session's webhooks.
     Webhooks,
+    /// The session tree's forwards (client protocol 1.109.0).
+    Forwards,
     /// The session's runtimes and the daemon's machines.
     Runtime,
     /// The session's permission overrides.
@@ -139,6 +141,13 @@ pub const MENU: &[MenuEntry] = &[
         description: "The webhooks that deliver into this session, and those made here",
     },
     MenuEntry {
+        command: Command::Forwards,
+        id: "forwards",
+        label: "Forwards",
+        icon: icondata::LuArrowRightLeft,
+        description: "The web apps and ports this session's agents forwarded",
+    },
+    MenuEntry {
         command: Command::Runtime,
         id: "runtime",
         label: "Runtimes",
@@ -175,13 +184,23 @@ pub const MENU: &[MenuEntry] = &[
     },
 ];
 
-/// Whether the menu shows `command` to a daemon that does or does not keep
-/// cron jobs (`has_crons`, client protocol 1.15) and webhooks
-/// (`has_webhooks`, client protocol 1.96.0).
-pub const fn offered(command: Command, has_crons: bool, has_webhooks: bool) -> bool {
+/// What the daemon keeps that some commands need.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Keeps {
+    /// Cron jobs (client protocol 1.15).
+    pub crons: bool,
+    /// Webhooks (client protocol 1.96.0).
+    pub webhooks: bool,
+    /// Forwards (client protocol 1.109.0).
+    pub forwards: bool,
+}
+
+/// Whether the menu shows `command` to a daemon that keeps `keeps`.
+pub const fn offered(command: Command, keeps: Keeps) -> bool {
     match command {
-        Command::Schedule | Command::Schedules => has_crons,
-        Command::Webhook | Command::Webhooks => has_webhooks,
+        Command::Schedule | Command::Schedules => keeps.crons,
+        Command::Webhook | Command::Webhooks => keeps.webhooks,
+        Command::Forwards => keeps.forwards,
         _ => true,
     }
 }
@@ -211,7 +230,7 @@ pub fn entry(command: Command) -> &'static MenuEntry {
 
 #[cfg(test)]
 mod tests {
-    use super::{Command, MENU, entry, offered, offered_to_guest};
+    use super::{Command, Keeps, MENU, entry, offered, offered_to_guest};
 
     #[test]
     fn a_guest_acts_and_reads_but_does_not_set_the_session_up() {
@@ -240,11 +259,16 @@ mod tests {
 
     #[test]
     fn only_a_daemon_that_keeps_cron_jobs_or_webhooks_offers_them() {
-        assert!(offered(Command::Schedule, true, false));
-        assert!(!offered(Command::Schedule, false, true));
-        assert!(offered(Command::Webhook, false, true));
-        assert!(!offered(Command::Webhook, true, false));
-        assert!(offered(Command::Goal, false, false));
+        let keeps = |crons, webhooks| Keeps {
+            crons,
+            webhooks,
+            forwards: false,
+        };
+        assert!(offered(Command::Schedule, keeps(true, false)));
+        assert!(!offered(Command::Schedule, keeps(false, true)));
+        assert!(offered(Command::Webhook, keeps(false, true)));
+        assert!(!offered(Command::Webhook, keeps(true, false)));
+        assert!(offered(Command::Goal, keeps(false, false)));
     }
 
     #[test]

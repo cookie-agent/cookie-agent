@@ -463,3 +463,18 @@ Phase 3 (client protocol 1.110.0, plugin protocol 1.51.0):
   out of the schema, which says `x-open`) rather than an `Open<T>` field,
   so their many matches stay as they are; nothing writes `Unknown`.
 
+
+Phase 4 (web):
+
+- **The share dialog is the forward's page**: its Overview lists the
+  forward's links with *Copy* and *Revoke*, and makes a new one with an
+  expiry. The Sharing view lists forward links beside the others, and
+  their titles open the forward's page.
+- **The expiry has no *Change…* dialog.** A picker beside it gives
+  *1 hour*, *24 hours*, *7 days*, or *Never*, counted from now.
+- **A guest** sees its session's forwards in the session panel, each with
+  *Open* through its share, and no actions or page.
+- **A `#session=<id>&forward=<handle>` link** opens the session with its
+  panel on the Forwards tab, where the row opens the app.
+- **The title bar's badge** counts the session tree's active forwards and
+  opens that tab.

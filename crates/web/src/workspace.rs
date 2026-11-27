@@ -42,6 +42,7 @@ mod background;
 mod cards;
 mod cron;
 mod drafts;
+mod forward;
 mod goal;
 mod history;
 mod manage;
@@ -71,6 +72,7 @@ pub use agent_documents::{AgentOpen, AgentTab};
 pub use attachments::{AttachOffer, draft_thumbnail};
 pub use cards::CardSet;
 pub use cron::CronForm;
+pub use forward::ForwardTab;
 pub use history::{MenuAnchor, PointAction, UserMenu};
 pub use manage::{ConfigEdit, MemoryChoice, MemoryEdit, MemoryPending, RUNTIMES_POLL};
 pub(crate) use notifications::release_push;
@@ -107,6 +109,8 @@ pub enum Panel {
     Schedules,
     /// The open session's webhooks.
     Webhooks,
+    /// The open session's tree's forwards.
+    Forwards,
     Skills,
     Permissions,
     /// The permission mode picker.
@@ -489,6 +493,21 @@ pub struct Workspace {
     /// The event open in the Webhooks view: the webhook, the event, and
     /// `webhooks.event` once read.
     pub webhook_event: RwSignal<Option<WebhookEventOpen>>,
+    /// Whether the daemon keeps forwards (client protocol 1.109.0).
+    pub has_forwards: RwSignal<bool>,
+    /// `forwards.list`: read on connect and on every `forwards.changed`;
+    /// a guest's are its session's.
+    pub forwards: RwSignal<Option<Result<cookie_agent_protocol::ForwardsListResult, String>>>,
+    /// The forward the Forwards view shows on its page, by handle.
+    pub forward_selected: RwSignal<Option<String>>,
+    /// The open forward's tab.
+    pub forward_tab: RwSignal<ForwardTab>,
+    /// The forward whose Delete asks first.
+    pub forward_confirm: RwSignal<Option<String>>,
+    /// The New forward form, while it is open.
+    pub forward_form: RwSignal<bool>,
+    /// Why the form was not sent, or a forward's action failed.
+    pub forward_error: RwSignal<Option<String>>,
     /// The daemon has push notifications (client protocol 1.30).
     pub has_push: RwSignal<bool>,
     /// Whether the daemon keeps unread sessions (client protocol 1.51.0).
@@ -830,6 +849,13 @@ impl Workspace {
             webhook_error: RwSignal::new(None),
             webhook_revealed: RwSignal::new(None),
             webhook_event: RwSignal::new(None),
+            has_forwards: RwSignal::new(false),
+            forwards: RwSignal::new(None),
+            forward_selected: RwSignal::new(None),
+            forward_tab: RwSignal::new(ForwardTab::Overview),
+            forward_confirm: RwSignal::new(None),
+            forward_form: RwSignal::new(false),
+            forward_error: RwSignal::new(None),
             has_push: RwSignal::new(false),
             keeps_unread: RwSignal::new(false),
             keeps_pins: RwSignal::new(false),
@@ -980,6 +1006,10 @@ impl Workspace {
             .set(cookie_agent_client_state::webhook::daemon_has_webhooks(
                 client.daemon_version(),
             ));
+        self.has_forwards
+            .set(cookie_agent_client_state::forward::daemon_has_forwards(
+                client.daemon_version(),
+            ));
         self.can_restart
             .set(cookie_agent_client_state::restart::daemon_can_restart(
                 client.daemon_version(),
@@ -1113,6 +1143,7 @@ impl Workspace {
         self.poll_runtimes();
         self.poll_crons();
         self.poll_webhooks();
+        self.poll_forwards();
         match client.runtime_snapshot().await {
             Ok(result) => {
                 self.runtime
@@ -1237,6 +1268,10 @@ impl Workspace {
             }
             ClientDelivery::WebhooksChanged(_) => {
                 self.poll_webhooks();
+                return;
+            }
+            ClientDelivery::ForwardsChanged(_) => {
+                self.poll_forwards();
                 return;
             }
             ClientDelivery::NotificationsChanged(_) => {
@@ -2242,6 +2277,24 @@ impl Workspace {
     /// Whether this connection is a guest's.
     pub fn is_guest(self) -> bool {
         self.guest.with(Option::is_some)
+    }
+
+    /// What the daemon keeps that some commands need, tracked.
+    pub fn keeps(self) -> crate::commands::Keeps {
+        crate::commands::Keeps {
+            crons: self.has_crons.get(),
+            webhooks: self.has_webhooks.get(),
+            forwards: self.has_forwards.get(),
+        }
+    }
+
+    /// [`Self::keeps`], untracked.
+    pub fn keeps_untracked(self) -> crate::commands::Keeps {
+        crate::commands::Keeps {
+            crons: self.has_crons.get_untracked(),
+            webhooks: self.has_webhooks.get_untracked(),
+            forwards: self.has_forwards.get_untracked(),
+        }
     }
 
     /// Whether what changes the viewed session's setup is offered: its
@@ -3297,6 +3350,10 @@ impl Workspace {
             Command::Webhooks => {
                 self.poll_webhooks();
                 self.panel.set(Some(Panel::Webhooks));
+            }
+            Command::Forwards => {
+                self.poll_forwards();
+                self.panel.set(Some(Panel::Forwards));
             }
             Command::Runtime => self.open_runtimes(),
             Command::Permissions => self.open_permissions(),

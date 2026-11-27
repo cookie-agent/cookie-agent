@@ -631,7 +631,6 @@ fn document_html(file: &CardFile) -> String {
     )
 }
 
-/// A card not ready: attaching, asking the user, or failed.
 /// A web forward's card: its page live in a frame of its address, which
 /// the page fills in once it knows where it reaches the daemon
 /// (`docs/site/specs/forwards.md` section 7.1).
@@ -646,6 +645,7 @@ fn forward_html(label: &str, handle: &str, path: &str, route: &str) -> String {
     )
 }
 
+/// A card not ready: attaching, asking the user, or failed.
 fn waiting_html(state: &CardState) -> String {
     let (icon, label, line, actions, status) = match state {
         CardState::Attaching { label } => (

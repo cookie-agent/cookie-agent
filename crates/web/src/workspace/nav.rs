@@ -35,6 +35,7 @@ impl Workspace {
             View::Memory => self.open_memory(),
             View::Cron => self.open_crons(),
             View::Webhooks => self.open_webhooks(),
+            View::Forwards => self.open_forwards(),
         }
         self.view.set(view);
     }
@@ -89,6 +90,7 @@ impl Workspace {
             View::Assets => self.poll_assets(),
             View::Sharing => self.refresh_shares(),
             View::Mcp => self.poll_mcp(),
+            View::Forwards => self.poll_forwards(),
             View::Chat | View::Machines | View::Cron | View::Webhooks => {}
         }
         match self.panel.get_untracked() {
@@ -167,6 +169,9 @@ impl Workspace {
                 self.webhook_form.with(Option::is_none)
                     && self.webhook_selected.with(Option::is_none)
             }
+            View::Forwards => {
+                !self.forward_form.get() && self.forward_selected.with(Option::is_none)
+            }
             View::Assets => self.asset_page.with(Option::is_none),
             View::Skills | View::Mcp | View::Machines | View::Sharing => true,
         }
@@ -185,6 +190,9 @@ impl Workspace {
         if view == View::Webhooks && self.webhook_selected.with(Option::is_some) {
             layers.push(Layer::Item);
         }
+        if view == View::Forwards && self.forward_selected.with(Option::is_some) {
+            layers.push(Layer::Item);
+        }
         let editing = match view {
             View::Agents => {
                 self.config_edit.with(Option::is_some) || self.agent_open.with(Option::is_some)
@@ -198,6 +206,7 @@ impl Workspace {
             }
             View::Cron => self.cron_form.with(Option::is_some),
             View::Webhooks => self.webhook_form.with(Option::is_some),
+            View::Forwards => self.forward_form.get(),
             View::Assets => self.asset_page.with(Option::is_some),
             View::Chat | View::Skills | View::Mcp | View::Machines | View::Sharing => false,
         };
@@ -278,6 +287,8 @@ impl Workspace {
                 self.webhook_selected.set(None);
                 self.webhook_event.set(None);
                 self.webhook_revealed.set(None);
+                self.forward_selected.set(None);
+                self.forward_confirm.set(None);
             }
             Layer::Editor => {
                 self.config_edit.set(None);
@@ -287,6 +298,7 @@ impl Workspace {
                 self.memory_pending.set(None);
                 self.cron_form.set(None);
                 self.webhook_form.set(None);
+                self.forward_form.set(false);
                 self.asset_page.set(None);
             }
         }

@@ -17,6 +17,7 @@ use super::Workspace;
 pub(super) struct Reads {
     pub crons: Latest,
     pub webhooks: Latest,
+    pub forwards: Latest,
     pub memory: Latest,
     pub plugins: Latest,
     pub mcp: Latest,

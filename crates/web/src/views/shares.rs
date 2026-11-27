@@ -813,17 +813,18 @@ pub fn sharing_page(workspace: Workspace) -> impl IntoView {
                     </p>
                 }
             });
-            if listed.shares.is_empty() && listed.sessions.is_empty() {
+            if listed.shares.is_empty() && listed.sessions.is_empty() && listed.forwards.is_empty()
+            {
                 return view! {
                     {off}
                     {empty_state(
                         icondata::LuLink,
-                        "No share links. Share an asset from its card, or a conversation from its ⋮ menu, to give it a public link.",
+                        "No share links. Share an asset from its card, a conversation from its ⋮ menu, or a web forward from its page, to give it a public link.",
                     )}
                 }
                 .into_any();
             }
-            let count = listed.shares.len() + listed.sessions.len();
+            let count = listed.shares.len() + listed.sessions.len() + listed.forwards.len();
             view! {
                 {off}
                 <div class="flex flex-wrap items-center gap-2">
@@ -877,6 +878,11 @@ pub fn sharing_page(workspace: Workspace) -> impl IntoView {
                         .into_iter()
                         .map(|share| share_row(workspace, share))
                         .collect_view()}
+                    {listed
+                        .forwards
+                        .into_iter()
+                        .map(|share| forward_share_row(workspace, share))
+                        .collect_view()}
                 </div>
             }
             .into_any()
@@ -885,7 +891,7 @@ pub fn sharing_page(workspace: Workspace) -> impl IntoView {
     view! {
         {super::view_header(
             "Sharing",
-            "Public links to assets and conversations: anyone with one can open it in a browser until it expires or you revoke it.",
+            "Public links to assets, conversations, and web forwards: anyone with one can open it in a browser until it expires or you revoke it.",
             (),
         )}
         {list}
@@ -948,6 +954,78 @@ fn share_row(workspace: Workspace, share: Share) -> impl IntoView {
                     None,
                     move |lifetime| workspace.set_share_lifetime(changed.clone(), lifetime),
                 )}
+                <span class="flex-1"></span>
+                <button
+                    type="button"
+                    class=format!("{ROW_BUTTON} text-bad")
+                    data-share-action="revoke"
+                    on:click=move |_| workspace.revoke_share(revoked.clone())
+                >
+                    <Glyph icon=icondata::LuTrash2 />
+                    "Revoke"
+                </button>
+            </div>
+        </div>
+    }
+}
+
+/// A link to a web forward: its title opens the forward's page.
+fn forward_share_row(
+    workspace: Workspace,
+    share: cookie_agent_protocol::ForwardShare,
+) -> impl IntoView {
+    let address = workspace.forward_share_address(&share);
+    let copied = address.clone();
+    let revoked = share.id.clone();
+    let forward = share.forward.clone();
+    let made = match &share.created.agent {
+        Some(agent) => format!("Made by {agent}"),
+        None => "Made by you".to_owned(),
+    };
+    let views = match share.views {
+        0 => "not opened yet".to_owned(),
+        1 => "opened once".to_owned(),
+        views => format!("opened {views} times"),
+    };
+    view! {
+        <div class="flex flex-col gap-1 border-b border-line py-2" data-share-row=share.id.to_string() data-share-forward=share.forward.clone()>
+            <div class="flex min-w-0 items-center gap-2">
+                <Glyph icon=icondata::LuArrowRightLeft class="text-accent" />
+                <button
+                    type="button"
+                    class="min-w-0 flex-1 truncate text-left text-sm font-bold hover:underline"
+                    data-share-title
+                    title="Open the forward"
+                    on:click=move |_| workspace.open_forward(forward.clone())
+                >
+                    {share.title.clone()}
+                </button>
+                <span class=NOTE>{format!("web forward {}", share.forward)}</span>
+            </div>
+            <p class="truncate font-mono text-xs text-muted select-all" data-share-url>{address}</p>
+            <p class=NOTE data-share-meta>
+                {format!("{} · {views} · {made}", expiry_text_at(share.expires_at))}
+            </p>
+            <div class="flex flex-wrap items-center gap-1">
+                <button
+                    type="button"
+                    class=ROW_BUTTON
+                    data-share-action="copy"
+                    on:click=move |_| {
+                        let address = copied.clone();
+                        leptos::task::spawn_local(async move {
+                            let done = crate::browser::copy_text(&address).await;
+                            workspace.status.set(if done {
+                                "link copied".to_owned()
+                            } else {
+                                format!("copying needs a secure page; the link is {address}")
+                            });
+                        });
+                    }
+                >
+                    <Glyph icon=icondata::LuCopy />
+                    "Copy"
+                </button>
                 <span class="flex-1"></span>
                 <button
                     type="button"

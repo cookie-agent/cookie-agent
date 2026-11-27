@@ -225,6 +225,9 @@ pub enum ClientDelivery {
     /// A webhook was created, changed, received an event, or was deleted;
     /// refetch `webhooks.list`.
     WebhooksChanged(cookie_agent_protocol::WebhooksChangedNotification),
+    /// A forward was made, changed, or deleted, or its status or counts
+    /// moved (client protocol 1.109.0); refetch `forwards.list`.
+    ForwardsChanged(cookie_agent_protocol::ForwardsChangedNotification),
     /// The push subscriptions changed; refetch `notifications.get`.
     NotificationsChanged(cookie_agent_protocol::NotificationsChangedNotification),
     /// The daemon will restart: when, and how many runs it still waits
@@ -1995,7 +1998,6 @@ impl Client {
         .await
     }
 
-    /// Every webhook with its state and history.
     /// The forwards, every one or `session`'s tree's (`forwards.list`,
     /// client protocol 1.109.0).
     pub async fn list_forwards(
@@ -2039,6 +2041,7 @@ impl Client {
         .await
     }
 
+    /// Every webhook with its state and history.
     pub async fn list_webhooks(
         &self,
     ) -> Result<cookie_agent_protocol::WebhooksListResult, ClientError> {
@@ -3377,6 +3380,11 @@ async fn route_notification(
             let changed: cookie_agent_protocol::WebhooksChangedNotification =
                 serde_json::from_str(params)?;
             let _ = deliveries.send(ClientDelivery::WebhooksChanged(changed));
+        }
+        cookie_agent_protocol::FORWARDS_CHANGED_METHOD => {
+            let changed: cookie_agent_protocol::ForwardsChangedNotification =
+                serde_json::from_str(params)?;
+            let _ = deliveries.send(ClientDelivery::ForwardsChanged(changed));
         }
         cookie_agent_protocol::NOTIFICATIONS_CHANGED_METHOD => {
             let changed: cookie_agent_protocol::NotificationsChangedNotification =

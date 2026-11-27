@@ -47,6 +47,7 @@ mod config_form;
 mod cron;
 mod depth;
 mod effort;
+mod forwards;
 mod install;
 mod live;
 mod loader;
@@ -4613,7 +4614,7 @@ const fn chip_of(panel: Panel) -> Option<&'static str> {
 /// The session panel's tabs (docs/site/specs/quiet-ink.md, D5): the sheets
 /// about the open session, each opened through its command as the
 /// Session commands sheet opens it, with what it reads.
-const SESSION_TABS: [(Panel, Command, &str, icons::Icon); 9] = [
+const SESSION_TABS: [(Panel, Command, &str, icons::Icon); 10] = [
     (Panel::Usage, Command::Usage, "Usage", icondata::LuCoins),
     (
         Panel::Permissions,
@@ -4651,6 +4652,12 @@ const SESSION_TABS: [(Panel, Command, &str, icons::Icon); 9] = [
         Command::Webhooks,
         "Webhooks",
         icondata::LuWebhook,
+    ),
+    (
+        Panel::Forwards,
+        Command::Forwards,
+        "Forwards",
+        icondata::LuArrowRightLeft,
     ),
     (
         Panel::Events,
@@ -4702,6 +4709,16 @@ fn session_tabs(workspace: Workspace) -> impl IntoView {
                 .len(),
         )
     });
+    // The forwards the open session's tree made.
+    let forwards = Memo::new(move |_| {
+        let Some(id) = workspace.selected.get() else {
+            return 0;
+        };
+        let root = workspace.root_of(id);
+        workspace.forwards.with(|_| {
+            cookie_agent_client_state::forward::tree_forwards(&workspace.forward_list(), root).len()
+        })
+    });
     let tabs = SESSION_TABS
         .into_iter()
         .map(|(panel, command, label, icon)| {
@@ -4720,6 +4737,9 @@ fn session_tabs(workspace: Workspace) -> impl IntoView {
                 }
                 Panel::Webhooks => {
                     Some(owned.get().1).filter(|count| *count > 0).map(|count| count.to_string())
+                }
+                Panel::Forwards => {
+                    Some(forwards.get()).filter(|count| *count > 0).map(|count| count.to_string())
                 }
                 // The groups and the skills that are off.
                 Panel::Runtimes | Panel::Skills => workspace.session_tools.with(|tools| {
@@ -4746,11 +4766,8 @@ fn session_tabs(workspace: Workspace) -> impl IntoView {
             // A daemon without cron jobs or webhooks has no such tab, and a
             // guest sees only what it may act on.
             let offered = move || {
-                crate::commands::offered(
-                    command,
-                    workspace.has_crons.get(),
-                    workspace.has_webhooks.get(),
-                ) && (!workspace.is_guest() || crate::commands::offered_to_guest(command))
+                crate::commands::offered(command, workspace.keeps())
+                    && (!workspace.is_guest() || crate::commands::offered_to_guest(command))
             };
             view! {
                 // An icon each, the label on the current tab only; on a
@@ -4946,6 +4963,7 @@ fn Sheet(workspace: Workspace) -> impl IntoView {
         Some(Panel::Background) => "Background calls",
         Some(Panel::Schedules) => "Schedules",
         Some(Panel::Webhooks) => "Webhooks",
+        Some(Panel::Forwards) => "Forwards",
         Some(Panel::Skills) => "Skills",
         Some(Panel::Permissions) => "Permissions",
         Some(Panel::Message) => {
@@ -5066,6 +5084,7 @@ fn Sheet(workspace: Workspace) -> impl IntoView {
                             Some(Panel::Background) => background_sheet(workspace).into_any(),
                             Some(Panel::Schedules) => session_schedules::schedules_sheet(workspace).into_any(),
                             Some(Panel::Webhooks) => session_schedules::webhooks_sheet(workspace).into_any(),
+                            Some(Panel::Forwards) => forwards::forwards_sheet(workspace).into_any(),
                             Some(Panel::Skills) => skills_sheet(workspace).into_any(),
                             Some(Panel::Permissions) => permissions_sheet(workspace).into_any(),
                             Some(Panel::Message) => message_sheet(workspace).into_any(),
@@ -6363,8 +6382,7 @@ fn transcript_sheet(workspace: Workspace) -> impl IntoView {
 /// agent's commands follow, each badged as the agent's; one of them stands
 /// in for cookie's command of its name. A filter on top narrows both.
 fn commands_sheet(workspace: Workspace) -> impl IntoView {
-    let has_crons = workspace.has_crons.get_untracked();
-    let has_webhooks = workspace.has_webhooks.get_untracked();
+    let keeps = workspace.keeps_untracked();
     let filter = RwSignal::new(String::new());
     let query = move || filter.get().trim().trim_start_matches('/').to_lowercase();
     let matches = |query: &str, texts: [&str; 2]| {
@@ -6434,7 +6452,7 @@ fn commands_sheet(workspace: Workspace) -> impl IntoView {
         let replaced = replaced.get();
         let offered: Vec<&'static crate::commands::MenuEntry> = MENU
             .iter()
-            .filter(|entry| crate::commands::offered(entry.command, has_crons, has_webhooks))
+            .filter(|entry| crate::commands::offered(entry.command, keeps))
             .filter(|entry| {
                 !workspace.is_guest() || crate::commands::offered_to_guest(entry.command)
             })

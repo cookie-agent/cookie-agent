@@ -252,6 +252,36 @@ pub fn LiveBadges(workspace: Workspace) -> impl IntoView {
             </button>
         </Show>
     };
+    // The session tree's active forwards.
+    let forwards = Memo::new(move |_| {
+        if workspace.new_session.get() {
+            return 0;
+        }
+        let Some(session) = workspace.selected.get() else {
+            return 0;
+        };
+        let root = workspace.root_of(session);
+        workspace.forwards.with(|_| {
+            cookie_agent_client_state::forward::active_count(
+                &cookie_agent_client_state::forward::tree_forwards(&workspace.forward_list(), root),
+            )
+        })
+    });
+    let forward_badge = view! {
+        <Show when=move || { forwards.get() > 0 }>
+            <button
+                type="button"
+                class=BADGE
+                id="forward-badge"
+                aria-label=move || forward_words(forwards.get())
+                title=move || format!("{}: click for them", forward_words(forwards.get()))
+                on:click=move |_| workspace.run_command(Command::Forwards)
+            >
+                <Glyph icon=icondata::LuArrowRightLeft class="text-sm text-accent" />
+                <span data-forward-count>{move || forwards.get()}</span>
+            </button>
+        </Show>
+    };
     let goal_badge = move || {
         goal.get().map(|goal| {
             let paused = goal.status == GoalStatus::Paused;
@@ -320,6 +350,7 @@ pub fn LiveBadges(workspace: Workspace) -> impl IntoView {
                 </button>
             </Show>
             {fire_badge}
+            {forward_badge}
             // The context ring shows once a request has measured it, the
             // session's cost once it has one, where the title keeps its room:
             // a narrow column (a phone, or beside the side panel) leaves them
@@ -352,6 +383,14 @@ pub fn LiveBadges(workspace: Workspace) -> impl IntoView {
             </Show>
         </div>
     }
+}
+
+/// `1 active forward`, `3 active forwards`.
+fn forward_words(count: usize) -> String {
+    format!(
+        "{count} active forward{}",
+        if count == 1 { "" } else { "s" }
+    )
 }
 
 #[cfg(test)]

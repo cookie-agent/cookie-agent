@@ -145,13 +145,14 @@ impl Forward {
     pub fn route(&self) -> String {
         let to = format!("{} {}:{}", self.to.machine, self.to.host, self.to.port);
         match &self.from {
-            Some(from) => format!(
-                "{} {} {}:{} → {to}",
-                self.kind.as_str(),
-                from.machine,
-                from.bind,
-                from.port
-            ),
+            Some(from) => {
+                // A port of 0 is the one the listener picked, once it has.
+                let listen = match &self.address {
+                    Some(address) if from.port == 0 => address.clone(),
+                    _ => format!("{}:{}", from.bind, from.port),
+                };
+                format!("{} {} {listen} → {to}", self.kind.as_str(), from.machine)
+            }
             None => format!("{} → {to}", self.kind.as_str()),
         }
     }

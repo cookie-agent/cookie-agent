@@ -4803,7 +4803,7 @@ def desktop_layout(browser):
     # (docs/site/specs/web-polish.md, P4).
     assert names == [
         "rename", "compact", "share", "copy-id", "schedule", "webhook", "preset", "goal", "skills", "background", "schedules",
-        "webhooks", "runtime", "permissions", "usage", "events",
+        "webhooks", "forwards", "runtime", "permissions", "usage", "events",
     ], names
     for name, text, icon in entries:
         assert icon and "/" not in text, (name, text, icon)

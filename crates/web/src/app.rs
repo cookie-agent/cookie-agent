@@ -311,6 +311,11 @@ impl Connection {
                 Some(push::LinkTarget::Attachment(sha256)) => {
                     crate::assets::reveal_attachment(sha256, self.workspace);
                 }
+                // The session panel's Forwards tab, where its row opens it.
+                Some(push::LinkTarget::Forward(_)) => {
+                    self.workspace
+                        .run_command(crate::commands::Command::Forwards);
+                }
                 None => {}
             }
         }
