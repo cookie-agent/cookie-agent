@@ -1,9 +1,11 @@
 # Media the agent saw, in folded work
 
-Status: **approved** (2026-11-26), with the user's decisions in
-[section 9](#9-decisions-2026-11-26). To be built after
-[attachment handling](attachment-handling.md) is done. It uses that spec's
-cards, `artifact.thumbnail`, and TUI label lines. Builds on
+Status: **implemented** (2026-11-27; no protocol change), with the user's
+decisions in [section 9](#9-decisions-2026-11-26) and what the
+implementation does differently in the
+[implementation notes](#implementation-notes). Uses
+[attachment handling](attachment-handling.md)'s cards, `artifact.thumbnail`,
+and TUI label lines. Builds on
 [reduced transcript display](reduced-transcript.md); there is a
 [preview](folded-media/preview.html).
 
@@ -195,3 +197,44 @@ attachment spec's phase 4.
 - **Q4.** Yes, PDFs count. `artifact.thumbnail` draws a PDF's first page
   with `pdftoppm` (the PDF icon without it). A PDF tile opens the document
   beside the chat, and the media viewer skips it.
+
+## Implementation notes
+
+- **Where it lives.** `client_state::transcript_mode` lists the files
+  (`SeenMedia`, `WorkSummary::seen`, `seen_label`) as it counts the calls.
+  The web draws the strip in `render/transcript.rs` (`seen_strip_html`), a
+  reply part of its own beside the work row, so a live row's ticking time
+  does not redraw it; `assets.rs` fills each thumbnail as it nears the view
+  (`data-asset-view="seen"`), fits the strip to its line (`fit_seen`), opens
+  the viewer over it, and runs Show call. The TUI draws the line in
+  `ui/transcript/assistant.rs` (`seen_line_layout`), each name and the
+  `↗ open` a `BlockId::SeenMedia` region resolved as
+  `PointerTarget::SeenMedia`.
+- **The model's view cannot be told yet.** `fit_media` and
+  `elide_excess_media` fit each request as it is sent and record nothing a
+  client reads, and a call whose media the model cannot take fails at the
+  call. So `SeenMedia::not_shown` is always `None`: the badge (web) and the
+  `°` (TUI) are drawn from it but never show. Showing them needs the engine
+  to record what it dropped, a protocol addition. The TUI has no tooltip
+  line to explain the `°`.
+- **Unnamed files** are named by their kind and place, `image 2`, `video
+  1`, `PDF 1`, not `image N` for every kind.
+- **The TUI's live line** keeps the newest names, as the web strip does
+  (section 4.2): `+N` leads the line while the work goes on, and ends it
+  once the work ended.
+- **Videos.** The strip shows the daemon's thumbnail with a play glyph, and
+  no duration: the thumbnail does not carry it, and reading the video for
+  it would undo the lazy thumbnail. The viewer's video bar shows it. A
+  video the daemon draws no thumbnail of (no `ffmpeg`) shows a film icon
+  rather than being read whole; a PDF without one, its icon and name.
+- **The viewer's caption** is a line under the file: the call's header and
+  **Show call**; the bar on top keeps the file's name. The viewer reads a
+  file the strip showed as a thumbnail, or hid in `+N`, when it comes to it.
+- **Show call** flashes the call's row with an accent ring. In the TUI a
+  name opens the fold and scrolls its call into view, without a flash.
+- **Live updates.** The page's DOM patcher leaves a keyed element marked
+  `data-keep` as the page filled it, so a thumbnail does not fill again as
+  others join the strip. The plan's settled rows are keyed by each call's
+  status and media count too, so media that arrives after a fold settled
+  (a call still running when text broke the work) draws.
+
