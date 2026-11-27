@@ -355,6 +355,7 @@ impl Workspace {
             byte_length: bytes.len() as u64,
             media_type,
             filename: Some(name.clone()),
+            folder: None,
         };
         self.status.set(format!(
             "attached {}; it is uploaded with the first message",

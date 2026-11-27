@@ -215,13 +215,35 @@ impl Engine {
         self.assets_blocking(move |engine, stores| {
             engine.check_client_store(&params.store)?;
             let length = params.length.min(cookie_agent_protocol::ASSET_CHUNK_BYTES);
-            let (bytes, asset) = stores.read(&params.store, params.asset, params.offset, length)?;
+            let part = stores.read(
+                &params.store,
+                params.asset,
+                params.path.as_deref(),
+                params.offset,
+                length,
+            )?;
             Ok(AssetReadResult {
-                data: base64::engine::general_purpose::STANDARD.encode(bytes),
-                total_bytes: asset.byte_length,
-                media_type: asset.media_type,
-                sha256: asset.sha256,
+                data: base64::engine::general_purpose::STANDARD.encode(part.bytes),
+                total_bytes: part.total_bytes,
+                media_type: part.media_type,
+                sha256: part.asset.sha256,
             })
+        })
+        .await
+    }
+
+    /// `asset.manifest`.
+    pub async fn asset_manifest(
+        &self,
+        params: cookie_agent_protocol::AssetManifestParams,
+    ) -> Result<cookie_agent_protocol::FolderManifestResult, EngineError> {
+        self.assets_blocking(move |engine, stores| {
+            engine.check_client_store(&params.store)?;
+            let (asset, manifest) = stores.manifest(&params.store, params.asset)?;
+            Ok(cookie_agent_protocol::FolderManifestResult::of(
+                asset.sha256,
+                manifest,
+            ))
         })
         .await
     }

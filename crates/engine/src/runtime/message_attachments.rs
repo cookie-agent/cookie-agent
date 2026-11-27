@@ -404,6 +404,7 @@ impl Engine {
                     reference,
                 },
                 metadata: None,
+                folder: None,
             },
         })
     }
@@ -453,6 +454,7 @@ impl Engine {
                     },
                 },
                 metadata: None,
+                folder: None,
             },
         })
     }
@@ -591,17 +593,35 @@ impl Engine {
             .read_store(key.session)
             .map_err(|error| EngineError::Asset(AssetError::Store(error.to_string())))?
             .ok_or_else(|| refused("this session has no artifacts"))?;
-        let range = store
-            .read_range(sha256.as_str(), 0, ASSET_MAX_BYTES)
-            .map_err(|error| EngineError::Asset(AssetError::Store(error.to_string())))?;
+        let store_error =
+            |error: std::io::Error| EngineError::Asset(AssetError::Store(error.to_string()));
+        // A folder's files are copied to the asset store first, one at a
+        // time, then the folder is written.
+        let folder = match file.folder {
+            Some(_) => Some(
+                crate::runtime::artifacts::read_folder_manifest(&store, sha256.as_str())
+                    .map_err(store_error)?
+                    .ok_or_else(|| refused("that attachment's folder is not stored"))?,
+            ),
+            None => None,
+        };
+        let content = match &folder {
+            Some(manifest) => crate::assets::AssetContent::Folder(manifest.clone()),
+            None => crate::assets::AssetContent::File {
+                media_type: file.media_type.as_str().to_owned(),
+                bytes: store
+                    .read_range(sha256.as_str(), 0, ASSET_MAX_BYTES)
+                    .map_err(store_error)?
+                    .data,
+            },
+        };
         let session = key.session;
         let scope = params.scope;
         let write = crate::assets::AssetWrite {
             replace: None,
             title: Some(tag.label()),
             filename: file.filename.clone(),
-            media_type: file.media_type.as_str().to_owned(),
-            bytes: range.data,
+            content,
             stamp: AssetStamp {
                 at: jiff::Timestamp::now(),
                 session,
@@ -611,6 +631,15 @@ impl Engine {
         let asset = self
             .assets_blocking(move |engine, stores| {
                 let target = engine.session_asset_stores(session).of(scope).clone();
+                if let Some(manifest) = &folder {
+                    for digest in manifest.digests() {
+                        let bytes = store
+                            .read_range(digest, 0, ASSET_MAX_BYTES)
+                            .map_err(|error| AssetError::Store(error.to_string()))?
+                            .data;
+                        stores.stage_blob(&target, &bytes)?;
+                    }
+                }
                 let (asset, _) = stores.write(&target, write, &std::collections::HashSet::new())?;
                 Ok(asset)
             })

@@ -77,6 +77,15 @@
       "minimum": 0,
       "type": "integer"
     },
+    "path": {
+      "description": "A path in a folder (client protocol 1.104.0): read that file of\nit. Without one, a folder reads as its main file.",
+      "maxLength": 1024,
+      "minLength": 1,
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "store": {
       "$ref": "#/$defs/AssetStore"
     }

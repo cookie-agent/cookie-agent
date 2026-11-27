@@ -184,6 +184,7 @@ mod tests {
             byte_length: 1,
             media_type: "text/plain".into(),
             filename: None,
+            folder: None,
         }
     }
 

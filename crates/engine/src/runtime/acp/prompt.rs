@@ -233,6 +233,7 @@ mod tests {
             byte_length: 5,
             media_type: media_type.to_owned(),
             filename: filename.map(str::to_owned),
+            folder: None,
         }
     }
 

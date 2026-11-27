@@ -5,6 +5,15 @@ The client protocol's version is `MAJOR.MINOR.PATCH`
 adds and a major breaks; before it, every minor could break the wire (see the
 [compatibility spec](../specs/compatibility-v1.md) section 3).
 
+## 1.104.0
+
+- Folders ([folder artifacts spec](../specs/folder-artifacts.md),
+  [Folders](protocol.md#folders)): `folder` `{ main, files, bytes }` on
+  `ArtifactRef`, `PersistedFilePart`, `Asset`, and `AssetBlock`; an optional
+  `path` on `artifact.read` and `asset.read`; `artifact.manifest` and
+  `asset.manifest`. Plugin protocol 1.49.0 and runtime protocol 1.18.0
+  carry the new members.
+
 ## 1.103.0
 
 - `agents.resolved` ([agent shortcuts spec](../specs/agent-shortcuts.md)

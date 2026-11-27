@@ -169,6 +169,7 @@ impl Placeholder {
             filename: Some(name.clone()).filter(|name| !name.is_empty()),
             created: stamp.clone(),
             updated: stamp,
+            folder: None,
         })
     }
 }

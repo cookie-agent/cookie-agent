@@ -405,6 +405,9 @@ pub(crate) fn engine_fault(error: EngineError) -> RpcFault {
         EngineError::Asset(cookie_agent_engine::AssetError::InvalidStore(_)) => {
             errors::BAD_PARAMS.error().field("field", "store")
         }
+        EngineError::Asset(cookie_agent_engine::AssetError::InvalidRequest(_)) => {
+            errors::BAD_PARAMS.error().field("field", "path")
+        }
         EngineError::Share(cookie_agent_engine::ShareError::NotFound(id)) => {
             errors::SHARE_NOT_FOUND.error().field("id", id)
         }

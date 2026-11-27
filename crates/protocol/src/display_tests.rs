@@ -8,6 +8,7 @@ fn artifact() -> ArtifactRef {
         byte_length: 482_113,
         media_type: "image/png".into(),
         filename: Some("screenshot.png".into()),
+        folder: None,
     }
 }
 

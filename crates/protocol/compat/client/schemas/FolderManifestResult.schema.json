@@ -1,0 +1,60 @@
+{
+  "$defs": {
+    "FolderEntry": {
+      "description": "One file of a folder.",
+      "properties": {
+        "byte_length": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "media_type": {
+          "type": "string"
+        },
+        "path": {
+          "description": "Relative and `/`-separated, with no empty, `.`, or `..` component.",
+          "maxLength": 1024,
+          "minLength": 1,
+          "type": "string"
+        },
+        "sha256": {
+          "maxLength": 64,
+          "minLength": 64,
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "sha256",
+        "byte_length",
+        "media_type"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "The files of a folder, for `artifact.manifest` and `asset.manifest`.",
+  "properties": {
+    "entries": {
+      "items": {
+        "$ref": "#/$defs/FolderEntry"
+      },
+      "type": "array"
+    },
+    "main": {
+      "type": "string"
+    },
+    "sha256": {
+      "description": "The manifest's digest, the folder's.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "sha256",
+    "main",
+    "entries"
+  ],
+  "title": "FolderManifestResult",
+  "type": "object"
+}

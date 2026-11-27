@@ -131,7 +131,7 @@ plugin protocol adds its own (see
 
 ## Version
 
-The protocol version is a semver string, currently **1.17.0**
+The protocol version is a semver string, currently **1.18.0**
 (`cookie_agent_protocol::RUNTIME_PROTOCOL_VERSION`). The daemon sends its
 version in `runtime/initialize` and the runtime answers with its own. Each end
 reads the other's `protocol_version` from the raw JSON before it decodes
@@ -232,6 +232,9 @@ never needs to send one.
 1.17.0 added MCP servers on demand: the `mcp_on_demand` feature, the
 `mcp/wanted` request, and the `stopped` MCP server state
 ([session tool groups](../specs/session-tool-groups.md) section 11.2).
+1.18.0 added `folder` to `ArtifactRef` and the `asset` display block
+([folder artifacts](../specs/folder-artifacts.md)). Only the daemon makes
+them.
 
 ## Capabilities and instances
 

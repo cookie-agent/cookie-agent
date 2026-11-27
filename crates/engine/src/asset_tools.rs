@@ -962,8 +962,10 @@ async fn execute_write(
         replace,
         title: write.title.clone(),
         filename,
-        media_type: media_type.to_owned(),
-        bytes,
+        content: crate::assets::AssetContent::File {
+            media_type: media_type.to_owned(),
+            bytes,
+        },
         stamp,
     };
     let (asset, new) = engine
@@ -1005,7 +1007,10 @@ async fn execute_read(
     let header = scoped_summary(&asset);
     let (store, id, total) = (asset.store.clone(), asset.id, asset.byte_length);
     let (bytes, asset) = engine
-        .assets_blocking(move |_, stores| Ok(stores.read(&store, id, 0, total)?))
+        .assets_blocking(move |_, stores| {
+            let part = stores.read(&store, id, None, 0, total)?;
+            Ok((part.bytes, part.asset))
+        })
         .await
         .map_err(|error| refused(error.to_string()))?;
     let accepted = context.turn_context.input_media.iter().find(|media| {

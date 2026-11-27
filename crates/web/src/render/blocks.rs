@@ -623,6 +623,7 @@ mod tests {
             byte_length: 2048,
             sha256: "b".repeat(64),
             filename: Some("loss.html".into()),
+            folder: None,
         }));
         assert!(asset.contains(&format!("data-asset=\"{id}\"")), "{asset}");
         assert!(

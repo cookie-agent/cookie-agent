@@ -1,7 +1,8 @@
 # Folder artifacts: a page with its files, and every file over HTTP
 
-Status: **draft** (2026-11-26), not approved. Decisions are in
-[section 11](#11-decisions).
+Status: **approved** (2026-11-26), being implemented. Decisions are in
+[section 11](#11-decisions); where the code differs, see the
+[implementation notes](#implementation-notes).
 
 ## 1. Problem
 
@@ -550,3 +551,26 @@ Decided by the user on 2026-11-26, as recommended:
   but every entry served means seeking into the zip, two folders never
   share files, and a rewrite of one figure stores the whole folder again.
   Rejected for the manifest.
+
+## Implementation notes
+
+Phase 1 (client protocol 1.104.0, plugin protocol 1.49.0, runtime protocol
+1.18.0). Where the code differs from the sections above:
+
+- **An entry's size is `byte_length`,** not `size`, the member the engine's
+  reference walk already follows (`collect_artifact_references` counts an
+  object with `sha256`, `byte_length`, and `media_type`). So a fork or a
+  revert that keeps a manifest keeps its files with no code of its own.
+- **`folder` is `{ main, files, bytes }`.** `bytes` is the files' total, so
+  a card shows a folder's size without reading its manifest. The
+  reference's own `byte_length` and `sha256` are the manifest blob's, which
+  the stores check a blob against, and an `Asset`'s `byte_length` is the
+  manifest's too.
+- **Paths are kept as the runtime sends them,** not NFC-normalized: the
+  workspace has no Unicode normalization crate, and the runtime's tar
+  stream already gives each name once.
+- **A blob is a manifest** when it starts with `{"cookie_folder":` and reads
+  as one; `artifact.read` without a `path` looks at the first bytes to tell.
+- **Folder assets' files are staged** (`AssetStores::stage_blob`) before the
+  write that names them, which checks each is still there. A staged file no
+  write named is removed by the store's sweep at the next start.

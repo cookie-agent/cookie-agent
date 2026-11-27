@@ -889,6 +889,18 @@ impl ServerProtocol for StubServer {
     ) -> Result<cookie_agent_protocol::ArtifactReadResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
+    async fn artifact_manifest(
+        &self,
+        _: cookie_agent_protocol::ArtifactManifestParams,
+    ) -> Result<cookie_agent_protocol::FolderManifestResult, ServerFault> {
+        Err(ServerFault::method_not_found("stub"))
+    }
+    async fn asset_manifest(
+        &self,
+        _: cookie_agent_protocol::AssetManifestParams,
+    ) -> Result<cookie_agent_protocol::FolderManifestResult, ServerFault> {
+        Err(ServerFault::method_not_found("stub"))
+    }
     async fn events_page(
         &self,
         _: cookie_agent_protocol::EventsPageParams,

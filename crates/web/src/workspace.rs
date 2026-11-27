@@ -3181,6 +3181,7 @@ impl Workspace {
                         sha256: read.artifact.sha256.clone(),
                         offset: 0,
                         length: read.length,
+                        path: None,
                     })
                     .await
                     .map_err(|error| crate::errors::describe_full(&error)),
@@ -3328,6 +3329,7 @@ impl Workspace {
                 asset,
                 offset: 0,
                 length: length.min(cookie_agent_protocol::ASSET_CHUNK_BYTES),
+                path: None,
             })
             .await
         {
@@ -3360,6 +3362,7 @@ impl Workspace {
                     asset,
                     offset: bytes.len() as u64,
                     length: cookie_agent_protocol::ASSET_CHUNK_BYTES,
+                    path: None,
                 })
                 .await
                 .map_err(|error| crate::errors::describe_full(&error))?;
@@ -3393,6 +3396,7 @@ impl Workspace {
                     sha256: sha256.clone(),
                     offset: bytes.len() as u64,
                     length: cookie_agent_protocol::ARTIFACT_CHUNK_BYTES,
+                    path: None,
                 })
                 .await
                 .map_err(|error| crate::errors::describe_full(&error))?;

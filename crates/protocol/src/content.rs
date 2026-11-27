@@ -27,6 +27,10 @@ pub struct ArtifactRef {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(length(min = 1, max = 255))]
     pub filename: Option<String>,
+    /// A folder's files and main file, when the artifact is a folder
+    /// (client protocol 1.104.0): `sha256` is then the manifest's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub folder: Option<crate::FolderInfo>,
 }
 
 impl ArtifactRef {
@@ -363,6 +367,7 @@ mod tests {
             byte_length: 482_113,
             media_type: "image/png".into(),
             filename: Some("screenshot.png".into()),
+            folder: None,
         }
     }
 

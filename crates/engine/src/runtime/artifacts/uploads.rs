@@ -285,6 +285,7 @@ impl Engine {
                 byte_length,
                 media_type: "application/octet-stream".into(),
                 filename: Some(filename.clone()),
+                folder: None,
             };
             reference
                 .validate()
@@ -459,6 +460,7 @@ impl Engine {
         &self,
         session: SessionId,
         sha256: &str,
+        path: Option<&str>,
         offset: u64,
         length: u64,
     ) -> Result<(Vec<u8>, u64, String), EngineError> {
@@ -476,12 +478,37 @@ impl Engine {
         self.inner.store.get(session)?;
         let artifacts = Arc::clone(&self.inner.artifacts);
         let digest = sha256.to_owned();
+        let wanted = path.map(str::to_owned);
         let read = blocking_io::run(move || {
             let Some(store) = artifacts.read_store(session)? else {
                 return Ok(None);
             };
+            // A folder reads as the file `path` names, or its main file.
+            let (digest, folder_type) = match super::read_folder_manifest(&store, &digest) {
+                Ok(Some(manifest)) => {
+                    let entry = match &wanted {
+                        Some(path) => manifest.entry(path).ok_or_else(|| {
+                            std::io::Error::new(
+                                std::io::ErrorKind::InvalidInput,
+                                format!("the folder has no file {path:?}"),
+                            )
+                        })?,
+                        None => manifest.main_entry(),
+                    };
+                    (entry.sha256.clone(), Some(entry.media_type.clone()))
+                }
+                Ok(None) if wanted.is_some() => {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        "a path names a file of a folder, and this artifact is a file",
+                    ));
+                }
+                Ok(None) => (digest, None),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+                Err(error) => return Err(error),
+            };
             match store.read_range(&digest, offset, length) {
-                Ok(range) => Ok(Some(range)),
+                Ok(range) => Ok(Some((range, folder_type))),
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
                 Err(error) => Err(error),
             }
@@ -492,11 +519,14 @@ impl Engine {
             sha256: sha256.to_owned(),
             reason: reason.to_owned(),
         };
-        let range = match read {
-            Ok(Some(range)) => range,
+        let (range, folder_type) = match read {
+            Ok(Some(read)) => read,
             Ok(None) => return Err(not_found("missing").into()),
             Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {
                 return Err(not_found("its stored copy is damaged").into());
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::InvalidInput => {
+                return Err(MediaError::InvalidRequest(error.to_string()).into());
             }
             Err(error) => return Err(error.into()),
         };
@@ -507,11 +537,55 @@ impl Engine {
             ))
             .into());
         }
-        Ok((
-            range.data,
-            range.total_bytes,
-            content_media_type(&range.head, range.total_bytes).to_owned(),
-        ))
+        let media_type = folder_type
+            .unwrap_or_else(|| content_media_type(&range.head, range.total_bytes).to_owned());
+        Ok((range.data, range.total_bytes, media_type))
+    }
+
+    /// The manifest of folder artifact `sha256` in the store of `session`'s
+    /// tree (`artifact.manifest`).
+    pub async fn artifact_manifest(
+        &self,
+        session: SessionId,
+        sha256: &str,
+    ) -> Result<cookie_agent_protocol::FolderManifest, EngineError> {
+        if !is_digest_name_common(sha256) {
+            return Err(
+                MediaError::InvalidRequest("a digest is 64 lowercase hex digits".into()).into(),
+            );
+        }
+        self.inner.store.get(session)?;
+        let artifacts = Arc::clone(&self.inner.artifacts);
+        let digest = sha256.to_owned();
+        let read = blocking_io::run(move || {
+            let Some(store) = artifacts.read_store(session)? else {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "artifact missing",
+                ));
+            };
+            super::read_folder_manifest(&store, &digest)
+        })
+        .await
+        .map_err(|error| EngineError::ToolFailed(error.to_string()))?;
+        let not_found = |reason: &str| MediaError::ArtifactNotFound {
+            sha256: sha256.to_owned(),
+            reason: reason.to_owned(),
+        };
+        match read {
+            Ok(Some(manifest)) => Ok(manifest),
+            Ok(None) => Err(MediaError::InvalidRequest(
+                "the artifact is a file, not a folder".into(),
+            )
+            .into()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                Err(not_found("missing").into())
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {
+                Err(not_found("its stored copy is damaged").into())
+            }
+            Err(error) => Err(error.into()),
+        }
     }
 
     /// Sweeps the finished uploads whose lease ended by `now` and that no
@@ -802,6 +876,7 @@ fn finish(
             byte_length: upload.byte_length,
             media_type: validated.media_type.into(),
             filename: upload.filename.clone(),
+            folder: None,
         },
         image: validated
             .image

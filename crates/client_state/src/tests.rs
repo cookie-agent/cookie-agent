@@ -4599,6 +4599,7 @@ fn user_file_parts_render_as_attachment_chips() {
                 byte_length: 482_113,
                 media_type: "image/png".into(),
                 filename: Some("my_screenshot.png".into()),
+                folder: None,
             },
         }),
     ])

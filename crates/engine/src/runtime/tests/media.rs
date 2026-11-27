@@ -230,6 +230,7 @@ async fn uploads_arrive_in_chunks_and_are_stored_as_their_content_says() {
             byte_length: bytes.len() as u64,
             media_type: "image/png".into(),
             filename: Some("photo.jpg".into()),
+            folder: None,
         }
     );
     let image = finished.image.expect("an image's size");
@@ -249,7 +250,7 @@ async fn uploads_arrive_in_chunks_and_are_stored_as_their_content_says() {
     let total = bytes.len() as u64;
     let (first, length, media_type) = fixture
         .engine
-        .read_artifact_range(session.session_id, sha256, 0, 1024 * 1024)
+        .read_artifact_range(session.session_id, sha256, None, 0, 1024 * 1024)
         .await
         .unwrap();
     assert_eq!((length, media_type.as_str()), (total, "image/png"));
@@ -257,13 +258,13 @@ async fn uploads_arrive_in_chunks_and_are_stored_as_their_content_says() {
     let tail_from = total - 100;
     let (tail, _, _) = fixture
         .engine
-        .read_artifact_range(session.session_id, sha256, tail_from, 1024 * 1024)
+        .read_artifact_range(session.session_id, sha256, None, tail_from, 1024 * 1024)
         .await
         .unwrap();
     assert_eq!(tail, bytes[usize::try_from(tail_from).unwrap()..]);
     let (end, _, _) = fixture
         .engine
-        .read_artifact_range(session.session_id, sha256, total, 10)
+        .read_artifact_range(session.session_id, sha256, None, total, 10)
         .await
         .unwrap();
     assert!(end.is_empty());
@@ -271,7 +272,7 @@ async fn uploads_arrive_in_chunks_and_are_stored_as_their_content_says() {
         media(
             fixture
                 .engine
-                .read_artifact_range(session.session_id, sha256, total + 1, 10)
+                .read_artifact_range(session.session_id, sha256, None, total + 1, 10)
                 .await
                 .unwrap_err()
         ),
@@ -281,7 +282,7 @@ async fn uploads_arrive_in_chunks_and_are_stored_as_their_content_says() {
         media(
             fixture
                 .engine
-                .read_artifact_range(session.session_id, sha256, 0, 1024 * 1024 + 1)
+                .read_artifact_range(session.session_id, sha256, None, 0, 1024 * 1024 + 1)
                 .await
                 .unwrap_err()
         ),
@@ -291,7 +292,7 @@ async fn uploads_arrive_in_chunks_and_are_stored_as_their_content_says() {
         media(
             fixture
                 .engine
-                .read_artifact_range(session.session_id, &"0".repeat(64), 0, 10)
+                .read_artifact_range(session.session_id, &"0".repeat(64), None, 0, 10)
                 .await
                 .unwrap_err()
         ),
@@ -306,7 +307,7 @@ async fn uploads_arrive_in_chunks_and_are_stored_as_their_content_says() {
         .unwrap();
     let (text, _, media_type) = fixture
         .engine
-        .read_artifact_range(session.session_id, &text_digest, 5, 3)
+        .read_artifact_range(session.session_id, &text_digest, None, 5, 3)
         .await
         .unwrap();
     assert_eq!(
@@ -824,6 +825,7 @@ async fn a_reference_must_say_what_the_stored_content_is() {
         byte_length: text.len() as u64,
         media_type: "image/png".into(),
         filename: None,
+        folder: None,
     };
     let error = media(
         fixture

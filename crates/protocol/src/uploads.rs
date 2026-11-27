@@ -203,6 +203,11 @@ pub struct ArtifactReadParams {
     pub session_id: SessionId,
     #[schemars(length(min = 64, max = 64), regex(pattern = "^[0-9a-f]{64}$"))]
     pub sha256: String,
+    /// A path in a folder (client protocol 1.104.0): read that file of
+    /// it. Without one, a folder reads as its main file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(length(min = 1, max = crate::FOLDER_MAX_PATH_BYTES))]
+    pub path: Option<String>,
     /// At most `total_bytes`; reading at `total_bytes` returns no data.
     pub offset: u64,
     #[schemars(range(min = 1, max = ARTIFACT_CHUNK_BYTES))]
@@ -248,6 +253,7 @@ mod tests {
                 byte_length: 3,
                 media_type: "image/png".into(),
                 filename: Some("a.png".into()),
+                folder: None,
             },
             image: Some(ImageSize {
                 width: 2,

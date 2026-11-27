@@ -1592,6 +1592,35 @@ impl ArtifactRouter {
     }
 }
 
+/// The folder manifest stored as `digest`, or `None` when that blob is a
+/// file (`docs/site/specs/folder-artifacts.md` section 3). A blob that
+/// starts as a manifest does but does not read as one is `InvalidData`.
+pub(crate) fn read_folder_manifest(
+    store: &ArtifactStore,
+    digest: &str,
+) -> std::io::Result<Option<cookie_agent_protocol::FolderManifest>> {
+    use std::io::Read as _;
+    let Some(mut file) = store.open_existing(digest)? else {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "artifact missing",
+        ));
+    };
+    let mut head = Vec::with_capacity(cookie_agent_protocol::FOLDER_MANIFEST_PREFIX.len());
+    (&mut file)
+        .take(cookie_agent_protocol::FOLDER_MANIFEST_PREFIX.len() as u64)
+        .read_to_end(&mut head)?;
+    if head != cookie_agent_protocol::FOLDER_MANIFEST_PREFIX {
+        return Ok(None);
+    }
+    let Some(bytes) = read_small_artifact(store, digest)? else {
+        return Err(invalid("a folder manifest too large to read"));
+    };
+    cookie_agent_protocol::FolderManifest::parse(&bytes)
+        .map(Some)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error.to_string()))
+}
+
 /// A blob small enough to be a manifest that names other artifacts, or `None`.
 fn read_small_artifact(store: &ArtifactStore, digest: &str) -> std::io::Result<Option<Vec<u8>>> {
     use std::io::Read as _;

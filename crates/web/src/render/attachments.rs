@@ -804,6 +804,7 @@ mod tests {
             byte_length: 1,
             sha256: "a".repeat(64),
             filename: None,
+            folder: None,
         }
     }
 
@@ -832,6 +833,7 @@ mod tests {
                         },
                     },
                     metadata: None,
+                    folder: None,
                 },
             },
         }

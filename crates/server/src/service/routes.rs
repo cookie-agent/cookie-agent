@@ -1330,6 +1330,16 @@ impl ServerProtocol for Server {
         self.engine.read_asset(params).await.map_err(protocol_fault)
     }
 
+    async fn asset_manifest(
+        &self,
+        params: cookie_agent_protocol::AssetManifestParams,
+    ) -> Result<cookie_agent_protocol::FolderManifestResult> {
+        self.engine
+            .asset_manifest(params)
+            .await
+            .map_err(protocol_fault)
+    }
+
     async fn asset_thumbnail(
         &self,
         params: cookie_agent_protocol::AssetThumbnailParams,
@@ -2043,6 +2053,7 @@ impl ServerProtocol for Server {
             .read_artifact_range(
                 params.session_id,
                 &params.sha256,
+                params.path.as_deref(),
                 params.offset,
                 params.length,
             )
@@ -2053,6 +2064,21 @@ impl ServerProtocol for Server {
             total_bytes,
             media_type,
         })
+    }
+
+    async fn artifact_manifest(
+        &self,
+        params: cookie_agent_protocol::ArtifactManifestParams,
+    ) -> Result<cookie_agent_protocol::FolderManifestResult> {
+        let manifest = self
+            .engine
+            .artifact_manifest(params.session_id, &params.sha256)
+            .await
+            .map_err(protocol_fault)?;
+        Ok(cookie_agent_protocol::FolderManifestResult::of(
+            params.sha256,
+            manifest,
+        ))
     }
 
     async fn runtime_snapshot(&self, _: RuntimeSnapshotGetParams) -> Result<RuntimeSnapshotResult> {

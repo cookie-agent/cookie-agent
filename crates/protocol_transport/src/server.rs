@@ -1249,6 +1249,11 @@ pub trait ServerProtocol: Send + Sync + 'static {
         &self,
         params: cookie_agent_protocol::AssetReadParams,
     ) -> Result<cookie_agent_protocol::AssetReadResult, ServerFault>;
+    /// The files of a folder asset's current content.
+    async fn asset_manifest(
+        &self,
+        params: cookie_agent_protocol::AssetManifestParams,
+    ) -> Result<cookie_agent_protocol::FolderManifestResult, ServerFault>;
     /// A small picture of an asset's current content.
     async fn asset_thumbnail(
         &self,
@@ -1304,6 +1309,11 @@ pub trait ServerProtocol: Send + Sync + 'static {
         &self,
         params: cookie_agent_protocol::ArtifactReadParams,
     ) -> Result<cookie_agent_protocol::ArtifactReadResult, ServerFault>;
+    /// The files of a folder artifact in the store of a session's tree.
+    async fn artifact_manifest(
+        &self,
+        params: cookie_agent_protocol::ArtifactManifestParams,
+    ) -> Result<cookie_agent_protocol::FolderManifestResult, ServerFault>;
     async fn runtime_snapshot(
         &self,
         params: RuntimeSnapshotGetParams,
@@ -2392,6 +2402,12 @@ async fn dispatch<S: ServerProtocol>(
         ),
         cookie_agent_protocol::ARTIFACT_READ_METHOD => {
             value(server.read_artifact(decode(params)?).await?)
+        }
+        cookie_agent_protocol::ARTIFACT_MANIFEST_METHOD => {
+            value(server.artifact_manifest(decode(params)?).await?)
+        }
+        cookie_agent_protocol::ASSET_MANIFEST_METHOD => {
+            value(server.asset_manifest(decode(params)?).await?)
         }
         cookie_agent_protocol::ASSETS_LIST_METHOD => {
             value(server.list_assets(decode(params)?).await?)

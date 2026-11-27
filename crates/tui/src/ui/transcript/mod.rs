@@ -2788,6 +2788,7 @@ impl App {
                         sha256: read.artifact.sha256.clone(),
                         offset: 0,
                         length: read.length,
+                        path: None,
                     })
                     .await
                     .map_err(|error| error.to_string()),

@@ -500,6 +500,7 @@ impl Engine {
                         byte_length: bytes.len() as u64,
                         media_type: media_type.to_owned(),
                         filename: None,
+                        folder: None,
                     },
                     alt: None,
                 })
@@ -1286,6 +1287,7 @@ impl Turn<'_> {
                         reference,
                     },
                     metadata: None,
+                    folder: None,
                 })
             });
         let Some(file) = file else {
@@ -5025,6 +5027,7 @@ mod tests {
                 byte_length: bytes.len() as u64,
                 media_type: "image/png".to_owned(),
                 filename: None,
+                folder: None,
             },
             alt: None,
         };

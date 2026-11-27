@@ -97,6 +97,7 @@ fn file_artifact(file: &FilePart) -> Option<ArtifactRef> {
         byte_length: bytes.len() as u64,
         media_type: file.media_type.clone(),
         filename: file.filename.clone(),
+        folder: None,
     })
 }
 
@@ -395,6 +396,7 @@ fn assistant_views(content: &[PersistedAssistantPart]) -> Vec<Option<HookAssista
                         byte_length: *byte_length,
                         media_type: file.media_type.as_str().to_owned(),
                         filename: file.filename.clone(),
+                        folder: None,
                     },
                 }),
                 PersistedFileSource::Url { .. } | PersistedFileSource::ProviderReference { .. } => {

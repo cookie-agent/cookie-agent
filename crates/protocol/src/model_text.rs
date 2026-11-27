@@ -458,6 +458,7 @@ mod tests {
             byte_length: 3_355_443,
             media_type: crate::FILE_UPLOAD_MEDIA_TYPE.into(),
             filename: filename.map(str::to_owned),
+            folder: None,
         };
         assert_eq!(
             user_file_label_head(&artifact(Some("report.zip"))),

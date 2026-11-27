@@ -185,6 +185,7 @@ async fn a_message_of_attachments_alone_is_sent() {
         byte_length: 10,
         media_type: "image/png".into(),
         filename: Some("a.png".into()),
+        folder: None,
     });
     app.handle_key(key(KeyCode::Enter)).await;
     wait_for_recorded_request(&recorded, "session.submit_input", 1).await;
@@ -315,6 +316,7 @@ async fn backspace_at_the_start_of_the_draft_removes_the_newest_chip() {
             byte_length: 10,
             media_type: "image/png".into(),
             filename: Some(name.into()),
+            folder: None,
         });
     }
     type_input(&mut app, "x").await;
@@ -340,6 +342,7 @@ async fn a_recalled_input_restores_its_files_as_chips() {
         byte_length: 482_113,
         media_type: "image/png".into(),
         filename: Some("chart.png".into()),
+        folder: None,
     };
     app.handle_rpc_update(RpcUpdate::SteerRecalled {
         session_id: session,

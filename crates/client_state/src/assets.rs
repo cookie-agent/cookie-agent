@@ -260,6 +260,7 @@ mod listing_tests {
             filename: Some(filename.into()),
             created: stamp.clone(),
             updated: stamp,
+            folder: None,
         }
     }
 

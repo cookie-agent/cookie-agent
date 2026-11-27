@@ -464,6 +464,7 @@ fn input_lane_events_store_user_content_and_text_only_events_refuse_files() {
                 byte_length: 482_113,
                 media_type: "image/png".into(),
                 filename: Some("screenshot.png".into()),
+                folder: None,
             },
         })
     };
@@ -3511,6 +3512,7 @@ fn display_blocks_newer_than_the_client_reach_it_as_text_and_unknown_ones_not_at
         byte_length: 48 * 1024,
         sha256: "a".repeat(64),
         filename: Some("loss.html".into()),
+        folder: None,
     });
     assert_eq!(this_build.blocks(&[Open::Known(asset.clone())]), None);
     assert_eq!(

@@ -542,8 +542,8 @@ impl Engine {
     ) -> Result<Option<Vec<u8>>, EngineError> {
         let (store, id, sha256) = (asset.store.clone(), asset.id, asset.sha256.clone());
         self.assets_blocking(
-            move |_, stores| match stores.read(&store, id, offset, length) {
-                Ok((bytes, now)) if now.sha256 == sha256 => Ok(Some(bytes)),
+            move |_, stores| match stores.read(&store, id, None, offset, length) {
+                Ok(part) if part.asset.sha256 == sha256 => Ok(Some(part.bytes)),
                 Ok(_) | Err(AssetError::NotFound(_)) => Ok(None),
                 Err(error) => Err(error.into()),
             },
@@ -628,8 +628,10 @@ impl Engine {
             replace: None,
             title: Some(title.to_owned()),
             filename: filename.map(str::to_owned),
-            media_type: media_type.to_owned(),
-            bytes,
+            content: crate::assets::AssetContent::File {
+                media_type: media_type.to_owned(),
+                bytes,
+            },
             stamp: cookie_agent_protocol::AssetStamp {
                 at: jiff::Timestamp::now(),
                 session: cookie_agent_protocol::SessionId::new_v7(),

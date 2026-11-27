@@ -17,6 +17,17 @@
             "null"
           ]
         },
+        "folder": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FolderInfo"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "A folder's files and main file, when the artifact is a folder\n(client protocol 1.104.0): `sha256` is then the manifest's."
+        },
         "media_type": {
           "description": "The media type sniffed from the content, such as `image/png`.",
           "maxLength": 255,
@@ -55,6 +66,17 @@
             "string",
             "null"
           ]
+        },
+        "folder": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FolderInfo"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "A folder's files and main file, when the content shown is a folder\n(client protocol 1.104.0): `sha256` is then the manifest's."
         },
         "handle": {
           "description": "An asset's handle: `asset_` and eight lowercase hexadecimal digits.",
@@ -721,6 +743,35 @@
         }
       ],
       "x-open": true
+    },
+    "FolderInfo": {
+      "description": "What a reference to a folder says about it (section 3.1). The\nreference's `sha256` and `byte_length` are the manifest blob's, so the\nstore checks the blob as it checks any, and `media_type` is the main\nfile's.",
+      "properties": {
+        "bytes": {
+          "description": "The bytes of its files together.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "files": {
+          "description": "How many files the folder holds.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "main": {
+          "description": "The main file's path in the folder.",
+          "maxLength": 1024,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "main",
+        "files",
+        "bytes"
+      ],
+      "type": "object"
     },
     "KeyValueEntry": {
       "properties": {

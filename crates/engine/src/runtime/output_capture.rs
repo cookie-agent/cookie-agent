@@ -971,6 +971,7 @@ impl OutputCapture {
                         byte_length: channel.written,
                         media_type: "text/plain".into(),
                         filename: channel.name.clone(),
+                        folder: None,
                     });
                 }
                 (Some(reference), Some(sha256))

@@ -59,6 +59,7 @@ pub(super) fn attached() -> AttachmentOutcome {
                 },
             },
             metadata: None,
+            folder: None,
         },
     }
 }

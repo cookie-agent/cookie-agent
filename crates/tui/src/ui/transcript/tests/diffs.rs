@@ -172,6 +172,7 @@ fn omitted_hunks_are_counted_and_a_full_diff_is_offered() {
         byte_length: 2048,
         media_type: "text/plain".into(),
         filename: Some("main.rs.diff".into()),
+        folder: None,
     };
     let state = diff_state(
         "Edit",
@@ -211,6 +212,7 @@ fn a_loaded_full_diff_replaces_the_cut_hunks_with_its_unified_text() {
                 byte_length: 64,
                 media_type: "text/plain".into(),
                 filename: None,
+                folder: None,
             }),
             ..sample_diff("src/main.rs")
         },

@@ -107,6 +107,10 @@ pub struct Asset {
     /// The name of the file the asset was last written from.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub filename: Option<String>,
+    /// A folder's files and main file, when the asset's content is a folder
+    /// (client protocol 1.104.0): `sha256` is then the manifest's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub folder: Option<crate::FolderInfo>,
     pub created: AssetStamp,
     pub updated: AssetStamp,
 }
@@ -135,6 +139,7 @@ impl Asset {
             byte_length: self.byte_length,
             sha256: self.sha256.clone(),
             filename: self.filename.clone(),
+            folder: self.folder.clone(),
         }
     }
 }
@@ -169,6 +174,10 @@ pub struct AssetBlock {
     pub sha256: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub filename: Option<String>,
+    /// A folder's files and main file, when the content shown is a folder
+    /// (client protocol 1.104.0): `sha256` is then the manifest's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub folder: Option<crate::FolderInfo>,
 }
 
 impl AssetBlock {
@@ -265,6 +274,11 @@ pub struct AssetGetResult {
 pub struct AssetReadParams {
     pub store: AssetStore,
     pub asset: AssetId,
+    /// A path in a folder (client protocol 1.104.0): read that file of
+    /// it. Without one, a folder reads as its main file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(length(min = 1, max = crate::FOLDER_MAX_PATH_BYTES))]
+    pub path: Option<String>,
     /// At most `total_bytes`; reading at `total_bytes` returns no data.
     pub offset: u64,
     #[schemars(range(min = 1, max = ASSET_CHUNK_BYTES))]

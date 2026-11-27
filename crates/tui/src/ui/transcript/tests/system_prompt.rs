@@ -206,6 +206,7 @@ fn new_transcript_blocks_are_visible_at_default_threshold_and_expand() {
             },
         },
         metadata: None,
+        folder: None,
     };
     let events = [
         session_created(session, 1),
@@ -401,6 +402,7 @@ fn expanded_new_blocks_cap_rendering_and_keep_full_state() {
                             url: media_url.clone(),
                         },
                         metadata: None,
+                        folder: None,
                     },
                 }],
             },

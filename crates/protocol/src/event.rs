@@ -628,6 +628,7 @@ impl ToolAttachment {
             byte_length: self.byte_length,
             media_type: self.mime_type.as_str().to_ascii_lowercase(),
             filename,
+            folder: None,
         }
     }
 
@@ -1622,6 +1623,10 @@ pub struct PersistedFilePart {
     #[serde(deserialize_with = "crate::deserialize_required_option")]
     #[schemars(with = "crate::NullableSchema<SafeModelMetadata>", required)]
     pub metadata: Option<SafeModelMetadata>,
+    /// A folder's files and main file, when the file is a folder
+    /// (client protocol 1.104.0): `sha256` is then the manifest's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub folder: Option<crate::FolderInfo>,
 }
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]

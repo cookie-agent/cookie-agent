@@ -18,13 +18,15 @@
 //! its file's modification time or length moved, so listing many stores
 //! costs a `stat` each.
 //!
-//! **The index is the only reference to a blob.** Session logs name an
-//! asset by its ID, never by its blob, so a blob is in use exactly when an
-//! index entry names its digest: replacing or deleting an asset rewrites the
-//! index, then deletes the old blob unless another entry still names it. A
-//! crash between the two leaves a blob no entry names, which the store's
-//! first open in a process removes, with half-written temporaries. A
-//! thumbnail goes with its blob.
+//! **The index and the manifests it names are the only references to a
+//! blob.** Session logs name an asset by its ID, never by its blob, so a
+//! blob is in use exactly when an index entry names its digest, or names a
+//! folder manifest that lists it (`docs/site/specs/folder-artifacts.md`
+//! section 3.2): replacing or deleting an asset rewrites the index, then
+//! deletes the old blobs unless another entry still names them. A crash
+//! between the two leaves blobs no entry names, which the store's first
+//! open in a process removes, with half-written temporaries. A thumbnail
+//! goes with its blob.
 //!
 //! Every change and every read of a store holds that store's lock, so a
 //! read never sees a blob deleted under it. Files are replaced by renaming
@@ -39,7 +41,8 @@ use std::{
 };
 
 use cookie_agent_protocol::{
-    Asset, AssetHandle, AssetId, AssetStamp, AssetStore, ProjectId, SessionId,
+    Asset, AssetHandle, AssetId, AssetStamp, AssetStore, FolderInfo, FolderManifest, ProjectId,
+    SessionId,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
@@ -67,6 +70,10 @@ pub enum AssetError {
     /// store of a session that is not a root.
     #[error("{0}")]
     InvalidStore(String),
+    /// A folder's `path` the content does not have, or a `path` given for
+    /// a file, or a folder's request made of a file.
+    #[error("{0}")]
+    InvalidRequest(String),
     /// Reading or writing the store's files failed.
     #[error("the asset store failed: {0}")]
     Store(String),
@@ -96,6 +103,9 @@ struct Record {
     sha256: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     filename: Option<String>,
+    /// Set when the content is a folder: `sha256` is its manifest's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    folder: Option<FolderInfo>,
     created: AssetStamp,
     updated: AssetStamp,
 }
@@ -111,6 +121,7 @@ impl Record {
             byte_length: self.byte_length,
             sha256: self.sha256.clone(),
             filename: self.filename.clone(),
+            folder: self.folder.clone(),
             created: self.created.clone(),
             updated: self.updated.clone(),
         }
@@ -134,9 +145,28 @@ pub(crate) struct AssetWrite {
     /// replaced one keeps its title.
     pub(crate) title: Option<String>,
     pub(crate) filename: Option<String>,
-    pub(crate) media_type: String,
-    pub(crate) bytes: Vec<u8>,
+    pub(crate) content: AssetContent,
     pub(crate) stamp: AssetStamp,
+}
+
+/// The content of an [`AssetWrite`].
+#[derive(Debug)]
+pub(crate) enum AssetContent {
+    /// One file, of `media_type`.
+    File { media_type: String, bytes: Vec<u8> },
+    /// A folder, whose files were stored first with
+    /// [`AssetStores::stage_blob`].
+    Folder(FolderManifest),
+}
+
+/// Part of one file of an asset, as [`AssetStores::read`] returns it.
+#[derive(Debug)]
+pub(crate) struct AssetPart {
+    pub(crate) bytes: Vec<u8>,
+    /// The whole file's length.
+    pub(crate) total_bytes: u64,
+    pub(crate) media_type: String,
+    pub(crate) asset: Asset,
 }
 
 /// Every store of a data root.
@@ -393,15 +423,17 @@ impl AssetStores {
         })
     }
 
-    /// Up to `length` bytes of the asset's content from `offset`, with the
-    /// asset they belong to.
+    /// Up to `length` bytes from `offset` of the asset's content, with the
+    /// asset they belong to. A folder reads as its file `path`, or its main
+    /// file without one; a `path` of a file asset is refused.
     pub(crate) fn read(
         &self,
         store: &AssetStore,
         id: AssetId,
+        path: Option<&str>,
         offset: u64,
         length: u64,
-    ) -> Result<(Vec<u8>, Asset), AssetError> {
+    ) -> Result<AssetPart, AssetError> {
         self.locked(store, |dir| {
             let index = self.index(dir)?;
             let record = index
@@ -409,10 +441,74 @@ impl AssetStores {
                 .iter()
                 .find(|record| record.id == id)
                 .ok_or(AssetError::NotFound(id))?;
-            let path = dir.join(BLOBS_DIR).join(&record.sha256);
-            let bytes = read_range(&path, offset, length).map_err(store_error(&path))?;
-            Ok((bytes, record.asset(store)))
+            let (sha256, total_bytes, media_type) = match (&record.folder, path) {
+                (None, None) => (
+                    record.sha256.clone(),
+                    record.byte_length,
+                    record.media_type.clone(),
+                ),
+                (None, Some(_)) => {
+                    return Err(AssetError::InvalidRequest(
+                        "a path names a file of a folder, and this asset is a file".into(),
+                    ));
+                }
+                (Some(_), path) => {
+                    let manifest = read_manifest(dir, &record.sha256)?;
+                    let entry = match path {
+                        Some(path) => manifest.entry(path).ok_or_else(|| {
+                            AssetError::InvalidRequest(format!("the folder has no file {path:?}"))
+                        })?,
+                        None => manifest.main_entry(),
+                    };
+                    (
+                        entry.sha256.clone(),
+                        entry.byte_length,
+                        entry.media_type.clone(),
+                    )
+                }
+            };
+            let blob = dir.join(BLOBS_DIR).join(&sha256);
+            let bytes = read_range(&blob, offset, length).map_err(store_error(&blob))?;
+            Ok(AssetPart {
+                bytes,
+                total_bytes,
+                media_type,
+                asset: record.asset(store),
+            })
         })
+    }
+
+    /// The manifest of the folder asset `id`'s content.
+    pub(crate) fn manifest(
+        &self,
+        store: &AssetStore,
+        id: AssetId,
+    ) -> Result<(Asset, FolderManifest), AssetError> {
+        self.locked(store, |dir| {
+            let index = self.index(dir)?;
+            let record = index
+                .assets
+                .iter()
+                .find(|record| record.id == id)
+                .ok_or(AssetError::NotFound(id))?;
+            if record.folder.is_none() {
+                return Err(AssetError::InvalidRequest(
+                    "the asset is a file, not a folder".into(),
+                ));
+            }
+            Ok((record.asset(store), read_manifest(dir, &record.sha256)?))
+        })
+    }
+
+    /// Stores `bytes` as a blob of `store` for a folder a later
+    /// [`Self::write`] names, and returns its digest. A blob no write
+    /// names by the daemon's next start is removed then.
+    pub(crate) fn stage_blob(
+        &self,
+        store: &AssetStore,
+        bytes: &[u8],
+    ) -> Result<String, AssetError> {
+        self.locked(store, |dir| store_blob(dir, bytes))
     }
 
     /// Stores `write`: a new asset, whose handle is none of `avoid` nor
@@ -426,16 +522,38 @@ impl AssetStores {
     ) -> Result<(Asset, bool), AssetError> {
         let written = self.locked(store, |dir| {
             let mut index = read_index(dir)?;
-            let sha256 = hex(&Sha256::digest(&write.bytes));
-            let blobs = dir.join(BLOBS_DIR);
-            fs::create_dir_all(&blobs).map_err(store_error(&blobs))?;
-            let blob = blobs.join(&sha256);
-            if fs::metadata(&blob).map(|metadata| metadata.len()).ok()
-                != Some(write.bytes.len() as u64)
-            {
-                write_atomic(&blob, &write.bytes)?;
-            }
-            let byte_length = write.bytes.len() as u64;
+            let (sha256, byte_length, media_type, folder) = match &write.content {
+                AssetContent::File { media_type, bytes } => (
+                    store_blob(dir, bytes)?,
+                    bytes.len() as u64,
+                    media_type.clone(),
+                    None,
+                ),
+                AssetContent::Folder(manifest) => {
+                    // Its files were staged first; one released since by
+                    // another asset's write is a failure to retry.
+                    for entry in &manifest.entries {
+                        let blob = dir.join(BLOBS_DIR).join(&entry.sha256);
+                        if fs::metadata(&blob).map(|metadata| metadata.len()).ok()
+                            != Some(entry.byte_length)
+                        {
+                            return Err(AssetError::Store(format!(
+                                "the folder's file {:?} is not in the store; save it again",
+                                entry.path
+                            )));
+                        }
+                    }
+                    // `byte_length` is the manifest's, as for a folder
+                    // artifact; `folder.bytes` holds the files' total.
+                    let json = manifest.to_canonical_json();
+                    (
+                        store_blob(dir, &json)?,
+                        json.len() as u64,
+                        manifest.main_entry().media_type.clone(),
+                        Some(manifest.info()),
+                    )
+                }
+            };
             let (position, old, new) = match write.replace {
                 Some(id) => {
                     let position = index
@@ -444,17 +562,19 @@ impl AssetStores {
                         .position(|record| record.id == id)
                         .ok_or(AssetError::NotFound(id))?;
                     let record = &mut index.assets[position];
+                    let old_folder = record.folder.is_some();
                     let old = std::mem::replace(&mut record.sha256, sha256);
                     if let Some(title) = write.title {
                         record.title = title;
                     }
-                    record.media_type = write.media_type;
+                    record.media_type = media_type;
                     record.byte_length = byte_length;
+                    record.folder = folder;
                     if write.filename.is_some() {
                         record.filename = write.filename;
                     }
                     record.updated = write.stamp;
-                    (position, Some(old), false)
+                    (position, Some((old, old_folder)), false)
                 }
                 None => {
                     let taken = index
@@ -476,10 +596,11 @@ impl AssetStores {
                         id: AssetId::new_v7(),
                         handle,
                         title,
-                        media_type: write.media_type,
+                        media_type,
                         byte_length,
                         sha256,
                         filename: write.filename,
+                        folder,
                         created: write.stamp.clone(),
                         updated: write.stamp,
                     });
@@ -487,8 +608,8 @@ impl AssetStores {
                 }
             };
             self.write_index(dir, &index)?;
-            if let Some(old) = old {
-                release_blob(dir, &index, &old);
+            if let Some((old, old_folder)) = old {
+                release_content(dir, &index, &old, old_folder);
             }
             Ok((index.assets[position].asset(store), new))
         })?;
@@ -531,7 +652,7 @@ impl AssetStores {
                 .ok_or(AssetError::NotFound(id))?;
             let record = index.assets.remove(position);
             self.write_index(dir, &index)?;
-            release_blob(dir, &index, &record.sha256);
+            release_content(dir, &index, &record.sha256, record.folder.is_some());
             Ok(record.asset(store))
         })?;
         self.changed();
@@ -558,9 +679,17 @@ impl AssetStores {
                 let bytes = fs::read(path).ok()?;
                 thumbnail::Picture::of(bytes, format)
             });
+            // A folder's thumbnail is its main file's.
+            let blob = match record.folder {
+                Some(_) => read_manifest(dir, &record.sha256)?
+                    .main_entry()
+                    .sha256
+                    .clone(),
+                None => record.sha256.clone(),
+            };
             Ok(ThumbnailSource {
                 asset: record.asset(store),
-                blob: dir.join(BLOBS_DIR).join(&record.sha256),
+                blob: dir.join(BLOBS_DIR).join(blob),
                 kept,
             })
         })
@@ -625,12 +754,73 @@ fn write_index(dir: &Path, index: &IndexFile) -> Result<(), AssetError> {
     write_atomic(&dir.join(INDEX_FILE), &bytes)
 }
 
-/// Deletes the blob `sha256` unless an entry of `index` still names it.
-/// A blob that cannot be deleted is left for the next sweep.
-fn release_blob(dir: &Path, index: &IndexFile, sha256: &str) {
-    if index.assets.iter().any(|record| record.sha256 == sha256) {
-        return;
+/// Stores `bytes` as `blobs/<sha256>` unless the store has it, and
+/// returns the digest.
+fn store_blob(dir: &Path, bytes: &[u8]) -> Result<String, AssetError> {
+    let sha256 = hex(&Sha256::digest(bytes));
+    let blobs = dir.join(BLOBS_DIR);
+    fs::create_dir_all(&blobs).map_err(store_error(&blobs))?;
+    let blob = blobs.join(&sha256);
+    if fs::metadata(&blob).map(|metadata| metadata.len()).ok() != Some(bytes.len() as u64) {
+        write_atomic(&blob, bytes)?;
     }
+    Ok(sha256)
+}
+
+/// The folder manifest stored as `sha256`.
+fn read_manifest(dir: &Path, sha256: &str) -> Result<FolderManifest, AssetError> {
+    let path = dir.join(BLOBS_DIR).join(sha256);
+    let bytes = fs::read(&path).map_err(store_error(&path))?;
+    FolderManifest::parse(&bytes)
+        .map_err(|error| AssetError::Store(format!("{}: {error}", path.display())))
+}
+
+/// Every blob `index` names: its entries' content, and the files of the
+/// folders among them.
+fn named_blobs(dir: &Path, index: &IndexFile) -> Result<HashSet<String>, AssetError> {
+    let mut named = HashSet::new();
+    for record in &index.assets {
+        named.insert(record.sha256.clone());
+        if record.folder.is_some() {
+            let manifest = read_manifest(dir, &record.sha256)?;
+            named.extend(manifest.digests().into_iter().map(str::to_owned));
+        }
+    }
+    Ok(named)
+}
+
+/// Deletes the content `sha256` an entry no longer has, a folder's
+/// manifest and files included, except the blobs other entries of `index`
+/// still name. Blobs that cannot be deleted are left for the next sweep.
+fn release_content(dir: &Path, index: &IndexFile, sha256: &str, folder: bool) {
+    let mut released = vec![sha256.to_owned()];
+    if folder {
+        match read_manifest(dir, sha256) {
+            Ok(manifest) => {
+                released.extend(manifest.digests().into_iter().map(str::to_owned));
+            }
+            Err(error) => {
+                eprintln!("cookie-agent: a folder's files stay for the next sweep: {error}");
+            }
+        }
+    }
+    let named = match named_blobs(dir, index) {
+        Ok(named) => named,
+        Err(error) => {
+            eprintln!("cookie-agent: unused asset files stay for the next sweep: {error}");
+            return;
+        }
+    };
+    for blob in released {
+        if !named.contains(&blob) {
+            release_blob(dir, &blob);
+        }
+    }
+}
+
+/// Deletes the blob `sha256` and its thumbnails. A blob that cannot be
+/// deleted is left for the next sweep.
+fn release_blob(dir: &Path, sha256: &str) {
     let thumbnails = thumbnail::Format::ALL
         .into_iter()
         .map(|format| thumbnail_path(dir, sha256, format));
@@ -654,7 +844,7 @@ fn thumbnail_path(dir: &Path, sha256: &str, format: thumbnail::Format) -> PathBu
 
 /// Whether `name`, a file of the thumbnails folder, is the thumbnail of a
 /// content in `named`.
-fn names_thumbnail(name: &str, named: &HashSet<&str>) -> bool {
+fn names_thumbnail(name: &str, named: &HashSet<String>) -> bool {
     name.split_once('.').is_some_and(|(sha256, extension)| {
         named.contains(sha256)
             && thumbnail::Format::ALL
@@ -670,11 +860,9 @@ fn sweep(dir: &Path) -> Result<(), AssetError> {
         return Ok(());
     }
     let index = read_index(dir)?;
-    let named = index
-        .assets
-        .iter()
-        .map(|record| record.sha256.as_str())
-        .collect::<HashSet<_>>();
+    // A folder's manifest that does not read leaves the store alone, so
+    // its files are not taken for leftovers.
+    let named = named_blobs(dir, &index)?;
     let blobs = dir.join(BLOBS_DIR);
     let thumbnails = dir.join(THUMBNAILS_DIR);
     for folder in [dir.to_owned(), blobs.clone(), thumbnails.clone()] {
@@ -687,7 +875,7 @@ fn sweep(dir: &Path) -> Result<(), AssetError> {
             let temporary = name.starts_with('.') && name.ends_with(".tmp");
             let unnamed = !temporary
                 && if folder == blobs {
-                    !named.contains(name.as_ref())
+                    !named.contains(name.as_ref() as &str)
                 } else if folder == thumbnails {
                     !names_thumbnail(&name, &named)
                 } else {

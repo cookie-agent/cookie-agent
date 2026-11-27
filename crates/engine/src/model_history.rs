@@ -2604,6 +2604,7 @@ fn persist_file(
         filename: file.filename,
         source,
         metadata: file.metadata,
+        folder: None,
     })
 }
 

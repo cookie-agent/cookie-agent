@@ -84,6 +84,14 @@
     {
       "direction": "to_daemon",
       "kind": "request",
+      "method": "artifact.manifest",
+      "params": "ArtifactManifestParams",
+      "params_role": "command",
+      "result": "FolderManifestResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
       "method": "artifact.read",
       "params": "ArtifactReadParams",
       "params_role": "command",
@@ -136,6 +144,14 @@
       "params": "AssetGetParams",
       "params_role": "command",
       "result": "AssetGetResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "asset.manifest",
+      "params": "AssetManifestParams",
+      "params_role": "command",
+      "result": "FolderManifestResult"
     },
     {
       "direction": "to_daemon",

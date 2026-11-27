@@ -23,8 +23,10 @@ fn write(
                 replace: None,
                 title: None,
                 filename: Some(filename.to_owned()),
-                media_type: media_type.to_owned(),
-                bytes,
+                content: crate::assets::AssetContent::File {
+                    media_type: media_type.to_owned(),
+                    bytes,
+                },
                 stamp: AssetStamp {
                     at: jiff::Timestamp::now(),
                     session: SessionId::new_v7(),

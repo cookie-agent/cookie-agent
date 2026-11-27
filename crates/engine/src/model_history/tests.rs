@@ -443,6 +443,7 @@ fn a_stored_user_file_part_becomes_a_file_input_part() {
                 byte_length: content.len() as u64,
                 media_type: "image/png".into(),
                 filename: Some(filename.into()),
+                folder: None,
             },
         })
     };

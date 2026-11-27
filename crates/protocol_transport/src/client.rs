@@ -1211,6 +1211,16 @@ impl Client {
             .await
     }
 
+    /// The files of a folder asset's current content (`asset.manifest`,
+    /// client protocol 1.104.0).
+    pub async fn asset_manifest(
+        &self,
+        params: cookie_agent_protocol::AssetManifestParams,
+    ) -> Result<cookie_agent_protocol::FolderManifestResult, ClientError> {
+        self.call(cookie_agent_protocol::ASSET_MANIFEST_METHOD, &params)
+            .await
+    }
+
     /// A small picture of an asset's current content (`asset.thumbnail`,
     /// client protocol 1.93.0).
     pub async fn asset_thumbnail(
@@ -1317,6 +1327,16 @@ impl Client {
         params: cookie_agent_protocol::ArtifactReadParams,
     ) -> Result<cookie_agent_protocol::ArtifactReadResult, ClientError> {
         self.call(cookie_agent_protocol::ARTIFACT_READ_METHOD, &params)
+            .await
+    }
+
+    /// The files of a folder artifact of a session's tree
+    /// (`artifact.manifest`, client protocol 1.104.0).
+    pub async fn artifact_manifest(
+        &self,
+        params: cookie_agent_protocol::ArtifactManifestParams,
+    ) -> Result<cookie_agent_protocol::FolderManifestResult, ClientError> {
+        self.call(cookie_agent_protocol::ARTIFACT_MANIFEST_METHOD, &params)
             .await
     }
 

@@ -42,6 +42,7 @@ fn artifact(name: &str, media_type: &str, byte_length: u64) -> ArtifactRef {
         byte_length,
         media_type: media_type.into(),
         filename: Some(name.into()),
+        folder: None,
     }
 }
 

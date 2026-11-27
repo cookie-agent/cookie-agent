@@ -3,7 +3,8 @@ use std::{collections::HashSet, fs, path::Path, sync::Arc};
 use cookie_agent_protocol::{AssetHandle, AssetStamp, AssetStore, SessionId};
 
 use super::{
-    AssetError, AssetStores, AssetWrite, BLOBS_DIR, INDEX_FILE, THUMBNAILS_DIR, media_type,
+    AssetContent, AssetError, AssetStores, AssetWrite, BLOBS_DIR, INDEX_FILE, THUMBNAILS_DIR,
+    media_type,
     thumbnail::{Format, Picture},
 };
 
@@ -24,8 +25,10 @@ fn new_asset(bytes: &[u8], filename: &str) -> AssetWrite {
         replace: None,
         title: None,
         filename: Some(filename.to_owned()),
-        media_type: media_type(filename, bytes).to_owned(),
-        bytes: bytes.to_vec(),
+        content: AssetContent::File {
+            media_type: media_type(filename, bytes).to_owned(),
+            bytes: bytes.to_vec(),
+        },
         stamp: stamp(),
     }
 }
@@ -70,9 +73,9 @@ fn a_write_replaces_an_asset_and_frees_the_content_nothing_else_holds() {
     let (again, _) = stores.write(&store, again, &none).unwrap();
     assert_eq!(again.title, "Loss curves");
 
-    let (bytes, read) = stores.read(&store, first.id, 6, 6).unwrap();
-    assert_eq!(bytes, b"circle");
-    assert_eq!(read.sha256, again.sha256);
+    let read = stores.read(&store, first.id, None, 6, 6).unwrap();
+    assert_eq!(read.bytes, b"circle");
+    assert_eq!(read.asset.sha256, again.sha256);
 
     let deleted = stores.delete(&store, first.id).unwrap();
     assert_eq!(deleted.id, first.id);
@@ -106,7 +109,10 @@ fn assets_with_the_same_bytes_share_one_blob_until_both_are_gone() {
     assert_eq!(blobs(&stores, &store), 1);
     stores.delete(&store, one.id).unwrap();
     assert_eq!(blobs(&stores, &store), 1, "the other asset still holds it");
-    assert_eq!(stores.read(&store, two.id, 0, 64).unwrap().0, b"# Notes");
+    assert_eq!(
+        stores.read(&store, two.id, None, 0, 64).unwrap().bytes,
+        b"# Notes"
+    );
     stores.delete(&store, two.id).unwrap();
     assert_eq!(blobs(&stores, &store), 0);
 }
@@ -137,7 +143,10 @@ fn the_first_open_removes_what_a_crash_left_behind() {
         .collect::<Vec<_>>();
     assert_eq!(names, vec![kept.sha256.clone()]);
     assert!(!dir.join(".index.json.123.tmp").exists());
-    assert_eq!(stores.read(&store, kept.id, 0, 64).unwrap().0, b"kept");
+    assert_eq!(
+        stores.read(&store, kept.id, None, 0, 64).unwrap().bytes,
+        b"kept"
+    );
 }
 
 #[test]
@@ -178,7 +187,7 @@ fn concurrent_writers_each_land_and_the_last_write_wins() {
         .collect::<HashSet<_>>();
     assert_eq!(handles.len(), 9, "handles are unique");
     let shared = stores.get(&store, target.id).unwrap();
-    let (bytes, _) = stores.read(&store, target.id, 0, 64).unwrap();
+    let bytes = stores.read(&store, target.id, None, 0, 64).unwrap().bytes;
     assert!(String::from_utf8(bytes).unwrap().starts_with("writer "));
     // Every blob is named by an entry: the replaced contents went.
     let named = assets

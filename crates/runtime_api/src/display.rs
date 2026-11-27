@@ -397,6 +397,7 @@ pub fn fit_block(
             byte_length: text.len() as u64,
             media_type: "text/plain".into(),
             filename,
+            folder: None,
         });
     }
     Ok(fitted)

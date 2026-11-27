@@ -1123,6 +1123,7 @@ async fn each_session_keeps_its_own_composer_draft() {
         byte_length: 10,
         media_type: "image/png".into(),
         filename: Some("a.png".into()),
+        folder: None,
     };
     app.set_selected_session(first);
     app.input.set_buffer("for the first".into());

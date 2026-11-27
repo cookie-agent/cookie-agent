@@ -475,6 +475,7 @@ mod tests {
             filename: filename.map(str::to_owned),
             created: stamp.clone(),
             updated: stamp,
+            folder: None,
         };
         let id = ShareId::new("q3Vt0x9LmA2bCdEfGh1iJk").unwrap();
         OpenShare {

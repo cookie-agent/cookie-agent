@@ -361,13 +361,15 @@ Idempotent redelivery resolves against the state preceding the original run.
 | `speech.transcribe.chunk` | `transcription_id`, `offset`, base64 `data` of at most `chunk_bytes` bytes | Empty object |
 | `speech.transcribe.finish` | `transcription_id`, `sha256` of every byte sent | `text`, the `backend` that answered, `duration_ms` |
 | `speech.transcribe.cancel` | `transcription_id` | Empty object |
-| `artifact.read` | Session ID, `sha256`, `offset`, `length` (at most 1 MiB) | Base64 `data`, `total_bytes`, `media_type` |
+| `artifact.read` | Session ID, `sha256`, optional `path` (since 1.104.0; see [Folders](#folders)), `offset`, `length` (at most 1 MiB) | Base64 `data`, `total_bytes`, `media_type` |
+| `artifact.manifest` | Session ID, `sha256` of a folder (since 1.104.0; see [Folders](#folders)) | The folder's `sha256`, `main`, and `entries` |
 | `assets.list` | `store` (since 1.67.0; see [Assets](#assets)) | The store's `assets`, newest first |
 | `assets.search` | `project?`, `scope?` (since 1.71.0; see [Assets](#assets)) | The `assets` of many stores, newest first, and the `sessions` whose own they list |
 | `attachment.decide` | `session_id`, `model_turn_seq`, `content_index`, `ordinal`, `allow` (since 1.73.0; see [Attachments](#attachments)) | `{}`; the tag's next `assistant_attachment` says how it resolved |
 | `attachment.save_asset` | `session_id`, `model_turn_seq`, `content_index`, `ordinal`, `scope?` (since 1.73.0) | The new `asset` |
 | `asset.get` | `store`, `asset` ID | The `asset` as it is now, or `asset_not_found` |
-| `asset.read` | `store`, `asset` ID, `offset`, `length` (at most 1 MiB) | Base64 `data`, `total_bytes`, `media_type`, and the `sha256` of the content read |
+| `asset.read` | `store`, `asset` ID, optional `path` (since 1.104.0; see [Folders](#folders)), `offset`, `length` (at most 1 MiB) | Base64 `data`, `total_bytes`, `media_type`, and the `sha256` of the content read |
+| `asset.manifest` | `store`, `asset` ID of a folder asset (since 1.104.0; see [Folders](#folders)) | The folder's `sha256`, `main`, and `entries` |
 | `asset.thumbnail` | `store`, `asset` ID (since 1.93.0; see [Assets](#assets)) | The `sha256` of the current content and its `thumbnail?`: `media_type`, base64 `data`, `width`, `height`; without one, `retry_later` (since 1.94.0) |
 | `asset.rename` | `store`, `asset` ID, `title` (1 to 200 characters on one line) | The renamed `asset` |
 | `asset.delete` | `store`, `asset` ID | Empty object |
@@ -943,6 +945,26 @@ absent; a session tree's own assets go by its root's project. `scope` is
 each tree whose own assets it lists: its root `session`, `title`, and
 `project`. A project the daemon does not have is `-32602`.
 
+
+### Folders
+
+Since 1.104.0 an attachment or an asset may be a **folder** with a main
+file ([spec](../specs/folder-artifacts.md)). A folder is stored as its files
+and one manifest, all in the store's blobs; its digest is the manifest's.
+A reference to one, an `ArtifactRef`, a file part's `PersistedFilePart`, an
+`Asset`, or an `asset` display block, carries `folder` `{ main, files,
+bytes }`: the main file's path, how many files the folder holds, and their
+bytes together. Its `sha256` and `byte_length` are the manifest's, and its
+`media_type` is the main file's, so a client that shows a reference by its
+media type shows a folder as its main file.
+
+`artifact.read` and `asset.read` take an optional `path` and read that file
+of a folder, with the file's own `total_bytes` and `media_type`; without
+one, a folder reads as its main file. A `path` the folder does not have, or
+one given for a file, is `bad_params` with `field` `path`.
+`artifact.manifest` and `asset.manifest` return the folder's `entries`,
+each `{ path, sha256, byte_length, media_type }`, sorted by path; asked of a
+file, they are `bad_params`.
 ### Share links
 
 Since 1.86.0 a share link is a public URL for one asset

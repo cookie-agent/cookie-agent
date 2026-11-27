@@ -28,6 +28,7 @@ fn artifact(media_type: &str, filename: &str, bytes: &[u8]) -> ArtifactRef {
         byte_length: bytes.len() as u64,
         media_type: media_type.into(),
         filename: Some(filename.into()),
+        folder: None,
     }
 }
 
@@ -256,6 +257,7 @@ fn persisted_file(media_type: &str, bytes: &[u8]) -> PersistedAssistantPart {
                 sha256,
             },
             metadata: None,
+            folder: None,
         },
     }
 }
