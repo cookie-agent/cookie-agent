@@ -4620,9 +4620,12 @@ fn user_file_parts_render_as_attachment_chips() {
     let Some(TranscriptItem::User { markdown, .. }) = state.transcript.last() else {
         panic!("expected a user row");
     };
+    // The row's markdown is its text: clients draw its files from
+    // `user_files`, and a copy of the message names them again.
+    assert_eq!(markdown.as_str(), "What is wrong with this *layout*?");
     assert_eq!(
-        markdown.as_str(),
-        "What is wrong with this *layout*?\n📎 my\\_screenshot\\.png · image\\/png · 471 KB"
+        state.user_message_text(1).as_deref(),
+        Some("What is wrong with this *layout*?\n📎 my_screenshot.png · image/png · 471 KB")
     );
 }
 

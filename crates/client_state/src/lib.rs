@@ -442,6 +442,86 @@ pub fn attachment_chip(artifact: &cookie_agent_protocol::ArtifactRef) -> String 
     )
 }
 
+/// A media type as a short word for people: `JPEG image`, `PDF`,
+/// `MP4 video`, `ZIP archive`. A `kind: file` upload's
+/// `application/octet-stream` is `file`, as is a type with no short name;
+/// another type is its subtype in capitals (`CSV`).
+#[must_use]
+pub fn media_type_word(media_type: &str) -> String {
+    let media_type = media_type
+        .split(';')
+        .next()
+        .unwrap_or(media_type)
+        .trim()
+        .to_ascii_lowercase();
+    let (kind, subtype) = media_type.split_once('/').unwrap_or(("", ""));
+    if matches!(kind, "image" | "video" | "audio") {
+        let named = match subtype {
+            "jpeg" | "pjpeg" => Some("JPEG"),
+            "png" | "apng" => Some("PNG"),
+            "gif" => Some("GIF"),
+            "webp" => Some("WebP"),
+            "svg+xml" => Some("SVG"),
+            "heic" | "heif" => Some("HEIC"),
+            "avif" => Some("AVIF"),
+            "mp4" if kind == "audio" => Some("M4A"),
+            "mp4" => Some("MP4"),
+            "webm" => Some("WebM"),
+            "quicktime" => Some("QuickTime"),
+            "mpeg" if kind == "audio" => Some("MP3"),
+            "mpeg" => Some("MPEG"),
+            "wav" | "wave" | "x-wav" | "vnd.wave" => Some("WAV"),
+            "ogg" => Some("OGG"),
+            "flac" | "x-flac" => Some("FLAC"),
+            "aac" => Some("AAC"),
+            "opus" => Some("Opus"),
+            _ => None,
+        };
+        return match named.map(str::to_owned).or_else(|| short_subtype(subtype)) {
+            Some(name) => format!("{name} {kind}"),
+            None => kind.to_owned(),
+        };
+    }
+    let word = match (kind, subtype) {
+        (_, "pdf") => "PDF",
+        ("text", "plain") => "text",
+        ("text", "markdown") => "Markdown",
+        ("text", "html") => "HTML page",
+        (_, "zip" | "x-zip-compressed") => "ZIP archive",
+        (_, "gzip" | "x-gzip") => "gzip archive",
+        (_, "x-tar") => "tar archive",
+        (_, "json") => "JSON",
+        (_, "octet-stream") => "file",
+        _ => {
+            return short_subtype(subtype)
+                .unwrap_or_else(|| if kind == "text" { "text" } else { "file" }.to_owned());
+        }
+    };
+    word.to_owned()
+}
+
+/// A subtype short and plain enough to show in capitals (`csv`, `x-yaml`),
+/// else `None` (a vendor tree, or a long name).
+fn short_subtype(subtype: &str) -> Option<String> {
+    let subtype = subtype.split('+').next().unwrap_or(subtype);
+    let subtype = subtype.strip_prefix("x-").unwrap_or(subtype);
+    (!subtype.is_empty()
+        && subtype.len() <= 8
+        && subtype.chars().all(|char| char.is_ascii_alphanumeric()))
+    .then(|| subtype.to_ascii_uppercase())
+}
+
+/// Whether a user's file was stored as a `kind: file` upload, which the
+/// model sees by its name and size alone.
+#[must_use]
+pub fn stored_as_file(artifact: &cookie_agent_protocol::ArtifactRef) -> bool {
+    artifact.media_type == cookie_agent_protocol::FILE_UPLOAD_MEDIA_TYPE
+}
+
+/// What clients tell a person about a user's file stored as a file
+/// ([`stored_as_file`]).
+pub const STORED_AS_FILE_NOTE: &str = "The model saw only this file's name and size";
+
 /// The text a person reads for `content`: text parts as they are and each
 /// file part as its [`attachment_chip`], one part per line. A part of a kind
 /// this build does not know reads as its tag.
@@ -509,8 +589,9 @@ impl ComposerInput {
     }
 }
 
-/// [`user_content_text`] as markdown: text parts are markdown already, and
-/// a chip's characters are escaped so a filename renders as written.
+/// [`user_content_text`] as markdown without its files, which clients draw
+/// from [`SessionState::user_files`]: text parts are markdown already, and
+/// a part of a kind this build does not know reads as its escaped tag.
 fn user_content_markdown(content: &cookie_agent_protocol::UserContent) -> String {
     use cookie_agent_protocol::{Open, UserContentPart};
     if let [Open::Known(UserContentPart::Text { text })] = content.parts() {
@@ -529,10 +610,10 @@ fn user_content_markdown(content: &cookie_agent_protocol::UserContent) -> String
     content
         .parts()
         .iter()
-        .map(|part| match part {
-            Open::Known(UserContentPart::Text { text }) => text.clone(),
-            Open::Known(UserContentPart::File { artifact }) => escape(attachment_chip(artifact)),
-            Open::Unknown { tag, .. } => escape(format!("[unsupported content: {tag}]")),
+        .filter_map(|part| match part {
+            Open::Known(UserContentPart::Text { text }) => Some(text.clone()),
+            Open::Known(UserContentPart::File { .. }) => None,
+            Open::Unknown { tag, .. } => Some(escape(format!("[unsupported content: {tag}]"))),
         })
         .collect::<Vec<_>>()
         .join("\n")
@@ -1547,6 +1628,32 @@ fn background_settles_at(ended_at: jiff::Timestamp) -> jiff::Timestamp {
 }
 
 impl SessionState {
+    /// The text of the user message `seq` as a person copies it: its text,
+    /// then each of its files as an [`attachment_chip`] line; `None` when
+    /// the transcript does not show it.
+    #[must_use]
+    pub fn user_message_text(&self, seq: u64) -> Option<String> {
+        let markdown = self.transcript.iter().find_map(|item| match item {
+            TranscriptItem::User {
+                seq: item_seq,
+                markdown,
+                ..
+            } if *item_seq == seq => Some(markdown.as_str()),
+            _ => None,
+        })?;
+        let lines = std::iter::once(markdown.to_owned())
+            .filter(|text| !text.is_empty())
+            .chain(
+                self.user_files
+                    .get(&seq)
+                    .into_iter()
+                    .flatten()
+                    .map(attachment_chip),
+            )
+            .collect::<Vec<_>>();
+        Some(lines.join("\n"))
+    }
+
     /// Changes a call's view state outside any event, such as content loaded
     /// on request, and has its row drawn again. Returns whether the call is
     /// known.
