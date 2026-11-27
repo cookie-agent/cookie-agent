@@ -29,6 +29,7 @@ use async_trait::async_trait;
 use cookie_agent_config::SkillRegistry;
 use cookie_agent_protocol::{
     CapabilityName, RuntimeAttachment, RuntimeCapabilityInfo, RuntimeKind, RuntimeLifetime,
+    SessionId,
 };
 use cookie_agent_runtime_api::{RuntimeInfo, ToolOrigin, ToolProvider};
 
@@ -83,10 +84,46 @@ pub trait RuntimeTemplate: Send + Sync {
         workspace: Option<&Path>,
     ) -> Result<StartedRuntime, StartError>;
 
-    /// Lets go of the template's connection and returns it, as the daemon
-    /// stops or a client disconnects the runtime; the caller shuts it down.
-    fn disconnect(&self) -> Option<RuntimeLink> {
+    /// Lets go of the template's connections and returns them, as the
+    /// daemon stops or a client disconnects the runtime; the caller shuts
+    /// them down.
+    fn disconnect(&self) -> Vec<RuntimeLink> {
+        Vec::new()
+    }
+
+    /// Whether each session tree gets its own process of the runtime
+    /// (`docs/site/specs/temporary-runtimes.md`): the registry then opens
+    /// instances from [`Self::owned`], never from this template.
+    fn per_session(&self) -> bool {
+        false
+    }
+
+    /// The template that starts root session `owner`'s process of a
+    /// per-session runtime; `None` for a runtime one process serves.
+    fn owned(&self, _owner: cookie_agent_protocol::SessionId) -> Option<Arc<dyn RuntimeTemplate>> {
         None
+    }
+
+    /// Lets go of root session `owner`, which was deleted, once its process
+    /// has stopped: waits for the process's `stop_command`, then runs the
+    /// template's `delete_command`. Nothing for a runtime one process
+    /// serves.
+    async fn release_owner(&self, _owner: cookie_agent_protocol::SessionId) {}
+
+    /// How long the runtime's process runs with nothing using it before the
+    /// daemon stops it; `None` keeps it running.
+    fn idle_stop_after(&self) -> Option<std::time::Duration> {
+        None
+    }
+
+    /// The owners whose process is connected now: `None` for a runtime one
+    /// process serves, each connected root session for a per-session one.
+    fn connected_owners(&self) -> Vec<Option<cookie_agent_protocol::SessionId>> {
+        if self.listing().connected {
+            vec![None]
+        } else {
+            Vec::new()
+        }
     }
 
     /// Takes the runtime's settings as the daemon's configuration has them
@@ -244,6 +281,9 @@ pub enum RuntimeInstanceStatus {
 /// replaces what the runtime declared under a new generation.
 pub(crate) struct RuntimeInstance {
     info: Arc<RuntimeInfo>,
+    /// The root session whose process of a per-session runtime this
+    /// instance runs on; `None` for a runtime one process serves.
+    owner: Option<SessionId>,
     current: Mutex<CurrentStart>,
     /// Providers added in-process after the instance started; they survive
     /// restarts.
@@ -274,7 +314,7 @@ impl CurrentStart {
 }
 
 impl RuntimeInstance {
-    fn new(started: StartedRuntime, generation: u64) -> Self {
+    fn new(started: StartedRuntime, generation: u64, owner: Option<SessionId>) -> Self {
         let StartedRuntime {
             info,
             providers,
@@ -284,6 +324,7 @@ impl RuntimeInstance {
         } = started;
         Self {
             info: Arc::new(info),
+            owner,
             current: Mutex::new(CurrentStart {
                 generation,
                 providers,
@@ -376,6 +417,10 @@ impl RuntimeInstance {
             && self.info.attachment_name() == info.attachment_name()
             && self.info.workspace().map(|workspace| workspace.root())
                 == info.workspace().map(|workspace| workspace.root())
+    }
+
+    fn key(&self) -> InstanceKey {
+        InstanceKey::of(&self.info, self.owner)
     }
 
     /// Takes over what a restart declared, under `generation`.
@@ -482,11 +527,14 @@ struct InstanceKey {
     runtime_id: String,
     capability: String,
     workspace: Option<PathBuf>,
+    /// The owning root session of a per-session runtime's instance.
+    owner: Option<SessionId>,
 }
 
 impl InstanceKey {
-    fn of(info: &RuntimeInfo) -> Self {
+    fn of(info: &RuntimeInfo, owner: Option<SessionId>) -> Self {
         Self {
+            owner,
             runtime_id: info.id().to_owned(),
             capability: info.capability().as_str().to_owned(),
             workspace: info
@@ -593,12 +641,17 @@ pub struct RuntimeTemplateSummary {
     pub runtime_id: String,
     pub lifetime: RuntimeLifetime,
     pub listing: RuntimeListingState,
+    /// Whether each session tree gets its own process of the runtime.
+    pub per_session: bool,
 }
 
 /// An instance as `runtimes.list` reports it.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RuntimeInstanceSummary {
     pub runtime_id: String,
+    /// The root session whose process of a per-session runtime the
+    /// instance runs on.
+    pub owner: Option<SessionId>,
     pub capability: String,
     /// The name the instance reports; absent until it has started.
     pub attachment_name: Option<String>,
@@ -638,10 +691,10 @@ pub(crate) struct RuntimeRegistry {
     /// Runtimes a client disconnected ([`Self::disconnect`]): opening a
     /// session leaves them down until something uses them.
     parked: Mutex<std::collections::HashSet<String>>,
-    /// By runtime ID, cancelled when a client disconnects the runtime: a
-    /// start or reconnect begun before then neither installs an instance
-    /// nor keeps trying.
-    stops: Mutex<BTreeMap<String, CancellationToken>>,
+    /// By runtime ID and owner, cancelled when a client disconnects the
+    /// runtime: a start or reconnect begun before then neither installs an
+    /// instance nor keeps trying.
+    stops: Mutex<BTreeMap<(String, Option<SessionId>), CancellationToken>>,
 }
 
 impl RuntimeRegistry {
@@ -652,17 +705,11 @@ impl RuntimeRegistry {
         local_template: Arc<dyn RuntimeTemplate>,
         local: StartedRuntime,
     ) -> Self {
-        let global = Arc::new(RuntimeInstance::new(global, 1));
-        let local = Arc::new(RuntimeInstance::new(local, 2));
+        let global = Arc::new(RuntimeInstance::new(global, 1, None));
+        let local = Arc::new(RuntimeInstance::new(local, 2, None));
         let mut slots = BTreeMap::new();
-        slots.insert(
-            InstanceKey::of(&global.info),
-            InstanceSlot::Ready(Arc::clone(&global)),
-        );
-        slots.insert(
-            InstanceKey::of(&local.info),
-            InstanceSlot::Ready(Arc::clone(&local)),
-        );
+        slots.insert(global.key(), InstanceSlot::Ready(Arc::clone(&global)));
+        slots.insert(local.key(), InstanceSlot::Ready(Arc::clone(&local)));
         let mut templates = BTreeMap::new();
         templates.insert(global_template.runtime_id().to_owned(), global_template);
         templates.insert(local_template.runtime_id().to_owned(), local_template);
@@ -784,6 +831,7 @@ impl RuntimeRegistry {
                         &key.runtime_id,
                         Some(key.capability.as_str()),
                         key.workspace.as_deref(),
+                        key.owner,
                     )
                     .await;
             });
@@ -861,12 +909,60 @@ impl RuntimeRegistry {
             .cloned()
     }
 
-    /// The running instance a session attachment refers to, if it is up.
-    pub(crate) fn instance(&self, attachment: &RuntimeAttachment) -> Option<Arc<RuntimeInstance>> {
+    /// The template that starts `runtime_id`'s instances for root session
+    /// `root`, and the owner its instances are keyed by: the root's own
+    /// template of a per-session runtime, which needs a root, else the
+    /// runtime's one template.
+    fn template_for(
+        &self,
+        runtime_id: &str,
+        root: Option<SessionId>,
+    ) -> Result<(Arc<dyn RuntimeTemplate>, Option<SessionId>), EngineError> {
+        let template = self
+            .template(runtime_id)
+            .ok_or_else(|| EngineError::Runtime(format!("unknown runtime `{runtime_id}`")))?;
+        if !template.per_session() {
+            return Ok((template, None));
+        }
+        let root = root.ok_or_else(|| {
+            EngineError::Runtime(format!(
+                "runtime `{runtime_id}` starts one process per session tree; use it from a session"
+            ))
+        })?;
+        let owned = template.owned(root).ok_or_else(|| {
+            EngineError::Runtime(format!(
+                "runtime `{runtime_id}` has no process for session {root}"
+            ))
+        })?;
+        Ok((owned, Some(root)))
+    }
+
+    /// The owner `root`'s instances of `runtime_id` are keyed by: `root`
+    /// for a per-session runtime, else none.
+    fn owner_of(&self, runtime_id: &str, root: SessionId) -> Option<SessionId> {
+        self.template(runtime_id)
+            .filter(|template| template.per_session())
+            .map(|_| root)
+    }
+
+    /// Whether each session tree gets its own process of `runtime_id`.
+    pub(crate) fn is_per_session(&self, runtime_id: &str) -> bool {
+        self.template(runtime_id)
+            .is_some_and(|template| template.per_session())
+    }
+
+    /// The running instance an attachment of a session in root session
+    /// `root`'s tree refers to, if it is up.
+    pub(crate) fn instance(
+        &self,
+        root: SessionId,
+        attachment: &RuntimeAttachment,
+    ) -> Option<Arc<RuntimeInstance>> {
         let key = InstanceKey {
             runtime_id: attachment.runtime_id.as_str().to_owned(),
             capability: attachment.capability.as_str().to_owned(),
             workspace: attachment.workspace.as_deref().map(PathBuf::from),
+            owner: self.owner_of(attachment.runtime_id.as_str(), root),
         };
         let slots = self
             .slots
@@ -897,18 +993,25 @@ impl RuntimeRegistry {
     }
 
     /// A running instance of `runtime_id` whose canonical workspace is
-    /// `workspace`, if one is up.
+    /// `workspace`, if one is up: of root session `root`'s process for a
+    /// per-session runtime, or of any owner's when `root` is `None`.
     pub(crate) fn instance_at(
         &self,
         runtime_id: &str,
         workspace: Option<&str>,
+        root: Option<SessionId>,
     ) -> Option<Arc<RuntimeInstance>> {
         let workspace = workspace.map(PathBuf::from);
+        let owner = root.and_then(|root| self.owner_of(runtime_id, root));
         self.slots
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .iter()
-            .find(|(key, _)| key.runtime_id == runtime_id && key.workspace == workspace)
+            .find(|(key, _)| {
+                key.runtime_id == runtime_id
+                    && key.workspace == workspace
+                    && (owner.is_none() || key.owner == owner)
+            })
             .and_then(|(_, slot)| slot.published())
             .map(Arc::clone)
     }
@@ -984,6 +1087,7 @@ impl RuntimeRegistry {
             slot.published()
                 .filter(|_| {
                     candidate.runtime_id == key.runtime_id
+                        && candidate.owner == key.owner
                         && candidate.capability == key.capability
                         && (key.workspace.is_none() || candidate.workspace == key.workspace)
                 })
@@ -1004,6 +1108,7 @@ impl RuntimeRegistry {
                     runtime_id: requested.runtime_id.clone(),
                     capability: requested.capability.clone(),
                     workspace: Some(workspace.clone()),
+                    owner: requested.owner,
                 },
             )
     }
@@ -1077,13 +1182,18 @@ impl RuntimeRegistry {
     /// nothing when it fails: no session uses it, so it does not show in
     /// `runtimes.list`. One that failed before stays failed with the new
     /// reason.
+    ///
+    /// `root` is the root session of the tree that needs the instance: a
+    /// per-session runtime opens it on that root's process, and refuses
+    /// without one.
     pub(crate) async fn ensure(
         self: &Arc<Self>,
         runtime_id: &str,
         capability: Option<&str>,
         workspace: Option<&Path>,
+        root: Option<SessionId>,
     ) -> Result<Arc<RuntimeInstance>, EngineError> {
-        self.open(runtime_id, capability, workspace, Record::Known)
+        self.open(runtime_id, capability, workspace, root, Record::Known)
             .await
     }
 
@@ -1095,11 +1205,10 @@ impl RuntimeRegistry {
         runtime_id: &str,
         capability: Option<&str>,
         workspace: Option<&Path>,
+        root: Option<SessionId>,
         record: Record,
     ) -> Result<Arc<RuntimeInstance>, EngineError> {
-        let template = self
-            .template(runtime_id)
-            .ok_or_else(|| EngineError::Runtime(format!("unknown runtime `{runtime_id}`")))?;
+        let (template, owner) = self.template_for(runtime_id, root)?;
         // Using a runtime a client disconnected starts it again.
         self.unpark(runtime_id);
         let offered = match Self::capability(template.as_ref(), capability).await {
@@ -1112,6 +1221,7 @@ impl RuntimeRegistry {
                         runtime_id: runtime_id.to_owned(),
                         capability: capability.to_owned(),
                         workspace: workspace.map(Path::to_owned),
+                        owner,
                     };
                     let previous = self.begin_start(&key);
                     self.fail_start(key, error.to_string(), previous, record);
@@ -1147,6 +1257,7 @@ impl RuntimeRegistry {
             runtime_id: runtime_id.to_owned(),
             capability: offered.name.as_str().to_owned(),
             workspace: workspace.map(Path::to_owned),
+            owner,
         };
         if let Some(instance) = self.live(&requested) {
             return self.reuse(template.as_ref(), instance).await;
@@ -1157,7 +1268,7 @@ impl RuntimeRegistry {
             return self.reuse(template.as_ref(), instance).await;
         }
         let pending = self.resolve(&requested);
-        let stop = self.stop_token(runtime_id);
+        let stop = self.stop_token(runtime_id, owner);
         let previous = self.begin_start(&pending);
         let started = template.start(&offered.name, workspace).await;
         if stop.is_cancelled() {
@@ -1218,7 +1329,7 @@ impl RuntimeRegistry {
         template: &dyn RuntimeTemplate,
         instance: Arc<RuntimeInstance>,
     ) -> Result<Arc<RuntimeInstance>, EngineError> {
-        let key = InstanceKey::of(&instance.info);
+        let key = instance.key();
         let ready = matches!(
             self.slot(&key),
             Some(InstanceSlot::Ready(current)) if Arc::ptr_eq(&current, &instance)
@@ -1321,12 +1432,13 @@ impl RuntimeRegistry {
         previous
     }
 
-    /// The token [`Self::disconnect`] cancels for `runtime_id`.
-    fn stop_token(&self, runtime_id: &str) -> CancellationToken {
+    /// The token [`Self::disconnect`] cancels for `owner`'s instances of
+    /// `runtime_id`.
+    fn stop_token(&self, runtime_id: &str, owner: Option<SessionId>) -> CancellationToken {
         self.stops
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .entry(runtime_id.to_owned())
+            .entry((runtime_id.to_owned(), owner))
             .or_insert_with(|| self.shutdown.child_token())
             .clone()
     }
@@ -1367,7 +1479,7 @@ impl RuntimeRegistry {
         previous: Option<Arc<RuntimeInstance>>,
         stop: &CancellationToken,
     ) -> Option<Arc<RuntimeInstance>> {
-        let key = InstanceKey::of(&started.info);
+        let key = InstanceKey::of(&started.info, pending.owner);
         if let (Some(_), Some(canonical)) = (&requested.workspace, &key.workspace)
             && &key != requested
         {
@@ -1439,7 +1551,7 @@ impl RuntimeRegistry {
                 instance.restart(started, generation);
                 instance
             }
-            None => Arc::new(RuntimeInstance::new(started, generation)),
+            None => Arc::new(RuntimeInstance::new(started, generation, key.owner)),
         };
         slots.insert(key, InstanceSlot::Ready(Arc::clone(&instance)));
         drop(slots);
@@ -1452,15 +1564,17 @@ impl RuntimeRegistry {
     /// running, with the same rules as attaching it.
     pub(crate) async fn ensure_attachment(
         self: &Arc<Self>,
+        root: SessionId,
         attachment: &RuntimeAttachment,
     ) -> Result<Arc<RuntimeInstance>, EngineError> {
-        if let Some(instance) = self.instance(attachment) {
+        if let Some(instance) = self.instance(root, attachment) {
             return Ok(instance);
         }
         self.open(
             attachment.runtime_id.as_str(),
             Some(attachment.capability.as_str()),
             attachment.workspace.as_deref().map(Path::new),
+            Some(root),
             Record::Always,
         )
         .await
@@ -1508,10 +1622,10 @@ impl RuntimeRegistry {
         generation: u64,
         reason: String,
     ) {
-        let key = InstanceKey::of(&instance.info);
+        let key = instance.key();
         // Taken before the slot says reconnecting, so a disconnect that
         // stops the instance also ends these attempts.
-        let stop = self.stop_token(&key.runtime_id);
+        let stop = self.stop_token(&key.runtime_id, key.owner);
         {
             let mut slots = self
                 .slots
@@ -1528,7 +1642,10 @@ impl RuntimeRegistry {
             );
         }
         self.notify();
-        let template = self.template(&key.runtime_id);
+        let template = self
+            .template_for(&key.runtime_id, key.owner)
+            .ok()
+            .map(|(template, _)| template);
         // A runtime that dialed in went away on its own; one the daemon
         // runs exited.
         let message = match &template {
@@ -1713,6 +1830,7 @@ impl RuntimeRegistry {
                 runtime_id: template.runtime_id().to_owned(),
                 lifetime: template.lifetime(),
                 listing: template.listing(),
+                per_session: template.per_session(),
             })
             .collect()
     }
@@ -1813,11 +1931,19 @@ impl RuntimeRegistry {
             .collect()
     }
 
-    /// Runtime `runtime_id`'s connection, for its ACP agents.
-    pub(crate) async fn agent_connection(&self, runtime_id: &str) -> Result<RuntimeLink, String> {
-        let template = self
-            .template(runtime_id)
-            .ok_or_else(|| format!("runtime `{runtime_id}` is not registered"))?;
+    /// Runtime `runtime_id`'s connection, for its ACP agents: root session
+    /// `root`'s process of a per-session runtime.
+    pub(crate) async fn agent_connection(
+        &self,
+        runtime_id: &str,
+        root: Option<SessionId>,
+    ) -> Result<RuntimeLink, String> {
+        if !self.knows(runtime_id) {
+            return Err(format!("runtime `{runtime_id}` is not registered"));
+        }
+        let (template, _) = self
+            .template_for(runtime_id, root)
+            .map_err(|error| error.to_string())?;
         self.unpark(runtime_id);
         template.agent_connection().await
     }
@@ -1861,6 +1987,11 @@ impl RuntimeRegistry {
     /// `runtime/initialize`. A connected runtime is left as it is.
     pub(crate) async fn connect(&self, runtime_id: &str) -> Result<(), EngineError> {
         let template = self.startable(runtime_id)?;
+        if template.per_session() {
+            return Err(EngineError::Runtime(format!(
+                "runtime `{runtime_id}` starts one process per session tree, when a session uses it"
+            )));
+        }
         self.unpark(runtime_id);
         let result = template.capabilities().await;
         self.notify();
@@ -1882,62 +2013,175 @@ impl RuntimeRegistry {
             .insert(runtime_id.to_owned());
         // Ends reconnect loops and keeps starts in flight from installing,
         // before the slots are stopped (see `install`).
-        if let Some(stop) = self
-            .stops
+        self.stops
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .remove(runtime_id)
-        {
-            stop.cancel();
-        }
-        let mut connections = Vec::new();
-        {
-            let mut slots = self
-                .slots
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            for (key, slot) in slots.iter_mut() {
-                if key.runtime_id != runtime_id {
-                    continue;
+            .retain(|(stopped, _), stop| {
+                if stopped == runtime_id {
+                    stop.cancel();
                 }
-                match slot {
-                    InstanceSlot::Ready(instance) | InstanceSlot::Reconnecting(instance) => {
-                        connections.extend(instance.clear());
-                        *slot = InstanceSlot::Stopped(Arc::clone(instance));
-                    }
-                    InstanceSlot::Failed {
-                        instance: Some(instance),
-                        ..
-                    } => {
-                        connections.extend(instance.clear());
-                        *slot = InstanceSlot::Stopped(Arc::clone(instance));
-                    }
-                    InstanceSlot::Starting
-                    | InstanceSlot::Failed { instance: None, .. }
-                    | InstanceSlot::Stopped(_) => {}
-                }
-            }
-            // Instances that never opened have nothing to show.
-            slots.retain(|key, slot| {
-                key.runtime_id != runtime_id || !matches!(slot, InstanceSlot::Failed { .. })
+                stopped != runtime_id
             });
-        }
-        connections.extend(template.disconnect().map(|connection| connection.0));
+        let mut connections = self.stop_slots(|key| key.runtime_id == runtime_id);
+        connections.extend(
+            template
+                .disconnect()
+                .into_iter()
+                .map(|connection| connection.0),
+        );
         let mut epochs = std::collections::HashSet::new();
         connections.retain(|connection| epochs.insert(connection.epoch()));
         self.notify();
         Ok(connections)
     }
 
+    /// Every connected process that stops when idle: its runtime ID,
+    /// owner, and how long it may stay idle.
+    pub(crate) fn idle_candidates(&self) -> Vec<(String, Option<SessionId>, std::time::Duration)> {
+        let templates = self
+            .templates
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        templates
+            .iter()
+            .filter_map(|template| Some((template, template.idle_stop_after()?)))
+            .flat_map(|(template, after)| {
+                template
+                    .connected_owners()
+                    .into_iter()
+                    .map(move |owner| (template.runtime_id().to_owned(), owner, after))
+            })
+            .collect()
+    }
+
+    /// The owners whose process of `runtime_id` is connected now.
+    pub(crate) fn idle_owners(&self, runtime_id: &str) -> Vec<Option<SessionId>> {
+        self.template(runtime_id)
+            .map(|template| template.connected_owners())
+            .unwrap_or_default()
+    }
+
+    /// Stops `owner`'s process of template runtime `runtime_id` (the one
+    /// process of a shared runtime with `None`), as when it was idle long
+    /// enough: its instances stop, and the next use starts it again.
+    /// Returns the connections for the caller to shut down.
+    pub(crate) fn stop_owner(
+        &self,
+        runtime_id: &str,
+        owner: Option<SessionId>,
+    ) -> Vec<super::remote::RuntimeClient> {
+        let Ok((template, owner)) = self.template_for(runtime_id, owner) else {
+            return Vec::new();
+        };
+        // Opening a session leaves a shared runtime stopped, as after a
+        // client's disconnect; a per-session one never starts on opening.
+        if owner.is_none() {
+            self.parked
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .insert(runtime_id.to_owned());
+        }
+        if let Some(stop) = self
+            .stops
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(&(runtime_id.to_owned(), owner))
+        {
+            stop.cancel();
+        }
+        let mut connections =
+            self.stop_slots(|key| key.runtime_id == runtime_id && key.owner == owner);
+        connections.extend(
+            template
+                .disconnect()
+                .into_iter()
+                .map(|connection| connection.0),
+        );
+        let mut epochs = std::collections::HashSet::new();
+        connections.retain(|connection| epochs.insert(connection.epoch()));
+        self.notify();
+        connections
+    }
+
+    /// Lets go of every per-session runtime's process root session `root`
+    /// owned, which was deleted: stops it, waits for its `stop_command`,
+    /// and runs the template's `delete_command`.
+    pub(crate) async fn retire_owner(&self, root: SessionId) {
+        let templates = self
+            .templates
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .values()
+            .filter(|template| template.per_session())
+            .cloned()
+            .collect::<Vec<_>>();
+        for template in templates {
+            let connections = self.stop_owner(template.runtime_id(), Some(root));
+            futures_util::future::join_all(
+                connections
+                    .iter()
+                    .map(super::remote::RuntimeClient::shutdown),
+            )
+            .await;
+            drop(connections);
+            template.release_owner(root).await;
+            self.slots
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .retain(|key, _| key.owner != Some(root));
+        }
+    }
+
+    /// Marks the instances at the keys `stopping` keeps stopped and drops
+    /// the failed ones that never opened; returns their connections.
+    fn stop_slots(
+        &self,
+        stopping: impl Fn(&InstanceKey) -> bool,
+    ) -> Vec<super::remote::RuntimeClient> {
+        let mut connections = Vec::new();
+        let mut slots = self
+            .slots
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        for (key, slot) in slots.iter_mut() {
+            if !stopping(key) {
+                continue;
+            }
+            match slot {
+                InstanceSlot::Ready(instance) | InstanceSlot::Reconnecting(instance) => {
+                    connections.extend(instance.clear());
+                    *slot = InstanceSlot::Stopped(Arc::clone(instance));
+                }
+                InstanceSlot::Failed {
+                    instance: Some(instance),
+                    ..
+                } => {
+                    connections.extend(instance.clear());
+                    *slot = InstanceSlot::Stopped(Arc::clone(instance));
+                }
+                InstanceSlot::Starting
+                | InstanceSlot::Failed { instance: None, .. }
+                | InstanceSlot::Stopped(_) => {}
+            }
+        }
+        // Instances that never opened have nothing to show.
+        slots.retain(|key, slot| !stopping(key) || !matches!(slot, InstanceSlot::Failed { .. }));
+        connections
+    }
+
     /// How `runtimes.list` reports `instance`.
     pub(crate) fn summary(&self, instance: &RuntimeInstance) -> Option<RuntimeInstanceSummary> {
-        let key = InstanceKey::of(&instance.info);
+        let key = instance.key();
         let workspace = key
             .workspace
             .as_ref()
             .map(|workspace| workspace.to_string_lossy().into_owned());
         self.instances().into_iter().find(|summary| {
             summary.runtime_id == key.runtime_id
+                && summary.owner == key.owner
                 && summary.capability == key.capability
                 && summary.workspace == workspace
         })
@@ -1968,6 +2212,7 @@ impl RuntimeRegistry {
                 };
                 RuntimeInstanceSummary {
                     runtime_id: key.runtime_id.clone(),
+                    owner: key.owner,
                     capability: key.capability.clone(),
                     attachment_name: instance
                         .map(|instance| instance.info.attachment_name().to_owned()),
@@ -2027,7 +2272,12 @@ impl RuntimeRegistry {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .values()
         {
-            connections.extend(template.disconnect().map(|connection| connection.0));
+            connections.extend(
+                template
+                    .disconnect()
+                    .into_iter()
+                    .map(|connection| connection.0),
+            );
         }
         // Instances of one runtime share its connection: shut each down once.
         let mut epochs = std::collections::HashSet::new();

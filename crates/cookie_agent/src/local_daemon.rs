@@ -305,6 +305,7 @@ mod tests {
     ) -> RuntimeListing {
         RuntimeListing {
             runtime_id: RuntimeId::new(id).unwrap(),
+            per_session: false,
             lifetime: RuntimeLifetime::DialIn,
             connected,
             capabilities,

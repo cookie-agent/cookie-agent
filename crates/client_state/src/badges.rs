@@ -379,6 +379,7 @@ mod tests {
         let runtime = |id: &str, machine: Option<&str>, platform: Option<&str>, caps: &[&str]| {
             RuntimeListing {
                 runtime_id: RuntimeId::new(id).unwrap(),
+                per_session: false,
                 lifetime: RuntimeLifetime::Builtin,
                 connected: true,
                 capabilities: caps

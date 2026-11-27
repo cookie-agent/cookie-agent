@@ -261,6 +261,7 @@ mod tests {
                     message: None,
                     active_runs: 0,
                     background_calls: 0,
+                    per_session: false,
                 })
                 .collect(),
             instances: Vec::new(),

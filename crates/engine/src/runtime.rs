@@ -88,6 +88,7 @@ mod runtime_tables;
 pub(crate) mod sessions;
 mod skills;
 mod submit;
+mod temporary_runtimes;
 /// Test-only hooks; the module body is `#![cfg(test)]`.
 pub(crate) mod test_hooks;
 #[cfg(test)]
@@ -1397,7 +1398,12 @@ impl Engine {
             local,
         ));
         runtimes.watch_builtin();
-        crate::runtimes::register_configured_templates(&runtimes, &options.config, &mcp_hub)?;
+        crate::runtimes::register_configured_templates(
+            &runtimes,
+            &options.config,
+            &mcp_hub,
+            &Arc::new(crate::runtimes::ProcessRecords::open(store.data_root())),
+        )?;
         let delegation_events = DelegationEventStore::new(Arc::clone(&store));
         let grant_journals = GrantJournals::new(store.sessions_dir_path());
         let (runtime_notifications, _) = broadcast::channel(64);
@@ -1552,6 +1558,7 @@ impl Engine {
         }
         engine.start_subagent_janitor();
         engine.start_mcp_wanted_watch();
+        engine.start_idle_runtime_watch();
         engine.start_cron_scheduler();
         engine.start_webhooks();
         engine.start_cache_expiry_scheduler();

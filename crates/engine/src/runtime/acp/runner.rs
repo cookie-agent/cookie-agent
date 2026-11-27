@@ -3044,7 +3044,11 @@ impl Engine {
             .inner
             .acp
             .processes
-            .acquire(&self.inner, &agent)
+            .acquire(
+                &self.inner,
+                &agent,
+                Some(self.root_session_of(active.session)),
+            )
             .await
             .map_err(EngineError::Acp)?;
         let live = self
@@ -4933,7 +4937,11 @@ impl Engine {
             .inner
             .acp
             .processes
-            .acquire(&self.inner, &agent)
+            .acquire(
+                &self.inner,
+                &agent,
+                Some(self.root_session_of(params.session_id)),
+            )
             .await
             .map_err(EngineError::Acp)?;
         let mut live = self

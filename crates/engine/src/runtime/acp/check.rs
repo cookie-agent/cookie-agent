@@ -57,7 +57,7 @@ impl Engine {
             .inner
             .acp
             .processes
-            .acquire(&self.inner, &declared)
+            .acquire(&self.inner, &declared, None)
             .await
         {
             Ok(acquired) => acquired,

@@ -66,8 +66,14 @@ impl Engine {
     ) -> Result<AttachedMachine, EngineError> {
         let preset = policy.and_then(|policy| policy.preset.as_deref());
         self.ensure_session_owned(session)?;
+        let root = self.root_session_of(session);
         let instance = self
-            .ensure_runtime(runtime_id, Some(capability), workspace.as_deref())
+            .ensure_runtime(
+                runtime_id,
+                Some(capability),
+                workspace.as_deref(),
+                Some(root),
+            )
             .await?;
         if let Some(connection) = instance.connection() {
             connection.retry_failed_mcp();
@@ -79,6 +85,7 @@ impl Engine {
                 let mut attachments = engine.attachments_of(&projection);
                 if !engine.attaches_on_acp_host_machine(session, &attachments, &instance)? {
                     engine.refuse_overlap_with(
+                        root,
                         &attachments,
                         &instance,
                         &SessionToolContext::new(session),
@@ -112,7 +119,7 @@ impl Engine {
                 None
             }
         };
-        let agent_md = match self.inner.runtimes.instance(&attachment) {
+        let agent_md = match self.inner.runtimes.instance(root, &attachment) {
             Some(instance) if attachment.workspace.is_some() => instance
                 .agent_md(preset)
                 .await
@@ -149,7 +156,7 @@ impl Engine {
             platform: self
                 .inner
                 .runtimes
-                .instance(&attachment)
+                .instance(root, &attachment)
                 .and_then(|instance| {
                     instance
                         .info()
@@ -350,7 +357,11 @@ impl Engine {
         session: SessionId,
         attachment: &RuntimeAttachment,
     ) -> Vec<String> {
-        let Some(instance) = self.inner.runtimes.instance(attachment) else {
+        let Some(instance) = self
+            .inner
+            .runtimes
+            .instance(self.root_session_of(session), attachment)
+        else {
             return Vec::new();
         };
         let bare = tool_names(&instance, &SessionToolContext::new(session));
@@ -367,8 +378,11 @@ impl Engine {
     /// (machines on demand, section 4); a runtime the daemon cannot place is
     /// its own machine. The session may not exist yet (its creation, a
     /// subagent's capabilities): tool lists are read with `context`.
+    ///
+    /// `root` is the root session of the tree whose session has `existing`.
     pub(crate) fn refuse_overlap_with(
         &self,
+        root: SessionId,
         existing: &[RuntimeAttachment],
         instance: &Arc<RuntimeInstance>,
         context: &SessionToolContext,
@@ -393,7 +407,7 @@ impl Engine {
             {
                 continue;
             }
-            let Some(other) = self.inner.runtimes.instance(attachment) else {
+            let Some(other) = self.inner.runtimes.instance(root, attachment) else {
                 continue;
             };
             if Arc::ptr_eq(&other, instance) {

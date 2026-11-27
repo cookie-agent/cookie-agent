@@ -2085,8 +2085,11 @@ does not know yet goes under `<not_connected_yet>`, with a comment saying it
 is placed when it connects. A connected runtime always has a machine. `global` is never listed as a runtime: a `<global/>` element,
 with a comment, says when the root of the caller's tree has it. Only the
 calling session's own attachments are shown. A runtime that is not connected
-keeps the machine, platform, and home the daemon last saw it with. The output
-is never truncated.
+keeps the machine, platform, and home the daemon last saw it with. A
+runtime whose template gives each session tree its own process
+([`scope = "session"`](../runtimes/templates.md#one-runtime-per-session-tree))
+says `per_session_tree="true"`, and its `connected` and `starts_on_use`
+describe the caller's tree's process. The output is never truncated.
 
 ```text
 <runtimes>

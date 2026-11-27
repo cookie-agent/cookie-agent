@@ -287,10 +287,12 @@ impl RuntimeTemplate for DialInTemplate {
             })
     }
 
-    fn disconnect(&self) -> Option<super::registry::RuntimeLink> {
+    fn disconnect(&self) -> Vec<super::registry::RuntimeLink> {
         lock(&self.connection)
             .take()
             .map(super::registry::RuntimeLink)
+            .into_iter()
+            .collect()
     }
 
     fn update_settings(&self, settings: &RuntimeSettings) {

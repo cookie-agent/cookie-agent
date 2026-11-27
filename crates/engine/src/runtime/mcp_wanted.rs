@@ -175,6 +175,7 @@ impl Engine {
                     runtime: runtime.cloned(),
                 })
             };
+            let root = self.root_session_of(projection.meta.session_id);
             for attachment in self.attachments_of(&projection) {
                 if attachment.runtime_id.as_str() == RuntimeId::GLOBAL {
                     let set = wanted.entry(Host::Global).or_default();
@@ -189,7 +190,7 @@ impl Engine {
                 let Some(connection) = self
                     .inner
                     .runtimes
-                    .instance(&attachment)
+                    .instance(root, &attachment)
                     .and_then(|instance| instance.connection())
                 else {
                     continue;

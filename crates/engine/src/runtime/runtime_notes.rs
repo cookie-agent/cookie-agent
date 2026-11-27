@@ -60,13 +60,14 @@ impl Engine {
         let Ok(attachments) = self.session_runtimes(session) else {
             return Vec::new();
         };
+        let root = self.root_session_of(session);
         attachments
             .into_iter()
             .filter(|attachment| {
                 attachment.runtime_id.as_str() != cookie_agent_protocol::RuntimeId::GLOBAL
             })
             .map(|attachment| AttachmentFacts {
-                platform: self.platform_of(&attachment),
+                platform: self.platform_of(root, &attachment),
                 machine: self.runtime_machine(attachment.runtime_id.as_str()),
                 runtime: attachment.runtime_id.into_string(),
                 kind: attachment.kind.as_str().to_owned(),
@@ -76,10 +77,10 @@ impl Engine {
             .collect()
     }
 
-    fn platform_of(&self, attachment: &RuntimeAttachment) -> Option<String> {
+    fn platform_of(&self, root: SessionId, attachment: &RuntimeAttachment) -> Option<String> {
         self.inner
             .runtimes
-            .instance(attachment)
+            .instance(root, attachment)
             .and_then(|instance| {
                 instance
                     .info()

@@ -363,7 +363,7 @@ impl Engine {
             Some(std::sync::Arc::clone(registry.global()))
         } else {
             registry
-                .instance_at(runtime, workspace.as_deref())
+                .instance_at(runtime, workspace.as_deref(), None)
                 .filter(|instance| instance.info().capability().as_str() == capability)
         };
         if let Some(instance) = live {

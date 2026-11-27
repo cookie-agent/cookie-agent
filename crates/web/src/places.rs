@@ -193,6 +193,7 @@ mod tests {
     fn homes() -> RuntimeHomes {
         let runtime = |id: &str, home: Option<&str>| RuntimeListing {
             runtime_id: RuntimeId::new(id).unwrap(),
+            per_session: false,
             lifetime: RuntimeLifetime::Builtin,
             connected: true,
             capabilities: Vec::new(),

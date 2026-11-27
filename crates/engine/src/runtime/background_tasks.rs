@@ -99,6 +99,17 @@ impl BackgroundTaskState {
             .filter_map(|job| job.runtime.clone())
             .collect()
     }
+
+    /// The session and runtime of each pending call that executes on a
+    /// runtime.
+    pub(crate) fn pending_calls(&self) -> Vec<(SessionId, String)> {
+        self.jobs
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .values()
+            .filter_map(|job| Some((job.session, job.runtime.clone()?)))
+            .collect()
+    }
 }
 
 pub(crate) use cookie_agent_protocol::BackgroundActor;

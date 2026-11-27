@@ -1,7 +1,8 @@
 # Temporary runtimes: one runtime per session tree
 
-Status: **approved** (2026-11-26), being implemented. The user's decisions
-are in [section 8](#8-decisions-2026-11-26).
+Status: **implemented** (2026-11-26; client protocol 1.102.0). The user's
+decisions are in [section 8](#8-decisions-2026-11-26); where the build
+differs from the draft, [section 9](#9-implementation-notes) says so.
 
 ## 1. Problem
 
@@ -143,11 +144,15 @@ deletion, and it is not retried.
 - **`stop_command`** runs after every stop, once the process has exited or
   been killed after `shutdown_grace_ms`. For docker it removes a container
   that the killed client left running.
-- **Recovery after a crash.** The registry records each live instance's
-  owner in `machines.json`, next to the template's runtime record, and
-  clears it after `stop_command` has run (or right away when there is
-  none). At start, the daemon runs `stop_command` for every owner still
-  recorded, so a daemon killed mid-run does not leave containers behind.
+- **Recovery after a crash.** The daemon records each temporary
+  template's running processes, and each owner of a `session` template, in
+  `runtime-processes.json` under its data root, and marks a process stopped
+  after its `stop_command` has run (or right away when there is none). At
+  start, it runs `stop_command` for every process still recorded as
+  running, so a daemon killed mid-run does not leave containers behind, and
+  it forgets the records of templates `config.toml` no longer has.
+  (Implementation note: the draft put these records in `machines.json`; a
+  file of their own keeps the machine registry's format unchanged.)
 - **`delete_command`** runs when the root session is deleted (a project
   deletion counts, since it takes its sessions), after the instance has
   stopped and `stop_command` has run. It runs even when the instance was
@@ -213,3 +218,27 @@ Chosen in this draft, open to change: the `30m` default of
 `idle_stop_after` for `session` templates, the 60 s hook timeout, the pin
 for temporary `shared` templates (section 6), and a `runtimes.disconnect`
 without `session` stopping every idle instance.
+
+## 9. Implementation notes
+
+- **Records** live in `runtime-processes.json`, not `machines.json`
+  (section 5).
+- **The machine pin** comes from the existing placement rules: a temporary
+  template's listing leaves out the machine its process reports, so the
+  daemon places it on a new machine named after the runtime ID and pins it
+  there.
+- **A shared template stopped for idleness** is parked as after a
+  Disconnect: opening a session leaves it down until a run, attachment,
+  session creation, or delegation uses it.
+- **Clients** show `one per session` beside the lifetime and offer no
+  Connect for a per-session runtime; its Disconnect stops every process
+  nothing uses. The card does not yet list each live instance by its root
+  session's title with a Disconnect of its own; `runtimes.list` carries
+  each instance's `owner` and `runtimes.disconnect` takes `session` for
+  that.
+- **Client-side lookups without a session** (`runtimes.reconnect`,
+  `runtimes.connect`, an MCP server reconnect from the MCP view, runtime
+  groups) refuse a per-session runtime or pick any owner's process.
+- **An ACP agent** on a per-session runtime runs once per owner, inside
+  that owner's process. Deleting a session does not start the process
+  only to end the agent's sessions there.

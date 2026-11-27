@@ -102,6 +102,10 @@
             "null"
           ]
         },
+        "per_session": {
+          "description": "Whether each session tree gets its own process of the runtime, from\nits template's `scope = \"session\"` (client protocol 1.102.0;\ntemporary runtimes spec section 7): `instances` name each process's\nroot session as `owner`. False from a 1.101.0 daemon.",
+          "type": "boolean"
+        },
         "platform": {
           "description": "The runtime's operating system, once it has connected and said.",
           "type": [

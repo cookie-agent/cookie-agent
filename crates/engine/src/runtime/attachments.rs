@@ -192,8 +192,12 @@ impl Engine {
     /// attaches. They compose under the runtime's ID and run without a
     /// workspace. An attachment whose instance is not running contributes
     /// nothing.
+    ///
+    /// `root` is the root session of the tree whose session has
+    /// `attachments`, which picks the process of a per-session runtime.
     pub(crate) fn tool_sources_for(
         &self,
+        root: SessionId,
         attachments: &[RuntimeAttachment],
     ) -> Vec<SourcedProvider> {
         let mut sources = self
@@ -210,7 +214,7 @@ impl Engine {
             .collect::<Vec<_>>();
         let mut shared_runtimes = std::collections::HashSet::new();
         for attachment in attachments {
-            let Some(instance) = self.inner.runtimes.instance(attachment) else {
+            let Some(instance) = self.inner.runtimes.instance(root, attachment) else {
                 continue;
             };
             // What it offers, for when it is not running (session tool
@@ -243,7 +247,10 @@ impl Engine {
         &self,
         session: SessionId,
     ) -> Result<Vec<SourcedProvider>, EngineError> {
-        Ok(self.tool_sources_for(&self.session_runtimes(session)?))
+        Ok(self.tool_sources_for(
+            self.root_session_of(session),
+            &self.session_runtimes(session)?,
+        ))
     }
 
     /// The instance of `capability` of `runtime_id` at `workspace` that a
@@ -253,18 +260,22 @@ impl Engine {
     /// `RuntimeRegistry::ensure`). A dial-in runtime this daemon has not
     /// seen since it started, but remembers, is refused as not connected,
     /// with when it was last seen.
+    ///
+    /// `root` is the root session of the tree the instance is for, which a
+    /// per-session runtime needs (`docs/site/specs/temporary-runtimes.md`).
     pub(crate) async fn ensure_runtime(
         &self,
         runtime_id: &str,
         capability: Option<&str>,
         workspace: Option<&std::path::Path>,
+        root: Option<SessionId>,
     ) -> Result<Arc<RuntimeInstance>, EngineError> {
         if let Some(offline) = self.remembered_offline(runtime_id) {
             return Err(EngineError::Runtime(offline));
         }
         self.inner
             .runtimes
-            .ensure(runtime_id, capability, workspace)
+            .ensure(runtime_id, capability, workspace, root)
             .await
     }
 
@@ -292,8 +303,12 @@ impl Engine {
     /// the one-attachment-per-tool-and-machine rule, since the agent takes
     /// that machine's other workspaces as additional directories
     /// (`docs/site/specs/acp-several-runtimes.md` section 3.5).
+    ///
+    /// `root` is the root session of the tree the new session joins, its
+    /// own ID for a root, which a per-session runtime starts for.
     pub(crate) async fn resolve_session_runtimes(
         &self,
+        root: SessionId,
         runtimes: &SessionRuntimes,
         acp: Option<(
             crate::runtime_snapshot::AcpOffers,
@@ -312,6 +327,7 @@ impl Engine {
                             RuntimeId::LOCAL,
                             Some(cookie_agent_protocol::CapabilityName::CODING),
                             Some(cwd),
+                            Some(root),
                         )
                         .await?;
                     push_instance(&mut attachments, &instance)?;
@@ -331,10 +347,11 @@ impl Engine {
                             &request.runtime_id,
                             request.capability.as_deref(),
                             request.workspace.as_deref(),
+                            Some(root),
                         )
                         .await?;
                     if !self.on_acp_host_machine(&attachments, &instance, acp.as_ref()) {
-                        self.refuse_overlap_with(&attachments, &instance, &context)?;
+                        self.refuse_overlap_with(root, &attachments, &instance, &context)?;
                     }
                     push_instance(&mut attachments, &instance)?;
                 }
@@ -349,7 +366,7 @@ impl Engine {
         {
             let home = self.runtime_home(chosen.as_str()).map(PathBuf::from);
             let instance = self
-                .ensure_runtime(chosen.as_str(), None, home.as_deref())
+                .ensure_runtime(chosen.as_str(), None, home.as_deref(), Some(root))
                 .await?;
             push_instance(&mut attachments, &instance)?;
         }
@@ -437,11 +454,17 @@ impl Engine {
         wanted: impl Fn(&RuntimeAttachment) -> bool,
     ) -> Result<Vec<(AttachmentName, EngineError)>, EngineError> {
         let mut failures = Vec::new();
+        let root = self.root_session_of(session);
         for attachment in self.session_runtimes(session)? {
             if !wanted(&attachment) {
                 continue;
             }
-            if let Err(error) = self.inner.runtimes.ensure_attachment(&attachment).await {
+            if let Err(error) = self
+                .inner
+                .runtimes
+                .ensure_attachment(root, &attachment)
+                .await
+            {
                 failures.push((attachment.name, error));
             }
         }
@@ -454,23 +477,27 @@ impl Engine {
     /// connection attempt failed is retried. The next run waits for those
     /// attempts to finish; failures reach clients viewing the session
     /// through the failure broadcasts.
+    ///
+    /// A per-session runtime is left for its first use, a run or an
+    /// attachment: opening a session does not start its process
+    /// (`docs/site/specs/temporary-runtimes.md` section 4).
     pub(crate) async fn connect_session(&self, session: SessionId) {
         let result = self
             .ensure_session_runtimes_where(session, |attachment| {
-                !self
-                    .inner
-                    .runtimes
-                    .is_parked(attachment.runtime_id.as_str())
+                let runtime_id = attachment.runtime_id.as_str();
+                !self.inner.runtimes.is_parked(runtime_id)
+                    && !self.inner.runtimes.is_per_session(runtime_id)
             })
             .await;
         Self::log_session_runtimes(session, result);
+        let root = self.root_session_of(session);
         for attachment in self.session_runtimes(session).unwrap_or_default() {
             if attachment.runtime_id.as_str() == RuntimeId::GLOBAL {
                 self.retry_global_mcp();
             } else if let Some(connection) = self
                 .inner
                 .runtimes
-                .instance(&attachment)
+                .instance(root, &attachment)
                 .and_then(|instance| instance.connection())
             {
                 connection.retry_failed_mcp();
@@ -483,11 +510,12 @@ impl Engine {
     /// have finished the connection attempts [`Self::connect_session`]
     /// started, so a run's tool list is not built from a partial snapshot.
     pub(crate) async fn await_session_mcp(&self, session: SessionId) {
+        let root = self.root_session_of(session);
         for attachment in self.session_runtimes(session).unwrap_or_default() {
             if let Some(connection) = self
                 .inner
                 .runtimes
-                .instance(&attachment)
+                .instance(root, &attachment)
                 .and_then(|instance| instance.connection())
             {
                 connection.mcp_settled().await;
@@ -522,6 +550,7 @@ impl Engine {
             return;
         }
         let retries = &self.inner.loaded_mcp_retries;
+        let root = self.root_session_of(session);
         let mut attempts = Vec::<futures_util::future::BoxFuture<'_, ()>>::new();
         for attachment in self.session_runtimes(session).unwrap_or_default() {
             if attachment.runtime_id.as_str() == RuntimeId::GLOBAL {
@@ -541,7 +570,7 @@ impl Engine {
             } else if let Some(connection) = self
                 .inner
                 .runtimes
-                .instance(&attachment)
+                .instance(root, &attachment)
                 .and_then(|instance| instance.connection())
             {
                 for server in connection.mcp_servers() {
@@ -618,7 +647,12 @@ impl Engine {
             return Err(EngineError::SessionRunning(session));
         }
         let instance = self
-            .ensure_runtime(runtime_id, capability, workspace.as_deref())
+            .ensure_runtime(
+                runtime_id,
+                capability,
+                workspace.as_deref(),
+                Some(self.root_session_of(session)),
+            )
             .await?;
         if runtime_id == RuntimeId::GLOBAL {
             self.retry_global_mcp();
@@ -634,6 +668,7 @@ impl Engine {
                 let mut attachments = engine.attachments_of(&projection);
                 if !engine.attaches_on_acp_host_machine(session, &attachments, &instance)? {
                     engine.refuse_overlap_with(
+                        engine.root_session_of(session),
                         &attachments,
                         &instance,
                         &cookie_agent_runtime_api::SessionToolContext::new(session),
@@ -824,7 +859,7 @@ impl Engine {
         workspace: Option<PathBuf>,
     ) -> Result<RuntimeInstanceSummary, EngineError> {
         let instance = self
-            .ensure_runtime(runtime_id, capability, workspace.as_deref())
+            .ensure_runtime(runtime_id, capability, workspace.as_deref(), None)
             .await?;
         if runtime_id == RuntimeId::GLOBAL {
             self.retry_global_mcp();
@@ -848,7 +883,53 @@ impl Engine {
     /// its instances stop, and opening a session leaves it down until a
     /// run, attachment, new session, or delegation uses it. Refused while
     /// it is busy ([`Self::runtime_activity`]).
-    pub async fn disconnect_runtime(&self, runtime_id: &str) -> Result<(), EngineError> {
+    ///
+    /// A per-session runtime stops the process of `session`'s tree, refused
+    /// while that one is busy, or without `session` every process nothing
+    /// uses (`docs/site/specs/temporary-runtimes.md` section 7).
+    pub async fn disconnect_runtime(
+        &self,
+        runtime_id: &str,
+        session: Option<SessionId>,
+    ) -> Result<(), EngineError> {
+        if self.inner.runtimes.is_per_session(runtime_id) {
+            let busy = self.busy_processes();
+            let owners = match session {
+                Some(session) => {
+                    let root = self.root_session_of(session);
+                    if busy.contains(&(runtime_id.to_owned(), Some(root))) {
+                        return Err(EngineError::Runtime(format!(
+                            "runtime `{runtime_id}` of session {root} is in use; disconnect it \
+                             once its runs and background calls end"
+                        )));
+                    }
+                    vec![Some(root)]
+                }
+                None => self
+                    .inner
+                    .runtimes
+                    .idle_owners(runtime_id)
+                    .into_iter()
+                    .filter(|owner| !busy.contains(&(runtime_id.to_owned(), *owner)))
+                    .collect(),
+            };
+            for owner in owners {
+                let connections = self.inner.runtimes.stop_owner(runtime_id, owner);
+                futures_util::future::join_all(
+                    connections
+                        .iter()
+                        .map(crate::runtimes::RuntimeClient::shutdown),
+                )
+                .await;
+            }
+            return Ok(());
+        }
+        if session.is_some() {
+            return Err(EngineError::Runtime(format!(
+                "runtime `{runtime_id}` is one process every session shares; disconnect it \
+                 without a session"
+            )));
+        }
         let activity = self
             .runtime_activity()
             .remove(runtime_id)

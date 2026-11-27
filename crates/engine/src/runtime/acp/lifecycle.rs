@@ -544,7 +544,7 @@ impl super::super::Engine {
             .inner
             .acp
             .processes
-            .acquire(&self.inner, &agent)
+            .acquire(&self.inner, &agent, Some(self.root_session_of(forked)))
             .await
             .map_err(super::super::EngineError::Acp)?;
         self.acp_session(forked, None, &agent, &resolved.document, &process, None)
@@ -578,10 +578,7 @@ impl super::super::Engine {
             .inner
             .acp
             .processes
-            .running(&super::process::ProcessKey {
-                runtime: record.runtime_id.to_string(),
-                agent: record.runtime_agent.to_string(),
-            });
+            .running_of(record.runtime_id.as_str(), record.runtime_agent.as_str());
         let live_fork = process
             .as_ref()
             .map(|process| process.init().capabilities.session("fork"));
@@ -711,7 +708,25 @@ impl super::super::Engine {
             }) else {
                 continue;
             };
-            if let Ok((process, _use)) = self.inner.acp.processes.acquire(&self.inner, &agent).await
+            // A per-session runtime's process is not started only to end
+            // a session on it.
+            if self.inner.runtimes.is_per_session(agent.runtime.as_str()) {
+                if let Some(process) = self
+                    .inner
+                    .acp
+                    .processes
+                    .running_of(agent.runtime.as_str(), agent.agent.as_str())
+                {
+                    end_agent_session(&process, &record.acp_session_id, false, true).await;
+                }
+                continue;
+            }
+            if let Ok((process, _use)) = self
+                .inner
+                .acp
+                .processes
+                .acquire(&self.inner, &agent, Some(self.root_session_of(session)))
+                .await
             {
                 end_agent_session(&process, &record.acp_session_id, false, true).await;
             }

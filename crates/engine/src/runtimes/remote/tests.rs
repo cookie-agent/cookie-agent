@@ -723,7 +723,7 @@ async fn a_dropped_instance_reconnects_with_its_tools_published_meanwhile() {
     ]));
     let mut failures = registry.subscribe_failures();
     let instance = registry
-        .ensure("remote", None, Some(workspace.path()))
+        .ensure("remote", None, Some(workspace.path()), None)
         .await
         .unwrap();
     let first_generation = instance.generation();
@@ -740,7 +740,9 @@ async fn a_dropped_instance_reconnects_with_its_tools_published_meanwhile() {
     )
     .await;
     // The tools stay published; calls fail fast with `runtime_unavailable`.
-    let reconnecting = registry.instance(&attachment).expect("still published");
+    let reconnecting = registry
+        .instance(any_root(), &attachment)
+        .expect("still published");
     assert!(Arc::ptr_eq(&reconnecting, &instance));
     let (generation, providers) = instance.sources();
     assert_eq!(generation, first_generation);
@@ -768,7 +770,9 @@ async fn a_dropped_instance_reconnects_with_its_tools_published_meanwhile() {
 
     wait_for_status(registry, "remote", crate::RuntimeInstanceStatus::Ready).await;
     // The same instance under a new generation and connection.
-    let restored = registry.instance(&attachment).expect("restored");
+    let restored = registry
+        .instance(any_root(), &attachment)
+        .expect("restored");
     assert!(Arc::ptr_eq(&restored, &instance));
     assert!(instance.generation() > first_generation);
     assert!(first_connection.is_closed());
@@ -813,7 +817,7 @@ async fn a_disconnect_ends_the_reconnect_of_a_dropped_instance() {
         3
     ]));
     registry
-        .ensure("remote", None, Some(workspace.path()))
+        .ensure("remote", None, Some(workspace.path()), None)
         .await
         .unwrap();
     connector.cut();
@@ -855,7 +859,11 @@ async fn a_connection_that_arrives_after_a_disconnect_is_not_kept() {
     let starting = {
         let registry = Arc::clone(&registry);
         let workspace = workspace.path().to_owned();
-        tokio::spawn(async move { registry.ensure("remote", None, Some(&workspace)).await })
+        tokio::spawn(async move {
+            registry
+                .ensure("remote", None, Some(&workspace), None)
+                .await
+        })
     };
     began.await.expect("the connect began");
     for connection in registry.disconnect("remote").unwrap() {
@@ -880,7 +888,7 @@ async fn a_connection_that_arrives_after_a_disconnect_is_not_kept() {
     );
     // The next use starts it again.
     registry
-        .ensure("remote", None, Some(workspace.path()))
+        .ensure("remote", None, Some(workspace.path()), None)
         .await
         .expect("a later start");
     assert!(listing_connected(&registry, "remote"));
@@ -900,11 +908,11 @@ async fn one_connection_serves_every_workspace_and_reconnects_once_for_them() {
         Duration::from_millis(20),
     ]));
     let first = registry
-        .ensure("remote", None, Some(api.path()))
+        .ensure("remote", None, Some(api.path()), None)
         .await
         .unwrap();
     let second = registry
-        .ensure("remote", None, Some(web.path()))
+        .ensure("remote", None, Some(web.path()), None)
         .await
         .unwrap();
     assert!(!Arc::ptr_eq(&first, &second));
@@ -956,7 +964,7 @@ async fn an_instance_that_cannot_reconnect_fails_and_is_revived_on_demand() {
     ]));
     let mut failures = registry.subscribe_failures();
     let instance = registry
-        .ensure("remote", None, Some(workspace.path()))
+        .ensure("remote", None, Some(workspace.path()), None)
         .await
         .unwrap();
     let first_generation = instance.generation();
@@ -993,19 +1001,19 @@ async fn an_instance_that_cannot_reconnect_fails_and_is_revived_on_demand() {
         crate::RuntimeInstanceStatus::Failed
     );
     // Its tools are dropped.
-    assert!(registry.instance(&attachment).is_none());
+    assert!(registry.instance(any_root(), &attachment).is_none());
     assert!(instance.providers().is_empty());
 
     // A retry fails while the runtime is unreachable, then revives it.
     let error = registry
-        .ensure("remote", None, Some(workspace.path()))
+        .ensure("remote", None, Some(workspace.path()), None)
         .await
         .err()
         .expect("still unreachable");
     assert!(error.to_string().contains("connection refused"), "{error}");
     connector.set_refuse(false);
     let revived = registry
-        .ensure("remote", None, Some(workspace.path()))
+        .ensure("remote", None, Some(workspace.path()), None)
         .await
         .unwrap();
     assert!(Arc::ptr_eq(&revived, &instance));
@@ -1015,7 +1023,7 @@ async fn an_instance_that_cannot_reconnect_fails_and_is_revived_on_demand() {
         instance_status(registry, "remote"),
         crate::RuntimeInstanceStatus::Ready
     );
-    assert!(registry.instance(&attachment).is_some());
+    assert!(registry.instance(any_root(), &attachment).is_some());
     fixture.engine.shutdown().await;
 }
 
@@ -1112,7 +1120,7 @@ async fn instances_are_keyed_by_the_workspace_the_runtime_reports() {
 
     // The daemon passes the path as given; the runtime resolves it.
     let instance = registry
-        .ensure("remote", None, Some(&first_link))
+        .ensure("remote", None, Some(&first_link), None)
         .await
         .unwrap();
     assert_eq!(
@@ -1122,14 +1130,17 @@ async fn instances_are_keyed_by_the_workspace_the_runtime_reports() {
     assert_eq!(connector.connects(), 1);
     // The same spelling and the canonical path reuse it without connecting.
     for path in [&first_link, &canonical] {
-        let again = registry.ensure("remote", None, Some(path)).await.unwrap();
+        let again = registry
+            .ensure("remote", None, Some(path), None)
+            .await
+            .unwrap();
         assert!(Arc::ptr_eq(&again, &instance));
     }
     assert_eq!(connector.connects(), 1);
     // A new spelling asks the runtime where it resolves, over the same
     // connection, and the running instance is shared.
     let deduplicated = registry
-        .ensure("remote", None, Some(&second_link))
+        .ensure("remote", None, Some(&second_link), None)
         .await
         .unwrap();
     assert!(Arc::ptr_eq(&deduplicated, &instance));
@@ -1202,6 +1213,10 @@ fn local_mcp_config(
         cookie_agent_identity::RuntimeId::new("local").unwrap(),
         cookie_agent_config::RuntimeTemplateConfig {
             shell_environment: Default::default(),
+            scope: cookie_agent_config::RuntimeScope::Shared,
+            idle_stop_after: None,
+            stop_command: Vec::new(),
+            delete_command: Vec::new(),
             command: Vec::new(),
             env: std::collections::BTreeMap::new(),
             startup_timeout_ms: 10_000,
@@ -1893,7 +1908,11 @@ async fn a_producing_runtime_sends_only_to_the_sessions_attached_to_it() {
         )
         .await
         .unwrap();
-    let instance = engine.inner.runtimes.instance(&attachment).unwrap();
+    let instance = engine
+        .inner
+        .runtimes
+        .instance(any_root(), &attachment)
+        .unwrap();
     let source = cookie_agent_protocol::ProducerSource::runtime(instance.info().id()).unwrap();
 
     // The daemon opens producer messaging and the runtime recovers.
@@ -2119,12 +2138,12 @@ async fn a_dial_in_runtime_serves_sessions_and_comes_back_after_a_drop() {
     connector.cut();
     wait_for_status(registry, "labpc", crate::RuntimeInstanceStatus::Failed).await;
     assert!(!listing().listing.connected);
-    assert!(registry.instance(&attachment).is_none());
+    assert!(registry.instance(any_root(), &attachment).is_none());
 
     // Dialing in again reopens it.
     dial_in().await.expect("labpc dials in again");
     wait_for_status(registry, "labpc", crate::RuntimeInstanceStatus::Ready).await;
-    let instance = registry.instance(&attachment).expect("revived");
+    let instance = registry.instance(any_root(), &attachment).expect("revived");
     assert!(!instance.connection().unwrap().is_closed());
     fixture.engine.shutdown().await;
 }
@@ -2145,7 +2164,7 @@ async fn a_runtime_joins_the_machine_of_the_id_it_reports() {
         .engine
         .inner
         .runtimes
-        .ensure("remote", None, Some(fixture._directory.path()))
+        .ensure("remote", None, Some(fixture._directory.path()), None)
         .await
         .unwrap();
     let listing = fixture
@@ -2260,7 +2279,7 @@ async fn a_silent_dial_in_runtime_is_dropped_and_then_refused_at_once() {
         )
         .await
         .expect("attach labpc");
-    let instance = registry.instance(&attachment).expect("ready");
+    let instance = registry.instance(any_root(), &attachment).expect("ready");
     let prepared = prepare_on(
         &instance,
         "bash",
@@ -2525,14 +2544,18 @@ async fn a_session_waits_for_a_dead_spawned_runtime_to_come_back() {
             .await
     };
     let first = attach().await.expect("attach remote");
-    let instance = registry.instance(&first).unwrap();
+    let instance = registry.instance(any_root(), &first).unwrap();
     let old = instance.connection().unwrap();
     connector.silence();
     tokio::time::sleep(Duration::from_secs(20)).await;
     attach().await.expect("attached once it came back");
     assert_eq!(connector.connects(), 2);
     assert!(old.is_closed(), "the dead connection was ended");
-    let connection = registry.instance(&first).unwrap().connection().unwrap();
+    let connection = registry
+        .instance(any_root(), &first)
+        .unwrap()
+        .connection()
+        .unwrap();
     assert!(!connection.is_closed());
     assert_ne!(connection.epoch(), old.epoch());
     fixture.engine.shutdown().await;
@@ -2950,6 +2973,10 @@ async fn open_with_servers(
         cookie_agent_identity::RuntimeId::new("local").unwrap(),
         cookie_agent_config::RuntimeTemplateConfig {
             shell_environment: Default::default(),
+            scope: cookie_agent_config::RuntimeScope::Shared,
+            idle_stop_after: None,
+            stop_command: Vec::new(),
+            delete_command: Vec::new(),
             command: Vec::new(),
             env: std::collections::BTreeMap::new(),
             startup_timeout_ms: 10_000,
@@ -3414,6 +3441,10 @@ async fn a_dial_in_runtime_hosts_its_daemon_table_and_follows_changes() {
             labpc.clone(),
             cookie_agent_config::RuntimeTemplateConfig {
                 shell_environment: Default::default(),
+                scope: cookie_agent_config::RuntimeScope::Shared,
+                idle_stop_after: None,
+                stop_command: Vec::new(),
+                delete_command: Vec::new(),
                 command: Vec::new(),
                 env: std::collections::BTreeMap::new(),
                 startup_timeout_ms: 10_000,
@@ -3648,4 +3679,9 @@ async fn a_global_server_connects_on_demand_and_stops_after_the_idle_delay() {
     engine.inner.mcp.await_eager_ready().await;
     assert_eq!(state(&engine), State::Connected);
     engine.shutdown().await;
+}
+
+/// A root session for lookups of shared runtimes, which ignore it.
+fn any_root() -> cookie_agent_protocol::SessionId {
+    cookie_agent_protocol::SessionId::new_v7()
 }

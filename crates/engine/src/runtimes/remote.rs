@@ -110,6 +110,14 @@ pub(crate) struct ProtocolTemplate {
     /// Counts [`RuntimeTemplate::disconnect`]s, so a connection that
     /// finishes initializing after one is shut down instead of kept.
     disconnects: std::sync::atomic::AtomicU64,
+    /// Whether listings leave out the machine the runtime reports, so the
+    /// daemon places it on a machine of its own: a temporary runtime's
+    /// every process is a new container or sandbox
+    /// (`docs/site/specs/temporary-runtimes.md` section 6).
+    own_machine: bool,
+    /// How long the process runs with nothing using it before the daemon
+    /// stops it; `None` keeps it running.
+    idle_stop_after: Option<Duration>,
 }
 
 /// How long the daemon waits for the in-process `local` runtime to answer
@@ -141,7 +149,22 @@ impl ProtocolTemplate {
             connection: Mutex::new(None),
             offered: Mutex::default(),
             disconnects: std::sync::atomic::AtomicU64::new(0),
+            own_machine: false,
+            idle_stop_after: None,
         }
+    }
+
+    /// The daemon stops the process after `after` with nothing using it.
+    pub(crate) const fn with_idle_stop(mut self, after: Option<Duration>) -> Self {
+        self.idle_stop_after = after;
+        self
+    }
+
+    /// Listings leave out the machine the runtime reports; see
+    /// [`Self::own_machine`].
+    pub(crate) const fn with_own_machine(mut self) -> Self {
+        self.own_machine = true;
+        self
     }
 
     /// Reports the MCP servers its instances host to `hub`.
@@ -284,6 +307,9 @@ impl RuntimeTemplate for ProtocolTemplate {
         if listing.connected {
             listing.message = None;
         }
+        if self.own_machine {
+            listing.machine = None;
+        }
         listing
     }
 
@@ -321,11 +347,15 @@ impl RuntimeTemplate for ProtocolTemplate {
         })
     }
 
-    fn disconnect(&self) -> Option<super::registry::RuntimeLink> {
+    fn disconnect(&self) -> Vec<super::registry::RuntimeLink> {
         let mut connection = lock(&self.connection);
         self.disconnects
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        connection.take().map(super::registry::RuntimeLink)
+        connection
+            .take()
+            .map(super::registry::RuntimeLink)
+            .into_iter()
+            .collect()
     }
 
     fn update_settings(&self, settings: &RuntimeSettings) {
@@ -387,6 +417,10 @@ impl RuntimeTemplate for ProtocolTemplate {
 
     async fn agent_connection(&self) -> Result<super::registry::RuntimeLink, String> {
         self.connected().await.map(super::registry::RuntimeLink)
+    }
+
+    fn idle_stop_after(&self) -> Option<Duration> {
+        self.idle_stop_after
     }
 }
 
@@ -466,30 +500,68 @@ pub(crate) fn acp_agent_settings(
 
 /// Registers a protocol template per configured `[runtimes.<id>]` other
 /// than `local`, each starting its instances with a [`ProcessConnector`].
+///
+/// A temporary template's processes are recorded in `records`, and those a
+/// daemon before this one left running get their `stop_command` now
+/// (`docs/site/specs/temporary-runtimes.md` section 5).
 pub(crate) fn register_configured_templates(
     registry: &RuntimeRegistry,
     config: &cookie_agent_config::LoadedConfiguration,
     mcp_hub: &Arc<McpHub>,
+    records: &Arc<super::ProcessRecords>,
 ) -> Result<(), EngineError> {
+    let started = config
+        .runtimes
+        .iter()
+        .filter(|(runtime_id, template)| !runtime_id.is_reserved() && template.daemon_starts())
+        .map(|(runtime_id, template)| (runtime_id.as_str().to_owned(), template.clone()))
+        .collect::<BTreeMap<_, _>>();
+    super::temporary::recover(records, &started);
     for (runtime_id, template) in &config.runtimes {
         // A table without a command holds a dial-in runtime's settings.
         if runtime_id.is_reserved() || !template.daemon_starts() {
             continue;
         }
-        registry.register_template(Arc::new(
-            ProtocolTemplate::new(
+        let settings = runtime_settings(config, runtime_id.as_str());
+        if template.scope == cookie_agent_config::RuntimeScope::Session {
+            registry.register_template(Arc::new(super::PerSessionTemplate::new(
                 runtime_id.as_str(),
-                Arc::new(ProcessConnector::new(
-                    template.command.clone(),
-                    template.env.clone(),
-                    template.shutdown_grace(),
-                )),
-                runtime_settings(config, runtime_id.as_str()),
-                template.startup_timeout(),
-                template.shutdown_grace(),
-            )
-            .with_mcp_hub(Arc::clone(mcp_hub)),
-        ))?;
+                template.clone(),
+                settings,
+                Arc::clone(mcp_hub),
+                Arc::clone(records),
+            )))?;
+            continue;
+        }
+        let launch = template.launch(None);
+        let connector =
+            ProcessConnector::new(launch.command, launch.env, template.shutdown_grace());
+        let connector = if template.is_temporary() {
+            connector.with_lifecycle(Arc::new(super::temporary::TemporaryProcess::new(
+                runtime_id.as_str(),
+                None,
+                template.clone(),
+                Arc::clone(records),
+            )))
+        } else {
+            connector
+        };
+        let protocol = ProtocolTemplate::new(
+            runtime_id.as_str(),
+            Arc::new(connector),
+            settings,
+            template.startup_timeout(),
+            template.shutdown_grace(),
+        )
+        .with_mcp_hub(Arc::clone(mcp_hub));
+        let protocol = if template.is_temporary() {
+            protocol
+                .with_own_machine()
+                .with_idle_stop(template.idle_stop_after)
+        } else {
+            protocol
+        };
+        registry.register_template(Arc::new(protocol))?;
     }
     Ok(())
 }

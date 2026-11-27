@@ -1637,6 +1637,13 @@ impl ServerProtocol for Server {
         &self,
         params: cookie_agent_protocol::RuntimesConnectParams,
     ) -> Result<cookie_agent_protocol::RuntimesConnectResult> {
+        if params.session.is_some() {
+            return Err(protocol_fault(cookie_agent_engine::EngineError::Runtime(
+                "`session` names the process `runtimes.disconnect` stops; a runtime connects \
+                 without one"
+                    .into(),
+            )));
+        }
         self.engine
             .connect_runtime(params.runtime_id.as_str())
             .await
@@ -1649,7 +1656,7 @@ impl ServerProtocol for Server {
         params: cookie_agent_protocol::RuntimesConnectParams,
     ) -> Result<cookie_agent_protocol::RuntimesConnectResult> {
         self.engine
-            .disconnect_runtime(params.runtime_id.as_str())
+            .disconnect_runtime(params.runtime_id.as_str(), params.session)
             .await
             .map_err(protocol_fault)?;
         self.connect_result(&params.runtime_id)

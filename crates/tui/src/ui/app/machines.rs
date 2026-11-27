@@ -116,6 +116,7 @@ impl App {
         self.spawn_rpc(async move {
             let params = RuntimesConnectParams {
                 runtime_id: runtime.clone(),
+                session: None,
             };
             let result = if connect {
                 client.connect_runtime(params).await

@@ -293,7 +293,11 @@ impl Engine {
                 .iter()
                 .filter(|attachment| attachment.workspace.is_some())
             {
-                let Some(instance) = self.inner.runtimes.instance(attachment) else {
+                let Some(instance) = self
+                    .inner
+                    .runtimes
+                    .instance(self.root_session_of(session), attachment)
+                else {
                     continue;
                 };
                 let Some(context) = instance.agent_md(preset).await? else {

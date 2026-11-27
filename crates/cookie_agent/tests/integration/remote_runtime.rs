@@ -739,7 +739,7 @@ async fn a_disconnected_runtime_stays_down_until_used_or_connected() {
 
     fixture
         .engine
-        .disconnect_runtime("remote")
+        .disconnect_runtime("remote", None)
         .await
         .expect("disconnect");
     assert!(!connected());

@@ -2745,6 +2745,7 @@ mod tests {
                 });
             listing.push(RuntimeListing {
                 runtime_id: RuntimeId::new(id).unwrap(),
+                per_session: false,
                 lifetime: RuntimeLifetime::Spawned,
                 connected: true,
                 capabilities: Vec::new(),

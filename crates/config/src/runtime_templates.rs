@@ -18,6 +18,31 @@ const REMOVED_WORKSPACE_PLACEHOLDER: &str = "{workspace}";
 const DEFAULT_STARTUP_TIMEOUT_MS: u64 = 10_000;
 const DEFAULT_SHUTDOWN_GRACE_MS: u64 = 3_000;
 
+/// The argument text a `scope = "session"` template's command, `env`
+/// values, and hooks have replaced with the ID of the root session that owns
+/// the instance (`docs/site/specs/temporary-runtimes.md` section 2).
+pub const SESSION_ID_PLACEHOLDER: &str = "{session_id}";
+
+/// The variable a template's process and hooks find the owning root
+/// session's ID in, when the template is per session.
+pub const SESSION_ID_ENV: &str = "COOKIE_SESSION_ID";
+
+/// How long an idle per-session instance runs when the template does not
+/// say.
+const DEFAULT_SESSION_IDLE_STOP: Duration = Duration::from_secs(30 * 60);
+
+/// Who shares a template's process (`docs/site/specs/temporary-runtimes.md`
+/// section 2).
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeScope {
+    /// One process serves every session.
+    #[default]
+    Shared,
+    /// One process per session tree, owned by its root session.
+    Session,
+}
+
 /// A `[runtimes.<id>]` table as authored.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -29,6 +54,10 @@ pub(crate) struct RawRuntimeTemplate {
     mcp: Option<McpConfig>,
     acp: Option<RawAcpRuntime>,
     shell_environment: Option<ShellEnvironmentOverride>,
+    scope: Option<RuntimeScope>,
+    idle_stop_after: Option<crate::runtime::McpIdleStop>,
+    stop_command: Option<Vec<String>>,
+    delete_command: Option<Vec<String>>,
 }
 
 /// `[runtimes.<id>.acp]` as authored.
@@ -104,6 +133,28 @@ pub struct RuntimeTemplateConfig {
     /// `[runtimes.<id>.shell_environment]`: the keys that replace
     /// `[shell_environment]`'s for this runtime.
     pub shell_environment: ShellEnvironmentOverride,
+    /// Whether one process serves every session or each session tree gets
+    /// its own.
+    pub scope: RuntimeScope,
+    /// How long an idle process runs before the daemon stops it; `None`
+    /// keeps it until the daemon exits or a client disconnects it.
+    pub idle_stop_after: Option<Duration>,
+    /// Run on the daemon's machine after every stop of the process; empty
+    /// when not authored.
+    pub stop_command: Vec<String>,
+    /// Run on the daemon's machine once the owning root session is
+    /// deleted; empty when not authored, and always for a shared template.
+    pub delete_command: Vec<String>,
+}
+
+/// What a template starts and runs for one owner: its commands with
+/// [`SESSION_ID_PLACEHOLDER`] replaced.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RuntimeLaunch {
+    pub command: Vec<String>,
+    pub env: BTreeMap<String, String>,
+    pub stop_command: Vec<String>,
+    pub delete_command: Vec<String>,
 }
 
 impl RuntimeTemplateConfig {
@@ -122,6 +173,52 @@ impl RuntimeTemplateConfig {
     #[must_use]
     pub const fn shutdown_grace(&self) -> Duration {
         Duration::from_millis(self.shutdown_grace_ms)
+    }
+
+    /// Whether the template's process is meant to come and go: per session,
+    /// stopped when idle, or cleaned up after by a `stop_command`. The
+    /// daemon places such a runtime on a machine of its own rather than by
+    /// the machine ID each new process reports.
+    #[must_use]
+    pub const fn is_temporary(&self) -> bool {
+        matches!(self.scope, RuntimeScope::Session)
+            || self.idle_stop_after.is_some()
+            || !self.stop_command.is_empty()
+    }
+
+    /// The commands and environment for the instance `session` owns, the
+    /// root session's ID, or for the one shared instance when `None`.
+    #[must_use]
+    pub fn launch(&self, session: Option<&str>) -> RuntimeLaunch {
+        let substitute = |values: &[String]| -> Vec<String> {
+            values
+                .iter()
+                .map(|value| match session {
+                    Some(session) => value.replace(SESSION_ID_PLACEHOLDER, session),
+                    None => value.clone(),
+                })
+                .collect()
+        };
+        let mut env = self
+            .env
+            .iter()
+            .map(|(name, value)| {
+                let value = match session {
+                    Some(session) => value.replace(SESSION_ID_PLACEHOLDER, session),
+                    None => value.clone(),
+                };
+                (name.clone(), value)
+            })
+            .collect::<BTreeMap<_, _>>();
+        if let Some(session) = session {
+            env.insert(SESSION_ID_ENV.to_owned(), session.to_owned());
+        }
+        RuntimeLaunch {
+            command: substitute(&self.command),
+            env,
+            stop_command: substitute(&self.stop_command),
+            delete_command: substitute(&self.delete_command),
+        }
     }
 }
 
@@ -179,9 +276,14 @@ fn validate_template(
     }
     let acp_agents = validate_acp_agents(id, template.acp)?;
     let shell_environment = template.shell_environment.unwrap_or_default();
+    let lifecycle_fields = template.scope.is_some()
+        || template.idle_stop_after.is_some()
+        || template.stop_command.is_some()
+        || template.delete_command.is_some();
     let launch_fields = template.env.is_some()
         || template.startup_timeout_ms.is_some()
-        || template.shutdown_grace_ms.is_some();
+        || template.shutdown_grace_ms.is_some()
+        || lifecycle_fields;
     if id == RuntimeId::LOCAL && (template.command.is_some() || launch_fields) {
         return Err(invalid(
             id,
@@ -193,7 +295,8 @@ fn validate_template(
             id,
             "a table without `command` holds the settings of the runtime that dials in as \
              this ID and accepts only `mcp`, `acp`, and `shell_environment` tables; give it \
-             a `command` for the daemon to start it",
+             a `command` for the daemon to start it (only runtimes the daemon starts can be \
+             per session or stop when idle)",
         ));
     }
     if template.command.is_none() {
@@ -205,11 +308,27 @@ fn validate_template(
             mcp_servers,
             acp_agents,
             shell_environment,
+            scope: RuntimeScope::Shared,
+            idle_stop_after: None,
+            stop_command: Vec::new(),
+            delete_command: Vec::new(),
         });
     }
     let command = validate_command(id, "", template.command)?;
+    let stop_command = validate_hook(id, "stop_command", template.stop_command)?;
+    let delete_command = validate_hook(id, "delete_command", template.delete_command)?;
+    let scope = template.scope.unwrap_or_default();
+    if scope == RuntimeScope::Shared && !delete_command.is_empty() {
+        return Err(invalid(
+            id,
+            "`delete_command` runs when the session that owns an instance is deleted, so it \
+             needs `scope = \"session\"`",
+        ));
+    }
     if command
         .iter()
+        .chain(&stop_command)
+        .chain(&delete_command)
         .any(|argument| argument.contains(REMOVED_WORKSPACE_PLACEHOLDER))
     {
         return Err(invalid(
@@ -219,6 +338,26 @@ fn validate_template(
         ));
     }
     let env = validate_env(id, "", template.env)?;
+    if scope == RuntimeScope::Shared
+        && command
+            .iter()
+            .chain(&stop_command)
+            .chain(env.values())
+            .any(|argument| argument.contains(SESSION_ID_PLACEHOLDER))
+    {
+        return Err(invalid(
+            id,
+            "`{session_id}` names the session that owns an instance, so it needs \
+             `scope = \"session\"`; a shared runtime serves every session",
+        ));
+    }
+    let idle_stop_after = match template.idle_stop_after {
+        Some(crate::runtime::McpIdleStop(after)) => after,
+        None => match scope {
+            RuntimeScope::Shared => None,
+            RuntimeScope::Session => Some(DEFAULT_SESSION_IDLE_STOP),
+        },
+    };
     let startup_timeout_ms = template
         .startup_timeout_ms
         .unwrap_or(DEFAULT_STARTUP_TIMEOUT_MS);
@@ -239,7 +378,32 @@ fn validate_template(
         mcp_servers,
         acp_agents,
         shell_environment,
+        scope,
+        idle_stop_after,
+        stop_command,
+        delete_command,
     })
+}
+
+/// A hook command as authored: absent is none, and one that is given must
+/// name a program.
+fn validate_hook(
+    id: &str,
+    key: &str,
+    command: Option<Vec<String>>,
+) -> Result<Vec<String>, ConfigError> {
+    match command {
+        None => Ok(Vec::new()),
+        Some(command) if command.first().is_none_or(String::is_empty) => Err(invalid(
+            id,
+            format!("`{key}` must be a nonempty array whose first element names a program"),
+        )),
+        Some(command) if command.iter().any(|argument| argument.contains('\0')) => Err(invalid(
+            id,
+            format!("`{key}` elements must not contain NUL"),
+        )),
+        Some(command) => Ok(command),
+    }
 }
 
 /// The longest description an ACP agent may carry, as for agent documents.

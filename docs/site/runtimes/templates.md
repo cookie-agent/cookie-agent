@@ -51,7 +51,14 @@ that uses `labpc`.
 | `mcp.servers.<name>` | MCP server table | none | MCP servers the runtime hosts on its machine, one per workspace instance or, with `scope = "runtime"`, one for the runtime; see [MCP servers](tools.md#mcp-servers). Their `include_tools` and `exclude_tools` filter tools on the runtime's machine ([choosing a server's tools](../extend/mcp.md#choosing-a-servers-tools)). |
 | `acp.agents.<agent>` | ACP agent table | none | ACP agents the runtime starts on its machine; see [ACP agents](tools.md#acp-agents). |
 | `shell_environment` | table | none | The [`[shell_environment]`](../engine/shell_environment.md) keys this runtime replaces: how it captures the user's shell environment on its machine. |
+| `scope` | `"shared"` or `"session"` | `"shared"` | Who shares the process: every session, or each session tree its own (see [one runtime per session tree](#one-runtime-per-session-tree)). |
+| `idle_stop_after` | duration string or seconds | `"0"` shared, `"30m"` per session | How long the process runs with nothing using it before the daemon stops it, as `"30m"`, `"2h"`, or a number of seconds; zero or less never stops it. |
+| `stop_command` | array of strings | none | Run on the daemon's machine after every stop of the process, such as `docker rm -f` of its container. |
+| `delete_command` | array of strings | none | With `scope = "session"`: run on the daemon's machine once the session tree that owned a process is deleted, such as `docker volume rm` of its volume. |
 
+- **`scope`, `idle_stop_after`, `stop_command`, and `delete_command`** need
+  `command`: only runtimes the daemon starts can be per session or stop
+  when idle.
 - **Runtime IDs** match `[a-z][a-z0-9_]{0,31}` because they become tool name
   prefixes. `global` is reserved. `[runtimes.local]` configures the built-in
   local runtime and accepts only `mcp`, `acp`, and `shell_environment` tables.
@@ -97,6 +104,63 @@ that uses `labpc`.
 
 Unknown keys and invalid values fail the configuration load, as everywhere in
 `config.toml`. Changes take effect when the daemon next starts.
+
+## One runtime per session tree
+
+A template whose process should exist only for one piece of work, such as a
+docker container per session, sets `scope = "session"`:
+
+```toml
+[runtimes.sandbox]
+command = ["docker", "run", "--rm", "-i", "--name", "cookie-{session_id}",
+           "-v", "cookie-{session_id}:/work", "sandbox-img",
+           "cookie", "runtime", "serve", "--stdio"]
+scope = "session"
+idle_stop_after = "30m"
+stop_command = ["docker", "rm", "-f", "cookie-{session_id}"]
+delete_command = ["docker", "volume", "rm", "cookie-{session_id}"]
+startup_timeout_ms = 60000
+```
+
+- **One process per session tree.** A root session that uses `sandbox`
+  starts its own process, and the subagents it delegates to, with
+  `capabilities` or their own attachments, share it. Another root session
+  starts another. The runtime ID stays `sandbox` everywhere: attachments,
+  permission rules, `list_runtimes`, and project defaults.
+- **`{session_id}`** is replaced, inside any element of `command`,
+  `stop_command`, `delete_command`, and the values of `env`, with the ID of
+  the root session, such as `01a1946d-d1a0-7063-9890-004906b59348`, which is
+  a valid container and volume name. The process and the hooks also get it
+  as `COOKIE_SESSION_ID`. A shared template that uses `{session_id}` is
+  rejected.
+- **It starts on use,** when a run, an attachment, a new session, or a
+  delegation needs it, not when a session is opened. A cold image pull can
+  take longer than the `10000` ms default of `startup_timeout_ms`.
+- **It stops** after `idle_stop_after` with no run of the tree and no
+  background call using it, when the session tree is deleted, when a
+  client disconnects the runtime, and when the daemon exits. The next use
+  starts a fresh process, so state carries over only through what the
+  command mounts, here the volume named after the session.
+- **`stop_command`** runs after every stop, once the process has exited or
+  been killed after `shutdown_grace_ms`. cookie stops the process by closing
+  its standard input, which ends `cookie runtime serve` inside the container
+  and so the container, but a killed `docker run` client leaves its
+  container running, and so does a daemon that crashed. The daemon
+  remembers the processes it started and runs `stop_command` for those
+  still recorded when it next starts.
+- **`delete_command`** runs once the root session is deleted (deleting its
+  project deletes it too), after the process has stopped.
+- **Hooks** run without a shell, with the daemon's environment plus `env`,
+  for at most 60 seconds each. A hook that fails is reported in the
+  daemon's log and never holds up a stop or a deletion.
+- **One machine.** Each new container would report a machine ID of its
+  own, so the daemon places every process of the template on one machine
+  named after it, `sandbox`, whose [memories](../concepts/memory.md) hold
+  notes about the image. A shared template with `idle_stop_after` or
+  `stop_command` is placed the same way.
+
+A shared template can be temporary as well: `idle_stop_after` and
+`stop_command` work on it, and it starts again at its next use.
 
 ## `cookie runtime serve`
 

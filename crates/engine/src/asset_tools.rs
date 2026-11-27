@@ -431,13 +431,14 @@ impl Engine {
         let attachments = self
             .session_runtimes(session)
             .map_err(|error| refused(error.to_string()))?;
+        let root = self.root_session_of(session);
         attachments
             .iter()
             .filter(|attachment| attachment.runtime_id.as_str() != RuntimeId::GLOBAL)
             .find(|attachment| {
                 self.inner
                     .runtimes
-                    .instance(attachment)
+                    .instance(root, attachment)
                     .and_then(|instance| instance.connection())
                     .is_some_and(|connection| connection.client.files())
             })

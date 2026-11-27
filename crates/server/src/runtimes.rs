@@ -68,6 +68,7 @@ pub(crate) fn runtimes_list(engine: &Engine) -> RuntimesListResult {
                     message: template.listing.message,
                     active_runs: busy.active_runs,
                     background_calls: busy.background_calls,
+                    per_session: template.per_session,
                 })
             })
             .collect(),
@@ -83,6 +84,7 @@ pub(crate) fn runtimes_list(engine: &Engine) -> RuntimesListResult {
 pub(crate) fn instance_info(instance: RuntimeInstanceSummary) -> Option<RuntimeInstanceInfo> {
     Some(RuntimeInstanceInfo {
         runtime_id: RuntimeId::new(instance.runtime_id).ok()?,
+        owner: instance.owner,
         capability: CapabilityName::new(instance.capability).ok()?,
         attachment_name: instance
             .attachment_name
@@ -147,6 +149,7 @@ mod session_runtimes_tests {
             machine: Some(MachineName::new(format!("{id}-box")).unwrap()),
             home: Some("/home/someone".into()),
             message: Some("ssh someone@host: refused".into()),
+            per_session: false,
             active_runs: 2,
             background_calls: 1,
         }

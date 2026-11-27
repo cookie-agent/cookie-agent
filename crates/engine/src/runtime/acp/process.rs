@@ -81,6 +81,9 @@ pub(crate) enum SessionEvent {
 pub(crate) struct ProcessKey {
     pub runtime: String,
     pub agent: String,
+    /// The root session whose process of a per-session runtime the agent
+    /// runs on (`docs/site/specs/temporary-runtimes.md` section 3).
+    pub owner: Option<SessionId>,
 }
 
 /// One running agent.
@@ -324,26 +327,46 @@ impl Processes {
             .cloned()
     }
 
-    fn by_connection(&self, client: &RuntimeClient, agent: &str) -> Option<Arc<AgentProcess>> {
+    /// A running process of `agent` on `runtime`, on any owner's process
+    /// of a per-session runtime.
+    pub(crate) fn running_of(&self, runtime: &str, agent: &str) -> Option<Arc<AgentProcess>> {
         lock(&self.running)
-            .get(&ProcessKey {
-                runtime: client.runtime_id().to_owned(),
-                agent: agent.to_owned(),
+            .values()
+            .find(|process| {
+                process.key.runtime == runtime
+                    && process.key.agent == agent
+                    && !process.exited.is_cancelled()
             })
-            .filter(|process| process.client.epoch() == client.epoch())
+            .cloned()
+    }
+
+    fn by_connection(&self, client: &RuntimeClient, agent: &str) -> Option<Arc<AgentProcess>> {
+        // Connection epochs are unique, so one names the owner's process of
+        // a per-session runtime too.
+        lock(&self.running)
+            .values()
+            .find(|process| {
+                process.key.runtime == client.runtime_id()
+                    && process.key.agent == agent
+                    && process.client.epoch() == client.epoch()
+            })
             .cloned()
     }
 
     /// The process of `agent`, started and initialized when it is not
-    /// running, marked in use until the returned guard drops.
+    /// running, marked in use until the returned guard drops. `root` is the
+    /// root session of the tree that uses it, whose process of a
+    /// per-session runtime it runs on.
     pub(crate) async fn acquire(
         &self,
         inner: &Arc<super::super::Inner>,
         agent: &RuntimeAgent,
+        root: Option<SessionId>,
     ) -> Result<(Arc<AgentProcess>, ProcessUse), String> {
         let key = ProcessKey {
             runtime: agent.runtime.to_string(),
             agent: agent.agent.to_string(),
+            owner: root.filter(|_| inner.runtimes.is_per_session(agent.runtime.as_str())),
         };
         let process = match self.running(&key) {
             Some(process) => process,
@@ -370,7 +393,10 @@ impl Processes {
         inner: &Arc<super::super::Inner>,
         key: ProcessKey,
     ) -> Result<Arc<AgentProcess>, String> {
-        let connection = inner.runtimes.agent_connection(&key.runtime).await?;
+        let connection = inner
+            .runtimes
+            .agent_connection(&key.runtime, key.owner)
+            .await?;
         let client = connection.0;
         client
             .agent_request::<_, Empty>(

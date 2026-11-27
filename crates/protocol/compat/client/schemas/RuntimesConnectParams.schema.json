@@ -8,6 +8,14 @@
       "minLength": 1,
       "pattern": "^[a-z][a-z0-9_]{0,31}$",
       "type": "string"
+    },
+    "session": {
+      "description": "For `runtimes.disconnect` of a per-session runtime: the root session\nwhose process stops (client protocol 1.102.0). Without it, every\nidle process of the runtime stops. Refused for `runtimes.connect`\nand for a runtime one process serves.",
+      "format": "uuid",
+      "type": [
+        "string",
+        "null"
+      ]
     }
   },
   "required": [

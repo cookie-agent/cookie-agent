@@ -217,6 +217,8 @@ impl Engine {
                     requested.runtime_id.as_str(),
                     Some(requested.capability.as_str()),
                     requested.workspace.as_deref().map(PathBuf::from).as_deref(),
+                    // The child joins the parent's tree, which the parent roots.
+                    Some(parent.meta.session_id),
                 )
                 .await
                 .map_err(|error| {
@@ -228,6 +230,7 @@ impl Engine {
                     })
                 })?;
             self.refuse_overlap_with(
+                parent.meta.session_id,
                 &attachments,
                 &instance,
                 &cookie_agent_runtime_api::SessionToolContext::new(SessionId::new_v7()),
@@ -316,6 +319,8 @@ struct ListedRuntime {
     /// The ACP agents it offers, by ID.
     acp_agents: Vec<String>,
     attachments: Vec<(RuntimeAttachment, &'static str)>,
+    /// Whether each session tree gets its own process of the runtime.
+    per_session: bool,
 }
 
 /// `value` escaped for an XML attribute.
@@ -351,6 +356,7 @@ fn write_runtime(text: &mut String, indent: &str, runtime: &ListedRuntime, platf
             ("id", Some(&runtime.id)),
             ("connected", Some(connected)),
             ("starts_on_use", runtime.starts_on_use.then_some("true")),
+            ("per_session_tree", runtime.per_session.then_some("true"),),
             ("platform", runtime.platform.as_deref().filter(|_| platform),),
             ("home", runtime.home.as_deref()),
             ("message", runtime.message.as_deref()),
@@ -414,9 +420,13 @@ impl Engine {
         let own = self.session_runtimes(session)?;
         let instances = self.runtime_instances();
         let acp_agents = self.inner.acp.runtime_agents();
+        let root = self.root_session_of(session);
+        // A per-session runtime's process is the tree's own.
+        let owner_of = |runtime: &str| self.inner.runtimes.is_per_session(runtime).then_some(root);
         let status_of = |attachment: &RuntimeAttachment| -> &'static str {
             let status = instances.iter().find(|instance| {
                 instance.runtime_id == attachment.runtime_id.as_str()
+                    && instance.owner == owner_of(&instance.runtime_id)
                     && instance.capability == attachment.capability.as_str()
                     && instance.workspace == attachment.workspace
             });
@@ -446,9 +456,19 @@ impl Engine {
                 ),
                 None => (listing.platform, listing.home),
             };
+            // The tree's own process of a per-session runtime.
+            let connected = if template.per_session {
+                self.inner
+                    .runtimes
+                    .idle_owners(&template.runtime_id)
+                    .contains(&Some(root))
+            } else {
+                listing.connected
+            };
             let runtime = ListedRuntime {
-                starts_on_use: !listing.connected && template.lifetime == RuntimeLifetime::Spawned,
-                connected: listing.connected,
+                per_session: template.per_session,
+                starts_on_use: !connected && template.lifetime == RuntimeLifetime::Spawned,
+                connected,
                 platform,
                 home,
                 message: listing.message.filter(|_| !listing.connected),

@@ -27,6 +27,7 @@ fn agent_running(engine: &Engine) -> bool {
     let key = super::super::super::acp::process::ProcessKey {
         runtime: "local".to_owned(),
         agent: "fixture".to_owned(),
+        owner: None,
     };
     engine.inner.acp.processes.running(&key).is_some()
 }

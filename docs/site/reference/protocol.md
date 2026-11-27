@@ -685,6 +685,15 @@ the daemon starts from a template (`lifetime: spawned`); `builtin` and
   session that attaches it (`session.resume`) leaves it down; the next
   run, attach, session creation, or delegation that needs it starts it
   again, as do `runtimes.connect` and `runtimes.reconnect`.
+- **Per-session runtimes** (since 1.102.0): a runtime whose template gives
+  each session tree its own process lists `per_session: true`, and each of
+  its instances names its tree's root session as `owner`. Such a runtime
+  starts only on use, so `runtimes.connect` refuses it.
+  `runtimes.disconnect` with `session` stops that tree's process, refused
+  while the tree uses it; without `session` it stops every process nothing
+  uses. A `session` is refused for a shared runtime and for
+  `runtimes.connect`. See
+  [one runtime per session tree](../runtimes/templates.md#one-runtime-per-session-tree).
 
 ### Machines
 

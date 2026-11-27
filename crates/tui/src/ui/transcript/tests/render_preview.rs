@@ -102,6 +102,7 @@ async fn render_preview() {
                     let (runtime, machine) = pair.split_once('=').expect("runtime=machine");
                     cookie_agent_protocol::RuntimeListing {
                         runtime_id: cookie_agent_protocol::RuntimeId::new(runtime).unwrap(),
+                        per_session: false,
                         lifetime: cookie_agent_protocol::RuntimeLifetime::Spawned,
                         connected: true,
                         capabilities: Vec::new(),

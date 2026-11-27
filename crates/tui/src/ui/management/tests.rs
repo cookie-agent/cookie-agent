@@ -777,6 +777,7 @@ fn runtime_listing() -> cookie_agent_protocol::RuntimesListResult {
             let capability = if id == "global" { "global" } else { "coding" };
             RuntimeInstanceInfo {
                 runtime_id: RuntimeId::new(id).unwrap(),
+                owner: None,
                 capability: CapabilityName::new(capability).unwrap(),
                 attachment_name: Some(AttachmentName::new(name).unwrap()),
                 kind: Some(RuntimeKind::new(capability).unwrap()),
@@ -788,6 +789,7 @@ fn runtime_listing() -> cookie_agent_protocol::RuntimesListResult {
         };
     let listing = |id: &str, lifetime, connected, capabilities| RuntimeListing {
         runtime_id: RuntimeId::new(id).unwrap(),
+        per_session: false,
         lifetime,
         connected,
         capabilities,

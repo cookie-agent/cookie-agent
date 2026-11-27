@@ -737,6 +737,12 @@ fn connection_line(listing: &RuntimeListing) -> String {
     if let Some(message) = listing.message.as_deref().filter(|_| !listing.connected) {
         line.push_str(&format!("\nlast attempt failed: {message}"));
     }
+    if listing.per_session {
+        line.push_str(
+            "\none process per session tree, started when a session uses it; disconnecting \
+             stops every process nothing uses",
+        );
+    }
     line
 }
 

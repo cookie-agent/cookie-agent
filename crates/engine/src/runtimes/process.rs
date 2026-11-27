@@ -11,7 +11,7 @@
 //! runtime that is still running; it then gets the template's shutdown grace
 //! to exit before its process group is killed.
 
-use std::{collections::BTreeMap, process::Stdio, time::Duration};
+use std::{collections::BTreeMap, process::Stdio, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use cookie_agent_protocol::{MessageFrame, Transport, TransportError};
@@ -33,6 +33,23 @@ use tokio_util::sync::CancellationToken;
 /// and its stderr to drain before it reports the exit.
 const EXIT_REPORT_WAIT: Duration = Duration::from_secs(2);
 
+/// How long a new process waits for the previous one's [`ProcessLifecycle::stopped`]
+/// to finish, such as a `stop_command` removing a container whose name the
+/// new one takes.
+const STOPPED_WAIT: Duration = Duration::from_secs(90);
+
+/// What a connector does around each process it runs: a temporary
+/// runtime's record and `stop_command`
+/// (`docs/site/specs/temporary-runtimes.md` section 5).
+pub(crate) trait ProcessLifecycle: Send + Sync {
+    /// The process started.
+    fn started(&self);
+
+    /// The process has exited or been killed; runs to completion before
+    /// the connector starts another.
+    fn stopped(&self) -> futures_util::future::BoxFuture<'static, ()>;
+}
+
 /// Starts a runtime per connection by running a command.
 pub(crate) struct ProcessConnector {
     /// The program and arguments.
@@ -41,6 +58,12 @@ pub(crate) struct ProcessConnector {
     /// The working directory; the daemon's when `None`.
     cwd: Option<std::path::PathBuf>,
     shutdown_grace: Duration,
+    lifecycle: Option<Arc<dyn ProcessLifecycle>>,
+    /// How many processes' [`ProcessLifecycle::stopped`] is still running.
+    stopping: Arc<tokio::sync::watch::Sender<usize>>,
+    /// How many processes this connector ran have not finished stopping,
+    /// [`ProcessLifecycle::stopped`] included.
+    running: Arc<tokio::sync::watch::Sender<usize>>,
 }
 
 impl ProcessConnector {
@@ -54,7 +77,32 @@ impl ProcessConnector {
             env,
             cwd: None,
             shutdown_grace,
+            lifecycle: None,
+            stopping: Arc::new(tokio::sync::watch::channel(0).0),
+            running: Arc::new(tokio::sync::watch::channel(0).0),
         }
+    }
+
+    /// Tells `lifecycle` of each process it runs.
+    pub(crate) fn with_lifecycle(mut self, lifecycle: Arc<dyn ProcessLifecycle>) -> Self {
+        self.lifecycle = Some(lifecycle);
+        self
+    }
+
+    /// Waits until every process this connector ran that has begun
+    /// stopping has finished, its [`ProcessLifecycle::stopped`] included,
+    /// up to [`STOPPED_WAIT`].
+    async fn stops_settled(&self) {
+        let mut stopping = self.stopping.subscribe();
+        let _ = tokio::time::timeout(STOPPED_WAIT, stopping.wait_for(|count| *count == 0)).await;
+    }
+
+    /// Waits until every process this connector ran has stopped, its
+    /// [`ProcessLifecycle::stopped`] included, up to [`STOPPED_WAIT`]: for
+    /// a caller that has let go of every connection.
+    pub(crate) async fn settled(&self) {
+        let mut running = self.running.subscribe();
+        let _ = tokio::time::timeout(STOPPED_WAIT, running.wait_for(|count| *count == 0)).await;
     }
 
     /// Runs the command in `cwd`.
@@ -68,6 +116,9 @@ impl ProcessConnector {
 impl RuntimeConnector for ProcessConnector {
     async fn connect(&self) -> Result<RuntimeConnection, String> {
         let (program, arguments) = self.command.split_first().ok_or("the command is empty")?;
+        // The previous process's cleanup, such as removing its container,
+        // comes first.
+        self.stops_settled().await;
         let mut command = tokio::process::Command::new(
             cookie_agent_protocol::paths::resolve_program(program, &self.env),
         );
@@ -99,6 +150,10 @@ impl RuntimeConnector for ProcessConnector {
             let _ = child.start_kill();
             return Err("the process has no stdio pipes".into());
         };
+        if let Some(lifecycle) = &self.lifecycle {
+            lifecycle.started();
+        }
+        self.running.send_modify(|count| *count += 1);
         let diagnostics = DiagnosticTail::default();
         let stderr_done = CancellationToken::new();
         tokio::spawn(capture_stderr(
@@ -112,6 +167,11 @@ impl RuntimeConnector for ProcessConnector {
                 child: Some(child),
                 stderr_done,
                 shutdown_grace: self.shutdown_grace,
+                lifecycle: Some(Stopping {
+                    lifecycle: self.lifecycle.clone(),
+                    stopping: Arc::clone(&self.stopping),
+                    running: Arc::clone(&self.running),
+                }),
             }),
             diagnostics: Some(diagnostics),
         })
@@ -155,6 +215,33 @@ struct ProcessTransport {
     child: Option<Box<dyn ChildWrapper>>,
     stderr_done: CancellationToken,
     shutdown_grace: Duration,
+    lifecycle: Option<Stopping>,
+}
+
+/// A process's [`ProcessLifecycle`], with its connector's counts of
+/// processes running and stopping.
+struct Stopping {
+    lifecycle: Option<Arc<dyn ProcessLifecycle>>,
+    stopping: Arc<tokio::sync::watch::Sender<usize>>,
+    running: Arc<tokio::sync::watch::Sender<usize>>,
+}
+
+impl Stopping {
+    /// Counts the process as stopping now, and returns the work that ends
+    /// its stop: the lifecycle's, then the counts.
+    fn begin(self) -> impl std::future::Future<Output = ()> + Send + 'static {
+        self.stopping.send_modify(|count| *count += 1);
+        let stopped = self.lifecycle.as_ref().map(|lifecycle| lifecycle.stopped());
+        async move {
+            if let Some(stopped) = stopped {
+                stopped.await;
+            }
+            self.stopping
+                .send_modify(|count| *count = count.saturating_sub(1));
+            self.running
+                .send_modify(|count| *count = count.saturating_sub(1));
+        }
+    }
 }
 
 impl ProcessTransport {
@@ -202,33 +289,39 @@ impl Transport for ProcessTransport {
 
 impl Drop for ProcessTransport {
     fn drop(&mut self) {
-        let Some(mut child) = self.child.take() else {
-            return;
-        };
-        if matches!(child.try_wait(), Ok(Some(_))) {
-            return;
-        }
-        let grace = self.shutdown_grace;
-        match tokio::runtime::Handle::try_current() {
-            // The stdin pipe closes when the fields drop, right after this.
-            Ok(handle) => {
-                handle.spawn(async move {
-                    let mut reaper = Reaper {
-                        child,
-                        exited: false,
-                    };
-                    if tokio::time::timeout(grace, reaper.child.wait())
-                        .await
-                        .is_ok()
-                    {
-                        reaper.exited = true;
-                    }
-                });
-            }
-            Err(_) => {
+        let child = self
+            .child
+            .take()
+            .and_then(|mut child| (!matches!(child.try_wait(), Ok(Some(_)))).then_some(child));
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            // Without a runtime to run it on, the cleanup is left to the
+            // next daemon's recovery, which finds the process still
+            // recorded.
+            if let Some(mut child) = child {
                 let _ = child.start_kill();
             }
-        }
+            return;
+        };
+        let stopped = self.lifecycle.take().map(Stopping::begin);
+        let grace = self.shutdown_grace;
+        // The stdin pipe closes when the fields drop, right after this.
+        handle.spawn(async move {
+            if let Some(child) = child {
+                let mut reaper = Reaper {
+                    child,
+                    exited: false,
+                };
+                if tokio::time::timeout(grace, reaper.child.wait())
+                    .await
+                    .is_ok()
+                {
+                    reaper.exited = true;
+                }
+            }
+            if let Some(stopped) = stopped {
+                stopped.await;
+            }
+        });
     }
 }
 

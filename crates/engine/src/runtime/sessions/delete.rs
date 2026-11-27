@@ -52,6 +52,10 @@ impl Engine {
         };
         let (deleted, acp_sessions) = deleted;
         self.forget_deleted_tree(root, &deleted);
+        // The tree's own processes of per-session runtimes stop, and their
+        // templates clean up after them
+        // (`docs/site/specs/temporary-runtimes.md` section 5).
+        self.inner.runtimes.retire_owner(root).await;
         // The tree's own assets go with it; the tree is gone either way.
         let store = cookie_agent_protocol::AssetStore::Session { session: root };
         if let Err(error) = self

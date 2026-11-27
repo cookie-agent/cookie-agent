@@ -159,10 +159,11 @@ impl Engine {
         let Ok(projection) = self.inner.store.get(session) else {
             return false;
         };
+        let root = self.root_session_of(session);
         self.attachments_of(&projection).iter().any(|attachment| {
             self.inner
                 .runtimes
-                .instance(attachment)
+                .instance(root, attachment)
                 .and_then(|attached| attached.connection())
                 .is_some_and(|connection| connection.epoch() == epoch)
         })
@@ -178,8 +179,9 @@ impl Engine {
             return Vec::new();
         };
         let mut states = Vec::<ProducerSourceState>::new();
+        let root = self.root_session_of(session);
         for attachment in self.attachments_of(&projection) {
-            let Some(instance) = self.inner.runtimes.instance(&attachment) else {
+            let Some(instance) = self.inner.runtimes.instance(root, &attachment) else {
                 continue;
             };
             let Some(status) = instance

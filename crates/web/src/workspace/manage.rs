@@ -392,6 +392,7 @@ impl Workspace {
         spawn_local(async move {
             let params = RuntimesConnectParams {
                 runtime_id: runtime_id.clone(),
+                session: None,
             };
             let result = if connect {
                 client.connect_runtime(params).await

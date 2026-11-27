@@ -239,13 +239,16 @@ impl Engine {
         let acp = self
             .selected_acp_offers(&selection.agent, selection.preset.as_deref())
             .map(|offers| (offers, selection.acp_runtime.clone()));
-        let attachments = self.resolve_session_runtimes(&runtimes, acp).await?;
+        // Chosen first: a per-session runtime the session attaches starts
+        // for it (`docs/site/specs/temporary-runtimes.md`).
+        let id = SessionId::new_v7();
+        let attachments = self.resolve_session_runtimes(id, &runtimes, acp).await?;
         let cwd = runtimes
             .cwd
             .as_deref()
             .unwrap_or_else(|| self.inner.store.cwd());
         self.reconcile_provider_store_off_worker().await?;
-        let meta = self.create_session_in(selection, &attachments, cwd, project, creator)?;
+        let meta = self.create_session_in(id, selection, &attachments, cwd, project, creator)?;
         let session_id = meta.session_id;
         self.connect_session(session_id).await;
         if !overlay.rules.is_empty() {
@@ -297,7 +300,14 @@ impl Engine {
         attachments: &[cookie_agent_protocol::RuntimeAttachment],
     ) -> Result<SessionMeta, EngineError> {
         self.reconcile_provider_store()?;
-        self.create_session_in(selection, attachments, self.inner.store.cwd(), None, None)
+        self.create_session_in(
+            SessionId::new_v7(),
+            selection,
+            attachments,
+            self.inner.store.cwd(),
+            None,
+            None,
+        )
     }
 
     /// Creates a root session of the client directory `cwd` whose creation
@@ -306,6 +316,7 @@ impl Engine {
     /// A session in `project` records it with its creation.
     fn create_session_in(
         &self,
+        id: SessionId,
         selection: RunSelection,
         attachments: &[cookie_agent_protocol::RuntimeAttachment],
         cwd: &std::path::Path,
@@ -345,7 +356,6 @@ impl Engine {
                     .as_ref()
                     .map(|webhook| format!("webhook:{}:{}", webhook.webhook_id, webhook.event_id))
             });
-        let id = SessionId::new_v7();
         let cwd_identity = session_cwd_identity(attachments, cwd)?;
         // A new root begins an empty tree, so its first handle is trivially
         // unique; it still goes through the same generation path so every

@@ -1819,7 +1819,7 @@ async fn a_disconnected_runtime_stays_down_on_open_and_starts_on_use() {
 
     fixture
         .engine
-        .disconnect_runtime("labpc")
+        .disconnect_runtime("labpc", None)
         .await
         .expect("disconnect an idle runtime");
     assert_eq!(
@@ -1842,7 +1842,7 @@ async fn a_disconnected_runtime_stays_down_on_open_and_starts_on_use() {
     );
     fixture
         .engine
-        .disconnect_runtime("labpc")
+        .disconnect_runtime("labpc", None)
         .await
         .expect("disconnect");
     fixture
@@ -1861,7 +1861,7 @@ async fn only_template_runtimes_connect_and_disconnect_by_hand() {
     for runtime in ["global", "local"] {
         let error = fixture
             .engine
-            .disconnect_runtime(runtime)
+            .disconnect_runtime(runtime, None)
             .await
             .expect_err("built in");
         assert!(
@@ -1954,7 +1954,7 @@ async fn a_runtime_a_run_uses_cannot_disconnect() {
     assert_eq!(busy.keys().collect::<Vec<_>>(), ["labpc"]);
     let error = fixture
         .engine
-        .disconnect_runtime("labpc")
+        .disconnect_runtime("labpc", None)
         .await
         .expect_err("in use");
     assert!(error.to_string().contains("1 active run"), "{error}");
@@ -1963,7 +1963,7 @@ async fn a_runtime_a_run_uses_cannot_disconnect() {
     assert!(fixture.engine.runtime_activity().is_empty());
     fixture
         .engine
-        .disconnect_runtime("labpc")
+        .disconnect_runtime("labpc", None)
         .await
         .expect("disconnect once idle");
     fixture.engine.shutdown().await;

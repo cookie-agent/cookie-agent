@@ -53,7 +53,10 @@ pub use runtime::{
     ToolOutputConfig, TransferConfig, WebhooksConfig, parse_cache_ttl, valid_daemon_token,
     valid_daemon_url, valid_page_url,
 };
-pub use runtime_templates::{AcpAgentConfig, RuntimeTemplateConfig};
+pub use runtime_templates::{
+    AcpAgentConfig, RuntimeLaunch, RuntimeScope, RuntimeTemplateConfig, SESSION_ID_ENV,
+    SESSION_ID_PLACEHOLDER,
+};
 pub use skills::{
     OFFICIAL_SKILLS_DIRECTORY, SkillAllowedTool, SkillContext, SkillDiagnostic, SkillDiscovery,
     SkillDocument, SkillFrontmatter, SkillRegistry, load_project_skills, load_skill_roots,

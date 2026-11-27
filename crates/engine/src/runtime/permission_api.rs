@@ -191,6 +191,7 @@ impl Engine {
         runtime: Option<&RuntimeId>,
     ) -> Vec<OwnedScope> {
         let attachments = self.attachments_of(session);
+        let root = self.root_session_of(session.meta.session_id);
         let mut scopes = attachments
             .iter()
             .filter(|attachment| runtime.is_none_or(|runtime| &attachment.runtime_id == runtime))
@@ -200,8 +201,8 @@ impl Engine {
                     .workspace
                     .as_deref()
                     .map(std::path::PathBuf::from),
-                home: self.attachment_home(attachment),
-                platform: self.attachment_platform(attachment),
+                home: self.attachment_home(root, attachment),
+                platform: self.attachment_platform(root, attachment),
             })
             .collect::<Vec<_>>();
         match runtime {
@@ -223,11 +224,12 @@ impl Engine {
     /// instance's, else the one its runtime last reported.
     fn attachment_home(
         &self,
+        root: SessionId,
         attachment: &cookie_agent_protocol::RuntimeAttachment,
     ) -> Option<String> {
         self.inner
             .runtimes
-            .instance(attachment)
+            .instance(root, attachment)
             .and_then(|instance| instance.info().home().map(str::to_owned))
             .or_else(|| self.runtime_home(attachment.runtime_id.as_str()))
     }
@@ -236,11 +238,12 @@ impl Engine {
     /// instance's workspace's, else the one its runtime last reported.
     fn attachment_platform(
         &self,
+        root: SessionId,
         attachment: &cookie_agent_protocol::RuntimeAttachment,
     ) -> Option<String> {
         self.inner
             .runtimes
-            .instance(attachment)
+            .instance(root, attachment)
             .and_then(|instance| {
                 instance
                     .info()

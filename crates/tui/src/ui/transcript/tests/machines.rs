@@ -23,6 +23,7 @@ fn listing(pairs: &[(&str, &str)]) -> RuntimeMachines {
             .iter()
             .map(|(id, machine)| RuntimeListing {
                 runtime_id: RuntimeId::new(*id).unwrap(),
+                per_session: false,
                 lifetime: RuntimeLifetime::Spawned,
                 connected: true,
                 capabilities: Vec::new(),

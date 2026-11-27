@@ -41,9 +41,11 @@ mod composition;
 mod dial_in;
 mod liveness;
 mod mcp_hub;
+mod per_session;
 mod process;
 mod registry;
 mod remote;
+mod temporary;
 
 pub(crate) use acp_hub::{AcpHub, AcpRelayHandler};
 #[cfg(test)]
@@ -57,6 +59,7 @@ pub(crate) use dial_in::{DialInTemplate, not_connected};
 pub(crate) use liveness::Liveness;
 pub(crate) use mcp_hub::McpHub;
 pub use mcp_hub::McpServerFailure;
+pub(crate) use per_session::PerSessionTemplate;
 pub(crate) use process::ProcessConnector;
 pub use registry::{
     RuntimeAcpAgents, RuntimeActivity, RuntimeFailure, RuntimeInstanceStatus,
@@ -69,6 +72,7 @@ pub(crate) use remote::{
     RuntimeClient, RuntimeProducerCall, RuntimeProducerHost, register_configured_templates,
     runtime_settings,
 };
+pub(crate) use temporary::ProcessRecords;
 
 /// Where [`crate::Engine::try_register_tool_provider`] adds a provider.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

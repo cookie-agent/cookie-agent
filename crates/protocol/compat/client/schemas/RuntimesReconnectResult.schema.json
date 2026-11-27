@@ -33,6 +33,14 @@
             "null"
           ]
         },
+        "owner": {
+          "description": "The root session whose process of a per-session runtime the\ninstance runs on (client protocol 1.102.0; temporary runtimes spec\nsection 7).",
+          "format": "uuid",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "platform": {
           "type": [
             "string",

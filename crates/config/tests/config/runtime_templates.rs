@@ -65,8 +65,6 @@ fn template_fields_are_strict() {
         "plugins = {}",
         "args = []",
         "cwd = \"/tmp\"",
-        // A server's, not a template's.
-        "scope = \"runtime\"",
     ] {
         let error = rejected(&format!(
             "[runtimes.labpc]\ncommand = [\"runtime\"]\n{field}\n"

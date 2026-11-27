@@ -235,6 +235,15 @@ impl Engine {
         self.acp_commands().len()
     }
 
+    /// The session and runtime of each agent command that runs or
+    /// settles.
+    pub(crate) fn acp_background_runtime_calls(&self) -> Vec<(SessionId, String)> {
+        self.acp_commands()
+            .iter()
+            .map(|command| (command.session, command.runtime.as_str().to_owned()))
+            .collect()
+    }
+
     /// The runtime of each agent command that runs or settles, in every
     /// session.
     pub(crate) fn acp_background_runtimes(&self) -> Vec<String> {

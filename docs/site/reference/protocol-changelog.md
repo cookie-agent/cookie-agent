@@ -5,6 +5,16 @@ The client protocol's version is `MAJOR.MINOR.PATCH`
 adds and a major breaks; before it, every minor could break the wire (see the
 [compatibility spec](../specs/compatibility-v1.md) section 3).
 
+## 1.102.0
+
+- Temporary runtimes ([spec](../specs/temporary-runtimes.md) section 7):
+  `RuntimeListing.per_session`, true for a runtime whose template gives
+  each session tree its own process (`scope = "session"`), and
+  `RuntimeInstanceInfo.owner`, the root session whose process an instance
+  runs on; `runtimes.disconnect` takes an optional `session` that stops only
+  that tree's process (refused for a shared runtime and for
+  `runtimes.connect`). Absent from a 1.101.0 daemon.
+
 ## 1.101.0
 
 - `SessionMeta.needs_you` ([what waits for the user](protocol.md#what-waits-for-the-user)):

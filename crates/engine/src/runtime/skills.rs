@@ -168,8 +168,9 @@ impl Engine {
     pub(crate) fn session_skills(&self, session: SessionId) -> Result<SessionSkills, EngineError> {
         let mut user = Vec::new();
         let mut project = Vec::new();
+        let root = self.root_session_of(session);
         for attachment in self.session_runtimes(session)? {
-            let Some(instance) = self.inner.runtimes.instance(&attachment) else {
+            let Some(instance) = self.inner.runtimes.instance(root, &attachment) else {
                 continue;
             };
             let registry = instance.skills();

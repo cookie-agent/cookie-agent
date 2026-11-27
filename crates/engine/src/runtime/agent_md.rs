@@ -40,7 +40,11 @@ impl Engine {
             if attachment.workspace.is_none() {
                 continue;
             }
-            let Some(instance) = self.inner.runtimes.instance(&attachment) else {
+            let Some(instance) = self
+                .inner
+                .runtimes
+                .instance(self.root_session_of(session), &attachment)
+            else {
                 continue;
             };
             let Some(context) = instance.agent_md(preset).await? else {
@@ -81,7 +85,11 @@ impl Engine {
             if attachment.workspace.is_none() {
                 continue;
             }
-            let read = match self.inner.runtimes.instance(&attachment) {
+            let read = match self
+                .inner
+                .runtimes
+                .instance(self.root_session_of(session), &attachment)
+            {
                 Some(instance) => instance.agent_md(preset).await.ok(),
                 None => None,
             };

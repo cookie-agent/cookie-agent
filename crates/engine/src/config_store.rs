@@ -229,7 +229,13 @@ impl Engine {
             return self.reconnect_mcp_server(name).await;
         }
         // Listed without a workspace: one of the runtime's own servers.
-        if workspace.is_none() && self.inner.runtimes.instance_at(runtime_id, None).is_none() {
+        if workspace.is_none()
+            && self
+                .inner
+                .runtimes
+                .instance_at(runtime_id, None, None)
+                .is_none()
+        {
             self.inner
                 .runtimes
                 .reconnect_runtime_mcp(runtime_id, &name)
@@ -243,7 +249,7 @@ impl Engine {
         let connection = self
             .inner
             .runtimes
-            .instance_at(runtime_id, workspace)
+            .instance_at(runtime_id, workspace, None)
             .and_then(|instance| instance.connection())
             .ok_or_else(|| {
                 EngineError::Mcp(match workspace {

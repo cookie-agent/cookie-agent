@@ -735,6 +735,7 @@ pub(super) async fn stop_process(engine: &Engine) {
     let key = super::super::acp::process::ProcessKey {
         runtime: "local".to_owned(),
         agent: "fixture".to_owned(),
+        owner: None,
     };
     let process = engine
         .inner

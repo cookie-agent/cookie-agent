@@ -515,6 +515,7 @@ pub fn draft_runtime_rows(
                 Some(Ok(instance)) => Some(instance.clone()),
                 Some(Err(message)) => Some(RuntimeInstanceInfo {
                     runtime_id: entry.request.runtime_id.clone(),
+                    owner: None,
                     capability: capability.clone(),
                     attachment_name: None,
                     kind: None,
@@ -674,10 +675,17 @@ impl ConnectionControl {
 
 /// The connection control of `listing`; `None` for a runtime that is built
 /// in or dials in, which connects on its own.
+///
+/// A per-session runtime starts only when a session uses it, so it offers
+/// no Connect; its Disconnect stops every process nothing uses, so a busy
+/// one does not hold it back.
 #[must_use]
 pub fn connection_control(listing: &RuntimeListing) -> Option<ConnectionControl> {
     if listing.lifetime != RuntimeLifetime::Spawned {
         return None;
+    }
+    if listing.per_session {
+        return listing.connected.then_some(ConnectionControl::Disconnect);
     }
     if !listing.connected {
         return Some(ConnectionControl::Connect);
@@ -703,6 +711,17 @@ pub fn connection_control(listing: &RuntimeListing) -> Option<ConnectionControl>
     } else {
         ConnectionControl::Busy(format!("in use by {}", uses.join(" and ")))
     })
+}
+
+/// What a runtime's scope says beside its lifetime: `one per session`
+/// for a runtime whose template gives each session tree its own process.
+#[must_use]
+pub const fn scope_label(listing: &RuntimeListing) -> Option<&'static str> {
+    if listing.per_session {
+        Some("one per session")
+    } else {
+        None
+    }
 }
 
 /// Whether `action` (connect or disconnect) applies to runtime `runtime_id`
@@ -1189,6 +1208,7 @@ mod tests {
             message: None,
             active_runs,
             background_calls,
+            per_session: false,
         }
     }
 

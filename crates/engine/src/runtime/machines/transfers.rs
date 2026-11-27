@@ -29,6 +29,7 @@ impl Engine {
             .map_err(|error| error.to_string())?;
         let mut machines = std::collections::BTreeSet::new();
         let mut refusals = Vec::new();
+        let root = self.root_session_of(session);
         for attachment in attachments {
             if attachment.runtime_id.as_str() == RuntimeId::GLOBAL {
                 continue;
@@ -43,7 +44,7 @@ impl Engine {
             if named != machine {
                 continue;
             }
-            let Some(instance) = self.inner.runtimes.instance(&attachment) else {
+            let Some(instance) = self.inner.runtimes.instance(root, &attachment) else {
                 refusals.push(format!(
                     "runtime `{}` is not connected",
                     attachment.runtime_id
@@ -116,7 +117,7 @@ impl Engine {
             .any(|attachment| {
                 self.inner
                     .runtimes
-                    .instance(attachment)
+                    .instance(self.root_session_of(session), attachment)
                     .and_then(|instance| instance.connection())
                     .is_some_and(|connection| connection.client.files())
             })

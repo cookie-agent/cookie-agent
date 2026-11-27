@@ -1220,6 +1220,10 @@ fn runtime_row(
         lifetime.map(|lifetime| lifetime_label(lifetime).to_owned()),
         card.listing
             .as_ref()
+            .and_then(cookie_agent_client_state::runtimes::scope_label)
+            .map(str::to_owned),
+        card.listing
+            .as_ref()
             .and_then(|listing| listing.platform.clone())
             .or_else(|| {
                 remembered

@@ -130,6 +130,7 @@ impl Engine {
         };
         let attachments = self
             .resolve_session_runtimes(
+                self.root_session_of(context.session),
                 &runtimes,
                 self.selected_acp_offers(&template.agent, template.preset.as_deref())
                     .map(|offers| (offers, template.acp_runtime.clone())),

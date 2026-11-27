@@ -749,6 +749,12 @@ pub struct RuntimesReconnectResult {
 #[serde(deny_unknown_fields)]
 pub struct RuntimesConnectParams {
     pub runtime_id: RuntimeId,
+    /// For `runtimes.disconnect` of a per-session runtime: the root session
+    /// whose process stops (client protocol 1.102.0). Without it, every
+    /// idle process of the runtime stops. Refused for `runtimes.connect`
+    /// and for a runtime one process serves.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<SessionId>,
 }
 
 /// The runtime afterwards, as `runtimes.list` reports it.
@@ -881,6 +887,12 @@ pub struct RuntimeListing {
     /// Background calls executing on the runtime (client protocol 1.55.0).
     #[serde(default, skip_serializing_if = "is_zero")]
     pub background_calls: u32,
+    /// Whether each session tree gets its own process of the runtime, from
+    /// its template's `scope = "session"` (client protocol 1.102.0;
+    /// temporary runtimes spec section 7): `instances` name each process's
+    /// root session as `owner`. False from a 1.101.0 daemon.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub per_session: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
@@ -1069,6 +1081,11 @@ pub struct RuntimeCapabilityInfo {
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 pub struct RuntimeInstanceInfo {
     pub runtime_id: RuntimeId,
+    /// The root session whose process of a per-session runtime the
+    /// instance runs on (client protocol 1.102.0; temporary runtimes spec
+    /// section 7).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<SessionId>,
     pub capability: CapabilityName,
     /// The name the instance reports; absent until it has started.
     #[serde(default, skip_serializing_if = "Option::is_none")]
