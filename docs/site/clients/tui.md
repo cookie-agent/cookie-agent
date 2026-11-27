@@ -467,6 +467,14 @@ and the text written between calls fold into one row above the reply,
 `▸ Working… 42s` while it works, with the latest line it wrote or thought
 under it, then the call running now, or while no call runs the calls so far
 (`3 tool calls · 1 failed`); then `▸ Worked for 1m 23s · 7 tool calls`.
+The pictures, videos, and PDFs the agent's calls returned to it are counted
+on the row (`· 3 images, 1 video`) and named on one line under it,
+`🖼 screenshot.png · loss.png · rollout.mp4  ↗ open`, each file once, `+N`
+for those that do not fit (while the agent works, the oldest, so the newest
+stays named; a new name draws dim for a moment). Clicking a name opens that
+file in the web page, and `↗ open` the first, when the TUI knows the page;
+without one, a name opens the work at the call that returned it. The line
+hides while the work is open.
 Click the row to open the work, and again to fold it. An open row keeps the
 hover's colour, and once you scroll past it while its work still fills the
 top of the pane, it stays pinned there; clicking it there folds the work

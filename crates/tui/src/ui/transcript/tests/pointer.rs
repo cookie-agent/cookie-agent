@@ -90,6 +90,7 @@ fn kind(target: PointerTarget) -> &'static str {
         PointerTarget::MemoryLink(_) => "memory link",
         PointerTarget::DeferredPromptLink => "deferred prompt link",
         PointerTarget::FileOpen(_) => "file open",
+        PointerTarget::SeenMedia(_) => "seen media",
         PointerTarget::TranscriptBlock(_) => "transcript block",
         PointerTarget::TreeExpand(_) => "tree expand",
         PointerTarget::TreeRow(_) => "tree row",
@@ -106,6 +107,7 @@ fn is_transcript(target: PointerTarget) -> bool {
             | PointerTarget::MemoryLink(_)
             | PointerTarget::DeferredPromptLink
             | PointerTarget::FileOpen(_)
+            | PointerTarget::SeenMedia(_)
             | PointerTarget::UserMessage(_)
     )
 }
@@ -255,7 +257,21 @@ fn background_call(job: &str) -> BackgroundCall {
 async fn content_app() -> (App, SessionId, ToolCallId) {
     let (mut app, session, run) = app_with_active_run().await;
     app.theme = Theme::new(ThemeKind::Default, ColorLevel::TrueColor);
-    let running = read_tool_state("src/lib.rs", ToolStatus::Running, "");
+    // The running call shows a picture, which its folded work row names.
+    let running = display_tool_state(
+        presentation("read", None),
+        ToolStatus::Running,
+        vec![cookie_agent_protocol::DisplayBlock::Media {
+            artifact: cookie_agent_protocol::ArtifactRef {
+                sha256: "c".repeat(64),
+                byte_length: 3,
+                media_type: "image/png".into(),
+                filename: Some("plot.png".into()),
+                folder: None,
+            },
+            alt: None,
+        }],
+    );
     let call_id = read_tool_id(&running);
     let done = read_tool_state("src/main.rs", ToolStatus::Completed, "output");
     {
@@ -669,6 +685,7 @@ async fn every_clickable_element_hovers_visibly() {
         "memory link",
         "deferred prompt link",
         "file open",
+        "seen media",
         "transcript block",
         "tree expand",
         "tree row",

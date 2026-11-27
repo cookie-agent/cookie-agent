@@ -120,6 +120,12 @@ impl App {
         }) {
             return Some(PointerTarget::FileOpen(hit.id));
         }
+        // A name on a work row's media line opens its file.
+        if let Some(hit) = hits.blocks.iter().rev().find(|hit| {
+            matches!(hit.id, BlockId::SeenMedia { .. }) && hit.action_rect.is_some_and(&over)
+        }) {
+            return Some(PointerTarget::SeenMedia(hit.id));
+        }
         // Past user-message rows open the copy/revert/fork menu — never
         // assistant/tool rows, which keep their expand/collapse toggle.
         if let Some(hit) = hits.user_messages.iter().find(|hit| over(hit.rect)) {
@@ -612,6 +618,7 @@ impl App {
             PointerTarget::MemoryLink(call_id) => self.open_tool_memory(call_id),
             PointerTarget::DeferredPromptLink => self.open_deferred_prompt(),
             PointerTarget::FileOpen(id) => self.open_file(id),
+            PointerTarget::SeenMedia(id) => self.open_seen(id),
             PointerTarget::TranscriptBlock(id) => self.toggle_block(id),
             PointerTarget::TreeExpand(session_id) => self.toggle_tree_session(session_id),
             PointerTarget::TreeRow(session_id) => {
@@ -731,7 +738,7 @@ impl App {
                     })),
                 text_style,
             ),
-            PointerTarget::FileOpen(id) => (
+            PointerTarget::FileOpen(id) | PointerTarget::SeenMedia(id) => (
                 one(hits
                     .blocks
                     .iter()

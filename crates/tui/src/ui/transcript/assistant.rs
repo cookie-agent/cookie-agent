@@ -87,6 +87,18 @@ pub(super) fn assistant_item_layout(
                 context.theme,
                 context.machines,
             ));
+            // The media the work saw, on one line under the row while it is
+            // folded; open, each call shows its own.
+            if !open && !row.summary.seen.is_empty() {
+                layout.push_layout(seen_line_layout(
+                    key,
+                    row,
+                    fresh.seen,
+                    context.figure_links.linkable(),
+                    context.width,
+                    context.theme,
+                ));
+            }
             if open {
                 band(key, start, layout.lines.len());
             }
@@ -478,6 +490,10 @@ fn work_row_layout(
     if let Some(failed) = summary.failed_label().filter(|_| !summary.live) {
         spans.push(Span::styled(format!(" {failed}"), theme.warning()));
     }
+    // The media its calls returned, after the calls (and a live row's time).
+    if let Some(seen) = summary.seen_label() {
+        spans.push(Span::styled(format!(" {seen}"), theme.muted_text()));
+    }
     // A finished row names the machines its work touched.
     if !summary.live {
         let (shown, more) = machines.work_row(&summary.runtimes);
@@ -582,11 +598,178 @@ pub(super) fn work_line_room(width: u16) -> usize {
     usize::from(width).saturating_sub(gutter + 3)
 }
 
+/// What leads a folded work row's line of the media its calls returned.
+pub(super) const SEEN_LEAD: &str = "🖼 ";
+/// The most columns a name on that line takes.
+const SEEN_NAME_COLUMNS: usize = 24;
+
+/// A folded work row's line of the pictures, videos, and PDFs its calls
+/// returned to the agent (`docs/site/specs/folded-media.md` section 5):
+/// `🖼 a.png · b.png · rollout.mp4  ↗ open`, each name cut at 24 columns,
+/// `°` after one the model never saw. What does not fit is counted, `+N`:
+/// at the end once the work ended, before the newest while it goes on, so
+/// the newest stays shown; `fresh`, the newest draws dim for one animation
+/// step. Each name opens its file, as `↗ open` (with a page to open it in)
+/// does the first.
+fn seen_line_layout(
+    key: WorkKey,
+    row: &transcript_mode::WorkRow,
+    fresh: bool,
+    link: bool,
+    width: u16,
+    theme: &Theme,
+) -> ItemLayout {
+    use cookie_agent_client_state::transcript_mode::SeenKind;
+    const SEPARATOR: &str = " · ";
+    let summary = &row.summary;
+    let seen = &summary.seen;
+    let mut ordinals = [0usize; 3];
+    let names = seen
+        .iter()
+        .map(|file| {
+            let slot = match file.kind() {
+                SeenKind::Image => 0,
+                SeenKind::Video => 1,
+                SeenKind::Pdf => 2,
+            };
+            ordinals[slot] += 1;
+            let name = flatten_header_argument(&file.label(ordinals[slot]));
+            crate::ui::app::truncate_with_ellipsis(&name, SEEN_NAME_COLUMNS)
+        })
+        .collect::<Vec<_>>();
+    let marked = |index: usize| {
+        UnicodeWidthStr::width(names[index].as_str()) + usize::from(!seen[index].model_saw())
+    };
+    // The columns after the lead, less the link's.
+    let tail = if link {
+        2 + UnicodeWidthStr::width(files::OPEN_LINK)
+    } else {
+        0
+    };
+    let room = work_line_room(width)
+        .saturating_sub(UnicodeWidthStr::width(SEEN_LEAD) + 2)
+        .saturating_sub(tail);
+    // How many fit, from the first or from the newest, with room for the
+    // count of the rest while there is a rest.
+    let order: Vec<usize> = if summary.live {
+        (0..seen.len()).rev().collect()
+    } else {
+        (0..seen.len()).collect()
+    };
+    let mut shown = Vec::new();
+    let mut used = 0usize;
+    for (taken, &index) in order.iter().enumerate() {
+        let rest = seen.len() - taken - 1;
+        let count = if rest > 0 {
+            2 + format!("+{rest}").len()
+        } else {
+            0
+        };
+        let next = used + usize::from(!shown.is_empty()) * SEPARATOR.len() + marked(index);
+        if next + count > room && !shown.is_empty() {
+            break;
+        }
+        used = next;
+        shown.push(index);
+    }
+    shown.sort_unstable();
+    let hidden = seen.len() - shown.len();
+    let mut spans = vec![Span::styled(format!("  {SEEN_LEAD}"), theme.muted_text())];
+    let mut regions = Vec::new();
+    // Where each target starts, after the lead.
+    let mut column = 0usize;
+    fn push(spans: &mut Vec<Span<'static>>, column: &mut usize, text: String, style: Style) {
+        *column += UnicodeWidthStr::width(text.as_str());
+        spans.push(Span::styled(text, style));
+    }
+    let target = |index: usize, from: usize, columns: usize| BlockRegion {
+        id: BlockId::SeenMedia {
+            item: key.item,
+            child: key.child,
+            index: u32::try_from(index).unwrap_or(u32::MAX),
+            from: u16::try_from(from).unwrap_or(u16::MAX),
+            columns: u16::try_from(columns).unwrap_or(u16::MAX),
+        },
+        start_line: 0,
+        end_line: 1,
+        header_lines: None,
+        header_gutter: None,
+    };
+    let count = format!("+{hidden}");
+    if hidden > 0 && summary.live {
+        push(&mut spans, &mut column, count.clone(), theme.muted_text());
+        push(
+            &mut spans,
+            &mut column,
+            SEPARATOR.to_owned(),
+            theme.muted_text(),
+        );
+    }
+    let newest = seen.len() - 1;
+    for (place, &index) in shown.iter().enumerate() {
+        if place > 0 {
+            push(
+                &mut spans,
+                &mut column,
+                SEPARATOR.to_owned(),
+                theme.muted_text(),
+            );
+        }
+        let style = if fresh && summary.live && index == newest {
+            theme.link().add_modifier(ratatui::style::Modifier::DIM)
+        } else {
+            theme.link()
+        };
+        let from = column;
+        push(&mut spans, &mut column, names[index].clone(), style);
+        regions.push(target(index, from, column - from));
+        if !seen[index].model_saw() {
+            push(&mut spans, &mut column, "°".to_owned(), theme.muted_text());
+        }
+    }
+    if hidden > 0 && !summary.live {
+        push(
+            &mut spans,
+            &mut column,
+            format!("  {count}"),
+            theme.muted_text(),
+        );
+    }
+    if link {
+        push(&mut spans, &mut column, "  ".to_owned(), theme.muted_text());
+        let from = column;
+        push(
+            &mut spans,
+            &mut column,
+            files::OPEN_LINK.to_owned(),
+            theme.link(),
+        );
+        regions.push(target(0, from, column - from));
+    }
+    let line = Line::from(spans);
+    let lines = if panel_margin(width) {
+        margin_rows(line, width, theme, None).0
+    } else {
+        assistant_body_line(line, width, theme)
+    };
+    let rows = lines.len();
+    for region in &mut regions {
+        region.end_line = rows.max(1);
+    }
+    ItemLayout {
+        regions,
+        lines,
+        user_seq: None,
+    }
+}
+
 /// Which of a work row's lines just changed.
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 pub(super) struct WorkLinesFresh {
     pub(super) text: bool,
     pub(super) tool: bool,
+    /// The newest name on its media line.
+    pub(super) seen: bool,
 }
 
 /// `deferred` rows moved down by `start`.

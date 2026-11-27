@@ -642,6 +642,10 @@ pub(super) enum PointerTarget {
     /// The `↗ open` that ends a file's line, by the line's region: opens
     /// the file in the web page.
     FileOpen(BlockId),
+    /// A name, or the `↗ open`, on a folded work row's line of the media its
+    /// calls returned, by its region: opens the file in the web page, or
+    /// without one the fold at its call.
+    SeenMedia(BlockId),
     TranscriptBlock(BlockId),
     /// A tree row's expand/collapse marker.
     TreeExpand(SessionId),
@@ -996,6 +1000,9 @@ pub struct App {
     /// it starts at, as of the last frame: folding it from there brings the
     /// row back to the top.
     pub(super) pinned_work: Option<(crate::ui::transcript::BlockId, usize)>,
+    /// A row the next frame brings into view once it lays it out: the
+    /// call a work row's media line opened its fold at.
+    pub(super) reveal_block: Option<crate::ui::transcript::BlockId>,
     /// The row of history not loaded the last frame showed, and its
     /// session: the history to read next.
     pub(super) history_in_view: Option<(SessionId, u64)>,
@@ -1874,6 +1881,7 @@ impl App {
             highlighter: Box::<SyntectHighlighter>::default(),
             hit_map: UiHitMap::default(),
             pinned_work: None,
+            reveal_block: None,
             history_in_view: None,
             hover: None,
             animation_ticks: 0,

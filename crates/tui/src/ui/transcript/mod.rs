@@ -432,6 +432,18 @@ pub(super) enum BlockId {
         call_id: cookie_agent_protocol::ToolCallId,
         block: u32,
     },
+    /// A name, or the `↗ open`, on a folded work row's line of the media
+    /// its calls returned (`docs/site/specs/folded-media.md` section 5):
+    /// the fold `item`/`child`, the file's `index` in the row's list, and
+    /// where the target stands after the line's lead, `from` and `columns`
+    /// wide.
+    SeenMedia {
+        item: u64,
+        child: u32,
+        index: u32,
+        from: u16,
+        columns: u16,
+    },
     /// *Allow* and *Deny* of an attachment that waits for the user.
     AttachmentAllow(AttachmentKey),
     AttachmentDeny(AttachmentKey),
@@ -763,11 +775,13 @@ const FRESH_WORK_LINE: std::time::Duration = std::time::Duration::from_millis(35
 
 impl LayoutCache {
     /// Notes the lines the work row of the fold `lead` shows at `now`, and
-    /// which of them first showed less than [`FRESH_WORK_LINE`] ago.
+    /// the newest file its media line names (by digest), and which of them
+    /// first showed less than [`FRESH_WORK_LINE`] ago.
     fn note_work_lines(
         &mut self,
         lead: WorkKey,
         lines: Option<&WorkLines>,
+        newest_seen: Option<&String>,
         now: jiff::Timestamp,
     ) -> WorkLinesFresh {
         let mut note = |slot: u8, line: Option<&String>| {
@@ -789,6 +803,7 @@ impl LayoutCache {
         WorkLinesFresh {
             text: note(0, lines.and_then(|lines| lines.text.as_ref())),
             tool: note(1, lines.and_then(|lines| lines.tool.as_ref())),
+            seen: note(2, newest_seen),
         }
     }
 
@@ -848,6 +863,7 @@ impl LayoutCache {
                                 | BlockId::AttachmentOpen(_)
                                 | BlockId::UserFile { .. }
                                 | BlockId::ToolMedia { .. }
+                                | BlockId::SeenMedia { .. }
                                 | BlockId::AttachmentAllow(_)
                                 | BlockId::AttachmentDeny(_)
                         )
@@ -1336,7 +1352,8 @@ pub(super) fn ensure_cached_transcript_layout_in(
         .live_keys()
         .filter_map(|lead| {
             let row = folds.work_row(state, lead, now, room)?;
-            let fresh = cache.note_work_lines(lead, row.lines.as_ref(), now);
+            let newest = row.summary.seen.last().map(|seen| &seen.artifact.sha256);
+            let fresh = cache.note_work_lines(lead, row.lines.as_ref(), newest, now);
             Some((lead, (row, fresh)))
         })
         .collect::<HashMap<_, _>>();
@@ -2290,6 +2307,15 @@ impl App {
         } else {
             (&splice.block_regions, &splice.user_regions)
         };
+        // A row a click asked to see, once laid out: a call in the fold a
+        // work row's media line opened.
+        if let Some(id) = self.reveal_block.take()
+            && let Some(region) = block_regions.iter().find(|region| region.id == id)
+        {
+            self.conversation_scroll.reveal(*region, viewport.height);
+            self.conversation_scroll
+                .clamp(content_height, viewport.height);
+        }
         self.hit_map.blocks.extend(
             block_regions
                 .iter()
@@ -2597,6 +2623,51 @@ impl App {
         }
     }
 
+    /// Opens what a name, or the `↗ open`, on a folded work row's media
+    /// line `id` stands for: the file in the web page when the TUI knows
+    /// the page, else the fold at the call that returned it.
+    pub(super) fn open_seen(&mut self, id: BlockId) {
+        let BlockId::SeenMedia {
+            item, child, index, ..
+        } = id
+        else {
+            return;
+        };
+        let Some(session_id) = self.selected else {
+            return;
+        };
+        let Some(state) = self.store.sessions.get(&session_id) else {
+            return;
+        };
+        let key = WorkKey { item, child };
+        let Some(seen) = state
+            .fold_plan()
+            .work_row(state, key, jiff::Timestamp::now(), usize::MAX)
+            .and_then(|row| row.summary.seen.into_iter().nth(index as usize))
+        else {
+            return;
+        };
+        if let Some(page) = self.page_url.as_deref() {
+            let link = cookie_agent_client_state::assets::attachment_link(
+                page,
+                session_id,
+                &seen.artifact.sha256,
+            );
+            let name = seen
+                .name
+                .clone()
+                .unwrap_or_else(|| seen.artifact.display_name().to_owned());
+            self.open_in_browser(&name, &link);
+            return;
+        }
+        self.conversation_scroll.hold();
+        self.expanded_blocks
+            .entry(session_id)
+            .or_default()
+            .insert(BlockId::work(key));
+        self.reveal_block = Some(BlockId::Tool(seen.call_id));
+    }
+
     /// Opens `link`, which shows `name`, in the browser, saying so.
     fn open_in_browser(&mut self, name: &str, link: &str) {
         self.status = match crate::ui::open_link::open(link) {
@@ -2612,6 +2683,10 @@ impl App {
         match block_id {
             BlockId::AttachmentOpen(_) | BlockId::UserFile { .. } | BlockId::ToolMedia { .. } => {
                 self.open_file(block_id);
+                return;
+            }
+            BlockId::SeenMedia { .. } => {
+                self.open_seen(block_id);
                 return;
             }
             BlockId::ToolFull { call_id, block } => {
@@ -3318,6 +3393,30 @@ pub(super) fn block_hit_at<'a>(
                 ))
             })
         }
+        // A name on a work row's media line, or its `↗ open`: where the
+        // layout placed it after the line's lead.
+        BlockId::SeenMedia { from, columns, .. }
+            if region.start_line >= scroll_offset && region.start_line < end =>
+        {
+            line_at(region.start_line).and_then(|line| {
+                let text = line
+                    .spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>();
+                let at = text.find(assistant::SEEN_LEAD)? + assistant::SEEN_LEAD.len();
+                let column = UnicodeWidthStr::width(&text[..at]) + usize::from(from);
+                Some(Rect::new(
+                    viewport
+                        .x
+                        .saturating_add(u16::try_from(column).unwrap_or(u16::MAX)),
+                    viewport.y
+                        + u16::try_from(region.start_line - scroll_offset).unwrap_or(u16::MAX),
+                    columns,
+                    1,
+                ))
+            })
+        }
         // A file's `↗ open` ends its line: a produced file's header row, or
         // the line of a file that is nothing else.
         id if opens_file(id) => {
@@ -3402,7 +3501,10 @@ pub(super) fn block_hit_at<'a>(
         // A file's line opens only at its `↗ open`.
         toggle_rect: if matches!(
             region.id,
-            BlockId::AttachmentOpen(_) | BlockId::UserFile { .. } | BlockId::ToolMedia { .. }
+            BlockId::AttachmentOpen(_)
+                | BlockId::UserFile { .. }
+                | BlockId::ToolMedia { .. }
+                | BlockId::SeenMedia { .. }
         ) {
             None
         } else if matches!(
