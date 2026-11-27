@@ -1283,6 +1283,9 @@ fn session_row(
     // held; a mark when its last run failed or was interrupted; and,
     // with none of those, a dot when unread.
     let unread_dot = status_mark.is_none() && session.unread;
+    // A pinned row without a state's mark shows its pin in the mark's
+    // slot; with one, the pin follows it.
+    let pin_in_slot = pinned && status_mark.is_none() && !unread_dot;
     let title = {
         let session = session.clone();
         let status = status_text.clone();
@@ -1549,21 +1552,30 @@ fn session_row(
                         {unread_dot.then(|| view! {
                             <span class="h-2 w-2 rounded-full bg-accent" data-session-activity="unread"></span>
                         })}
+                        {pin_in_slot.then(|| view! {
+                            <span
+                                class="inline-flex rotate-45 text-xs text-accent"
+                                data-pinned-session
+                                title="Pinned: listed above the sessions at work, whatever its age"
+                            >
+                                <Glyph icon=icondata::LuPin />
+                            </span>
+                        })}
                     </span>
                     <span class="sr-only">{status_text.clone()}</span>
                     {unread.then(|| view! {
                         <span class="sr-only" data-unread title="Unread: it finished, or asked for you, while you were away">"unread"</span>
                     })}
-                    {pinned.then(|| view! {
+                    {(pinned && !pin_in_slot).then(|| view! {
                         <span
                             class="inline-flex shrink-0 rotate-45 text-xs text-accent"
                             data-pinned-session
-                            title="Pinned: listed with the sessions at work, whatever its age"
+                            title="Pinned: listed above the sessions at work, whatever its age"
                         >
                             <Glyph icon=icondata::LuPin />
                         </span>
-                        <span class="sr-only">"pinned"</span>
                     })}
+                    {pinned.then(|| view! { <span class="sr-only">"pinned"</span> })}
                     {cron.clone().map(|cron| cron::clock_mark(workspace, cron))}
                     {webhook.clone().map(|webhook| webhooks::webhook_mark(workspace, webhook))}
                     // The whole title on hover, as a long one is cut here.
