@@ -863,7 +863,13 @@ fn validate_agent_document(
                         AgentMode::Subagent | AgentMode::All
                     )
             };
-            let pattern = rule.resource.as_str();
+            // `${agent_id}` is the agent itself.
+            let [own_id, ..] = cookie_agent_identity::WildcardPattern::MEMORY_VARIABLES;
+            let pattern = if rule.resource.as_str() == own_id {
+                document.id.as_str()
+            } else {
+                rule.resource.as_str()
+            };
             if pattern.contains('*') || pattern.contains('?') {
                 // Wildcard delegation uses the same runtime matching as every
                 // other permission. A pattern that matches no eligible agent

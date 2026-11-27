@@ -1230,7 +1230,12 @@ equivalent to code: a repository can ship both a server definition and an agent
 that permits it. Review them and work only in repositories you trust.
 
 Delegation targets come from the keys in the `delegate` permission map and must
-resolve to enabled `subagent` or `all` agents. A named target no agent has
+resolve to enabled `subagent` or `all` agents. The key `${agent_id}` names the
+agent itself, so a document that several agents share (the [`_acp`
+template](acp-agents.md), say) lets each start another session of its own:
+`delegate: {"${agent_id}": allow}`. It is the whole key, never part of a
+pattern, and an agent of mode `primary` that names it fails the configuration
+like any other target of that mode. A named target no agent has
 yet, and a pattern that matches none, do not fail the configuration: the
 name may be an [ACP agent](acp-agents.md) whose runtime has not
 reported it, such as a dial-in runtime that has not connected since the

@@ -355,11 +355,16 @@ fn validate_permission_expressions(
 }
 
 /// Whether the `${…}` expressions of a rule's `resource` suit its `action`:
-/// `${workspace_dir}` for `read` and `write`, and the memory variables
+/// `${workspace_dir}` for `read` and `write`; the memory variables
 /// (`docs/site/specs/memory.md` section 16.9.9) for `memory` and
 /// `memory_write`, each a whole URL segment, after a `/` and before a `/`
-/// or the end. Any other `${` is malformed.
+/// or the end; and `${agent_id}` as a whole `delegate` resource, the agent
+/// itself. Any other `${` is malformed.
 pub(crate) fn permission_expressions_valid(action: &str, resource: &str) -> bool {
+    let [agent_id, ..] = cookie_agent_identity::WildcardPattern::MEMORY_VARIABLES;
+    if action == "delegate" {
+        return !resource.contains("${") || resource == agent_id;
+    }
     let mut rest = resource;
     while let Some(start) = rest.find("${") {
         let expression = &rest[start..];

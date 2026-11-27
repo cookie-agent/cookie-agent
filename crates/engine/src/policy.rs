@@ -532,7 +532,11 @@ fn freeze_with_bindings(
         return Err(EngineError::NoRunnableModel);
     }
     let document = &agent.document;
-    let targets = delegation_targets(&document.frontmatter.permissions, registry.agents());
+    let targets = delegation_targets(
+        &document.id,
+        &document.frontmatter.permissions,
+        registry.agents(),
+    );
     let delegation = (!targets.is_empty()).then(|| protocol::FrozenDelegationPolicy {
         targets,
         effective_depth_ceiling: inherited_depth_ceiling.unwrap_or_default(),
@@ -1544,7 +1548,11 @@ pub(crate) fn freeze_acp_agent_policy(
     }
     let document = &agent.document;
     let permissions = crate::permissions::agent_permission_rules(document, delegated, memory);
-    let targets = delegation_targets(&document.frontmatter.permissions, registry.agents());
+    let targets = delegation_targets(
+        &document.id,
+        &document.frontmatter.permissions,
+        registry.agents(),
+    );
     let delegation = (!targets.is_empty()).then_some(protocol::FrozenDelegationPolicy {
         targets,
         effective_depth_ceiling: depth_ceiling,

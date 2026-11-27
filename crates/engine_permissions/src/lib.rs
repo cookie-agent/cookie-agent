@@ -1202,17 +1202,24 @@ pub struct MemoryVariables {
     pub project: Option<String>,
 }
 
-/// `rule` with the memory variables of its pattern expanded for a run of
-/// `agent`: one rule per session machine for `${session_machine}`, and none
-/// when a variable stands for nothing (no project, or no machine), since
-/// such a pattern matches no memory. Rules of other actions, and patterns
-/// without a variable, are kept as they are.
+/// `rule` with the variables of its pattern expanded for a run of `agent`:
+/// a `delegate` rule's `${agent_id}`, the agent itself; and a memory rule's
+/// memory variables, one rule per session machine for `${session_machine}`,
+/// and none when a variable stands for nothing (no project, or no machine),
+/// since such a pattern matches no memory. Rules of other actions, and
+/// patterns without a variable, are kept as they are.
 fn expand_memory_variables(
     rule: PermissionRule,
     agent: &AgentId,
     variables: &MemoryVariables,
 ) -> Vec<PermissionRule> {
     let [agent_id, session_machine, session_project] = WildcardPattern::MEMORY_VARIABLES;
+    if rule.action == PermissionAction::DELEGATE && rule.resource.as_str() == agent_id {
+        return WildcardPattern::new(agent.as_str())
+            .map(|resource| PermissionRule { resource, ..rule })
+            .into_iter()
+            .collect();
+    }
     let pattern = rule.resource.as_str();
     let memory_action =
         rule.action == PermissionAction::MEMORY || rule.action == PermissionAction::MEMORY_WRITE;

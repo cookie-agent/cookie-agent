@@ -611,6 +611,7 @@ impl AgentRegistry {
                     })
                     .collect(),
                 delegation_targets: delegation_targets(
+                    &agent.document.id,
                     &agent.document.frontmatter.permissions,
                     &agents,
                 ),
@@ -774,7 +775,7 @@ impl AgentRegistry {
                         cookie_agent_config::PermissionKey::any(PermissionAction::DELEGATE),
                         PermissionValue::Resources(IndexMap::from([(resource.clone(), *effect)])),
                     )]);
-                    if delegation_targets(&single, &self.agents).is_empty() {
+                    if delegation_targets(id, &single, &self.agents).is_empty() {
                         diagnostics.push(format!(
                             "agent `{id}` delegates to `{pattern}`, which matches no agent yet: \
                              no enabled subagent document matches it and no connected runtime \
@@ -1313,7 +1314,12 @@ fn first_available_selection(models: &CompiledModelRuntime) -> Option<ModelSelec
     })
 }
 
+/// The agents `owner`'s `permissions` let it delegate to: every eligible
+/// agent a non-deny `delegate` rule names or matches. `${agent_id}` names
+/// `owner` itself, so a template shared by several agents (`_acp`) lets each
+/// delegate to another session of its own.
 pub(crate) fn delegation_targets(
+    owner: &AgentId,
     permissions: &IndexMap<cookie_agent_config::PermissionKey, PermissionValue>,
     known_agents: &BTreeMap<AgentId, ResolvedAgent>,
 ) -> Vec<AgentId> {
@@ -1348,7 +1354,12 @@ pub(crate) fn delegation_targets(
                 if *effect == PermissionEffect::Deny {
                     continue;
                 }
-                let pattern = resource.as_str();
+                let [own_id, ..] = cookie_agent_identity::WildcardPattern::MEMORY_VARIABLES;
+                let pattern = if resource.as_str() == own_id {
+                    owner.as_str()
+                } else {
+                    resource.as_str()
+                };
                 if pattern.contains('*') || pattern.contains('?') {
                     // Wildcard delegation uses the same matching as every
                     // other permission: expand against the known agent set.
@@ -1399,10 +1410,15 @@ mod tests {
     };
     use cookie_agent_identity::AgentId as IdentityAgentId;
 
+    /// The agent whose rules a test reads; none of them names `${agent_id}`.
+    fn test_owner() -> IdentityAgentId {
+        IdentityAgentId::new("primary").unwrap()
+    }
+
     #[test]
     fn delegation_targets_require_named_non_deny_permissions() {
         let known = BTreeMap::new();
-        assert!(delegation_targets(&IndexMap::new(), &known).is_empty());
+        assert!(delegation_targets(&test_owner(), &IndexMap::new(), &known).is_empty());
 
         let mut resources = IndexMap::new();
         resources.insert(WildcardPattern::new("*").unwrap(), PermissionEffect::Deny);
@@ -1415,7 +1431,7 @@ mod tests {
             PermissionValue::Resources(resources),
         )]);
         // A named target is one only once an agent has the name.
-        assert!(delegation_targets(&permissions, &known).is_empty());
+        assert!(delegation_targets(&test_owner(), &permissions, &known).is_empty());
         let reviewer = cookie_agent_protocol::AgentId::new("reviewer").unwrap();
         let known = BTreeMap::from([(
             reviewer.clone(),
@@ -1432,7 +1448,10 @@ mod tests {
                 unavailable: None,
             },
         )]);
-        assert_eq!(delegation_targets(&permissions, &known), [reviewer]);
+        assert_eq!(
+            delegation_targets(&test_owner(), &permissions, &known),
+            [reviewer]
+        );
     }
 
     #[test]
@@ -1572,7 +1591,7 @@ mod tests {
         // Disabled and non-subagent matches are excluded; concrete and
         // wildcard targets merge and dedupe.
         assert_eq!(
-            delegation_targets(&permissions, &known),
+            delegation_targets(&test_owner(), &permissions, &known),
             [
                 cookie_agent_protocol::AgentId::new("explore").unwrap(),
                 cookie_agent_protocol::AgentId::new("sub-worker").unwrap(),
@@ -1586,7 +1605,7 @@ mod tests {
             PermissionValue::Effect(PermissionEffect::Allow),
         )]);
         assert_eq!(
-            delegation_targets(&scalar, &known),
+            delegation_targets(&test_owner(), &scalar, &known),
             [
                 cookie_agent_protocol::AgentId::new("explore").unwrap(),
                 cookie_agent_protocol::AgentId::new("sub-worker").unwrap(),
@@ -1596,6 +1615,6 @@ mod tests {
             cookie_agent_config::PermissionKey::any(PermissionAction::DELEGATE),
             PermissionValue::Effect(PermissionEffect::Deny),
         )]);
-        assert!(delegation_targets(&scalar_deny, &known).is_empty());
+        assert!(delegation_targets(&test_owner(), &scalar_deny, &known).is_empty());
     }
 }
