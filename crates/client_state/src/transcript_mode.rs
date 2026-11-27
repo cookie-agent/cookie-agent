@@ -99,6 +99,86 @@ pub struct WorkSummary {
     pub failed: usize,
     /// The runtimes its calls ran on, in the order it first used them.
     pub runtimes: Vec<cookie_agent_protocol::RuntimeId>,
+    /// The pictures, videos, and PDFs its calls returned to the agent, in
+    /// call order, each once (`docs/site/specs/folded-media.md` section 3).
+    pub seen: Vec<SeenMedia>,
+}
+
+/// A picture, video, or PDF a call in folded work returned to the agent:
+/// a `Media` block of its row (`docs/site/specs/folded-media.md`).
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub struct SeenMedia {
+    pub artifact: cookie_agent_protocol::ArtifactRef,
+    /// The call whose row shows it.
+    pub call_id: ToolCallId,
+    /// The call's header, as its row shows it ([`crate::tool_header`]).
+    pub header: String,
+    /// The file's name: its own, else the file the call's primary argument
+    /// names (`Read runs/loss.png` gives `loss.png`); `None` with neither.
+    pub name: Option<String>,
+    /// Why the model never saw it, when it did not: the reason of the
+    /// placeholder its request carried in its place. Always `None` today:
+    /// the engine fits media to each request as it sends it and records
+    /// nothing of that a client reads, so a client cannot tell.
+    pub not_shown: Option<String>,
+}
+
+/// What kind of file a [`SeenMedia`] is.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum SeenKind {
+    Image,
+    Video,
+    Pdf,
+}
+
+impl SeenKind {
+    /// The kind of a file of `media_type` that counts as seen; `None` for
+    /// any other.
+    #[must_use]
+    pub fn of(media_type: &str) -> Option<Self> {
+        if media_type.starts_with("image/") {
+            Some(Self::Image)
+        } else if media_type.starts_with("video/") {
+            Some(Self::Video)
+        } else if media_type == "application/pdf" {
+            Some(Self::Pdf)
+        } else {
+            None
+        }
+    }
+
+    /// What one of the kind is called: `image`, `video`, `PDF`.
+    #[must_use]
+    pub const fn word(self) -> &'static str {
+        match self {
+            Self::Image => "image",
+            Self::Video => "video",
+            Self::Pdf => "PDF",
+        }
+    }
+}
+
+impl SeenMedia {
+    #[must_use]
+    pub fn kind(&self) -> SeenKind {
+        SeenKind::of(&self.artifact.media_type).unwrap_or(SeenKind::Image)
+    }
+
+    /// Whether the model saw it.
+    #[must_use]
+    pub fn model_saw(&self) -> bool {
+        self.not_shown.is_none()
+    }
+
+    /// What a list of names calls it: [`Self::name`], else its kind and
+    /// `ordinal`, its place among the listed files of that kind counted
+    /// from one (`image 2`).
+    #[must_use]
+    pub fn label(&self, ordinal: usize) -> String {
+        self.name
+            .clone()
+            .unwrap_or_else(|| format!("{} {ordinal}", self.kind().word()))
+    }
 }
 
 impl WorkSummary {
@@ -139,6 +219,38 @@ impl WorkSummary {
     #[must_use]
     pub fn failed_label(&self) -> Option<String> {
         (self.failed > 0).then(|| format!("· {} failed", self.failed))
+    }
+
+    /// How many of each kind of file the work saw, in image, video, PDF
+    /// order, kinds at none left out.
+    #[must_use]
+    pub fn seen_counts(&self) -> Vec<(SeenKind, usize)> {
+        [SeenKind::Image, SeenKind::Video, SeenKind::Pdf]
+            .into_iter()
+            .map(|kind| {
+                let count = self.seen.iter().filter(|seen| seen.kind() == kind).count();
+                (kind, count)
+            })
+            .filter(|(_, count)| *count > 0)
+            .collect()
+    }
+
+    /// The files the work saw, shown after its calls and failed ones (and
+    /// after a live row's time): `· 3 images, 1 video, 1 PDF`; `None` at
+    /// none.
+    #[must_use]
+    pub fn seen_label(&self) -> Option<String> {
+        let counts = self.seen_counts();
+        (!counts.is_empty()).then(|| {
+            let parts = counts
+                .into_iter()
+                .map(|(kind, count)| match count {
+                    1 => format!("1 {}", kind.word()),
+                    count => format!("{count} {}s", kind.word()),
+                })
+                .collect::<Vec<_>>();
+            format!("· {}", parts.join(", "))
+        })
     }
 }
 
@@ -183,6 +295,7 @@ fn fold_summary<'a>(
             tool_calls: 0,
             failed: 0,
             runtimes: Vec::new(),
+            seen: Vec::new(),
         },
     )
 }
@@ -196,7 +309,8 @@ fn span(started: Option<jiff::Timestamp>, ended: Option<jiff::Timestamp>) -> Dur
         .unwrap_or_default()
 }
 
-/// `summary` with the tool calls of `work` and the failed ones counted.
+/// `summary` with the tool calls of `work` and the failed ones counted, and
+/// the media they returned listed.
 fn tally<'a>(
     state: &SessionState,
     work: impl IntoIterator<Item = &'a AssistantChild>,
@@ -215,12 +329,55 @@ fn tally<'a>(
                 {
                     summary.runtimes.push(runtime.clone());
                 }
+                if let Some(tool) = tool {
+                    add_seen(tool, &mut summary.seen);
+                }
             }
             AssistantChild::CommittedTool { .. } => summary.tool_calls += 1,
             _ => {}
         }
     }
     summary
+}
+
+/// Adds the pictures, videos, and PDFs the row of `tool` shows to `seen`,
+/// those not in it yet: none of a call that failed, and of one still
+/// running those its live display shows.
+fn add_seen(tool: &crate::ToolCallState, seen: &mut Vec<SeenMedia>) {
+    use cookie_agent_protocol::{DisplayBlock, Open};
+    if tool.status == ToolStatus::Failed {
+        return;
+    }
+    for block in tool.shown_display() {
+        let Open::Known(DisplayBlock::Media { artifact, .. }) = block else {
+            continue;
+        };
+        if SeenKind::of(&artifact.media_type).is_none()
+            || seen
+                .iter()
+                .any(|known| known.artifact.sha256 == artifact.sha256)
+        {
+            continue;
+        }
+        let name = artifact
+            .filename
+            .as_deref()
+            .map(crate::tool_header::flatten_header_argument)
+            .filter(|name| !name.trim().is_empty())
+            .or_else(|| {
+                let argument = tool.presentation.primary_argument.as_ref()?;
+                let argument = crate::tool_header::flatten_header_argument(argument.as_str());
+                let file = argument.trim().rsplit(['/', '\\']).next()?.trim();
+                (!file.is_empty()).then(|| file.to_owned())
+            });
+        seen.push(SeenMedia {
+            artifact: artifact.clone(),
+            call_id: tool.id,
+            header: tool.header_text(),
+            name,
+            not_shown: None,
+        });
+    }
 }
 
 /// What a live work row says under its label: the latest text it wrote or
@@ -426,6 +583,7 @@ impl WorkRow {
             self.summary.label().hash(hasher);
             self.summary.tool_calls.hash(hasher);
             self.summary.failed.hash(hasher);
+            self.summary.seen.hash(hasher);
         } else {
             self.summary.hash(hasher);
         }
@@ -535,7 +693,26 @@ fn signature(state: &SessionState, start: usize, end: usize) -> u64 {
                 std::mem::discriminant(child).hash(&mut hasher);
                 child.version().hash(&mut hasher);
                 match child {
-                    AssistantChild::Tool { call_id } => call_id.hash(&mut hasher),
+                    AssistantChild::Tool { call_id } => {
+                        call_id.hash(&mut hasher);
+                        // What a settled row reads of the call: whether it
+                        // failed, and the media its row shows.
+                        if let Some(tool) = state.tools.get(call_id) {
+                            std::mem::discriminant(&tool.status).hash(&mut hasher);
+                            tool.shown_display()
+                                .iter()
+                                .filter(|block| {
+                                    matches!(
+                                        block,
+                                        cookie_agent_protocol::Open::Known(
+                                            cookie_agent_protocol::DisplayBlock::Media { .. }
+                                        )
+                                    )
+                                })
+                                .count()
+                                .hash(&mut hasher);
+                        }
+                    }
                     AssistantChild::CommittedTool {
                         turn_seq,
                         content_index,
@@ -997,6 +1174,7 @@ impl FoldPlan {
                         tool_calls: 0,
                         failed: 0,
                         runtimes: Vec::new(),
+                        seen: Vec::new(),
                     },
                 )
             }

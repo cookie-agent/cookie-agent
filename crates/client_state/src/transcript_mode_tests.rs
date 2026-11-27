@@ -700,6 +700,7 @@ fn a_live_rows_shown_hash_moves_with_its_label_not_its_clock() {
                 tool_calls: 2,
                 failed: 0,
                 runtimes: Vec::new(),
+                seen: Vec::new(),
             },
             lines: None,
         };
