@@ -207,9 +207,10 @@ pub fn listed_first(session: &SessionMeta) -> bool {
     session.pinned || session_is_active(session)
 }
 
-/// Orders a session list: the [`listed_first`] sessions (active or
-/// pinned), then the rest, each group newest [`ordering_activity`] first;
-/// sessions that tie keep their order. It knows nothing of how a list is
+/// Orders a session list: the pinned sessions, then the active ones
+/// ([`session_is_active`]) not pinned, then the rest, each group newest
+/// [`ordering_activity`] first, so a session that starts working never
+/// moves above a pinned one; sessions that tie keep their order. It knows nothing of how a list is
 /// grouped, so a client orders each group (each project's sessions, say)
 /// on its own.
 /// The sessions may be held or borrowed: a client orders references to the
@@ -218,7 +219,8 @@ pub fn order_sessions<S: std::borrow::Borrow<SessionMeta>>(sessions: &mut [S]) {
     sessions.sort_by_key(|session| {
         let session = session.borrow();
         (
-            !listed_first(session),
+            !session.pinned,
+            !session_is_active(session),
             std::cmp::Reverse(ordering_activity(session)),
         )
     });
@@ -711,7 +713,7 @@ mod tests {
     }
 
     #[test]
-    fn active_sessions_come_first_then_the_rest_newest_first() {
+    fn pinned_sessions_come_first_then_active_ones_then_the_rest_newest_first() {
         let mut sessions = vec![
             session("old-idle", "idle", "2026-10-20T08:00:00Z"),
             session("old-running", "running", "2026-10-20T07:00:00Z"),
@@ -727,7 +729,7 @@ mod tests {
                 waiting
             },
             {
-                // So does a pinned one, whatever its status.
+                // A pinned one leads, whatever its status and age.
                 let mut pinned = session("old-pinned", "completed", "2026-10-20T06:30:00Z");
                 pinned.pinned = true;
                 pinned
@@ -741,9 +743,9 @@ mod tests {
         assert_eq!(
             names,
             [
+                "old-pinned",
                 "new-running",
                 "old-running",
-                "old-pinned",
                 "old-waiting",
                 "new-failed",
                 "tie-a",

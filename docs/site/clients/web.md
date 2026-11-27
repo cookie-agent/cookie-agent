@@ -297,7 +297,7 @@ buttons.
     protocol 1.51 keeps no unread sessions.
   - **Pinned.** A row's **⋮** › **Pin** pins the session, and **Unpin**
     lets it go. A pinned session has a pin before its title, stays at the
-    top of its list (or project section) with the sessions at work, shows
+    top of its list (or project section), above the sessions at work, shows
     in a folded project section, and is listed whatever the filter's date
     says. Pins are the daemon's, so every client shows them; a daemon
     older than client protocol 1.66 keeps none
