@@ -367,6 +367,7 @@ Idempotent redelivery resolves against the state preceding the original run.
 | `forward.create` | `kind`, `to`, `from?`, `title?`, `expires_in_hours?` (since 1.109.0) | The `forward` |
 | `forward.update` | `forward` (its handle), `title?`, `expires_in_hours?` (since 1.109.0) | The `forward` |
 | `forward.delete` | `forward` (since 1.109.0) | `{}` |
+| `forward_share.create` | `forward`, `expiry`, `reuse?` (since 1.110.0) | The `share` (`ForwardShare`) and whether it is new |
 | `content.urls` | `targets`: up to 64 of `{ type: "artifact", session_id, sha256, name? }` or `{ type: "asset", store, asset }` (since 1.108.0; see [Folders](#folders)) | `urls`, one per target: `{ path, sha256, main? }` or `null` |
 | `artifact.thumbnail` | Session ID, `sha256` (since 1.105.0; see [Media](#media)) | As `asset.thumbnail`: the `sha256`, its `thumbnail?`, and without one `retry_later` |
 | `attachment.delivery` | Session ID, `files` (`ArtifactRef`s, at most 64), the draft's `selection` (since 1.105.0; see [Media](#media)) | Per file, in order: `sha256`, `ending` (`included`, `read_artifact`, `transfer`, `name_only`), the `label` the model gets, and `reason?` |
@@ -1035,6 +1036,21 @@ session tree deletes the forwards it made. `forwards.changed` says to list
 them again, at most once a second. A guest lists its shared session's
 forwards and nothing else. Refusals are `forward_not_found` and
 `forward_invalid`, with the reason in `detail`.
+
+Since 1.110.0 the daemon serves an `http` forward's app at
+`/p/<handle>/<path>` on its listener, unsandboxed and on the page's own
+origin, for a request with the page ticket cookie or the token; a guest of
+a conversation share reaches the shared session's forwards at
+`/s/<id>/p/<handle>/`. Only headers change on the way: the path loses its
+prefix, `Host` is the target's, `X-Forwarded-Prefix` and the other
+`X-Forwarded-*` headers say where the app is, the page ticket cookie is
+taken out, and a `Location` from the root and a cookie for the whole site
+get the prefix. WebSockets are upgraded end to end. `forward_share.create`
+makes a public link whose root is the app, `/s/<id>/`, for anyone with it
+until it or the forward ends; `shares.list` lists them in `forwards`, and
+`share.revoke` revokes one. An agent shows a forward in its reply with
+`<attach forward="fw_…" path="/…"/>`, whose outcome is `forwarded` with a
+`ForwardBlock` (`handle`, `kind`, `title?`, `route`) and the `path`.
 ### Share links
 
 Since 1.86.0 a share link is a public URL for one asset

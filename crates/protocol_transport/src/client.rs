@@ -1317,6 +1317,16 @@ impl Client {
             .await
     }
 
+    /// Make a link to a web forward (`forward_share.create`, client protocol
+    /// 1.110.0).
+    pub async fn create_forward_share(
+        &self,
+        params: cookie_agent_protocol::ForwardShareCreateParams,
+    ) -> Result<cookie_agent_protocol::ForwardShareResult, ClientError> {
+        self.call(cookie_agent_protocol::FORWARD_SHARE_CREATE_METHOD, &params)
+            .await
+    }
+
     /// Change a conversation share (`session_share.update`).
     pub async fn update_session_share(
         &self,

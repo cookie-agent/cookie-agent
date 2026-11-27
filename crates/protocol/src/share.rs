@@ -20,6 +20,9 @@ pub const SHARE_REVOKE_METHOD: &str = "share.revoke";
 pub const SHARES_REVOKE_ALL_METHOD: &str = "shares.revoke_all";
 pub const SHARES_CHANGED_METHOD: &str = "shares.changed";
 pub const SESSION_SHARE_CREATE_METHOD: &str = "session_share.create";
+/// `forward_share.create` (client protocol 1.110.0): a public link to a
+/// web forward (`docs/site/specs/forwards.md` section 6.1).
+pub const FORWARD_SHARE_CREATE_METHOD: &str = "forward_share.create";
 pub const SESSION_SHARE_UPDATE_METHOD: &str = "session_share.update";
 
 /// The most bytes a conversation share's label has: what fits in the
@@ -144,6 +147,48 @@ pub struct SharesListResult {
     /// The conversation shares (client protocol 1.88.0).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sessions: Vec<SessionShare>,
+    /// The links to web forwards (client protocol 1.110.0).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub forwards: Vec<ForwardShare>,
+}
+
+/// A public link to a web forward (client protocol 1.110.0): whoever opens
+/// it reaches the forward's app at the link's root, until the link or the
+/// forward ends.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct ForwardShare {
+    pub id: ShareId,
+    /// The app's path relative to the share base, `s/<id>/`.
+    pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    /// The forward's handle.
+    pub forward: String,
+    pub title: String,
+    pub created: ShareCreated,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<jiff::Timestamp>,
+    pub views: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_viewed: Option<jiff::Timestamp>,
+}
+
+/// `forward_share.create`: a link to web forward `forward`, or with `reuse`
+/// its newest live one.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ForwardShareCreateParams {
+    pub forward: String,
+    pub expiry: ShareExpiry,
+    #[serde(default)]
+    pub reuse: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct ForwardShareResult {
+    pub share: ForwardShare,
+    /// Whether the link is new; false when `reuse` returned one.
+    pub created: bool,
 }
 
 /// Makes a conversation share of a root session.

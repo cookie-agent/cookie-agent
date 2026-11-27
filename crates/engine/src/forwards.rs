@@ -150,6 +150,54 @@ struct Link {
 enum Other {
     Pending(Vec<Out>),
     Runtime(EndKey),
+    /// The daemon's own end: a browser's request to an `http` forward,
+    /// through a pipe the proxy reads and writes.
+    Local(LocalEnd),
+}
+
+/// The daemon's end of a connection: what the runtime sends goes into
+/// `inbox`, which the pipe's writer drains.
+struct LocalEnd {
+    inbox: mpsc::UnboundedSender<LocalIn>,
+    window: Arc<Window>,
+    /// The pipe's reader reached its end, and said so.
+    eof: Arc<std::sync::atomic::AtomicBool>,
+}
+
+enum LocalIn {
+    Data(Vec<u8>),
+    Eof,
+    Reset,
+}
+
+/// What the daemon's end sent and the runtime has not acknowledged.
+#[derive(Default)]
+struct Window {
+    unacked: Mutex<u64>,
+    acked: tokio::sync::Notify,
+}
+
+impl Window {
+    async fn wait_room(&self) {
+        loop {
+            let notified = self.acked.notified();
+            if *lock(&self.unacked) < cookie_agent_protocol::runtime_protocol::NET_WINDOW_BYTES {
+                return;
+            }
+            notified.await;
+        }
+    }
+
+    fn sent(&self, bytes: u64) {
+        *lock(&self.unacked) += bytes;
+    }
+
+    fn acked(&self, bytes: u64) {
+        let mut unacked = lock(&self.unacked);
+        *unacked = unacked.saturating_sub(bytes);
+        drop(unacked);
+        self.acked.notify_waiters();
+    }
 }
 
 /// A message to a runtime, in the order its outbox sends them.
@@ -597,7 +645,7 @@ impl crate::runtimes::NetRelayHandler for NetRelay {
                     let pending =
                         match std::mem::replace(&mut link.other, Other::Runtime(other.clone())) {
                             Other::Pending(pending) => pending,
-                            Other::Runtime(_) => Vec::new(),
+                            Other::Runtime(_) | Other::Local(_) => Vec::new(),
                         };
                     relay.links.insert(
                         other.clone(),
@@ -648,6 +696,10 @@ impl crate::runtimes::NetRelayHandler for NetRelay {
         let mut relay = lock(&self.forwards.relay);
         let other = match relay.links.get(&end).map(|link| &link.other) {
             Some(Other::Runtime(other)) => other.clone(),
+            Some(Other::Local(local)) => {
+                local.window.acked(params.bytes);
+                return;
+            }
             _ => return,
         };
         relay.send(
@@ -710,6 +762,12 @@ impl Forwards {
                     }),
                 );
             }
+            Other::Local(local) => {
+                use base64::Engine as _;
+                if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&params.data) {
+                    let _ = local.inbox.send(LocalIn::Data(bytes));
+                }
+            }
         }
         drop(relay);
         self.counted(&handle, recent, bytes, inbound);
@@ -734,6 +792,27 @@ impl Forwards {
                 link.eof = true;
                 pending.push(Out::Close(params));
             } else {
+                relay.links.remove(&end);
+                drop(relay);
+                self.ended(
+                    &handle,
+                    recent,
+                    params.reason.as_deref().unwrap_or("closed"),
+                );
+            }
+            return;
+        }
+        if let Other::Local(local) = &link.other {
+            if eof {
+                link.eof = true;
+                let _ = local.inbox.send(LocalIn::Eof);
+                let done = local.eof.load(std::sync::atomic::Ordering::Acquire);
+                drop(relay);
+                if done {
+                    self.finish_local(&end, "closed");
+                }
+            } else {
+                let _ = local.inbox.send(LocalIn::Reset);
                 relay.links.remove(&end);
                 drop(relay);
                 self.ended(
@@ -957,15 +1036,21 @@ impl NetRelay {
             let Some(link) = relay.links.remove(&end) else {
                 continue;
             };
-            if let Other::Runtime(other) = link.other {
-                relay.links.remove(&other);
-                relay.send(
-                    &other.runtime,
-                    Out::Close(NetCloseParams {
-                        connection: other.id,
-                        reason: Some(format!("{} disconnected", lost.runtime)),
-                    }),
-                );
+            match link.other {
+                Other::Runtime(other) => {
+                    relay.links.remove(&other);
+                    relay.send(
+                        &other.runtime,
+                        Out::Close(NetCloseParams {
+                            connection: other.id,
+                            reason: Some(format!("{} disconnected", lost.runtime)),
+                        }),
+                    );
+                }
+                Other::Local(local) => {
+                    let _ = local.inbox.send(LocalIn::Reset);
+                }
+                Other::Pending(_) => {}
             }
             ended.push((link.forward, link.recent));
         }
@@ -985,6 +1070,198 @@ impl NetRelay {
                 .ended(&handle, recent, &format!("{} disconnected", lost.runtime));
         }
         self.forwards.kick();
+    }
+}
+
+impl Forwards {
+    /// Ends the daemon's end `end` once both directions ended.
+    fn finish_local(&self, end: &EndKey, how: &str) {
+        let mut relay = lock(&self.relay);
+        let Some(link) = relay.links.remove(end) else {
+            return;
+        };
+        relay.send(
+            &end.runtime,
+            Out::Close(NetCloseParams {
+                connection: end.id,
+                reason: Some(how.to_owned()),
+            }),
+        );
+        drop(relay);
+        self.ended(&link.forward, link.recent, how);
+    }
+
+    /// Opens a connection of `http` forward `handle` from `peer`, a
+    /// browser's address: a pipe whose other end is the forward's target,
+    /// reached from its machine.
+    pub(crate) async fn open_local(
+        self: &Arc<Self>,
+        engine: &crate::Engine,
+        handle: &str,
+        peer: String,
+    ) -> Result<tokio::io::DuplexStream, String> {
+        let record = self
+            .records()
+            .into_iter()
+            .find(|record| record.handle == handle && record.kind == ForwardKind::Http)
+            .ok_or_else(|| format!("there is no web forward {handle}"))?;
+        if record
+            .expires_at
+            .is_some_and(|at| at <= jiff::Timestamp::now())
+        {
+            return Err(format!("forward {handle} has expired"));
+        }
+        let target = engine
+            .forward_client(&record.to.machine)
+            .await
+            .ok_or_else(|| format!("{} is not connected", record.to.machine))?;
+        let connection = target
+            .net_connect(NetProtocol::Tcp, &record.to.host, record.to.port)
+            .await?;
+        let end = EndKey {
+            runtime: RuntimeKey::of(&target),
+            id: connection,
+        };
+        let Some(recent) = self.opened(handle, peer) else {
+            let mut relay = lock(&self.relay);
+            relay.outbox(&target);
+            relay.send(
+                &end.runtime,
+                Out::Close(NetCloseParams {
+                    connection,
+                    reason: None,
+                }),
+            );
+            return Err("the forward carries as many connections as it may".into());
+        };
+        let (ours, theirs) = tokio::io::duplex(256 * 1024);
+        let (inbox, queued) = mpsc::unbounded_channel();
+        let window = Arc::new(Window::default());
+        let eof = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        {
+            let mut relay = lock(&self.relay);
+            relay.outbox(&target);
+            relay.links.insert(
+                end.clone(),
+                Link {
+                    forward: handle.to_owned(),
+                    other: Other::Local(LocalEnd {
+                        inbox,
+                        window: Arc::clone(&window),
+                        eof: Arc::clone(&eof),
+                    }),
+                    eof: false,
+                    inbound: false,
+                    recent,
+                },
+            );
+        }
+        let (reader, writer) = tokio::io::split(ours);
+        tokio::spawn(Arc::clone(self).write_local(end.clone(), writer, queued));
+        tokio::spawn(Arc::clone(self).read_local(end.clone(), reader, window, eof));
+        self.replay(&end);
+        Ok(theirs)
+    }
+
+    /// Writes what the target sends into the pipe, acknowledging it.
+    async fn write_local(
+        self: Arc<Self>,
+        end: EndKey,
+        mut writer: tokio::io::WriteHalf<tokio::io::DuplexStream>,
+        mut queued: mpsc::UnboundedReceiver<LocalIn>,
+    ) {
+        use tokio::io::AsyncWriteExt as _;
+        while let Some(message) = queued.recv().await {
+            match message {
+                LocalIn::Data(bytes) => {
+                    if writer.write_all(&bytes).await.is_err() {
+                        self.reset_local(&end, "the browser went away");
+                        return;
+                    }
+                    lock(&self.relay).send(
+                        &end.runtime,
+                        Out::Ack(NetAckParams {
+                            connection: end.id,
+                            bytes: bytes.len() as u64,
+                        }),
+                    );
+                }
+                LocalIn::Eof => {
+                    let _ = writer.shutdown().await;
+                }
+                LocalIn::Reset => return,
+            }
+        }
+    }
+
+    /// Sends what the pipe's reader gets to the target, within its window.
+    async fn read_local(
+        self: Arc<Self>,
+        end: EndKey,
+        mut reader: tokio::io::ReadHalf<tokio::io::DuplexStream>,
+        window: Arc<Window>,
+        eof: Arc<std::sync::atomic::AtomicBool>,
+    ) {
+        use base64::Engine as _;
+        use tokio::io::AsyncReadExt as _;
+        let mut buffer = vec![0u8; cookie_agent_protocol::runtime_protocol::MAX_NET_DATA_BYTES];
+        loop {
+            window.wait_room().await;
+            let read = reader.read(&mut buffer).await;
+            let count = match read {
+                Ok(0) | Err(_) => break,
+                Ok(count) => count,
+            };
+            window.sent(count as u64);
+            let mut relay = lock(&self.relay);
+            let Some(link) = relay.links.get(&end) else {
+                return;
+            };
+            let (handle, recent) = (link.forward.clone(), link.recent);
+            relay.send(
+                &end.runtime,
+                Out::Data(NetDataParams {
+                    connection: end.id,
+                    data: base64::engine::general_purpose::STANDARD.encode(&buffer[..count]),
+                }),
+            );
+            drop(relay);
+            self.counted(&handle, recent, count as u64, true);
+        }
+        eof.store(true, std::sync::atomic::Ordering::Release);
+        let mut relay = lock(&self.relay);
+        let Some(link) = relay.links.get(&end) else {
+            return;
+        };
+        let done = link.eof;
+        relay.send(
+            &end.runtime,
+            Out::Close(NetCloseParams {
+                connection: end.id,
+                reason: Some(NET_EOF.to_owned()),
+            }),
+        );
+        drop(relay);
+        if done {
+            self.finish_local(&end, "closed");
+        }
+    }
+
+    /// Ends the daemon's end `end` at once.
+    fn reset_local(&self, end: &EndKey, how: &str) {
+        let mut relay = lock(&self.relay);
+        let Some(link) = relay.links.remove(end) else {
+            return;
+        };
+        relay.send(
+            &end.runtime,
+            Out::Close(NetCloseParams {
+                connection: end.id,
+                reason: Some(how.to_owned()),
+            }),
+        );
+        drop(relay);
+        self.ended(&link.forward, link.recent, how);
     }
 }
 

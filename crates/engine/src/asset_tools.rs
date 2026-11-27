@@ -62,7 +62,7 @@ const READ_DESCRIPTION: &str = "Read an asset's content by its handle, as `read`
 
 const LIST_DESCRIPTION: &str = "List the assets you can use: this conversation's and the project's, newest first, each with its handle, title, type, size, scope, and which session last saved it and when. At most 100 are listed.";
 
-const SHARE_DESCRIPTION: &str = "Make a public link to an asset, for the user to send to people outside cookie: anyone with the link can open the asset in a browser, without signing in, until the link expires. The link always shows the asset's current content. The user is usually asked to approve the call. `expires_in` is `7d` by default; `1d`, `30d`, and `never` are the others. An asset that already has a live link gets that link back, with its own expiry. Only share what the user asked to share.";
+const SHARE_DESCRIPTION: &str = "Make a public link to an asset, or to a web forward by its handle (`fw_…`), whose app the link opens, for the user to send to people outside cookie: anyone with the link can open it in a browser, without signing in, until the link expires. The link always shows the asset's current content. The user is usually asked to approve the call. `expires_in` is `7d` by default; `1d`, `30d`, and `never` are the others. An asset that already has a live link gets that link back, with its own expiry. Only share what the user asked to share.";
 
 const DELETE_DESCRIPTION: &str = "Delete an asset by its handle. Every place it was shown then says it was deleted, and it cannot be brought back.";
 
@@ -171,7 +171,7 @@ impl ShareLifetime {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct ShareArgs {
-    /// The asset's handle
+    /// The asset's handle, or a web forward's (fw_…)
     asset: String,
     /// How long the link works: `7d` (default), `1d`, `30d`, or `never`
     #[serde(default)]
@@ -414,6 +414,8 @@ enum AssetCall {
     List(Option<AssetScope>),
     Delete(Asset),
     Share(Asset, ShareLifetime),
+    /// A link to the web forward with this handle.
+    ShareForward(String, ShareLifetime),
 }
 
 /// A prepared `write_asset`: the file's route on its machine, and where it
@@ -685,12 +687,26 @@ impl ToolProvider for AssetTools {
                         "share links are turned off on this daemon ([share] enabled = false)",
                     ));
                 }
-                let reference = args.asset;
-                let asset = blocking(&engine, session, move |engine, stores| {
-                    resolve(engine, stores, &reference)
-                })
-                .await?;
-                (AssetCall::Share(asset, args.expires_in), None)
+                if args.asset.starts_with("fw_") {
+                    let visible = engine.session_forwards(session).into_iter().any(|forward| {
+                        forward.handle == args.asset
+                            && forward.kind == cookie_agent_protocol::ForwardKind::Http
+                    });
+                    if !visible {
+                        return Err(refused(format!(
+                            "there is no web forward {} this conversation can use",
+                            args.asset
+                        )));
+                    }
+                    (AssetCall::ShareForward(args.asset, args.expires_in), None)
+                } else {
+                    let reference = args.asset;
+                    let asset = blocking(&engine, session, move |engine, stores| {
+                        resolve(engine, stores, &reference)
+                    })
+                    .await?;
+                    (AssetCall::Share(asset, args.expires_in), None)
+                }
             }
             _ => unreachable!("checked by resource"),
         };
@@ -813,6 +829,48 @@ impl PreparedExecutor for AssetExecutor {
             }
             AssetCall::Share(asset, lifetime) => {
                 execute_share(engine, &context, asset, lifetime).await
+            }
+            AssetCall::ShareForward(handle, lifetime) => {
+                let now = jiff::Timestamp::now();
+                let result = engine
+                    .make_forward_share(
+                        cookie_agent_protocol::ForwardShareCreateParams {
+                            forward: handle.clone(),
+                            expiry: lifetime.expiry(now),
+                            reuse: true,
+                        },
+                        cookie_agent_protocol::ShareCreated {
+                            at: now,
+                            session: Some(context.session),
+                            agent: Some(context.turn_context.agent.clone()),
+                        },
+                    )
+                    .await
+                    .map_err(|error| refused(error.to_string()))?;
+                let share = result.share;
+                let address = share.url.clone().unwrap_or_else(|| {
+                    format!(
+                        "{} below the address of the daemon's web page (the daemon has no [public] url or [server] page_url, so ask the user for that address)",
+                        share.path
+                    )
+                });
+                let expiry = match share.expires_at {
+                    Some(at) => format!(
+                        "expires {}",
+                        at.to_zoned(jiff::tz::TimeZone::UTC)
+                            .strftime("%Y-%m-%d %H:%M UTC")
+                    ),
+                    None => "never expires".to_owned(),
+                };
+                let output = format!(
+                    "{} {handle}: {address} ({expiry}). Anyone with the link reaches the app, which may have no login of its own.",
+                    if result.created {
+                        "Shared"
+                    } else {
+                        "Already shared"
+                    }
+                );
+                Ok(text_result(&format!("Shared {handle}"), output, Vec::new()))
             }
             AssetCall::Delete(asset) => {
                 let (store, id) = (asset.store.clone(), asset.id);

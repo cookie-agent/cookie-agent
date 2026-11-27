@@ -4199,14 +4199,14 @@ share_link(asset: string, expires_in?: "1d" | "7d" | "30d" | "never")
 Description sent to the model:
 
 ```text
-Make a public link to an asset, for the user to send to people outside cookie: anyone with the link can open the asset in a browser, without signing in, until the link expires. The link always shows the asset's current content. The user is usually asked to approve the call. `expires_in` is `7d` by default; `1d`, `30d`, and `never` are the others. An asset that already has a live link gets that link back, with its own expiry. Only share what the user asked to share.
+Make a public link to an asset, or to a web forward by its handle (`fw_…`), whose app the link opens, for the user to send to people outside cookie: anyone with the link can open it in a browser, without signing in, until the link expires. The link always shows the asset's current content. The user is usually asked to approve the call. `expires_in` is `7d` by default; `1d`, `30d`, and `never` are the others. An asset that already has a live link gets that link back, with its own expiry. Only share what the user asked to share.
 ```
 
 Only when the session has the `global` runtime attached and no `"*": deny` for `share` hides it. A root run of any agent but an internal one asks the user by default; a delegated run is denied it. Its resource is `asset`.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `asset` | `string` | yes | The asset's handle |
+| `asset` | `string` | yes | The asset's handle, or a web forward's (fw_…) |
 | `expires_in` | `"1d" \| "7d" \| "30d" \| "never"` | no | How long the link works: `7d` (default), `1d`, `30d`, or `never` Default: `"7d"`. |
 
 ??? note "Parameters JSON Schema"
@@ -4227,7 +4227,7 @@ Only when the session has the `global` runtime attached and no `"*": deny` for `
       "additionalProperties": false,
       "properties": {
         "asset": {
-          "description": "The asset's handle",
+          "description": "The asset's handle, or a web forward's (fw_…)",
           "type": "string"
         },
         "expires_in": {

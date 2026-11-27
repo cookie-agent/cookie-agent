@@ -442,6 +442,14 @@
       "result": "ForwardResult"
     },
     {
+      "direction": "to_daemon",
+      "kind": "request",
+      "method": "forward_share.create",
+      "params": "ForwardShareCreateParams",
+      "params_role": "command",
+      "result": "ForwardShareResult"
+    },
+    {
       "direction": "from_daemon",
       "kind": "notification",
       "method": "forwards.changed",

@@ -709,6 +709,12 @@ impl ServerProtocol for StubServer {
     ) -> Result<cookie_agent_protocol::SessionShareResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
+    async fn create_forward_share(
+        &self,
+        _: cookie_agent_protocol::ForwardShareCreateParams,
+    ) -> Result<cookie_agent_protocol::ForwardShareResult, ServerFault> {
+        Err(ServerFault::method_not_found("stub"))
+    }
     async fn update_session_share(
         &self,
         _: cookie_agent_protocol::SessionShareUpdateParams,

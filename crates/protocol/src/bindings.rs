@@ -410,6 +410,7 @@ fn client_methods() -> Vec<MethodSpec> {
         request!(SHARE_REVOKE_METHOD, ToDaemon, ShareRevokeParams => ShareRevokeResult),
         request!(SHARES_REVOKE_ALL_METHOD, ToDaemon, SharesRevokeAllParams => SharesRevokeAllResult),
         request!(SESSION_SHARE_CREATE_METHOD, ToDaemon, SessionShareCreateParams => SessionShareResult),
+        request!(FORWARD_SHARE_CREATE_METHOD, ToDaemon, ForwardShareCreateParams => ForwardShareResult),
         request!(SESSION_SHARE_UPDATE_METHOD, ToDaemon, SessionShareUpdateParams => SessionShareResult),
         request!(PLUGINS_LIST_METHOD, ToDaemon, PluginsListParams => PluginsListResult),
         request!(PLUGINS_RESTART_METHOD, ToDaemon, PluginsRestartParams => PluginsRestartResult),

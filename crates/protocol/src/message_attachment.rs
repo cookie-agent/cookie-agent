@@ -30,9 +30,12 @@ pub fn markdown_options() -> pulldown_cmark::Options {
         | pulldown_cmark::Options::ENABLE_GFM
 }
 
-/// What a tag attaches.
+/// What a tag attaches. Open since client protocol 1.110.0: a kind a
+/// newer daemon wrote reads as [`AttachSource::Unknown`], which a client
+/// shows as a tag it cannot show.
 #[derive(Clone, Debug, Deserialize, Eq, Hash, JsonSchema, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[schemars(extend("x-open" = true))]
 pub enum AttachSource {
     /// A file or a folder on a machine: `src`, with the tag's `machine`,
     /// and for a folder the file `main` names to show it as (client
@@ -49,6 +52,17 @@ pub enum AttachSource {
     Artifact { sha256: String },
     /// An asset, by its handle.
     Asset { handle: String },
+    /// A web forward that exists, by its handle, and the page of it to show
+    /// (client protocol 1.110.0, `docs/site/specs/forwards.md` section 7.1).
+    Forward {
+        handle: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        path: Option<String>,
+    },
+    /// A kind this build does not know; never written.
+    #[serde(other)]
+    #[schemars(skip)]
+    Unknown,
 }
 
 /// One `<attach …/>` tag as written.
@@ -82,14 +96,18 @@ impl AttachTag {
             AttachSource::Artifact { sha256 } => {
                 format!("artifact {}", sha256.get(..12).unwrap_or(sha256))
             }
-            AttachSource::Asset { handle } => handle.clone(),
+            AttachSource::Asset { handle } | AttachSource::Forward { handle, .. } => handle.clone(),
+            AttachSource::Unknown => "attachment".to_owned(),
         }
     }
 }
 
-/// How a tag resolved.
+/// How a tag resolved. Open since client protocol 1.110.0: an outcome a
+/// newer daemon wrote reads as [`AttachmentOutcome::Unknown`], which a
+/// client shows as an attachment it cannot show.
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[schemars(extend("x-open" = true))]
 pub enum AttachmentOutcome {
     /// The `read` (or `asset`) rule asks: the user's answer decides, with
     /// `attachment.decide`.
@@ -102,9 +120,20 @@ pub enum AttachmentOutcome {
     Shown {
         asset: AssetBlock,
     },
+    /// A web forward, as it was when shown, and the page of it to show;
+    /// clients show it as it is now (client protocol 1.110.0).
+    Forwarded {
+        forward: crate::ForwardBlock,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        path: Option<String>,
+    },
     Failed {
         reason: String,
     },
+    /// An outcome this build does not know; never written.
+    #[serde(other)]
+    #[schemars(skip)]
+    Unknown,
 }
 
 /// One piece of a stretch of raw HTML: HTML that stays text, or a tag.
@@ -176,21 +205,32 @@ fn parse_tag(text: &str) -> Option<(AttachTag, usize)> {
     }
     let (mut src, mut machine, mut main, mut artifact, mut asset, mut title) =
         (None, None, None, None, None, None);
+    let (mut forward, mut path): (Option<String>, Option<String>) = (None, None);
     loop {
         rest = rest.trim_start();
         if let Some(after) = rest.strip_prefix("/>") {
             let length = text.len() - after.len();
-            let source = match (src, artifact, asset) {
-                (Some(path), None, None) => AttachSource::Path {
-                    path,
+            let source = match (src, artifact, asset, forward) {
+                (Some(src), None, None, None) if path.is_none() => AttachSource::Path {
+                    path: src,
                     machine,
                     main,
                 },
-                (None, Some(sha256), None) if machine.is_none() && main.is_none() => {
+                (None, Some(sha256), None, None)
+                    if machine.is_none() && main.is_none() && path.is_none() =>
+                {
                     AttachSource::Artifact { sha256 }
                 }
-                (None, None, Some(handle)) if machine.is_none() && main.is_none() => {
+                (None, None, Some(handle), None)
+                    if machine.is_none() && main.is_none() && path.is_none() =>
+                {
                     AttachSource::Asset { handle }
+                }
+                (None, None, None, Some(handle)) if machine.is_none() && main.is_none() => {
+                    if path.as_deref().is_some_and(|path| !path.starts_with('/')) {
+                        return None;
+                    }
+                    AttachSource::Forward { handle, path }
                 }
                 _ => return None,
             };
@@ -222,6 +262,8 @@ fn parse_tag(text: &str) -> Option<(AttachTag, usize)> {
             "src" => &mut src,
             "machine" => &mut machine,
             "main" => &mut main,
+            "forward" => &mut forward,
+            "path" => &mut path,
             "artifact" => &mut artifact,
             "asset" => &mut asset,
             "title" => &mut title,

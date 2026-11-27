@@ -56,6 +56,66 @@
         }
       ]
     },
+    "ForwardShare": {
+      "description": "A public link to a web forward (client protocol 1.110.0): whoever opens\nit reaches the forward's app at the link's root, until the link or the\nforward ends.",
+      "properties": {
+        "created": {
+          "$ref": "#/$defs/ShareCreated"
+        },
+        "expires_at": {
+          "format": "date-time",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "forward": {
+          "description": "The forward's handle.",
+          "type": "string"
+        },
+        "id": {
+          "description": "A share link's ID: 22 base64url characters.",
+          "maxLength": 22,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9_-]{22}$",
+          "type": "string"
+        },
+        "last_viewed": {
+          "format": "date-time",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "path": {
+          "description": "The app's path relative to the share base, `s/<id>/`.",
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "views": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "path",
+        "forward",
+        "title",
+        "created",
+        "views"
+      ],
+      "type": "object"
+    },
     "SessionShare": {
       "description": "One conversation share: a link that lets whoever opens it use one root\nsession as a guest (client protocol 1.88.0).",
       "properties": {
@@ -255,6 +315,13 @@
     "enabled": {
       "description": "Whether the daemon serves links (`[share] enabled`).",
       "type": "boolean"
+    },
+    "forwards": {
+      "description": "The links to web forwards (client protocol 1.110.0).",
+      "items": {
+        "$ref": "#/$defs/ForwardShare"
+      },
+      "type": "array"
     },
     "sessions": {
       "description": "The conversation shares (client protocol 1.88.0).",

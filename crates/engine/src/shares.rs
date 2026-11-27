@@ -71,6 +71,9 @@ pub(crate) enum ShareTarget {
         label: String,
         can_send: bool,
     },
+    /// A web forward, by its handle (`docs/site/specs/forwards.md` section
+    /// 6.1).
+    Forward { forward: String, title: String },
 }
 
 impl ShareRecord {
@@ -83,7 +86,7 @@ impl ShareRecord {
     pub(crate) fn asset(&self) -> Option<AssetId> {
         match &self.target {
             ShareTarget::Asset { asset, .. } => Some(*asset),
-            ShareTarget::Session { .. } => None,
+            ShareTarget::Session { .. } | ShareTarget::Forward { .. } => None,
         }
     }
 }

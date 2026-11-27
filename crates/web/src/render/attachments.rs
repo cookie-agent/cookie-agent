@@ -306,6 +306,13 @@ enum CardState {
         reason: String,
     },
     Ready(Box<CardFile>),
+    /// A web forward, shown live at `path` of it.
+    Forward {
+        label: String,
+        handle: String,
+        path: String,
+        route: String,
+    },
 }
 
 impl CardState {
@@ -330,6 +337,16 @@ impl CardState {
             (AttachmentOutcome::Shown { asset }, _) => {
                 Self::Ready(Box::new(CardFile::asset(asset)))
             }
+            (AttachmentOutcome::Unknown, _) => Self::Failed {
+                label,
+                reason: "this version of the page cannot show it".to_owned(),
+            },
+            (AttachmentOutcome::Forwarded { forward, path }, _) => Self::Forward {
+                label: forward.title.clone().unwrap_or_else(|| label.clone()),
+                handle: forward.handle.clone(),
+                path: path.clone().unwrap_or_else(|| "/".to_owned()),
+                route: forward.route.clone(),
+            },
             (AttachmentOutcome::Attached { file }, Some(key)) => match &file.source {
                 PersistedFileSource::Artifact {
                     byte_length,
@@ -479,6 +496,15 @@ fn row_html(states: &[CardState], compact: &str) -> String {
             let (body, kind) = match (card, state) {
                 (Card::Audio, CardState::Ready(file)) => (audio_html(file), "audio"),
                 (_, CardState::Ready(file)) => (file_html(file), "file"),
+                (
+                    _,
+                    CardState::Forward {
+                        label,
+                        handle,
+                        path,
+                        route,
+                    },
+                ) => (forward_html(label, handle, path, route), "forward"),
                 (_, state) => (waiting_html(state), "waiting"),
             };
             html.push_str(&format!(
@@ -606,6 +632,20 @@ fn document_html(file: &CardFile) -> String {
 }
 
 /// A card not ready: attaching, asking the user, or failed.
+/// A web forward's card: its page live in a frame of its address, which
+/// the page fills in once it knows where it reaches the daemon
+/// (`docs/site/specs/forwards.md` section 7.1).
+fn forward_html(label: &str, handle: &str, path: &str, route: &str) -> String {
+    let src = escape(&format!("p/{handle}{path}"));
+    format!(
+        "<span class=\"{SURFACE} w-full flex-col gap-1.5 p-2\" data-forward-card data-forward-handle=\"{handle}\"><span class=\"flex min-w-0 items-center gap-2 px-1\">{icon}<span class=\"truncate text-sm\" data-asset-title>{label}</span><span class=\"truncate text-[0.6875rem] text-muted\">{route}</span><a class=\"ml-auto shrink-0 text-xs text-accent hover:underline\" target=\"_blank\" rel=\"noopener\" data-forward-src=\"{src}\">Open in new tab</a></span><iframe class=\"block h-[480px] w-full rounded border border-line bg-white\" title=\"{label}\" data-forward-src=\"{src}\"></iframe></span>",
+        icon = svg(icondata::LuGlobe, "shrink-0 text-accent"),
+        handle = escape(handle),
+        label = escape(label),
+        route = escape(route),
+    )
+}
+
 fn waiting_html(state: &CardState) -> String {
     let (icon, label, line, actions, status) = match state {
         CardState::Attaching { label } => (
@@ -632,7 +672,7 @@ fn waiting_html(state: &CardState) -> String {
             String::new(),
             "failed",
         ),
-        CardState::Ready(_) => return String::new(),
+        CardState::Ready(_) | CardState::Forward { .. } => return String::new(),
     };
     format!(
         "<span class=\"{SURFACE} flex-col gap-0.5 px-2.5 py-2\" data-attach-state=\"{status}\"><span class=\"flex min-w-0 items-center gap-2\">{}<span class=\"min-w-0 flex-1 truncate text-sm font-bold\">{}</span></span><span class=\"line-clamp-3 {NOTE}\">{}</span>{actions}</span>",

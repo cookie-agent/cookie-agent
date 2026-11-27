@@ -34,6 +34,15 @@ pub fn asset_link(page_url: &str, session: SessionId, handle: &AssetHandle) -> S
     format!("{page}{separator}#session={session}&asset={handle}")
 }
 
+/// The web page's link that opens `session` and its web forward `handle`
+/// on the page at `page_url` (`docs/site/specs/forwards.md` section 7.1).
+#[must_use]
+pub fn forward_link(page_url: &str, session: SessionId, handle: &str) -> String {
+    let page = page_url.split('#').next().unwrap_or(page_url);
+    let separator = if page.ends_with('/') { "" } else { "/" };
+    format!("{page}{separator}#session={session}&forward={handle}")
+}
+
 /// The web page's link that opens `session` and the file an attachment of
 /// it stored, by its `sha256`, on the page at `page_url`
 /// (`docs/site/specs/message-attachments.md` section 6).

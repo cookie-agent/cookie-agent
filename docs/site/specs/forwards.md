@@ -398,6 +398,13 @@ thousand of them code.
 8. **`<attach forward/>` shows a forward that exists** as a live page
    (section 7.1), by its handle and an optional `path`. A tag never makes
    one: the agent makes it with `forward_create` first.
+9. **The attachment enums open, in a minor** (2026-11-27). The tag needs a
+   new `AttachSource` and `AttachmentOutcome` variant, and both were
+   closed, which the compatibility rules count as breaking. The user chose
+   to make both open in the same minor (1.110.0), each with an unknown
+   fallback, over a major bump or a card in `forward_create`'s result:
+   only clients older than the release, which ship with the daemon,
+   cannot read a forward tag.
 
 ## Implementation notes
 
@@ -435,3 +442,24 @@ Phase 2 (client protocol 1.109.0):
   with every connection.
 - **An `http` forward** is active with its address once its machine is
   connected; the daemon serves it from phase 3.
+
+Phase 3 (client protocol 1.110.0, plugin protocol 1.51.0):
+
+- **The daemon's end of a web forward** is a pipe the proxy speaks HTTP
+  through: the relay's link to the target's connection has a local end
+  instead of a runtime's, under the same 1 MiB window, and each browser
+  connection is one connection to the target.
+- **Share links to a forward** are made with `forward_share.create`, not
+  `share.create`, whose params name an asset; `shares.list` lists them in
+  `forwards`, and `share.revoke` revokes one. `share.update` keeps to asset
+  links: a forward's link is changed by making a new one. `share_link`
+  takes a forward's handle.
+- **A WebSocket upgrade** carries `Connection: upgrade` to the app again,
+  which dropping the hop-by-hop headers takes out.
+- **`ForwardBlock`** holds the handle, kind, title, and route; a card reads
+  the forward's address from where the page reaches the daemon, its own
+  for the user and its share for a guest.
+- **The opened enums** take an `Unknown` fallback (`#[serde(other)]`, left
+  out of the schema, which says `x-open`) rather than an `Open<T>` field,
+  so their many matches stay as they are; nothing writes `Unknown`.
+

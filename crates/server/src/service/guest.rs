@@ -540,6 +540,7 @@ mod tests {
         "share.revoke",
         "shares.revoke_all",
         "session_share.create",
+        "forward_share.create",
         "session_share.update",
         "plugins.list",
         "plugins.restart",

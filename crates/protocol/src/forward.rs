@@ -157,6 +157,32 @@ impl Forward {
     }
 }
 
+/// A forward as an attachment showed it (`<attach forward/>`, client
+/// protocol 1.110.0): which one, and what it was then. Clients show it as
+/// it is now.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct ForwardBlock {
+    pub handle: String,
+    pub kind: ForwardKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// [`Forward::route`] then.
+    pub route: String,
+}
+
+impl Forward {
+    /// The forward as an attachment shows it.
+    #[must_use]
+    pub fn block(&self) -> ForwardBlock {
+        ForwardBlock {
+            handle: self.handle.clone(),
+            kind: self.kind,
+            title: self.title.clone(),
+            route: self.route(),
+        }
+    }
+}
+
 /// `forwards.list`: every forward, or a session tree's.
 #[derive(Clone, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]

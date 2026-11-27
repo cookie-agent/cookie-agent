@@ -470,6 +470,7 @@ fn mark_card(card: &web_sys::Element, shared: &std::collections::HashSet<String>
 /// file's chip reads nothing.
 pub fn show_within(root: &web_sys::Element, workspace: Workspace) {
     listen();
+    show_forwards(root, workspace);
     let Ok(blocks) = root.query_selector_all("[data-asset]:not([data-shown]):not([data-near])")
     else {
         return;
@@ -2490,6 +2491,34 @@ fn store_label(store: &AssetStore) -> String {
         AssetStore::Session { session } => format!("s_{session}"),
         AssetStore::Project { project } => format!("p_{}", project.as_str()),
         AssetStore::Shared => "shared".to_owned(),
+    }
+}
+
+/// Points the web forwards' frames and links below `root` at the daemon's
+/// address: the page's own for the user, a guest's share for a guest.
+fn show_forwards(root: &web_sys::Element, workspace: Workspace) {
+    let Ok(found) = root.query_selector_all("[data-forward-src]:not([data-forward-shown])") else {
+        return;
+    };
+    let base = workspace.share_page_base.get_untracked();
+    for index in 0..found.length() {
+        let Some(element) = found
+            .item(index)
+            .and_then(|node| node.dyn_into::<web_sys::Element>().ok())
+        else {
+            continue;
+        };
+        let Some(path) = element.get_attribute("data-forward-src") else {
+            continue;
+        };
+        let url = format!("{base}{path}");
+        let member = if element.tag_name().eq_ignore_ascii_case("a") {
+            "href"
+        } else {
+            "src"
+        };
+        let _ = element.set_attribute(member, &url);
+        let _ = element.set_attribute("data-forward-shown", "");
     }
 }
 

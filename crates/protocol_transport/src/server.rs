@@ -1319,6 +1319,11 @@ pub trait ServerProtocol: Send + Sync + 'static {
         &self,
         params: cookie_agent_protocol::SessionShareCreateParams,
     ) -> Result<cookie_agent_protocol::SessionShareResult, ServerFault>;
+    /// Makes a link to a web forward.
+    async fn create_forward_share(
+        &self,
+        params: cookie_agent_protocol::ForwardShareCreateParams,
+    ) -> Result<cookie_agent_protocol::ForwardShareResult, ServerFault>;
     /// Changes a conversation share.
     async fn update_session_share(
         &self,
@@ -2550,6 +2555,9 @@ async fn dispatch<S: ServerProtocol>(
         }
         cookie_agent_protocol::SESSION_SHARE_CREATE_METHOD => {
             value(server.create_session_share(decode(params)?).await?)
+        }
+        cookie_agent_protocol::FORWARD_SHARE_CREATE_METHOD => {
+            value(server.create_forward_share(decode(params)?).await?)
         }
         cookie_agent_protocol::SESSION_SHARE_UPDATE_METHOD => {
             value(server.update_session_share(decode(params)?).await?)

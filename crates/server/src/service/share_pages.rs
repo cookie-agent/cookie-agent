@@ -57,6 +57,11 @@ enum Wanted {
     /// A guest's content, below `f/` (`docs/site/specs/folder-artifacts.md`
     /// section 6.5).
     Content(ShareId),
+    /// A guest's web forward, below `p/` (`docs/site/specs/forwards.md`
+    /// section 6.1).
+    GuestForward(ShareId),
+    /// Any other path of a link, which only a link to a web forward serves.
+    Other(ShareId),
     Font,
     /// A file of the guest page.
     App(String),
@@ -89,8 +94,9 @@ fn wanted(path: &str) -> Option<Wanted> {
                 "raw" => Some(Wanted::Raw(id)),
                 "download" => Some(Wanted::Download(id)),
                 "f" => Some(Wanted::Content(id)),
+                "p" => Some(Wanted::GuestForward(id)),
                 "ws" if rest == "/ws" => Some(Wanted::Socket(id)),
-                _ => None,
+                _ => Some(Wanted::Other(id)),
             }
         }
     }
@@ -99,12 +105,14 @@ fn wanted(path: &str) -> Option<Wanted> {
 /// Serves a path below `/s/`.
 pub(crate) async fn share_pages(State(state): State<WebSocketState>, request: Request) -> Response {
     let method = request.method().clone();
-    if method != Method::GET && method != Method::HEAD {
-        return gone();
-    }
+    // A web forward's app takes every method; everything else reads.
+    let reads = method == Method::GET || method == Method::HEAD;
     let Some(wanted) = wanted(request.uri().path()) else {
         return gone();
     };
+    if matches!(wanted, Wanted::Font | Wanted::App(_)) && !reads {
+        return gone();
+    }
     if wanted == Wanted::Font {
         return font();
     }
@@ -123,15 +131,54 @@ pub(crate) async fn share_pages(State(state): State<WebSocketState>, request: Re
         | Wanted::Slash(id)
         | Wanted::Raw(id)
         | Wanted::Download(id)
-        | Wanted::Content(id) => id.clone(),
+        | Wanted::Content(id)
+        | Wanted::GuestForward(id)
+        | Wanted::Other(id) => id.clone(),
         Wanted::Font | Wanted::App(_) | Wanted::Socket(_) => unreachable!("answered above"),
     };
     let open = match engine.open_share(id.clone()).await {
         Ok(Some(OpenedLink::Asset(open))) => *open,
+        Ok(Some(OpenedLink::Forward(handle))) => {
+            return forward_link(engine, &id, &handle, request).await;
+        }
+        Ok(Some(OpenedLink::Session(link))) if !reads => {
+            return match wanted {
+                Wanted::GuestForward(_) => {
+                    let below = after(&request, &id, "p").to_owned();
+                    let outside = share_outside(engine, &request);
+                    let base = format!("{}/s/{id}/p", outside_root(&outside));
+                    super::forward_pages::serve(
+                        engine,
+                        &below,
+                        &base,
+                        &outside,
+                        Some(link.session),
+                        request,
+                    )
+                    .await
+                }
+                _ => gone(),
+            };
+        }
+        _ if !reads => return gone(),
         Ok(Some(OpenedLink::Session(link))) => {
             return match wanted {
                 Wanted::Slash(id) => redirect(&format!("../{id}")),
                 Wanted::Landing(_) => guest_page(engine, &link),
+                Wanted::GuestForward(_) => {
+                    let below = after(&request, &id, "p").to_owned();
+                    let outside = share_outside(engine, &request);
+                    let base = format!("{}/s/{id}/p", outside_root(&outside));
+                    super::forward_pages::serve(
+                        engine,
+                        &below,
+                        &base,
+                        &outside,
+                        Some(link.session),
+                        request,
+                    )
+                    .await
+                }
                 Wanted::Content(_) => {
                     let below = after(&request, &id, "f").to_owned();
                     guest_content(
@@ -249,9 +296,48 @@ pub(crate) async fn share_pages(State(state): State<WebSocketState>, request: Re
                 bytes,
             )
         }
-        Wanted::Content(_) => gone(),
+        Wanted::Content(_) | Wanted::GuestForward(_) | Wanted::Other(_) => gone(),
         Wanted::Font | Wanted::App(_) | Wanted::Socket(_) => unreachable!("answered above"),
     }
+}
+
+/// Where a share's pages are from the outside: the share base, else the
+/// request's own address.
+fn share_outside(engine: &Engine, request: &Request) -> super::plugin_pages::Outside {
+    super::plugin_pages::Outside::of(engine.share_base().as_deref(), request.headers(), false)
+}
+
+/// The path the outside's root is at, `""` or `/<root>`.
+fn outside_root(outside: &super::plugin_pages::Outside) -> String {
+    if outside.root.is_empty() {
+        String::new()
+    } else {
+        format!("/{}", outside.root.trim_start_matches('/'))
+    }
+}
+
+/// A link to a web forward: its app at the link's root,
+/// `/s/<id>/<path>`, for anyone with the link while it and the forward
+/// live.
+async fn forward_link(engine: &Engine, id: &ShareId, handle: &str, request: Request) -> Response {
+    let Some(forward) = engine.web_forward(handle) else {
+        return gone();
+    };
+    let path = request.uri().path().to_owned();
+    let rest = path
+        .strip_prefix(PREFIX)
+        .and_then(|below| below.strip_prefix(id.as_str()))
+        .unwrap_or_default()
+        .to_owned();
+    if rest.is_empty() {
+        return redirect(&format!("{id}/"));
+    }
+    if rest == "/" && request.method() == Method::GET {
+        engine.count_share_view(id);
+    }
+    let outside = share_outside(engine, &request);
+    let prefix = format!("{}/s/{id}", outside_root(&outside));
+    super::forward_pages::serve_at(engine, &forward, &rest, &prefix, &outside, request).await
 }
 
 /// The path after `/s/<id>/<kind>/` of `request`, as it was sent.
@@ -708,13 +794,12 @@ mod tests {
             Some(Wanted::Download(id()))
         );
         assert_eq!(wanted("/s/_font/inter.woff2"), Some(Wanted::Font));
-        for path in [
-            "/s/",
-            "/s/short",
-            &format!("/s/{ID}/other/x"),
-            &format!("/s/{ID}x"),
-            "/plugins/x",
-        ] {
+        // Any other path of a link: a web forward's link serves its app's.
+        assert_eq!(
+            wanted(&format!("/s/{ID}/other/x")),
+            Some(Wanted::Other(id()))
+        );
+        for path in ["/s/", "/s/short", &format!("/s/{ID}x"), "/plugins/x"] {
             assert_eq!(wanted(path), None, "{path}");
         }
     }

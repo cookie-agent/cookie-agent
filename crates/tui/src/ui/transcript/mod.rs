@@ -2581,6 +2581,16 @@ impl App {
                         self.open_in_browser(&name, &link);
                         return;
                     }
+                    Some(AttachmentOutcome::Forwarded { forward, .. }) => {
+                        let link = cookie_agent_client_state::assets::forward_link(
+                            page,
+                            session_id,
+                            &forward.handle,
+                        );
+                        let name = forward.handle.clone();
+                        self.open_in_browser(&name, &link);
+                        return;
+                    }
                     Some(AttachmentOutcome::Attached { file }) => stored(file),
                     _ => None,
                 }

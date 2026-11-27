@@ -1447,6 +1447,16 @@ impl ServerProtocol for Server {
             .map_err(protocol_fault)
     }
 
+    async fn create_forward_share(
+        &self,
+        params: cookie_agent_protocol::ForwardShareCreateParams,
+    ) -> Result<cookie_agent_protocol::ForwardShareResult> {
+        self.engine
+            .create_forward_share(params)
+            .await
+            .map_err(protocol_fault)
+    }
+
     async fn create_session_share(
         &self,
         params: cookie_agent_protocol::SessionShareCreateParams,

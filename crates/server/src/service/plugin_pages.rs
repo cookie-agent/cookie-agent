@@ -122,7 +122,7 @@ pub(crate) async fn plugin_pages(
 }
 
 /// Whether `headers` carry the page ticket cookie or the daemon token.
-fn has_access(headers: &HeaderMap, token: &str) -> bool {
+pub(super) fn has_access(headers: &HeaderMap, token: &str) -> bool {
     if authorized(headers, token) {
         return true;
     }
@@ -135,7 +135,7 @@ fn has_access(headers: &HeaderMap, token: &str) -> bool {
 }
 
 /// Every `name=value` pair of the request's `Cookie` headers.
-fn cookies(headers: &HeaderMap) -> impl Iterator<Item = (&str, &str)> {
+pub(super) fn cookies(headers: &HeaderMap) -> impl Iterator<Item = (&str, &str)> {
     headers
         .get_all(header::COOKIE)
         .iter()
@@ -147,7 +147,7 @@ fn cookies(headers: &HeaderMap) -> impl Iterator<Item = (&str, &str)> {
         })
 }
 
-fn html(status: StatusCode, body: &str) -> Response {
+pub(super) fn html(status: StatusCode, body: &str) -> Response {
     (
         status,
         [
@@ -174,7 +174,7 @@ const HOP_BY_HOP: [&str; 8] = [
 
 /// Removes the hop-by-hop headers of `headers`, those its `Connection`
 /// names included, and `upgrade` unless `upgrading`.
-fn remove_hop_by_hop(headers: &mut HeaderMap, upgrading: bool) {
+pub(super) fn remove_hop_by_hop(headers: &mut HeaderMap, upgrading: bool) {
     let named: Vec<HeaderName> = headers
         .get_all(header::CONNECTION)
         .iter()
@@ -197,16 +197,16 @@ fn remove_hop_by_hop(headers: &mut HeaderMap, upgrading: bool) {
 
 /// Where the page is reached from outside: scheme, host, and the path the
 /// daemon's root is at, for the `X-Forwarded-*` headers.
-struct Outside {
-    proto: String,
-    host: Option<String>,
-    root: String,
+pub(super) struct Outside {
+    pub(super) proto: String,
+    pub(super) host: Option<String>,
+    pub(super) root: String,
 }
 
 impl Outside {
     /// From `[server] page_url` when it is set, else from a front's own
     /// `X-Forwarded-*` headers, else from the request.
-    fn of(page_url: Option<&str>, headers: &HeaderMap, tls: bool) -> Self {
+    pub(super) fn of(page_url: Option<&str>, headers: &HeaderMap, tls: bool) -> Self {
         if let Some((scheme, rest)) = page_url.and_then(|url| url.split_once("://")) {
             let (host, path) = rest.split_once('/').unwrap_or((rest, ""));
             return Self {
@@ -323,7 +323,7 @@ fn upstream_headers(
 }
 
 /// Whether `headers` ask to upgrade the connection, as a WebSocket does.
-fn upgrading(headers: &HeaderMap) -> bool {
+pub(super) fn upgrading(headers: &HeaderMap) -> bool {
     headers.contains_key(header::UPGRADE)
         && headers
             .get_all(header::CONNECTION)

@@ -100,7 +100,8 @@ fn failure_note(tag: &AttachTag, reason: &str) -> String {
         } => format!("{path} on {machine}"),
         AttachSource::Path { path, .. } => path.clone(),
         AttachSource::Artifact { sha256 } => format!("artifact {sha256}"),
-        AttachSource::Asset { handle } => handle.clone(),
+        AttachSource::Asset { handle } | AttachSource::Forward { handle, .. } => handle.clone(),
+        AttachSource::Unknown => "an attachment".to_owned(),
     };
     format!("{named}: {reason}")
 }
@@ -190,7 +191,10 @@ impl Engine {
                         .or_default()
                         .push(failure_note(&tag, reason));
                 }
-                AttachmentOutcome::Attached { .. } | AttachmentOutcome::Shown { .. } => {
+                AttachmentOutcome::Attached { .. }
+                | AttachmentOutcome::Shown { .. }
+                | AttachmentOutcome::Forwarded { .. }
+                | AttachmentOutcome::Unknown => {
                     lock(&state.waiting).remove(&key);
                 }
             }
@@ -268,6 +272,11 @@ impl Engine {
             }
             AttachSource::Artifact { sha256 } => self.attach_artifact(key.session, tag, sha256),
             AttachSource::Asset { handle } => self.show_asset_tag(key.session, handle, agent).await,
+            AttachSource::Forward { handle, path } => {
+                self.show_forward_tag(key.session, handle, path.clone(), agent)
+            }
+            // The tag's parser makes only the kinds this build knows.
+            AttachSource::Unknown => Err("this kind of tag is not known".to_owned()),
         };
         result.unwrap_or_else(|reason| AttachmentOutcome::Failed { reason })
     }
@@ -584,6 +593,45 @@ impl Engine {
             }),
             Checked::Asks => Ok(AttachmentOutcome::PendingApproval),
             Checked::Denied => Err("showing assets is not allowed".into()),
+        }
+    }
+
+    /// The web forward `handle`, shown when `agent`'s `forward` rule allows
+    /// reading it (`docs/site/specs/forwards.md` section 7.1). A tag never
+    /// makes a forward.
+    fn show_forward_tag(
+        &self,
+        session: SessionId,
+        handle: &str,
+        path: Option<String>,
+        agent: Option<&cookie_agent_protocol::AgentSnapshot>,
+    ) -> Result<AttachmentOutcome, String> {
+        let forward = self
+            .session_forwards(session)
+            .into_iter()
+            .find(|forward| forward.handle == handle)
+            .ok_or_else(|| format!("there is no forward {handle} this conversation can use"))?;
+        if forward.status == cookie_agent_protocol::ForwardStatus::Expired {
+            return Err(format!("forward {handle} has expired"));
+        }
+        let scope = cookie_agent_runtime_api::ResourceScope {
+            runtime: RuntimeId::GLOBAL.to_owned(),
+            ..cookie_agent_runtime_api::ResourceScope::default()
+        };
+        match self.check_attachment(
+            session,
+            agent,
+            PermissionAction::FORWARD,
+            "read",
+            "read",
+            &scope,
+        )? {
+            Checked::Allowed => Ok(AttachmentOutcome::Forwarded {
+                forward: forward.block(),
+                path,
+            }),
+            Checked::Asks => Ok(AttachmentOutcome::PendingApproval),
+            Checked::Denied => Err("showing forwards is not allowed".into()),
         }
     }
 

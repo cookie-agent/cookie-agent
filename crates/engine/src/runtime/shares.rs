@@ -4,11 +4,12 @@
 //! asks of a link, and the links' removal with their assets.
 
 use cookie_agent_protocol::{
-    Asset, AssetStore, RunId, SHARE_DEFAULT_LABEL, SessionId, SessionOrigin, SessionShare,
-    SessionShareCreateParams, SessionShareResult, SessionShareUpdateParams, Share,
-    ShareCreateParams, ShareCreateResult, ShareCreated, ShareId, ShareRevokeParams,
-    ShareRevokeResult, ShareUpdateParams, ShareUpdateResult, SharesListParams, SharesListResult,
-    SharesRevokeAllParams, SharesRevokeAllResult, is_share_label,
+    Asset, AssetStore, ForwardShare, ForwardShareCreateParams, ForwardShareResult, RunId,
+    SHARE_DEFAULT_LABEL, SessionId, SessionOrigin, SessionShare, SessionShareCreateParams,
+    SessionShareResult, SessionShareUpdateParams, Share, ShareCreateParams, ShareCreateResult,
+    ShareCreated, ShareId, ShareRevokeParams, ShareRevokeResult, ShareUpdateParams,
+    ShareUpdateResult, SharesListParams, SharesListResult, SharesRevokeAllParams,
+    SharesRevokeAllResult, is_share_label,
 };
 
 use super::{Engine, EngineError};
@@ -38,6 +39,8 @@ pub struct GuestLink {
 pub enum OpenedLink {
     Asset(Box<OpenShare>),
     Session(GuestLink),
+    /// A web forward, by its handle.
+    Forward(String),
 }
 
 /// One guest connected through a link. It is counted until dropped.
@@ -165,8 +168,25 @@ impl Engine {
             let records = engine.inner.shares.list(jiff::Timestamp::now())?;
             let mut shares = Vec::new();
             let mut sessions = Vec::new();
+            let mut forwards = Vec::new();
             let mut gone = Vec::new();
             for record in records {
+                if let ShareTarget::Forward { forward, title } = &record.target {
+                    if params.asset.is_some() || params.session.is_some() {
+                        continue;
+                    }
+                    if engine.web_forward(forward).is_none() {
+                        gone.push(record.id.clone());
+                        continue;
+                    }
+                    forwards.push(Self::forward_share(
+                        &record,
+                        forward,
+                        title,
+                        base.as_deref(),
+                    ));
+                    continue;
+                }
                 if matches!(record.target, ShareTarget::Session { .. }) {
                     // A session's links go when it is deleted, so one that
                     // cannot be read now is only left out.
@@ -202,6 +222,7 @@ impl Engine {
                 shares,
                 enabled: engine.shares_enabled(),
                 sessions,
+                forwards,
             })
         })
         .await
@@ -308,6 +329,104 @@ impl Engine {
             let share = Self::share(&record, &asset, engine.share_base().as_deref())
                 .ok_or_else(|| ShareError::OtherKind(record.id.clone()))?;
             Ok(ShareUpdateResult { share })
+        })
+        .await
+    }
+
+    /// `record`, a link to web forward `forward`, as clients see it.
+    fn forward_share(
+        record: &ShareRecord,
+        forward: &str,
+        title: &str,
+        base: Option<&str>,
+    ) -> ForwardShare {
+        ForwardShare {
+            id: record.id.clone(),
+            path: format!("{}{}/", cookie_agent_protocol::SHARE_PATH_PREFIX, record.id),
+            url: base
+                .map(|base| format!("{}/", cookie_agent_protocol::share_url(base, &record.id))),
+            forward: forward.to_owned(),
+            title: title.to_owned(),
+            created: record.created.clone(),
+            expires_at: record.expires_at,
+            views: record.views,
+            last_viewed: record.last_viewed,
+        }
+    }
+
+    /// `forward_share.create`, the user's: no rule is checked.
+    pub async fn create_forward_share(
+        &self,
+        params: ForwardShareCreateParams,
+    ) -> Result<ForwardShareResult, EngineError> {
+        self.make_forward_share(
+            params,
+            ShareCreated {
+                at: jiff::Timestamp::now(),
+                session: None,
+                agent: None,
+            },
+        )
+        .await
+    }
+
+    /// A link to web forward `params.forward`, made by `created`.
+    pub(crate) async fn make_forward_share(
+        &self,
+        params: ForwardShareCreateParams,
+        created: ShareCreated,
+    ) -> Result<ForwardShareResult, EngineError> {
+        self.shares_blocking(move |engine| {
+            if !engine.shares_enabled() {
+                return Err(ShareError::Disabled.into());
+            }
+            let now = jiff::Timestamp::now();
+            if params.expiry.at().is_some_and(|at| at <= now) {
+                return Err(ShareError::PastExpiry.into());
+            }
+            let forward = engine
+                .web_forward(&params.forward)
+                .ok_or_else(|| crate::forwards::ForwardError::NotFound(params.forward.clone()))?;
+            let base = engine.share_base();
+            if params.reuse {
+                let newest = engine
+                    .inner
+                    .shares
+                    .list(now)?
+                    .into_iter()
+                    .filter(|record| {
+                        matches!(&record.target, ShareTarget::Forward { forward: own, .. } if *own == forward.handle)
+                    })
+                    .max_by_key(|record| record.created.at);
+                if let Some(record) = newest
+                    && let ShareTarget::Forward { forward, title } = &record.target
+                {
+                    return Ok(ForwardShareResult {
+                        share: Self::forward_share(&record, forward, title, base.as_deref()),
+                        created: false,
+                    });
+                }
+            }
+            let title = forward
+                .title
+                .clone()
+                .unwrap_or_else(|| forward.route());
+            let record = ShareRecord {
+                id: new_share_id()?,
+                target: ShareTarget::Forward {
+                    forward: forward.handle.clone(),
+                    title: title.clone(),
+                },
+                created,
+                expires_at: params.expiry.at(),
+                views: 0,
+                last_viewed: None,
+            };
+            engine.inner.shares.insert(record.clone())?;
+            Ok(ForwardShareResult {
+                share: Self::forward_share(&record, &forward.handle, &title, base.as_deref()),
+                created: true,
+            })
         })
         .await
     }
@@ -459,6 +578,11 @@ impl Engine {
                     .is_ok()
                     .then_some(OpenedLink::Session(link)));
             }
+            if let ShareTarget::Forward { forward, .. } = &record.target {
+                return Ok(engine
+                    .web_forward(forward)
+                    .map(|forward| OpenedLink::Forward(forward.handle)));
+            }
             let Some(asset) = engine.shared_asset(&record)? else {
                 return Ok(None);
             };
@@ -575,6 +699,7 @@ impl Engine {
             .remove(|record| match &record.target {
                 ShareTarget::Asset { store: own, .. } => own == store,
                 ShareTarget::Session { session: own, .. } => Some(*own) == session,
+                ShareTarget::Forward { .. } => false,
             })
             .unwrap_or_else(|error| {
                 eprintln!("cookie-agent: share links: {error}");
@@ -608,7 +733,7 @@ fn guest_link(record: &ShareRecord) -> Option<GuestLink> {
             can_send: *can_send,
             expires_at: record.expires_at,
         }),
-        ShareTarget::Asset { .. } => None,
+        ShareTarget::Asset { .. } | ShareTarget::Forward { .. } => None,
     }
 }
 

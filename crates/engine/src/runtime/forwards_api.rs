@@ -62,6 +62,27 @@ impl Engine {
         None
     }
 
+    /// The web forward `handle`, while it is one.
+    pub fn web_forward(&self, handle: &str) -> Option<Forward> {
+        self.inner
+            .forwards
+            .get(handle)
+            .filter(|forward| forward.kind == ForwardKind::Http)
+    }
+
+    /// A connection of web forward `handle` for a browser at `peer`: a pipe
+    /// to the forward's target, reached from its machine
+    /// (`docs/site/specs/forwards.md` section 6).
+    pub async fn open_web_forward(
+        &self,
+        handle: &str,
+        peer: String,
+    ) -> Result<tokio::io::DuplexStream, String> {
+        Arc::clone(&self.inner.forwards)
+            .open_local(self, handle, peer)
+            .await
+    }
+
     /// Bumped whenever a forward is made, changed, deleted, or its status
     /// or counts move.
     pub fn subscribe_forward_changes(&self) -> tokio::sync::watch::Receiver<u64> {
@@ -292,7 +313,14 @@ impl Engine {
 
     /// Ends the share links of the forwards `handles` (section 6.1); none
     /// exist before share links name forwards.
-    pub(crate) fn revoke_forward_shares(&self, _handles: &HashSet<String>) {}
+    pub(crate) fn revoke_forward_shares(&self, handles: &HashSet<String>) {
+        let removed = self.inner.shares.remove(|record| {
+            matches!(&record.target, crate::shares::ShareTarget::Forward { forward, .. } if handles.contains(forward))
+        });
+        if let Err(error) = removed {
+            eprintln!("cookie-agent: the forwards' share links stay: {error}");
+        }
+    }
 }
 
 /// When a forward made or extended at `now` for `hours` ends: `None` for

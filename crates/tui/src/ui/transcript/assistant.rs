@@ -242,6 +242,27 @@ fn attachment_layout(
                 let id = key.filter(|_| link).map(BlockId::AttachmentOpen);
                 target(&mut lines, file_line(" ", &label, theme), id);
             }
+            Some(AttachmentOutcome::Unknown) => target(
+                &mut lines,
+                Line::styled(
+                    format!(" 📎 {label} — this version cannot show it"),
+                    theme.muted(),
+                ),
+                None,
+            ),
+            Some(AttachmentOutcome::Forwarded { forward, .. }) => {
+                let link = context.figure_links.linkable();
+                let name = forward
+                    .title
+                    .clone()
+                    .unwrap_or_else(|| forward.route.clone());
+                let line = Line::from(vec![
+                    Span::raw(format!(" 🌐 {name}")),
+                    Span::styled(format!(" · {}", forward.handle), theme.muted()),
+                ]);
+                let id = key.filter(|_| link).map(BlockId::AttachmentOpen);
+                target(&mut lines, line, id);
+            }
             Some(AttachmentOutcome::Shown { asset }) => {
                 let link = context.figure_links.linkable();
                 let label = FileLabel {

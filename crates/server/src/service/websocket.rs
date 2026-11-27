@@ -344,6 +344,10 @@ fn router(
             axum::routing::any(super::content_pages::content_pages),
         )
         .route(
+            "/p/{*path}",
+            axum::routing::any(super::forward_pages::forward_pages),
+        )
+        .route(
             "/hooks/{token}",
             axum::routing::any(super::webhook_route::receive),
         )

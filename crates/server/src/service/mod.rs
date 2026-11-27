@@ -1,4 +1,5 @@
 mod content_pages;
+mod forward_pages;
 mod guest;
 mod page;
 mod plugin_pages;

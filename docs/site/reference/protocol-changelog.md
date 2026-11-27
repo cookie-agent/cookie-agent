@@ -5,6 +5,21 @@ The client protocol's version is `MAJOR.MINOR.PATCH`
 adds and a major breaks; before it, every minor could break the wire (see the
 [compatibility spec](../specs/compatibility-v1.md) section 3).
 
+## 1.110.0
+
+- Web forwards ([forwards spec](../specs/forwards.md) sections 6 and 7.1,
+  [Forwards](protocol.md#forwards)): the daemon serves an `http` forward's
+  app under `/p/<handle>/`, a guest's below its share; `forward_share.create`
+  makes a public link to one, which `shares.list` lists in `forwards`; the
+  attachment tag's `forward` source (`AttachSource.forward`, with `handle`
+  and `path`) and the `forwarded` outcome with a `ForwardBlock`.
+- `AttachSource` and `AttachmentOutcome` are open: a kind a newer daemon
+  writes reads as unknown, which a client shows as an attachment it cannot
+  show. Clients of 1.109.0 and older, which treat them as closed, cannot
+  read a forward tag; the user accepted this in place of a major bump
+  ([forwards spec](../specs/forwards.md) section 12). Plugin protocol 1.51.0
+  carries the change.
+
 ## 1.109.0
 
 - Forwards ([spec](../specs/forwards.md), [Forwards](protocol.md#forwards)):
