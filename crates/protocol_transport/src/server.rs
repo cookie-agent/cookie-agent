@@ -1132,6 +1132,11 @@ pub trait ServerProtocol: Send + Sync + 'static {
         params: cookie_agent_protocol::SessionBackgroundStopParams,
         context: &ServerContext,
     ) -> Result<cookie_agent_protocol::SessionBackgroundStopResult, ServerFault>;
+    /// Stops following an ACP agent's own background command as the user.
+    async fn forget_background(
+        &self,
+        params: cookie_agent_protocol::SessionBackgroundForgetParams,
+    ) -> Result<cookie_agent_protocol::SessionBackgroundForgetResult, ServerFault>;
     async fn list_mcp_servers(
         &self,
         params: McpServerListParams,
@@ -2424,6 +2429,9 @@ async fn dispatch<S: ServerProtocol>(
         }
         cookie_agent_protocol::SESSION_BACKGROUND_STOP_METHOD => {
             value(server.stop_background(decode(params)?, context).await?)
+        }
+        cookie_agent_protocol::SESSION_BACKGROUND_FORGET_METHOD => {
+            value(server.forget_background(decode(params)?).await?)
         }
         "mcp.server.list" => value(server.list_mcp_servers(decode_default(params)?).await?),
         "mcp.server.add" => value(server.add_mcp_server(decode(params)?).await?),

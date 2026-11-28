@@ -1607,6 +1607,20 @@ impl Client {
         .await
     }
 
+    /// Stops following an ACP agent's own background command `job` as the
+    /// user; it ends nothing.
+    pub async fn forget_background(
+        &self,
+        session_id: SessionId,
+        job: String,
+    ) -> Result<cookie_agent_protocol::SessionBackgroundForgetResult, ClientError> {
+        self.call(
+            cookie_agent_protocol::SESSION_BACKGROUND_FORGET_METHOD,
+            &cookie_agent_protocol::SessionBackgroundForgetParams { session_id, job },
+        )
+        .await
+    }
+
     pub async fn list_runtimes(
         &self,
     ) -> Result<cookie_agent_protocol::RuntimesListResult, ClientError> {

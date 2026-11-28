@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Stop following an ACP agent's own command (`agent_task`) as the user\n(client protocol 1.111.0), for one the agent will not report the end of,\nsuch as a command it lost track of. Cookie runs nothing of the agent's,\nso this ends nothing: the command leaves the session's background calls\nand stops holding the session, the agent's process, and a daemon\nrestart, and the session records it as forgotten\n(`AcpBackgroundEnded.dropped`). Refused for a call cookie can stop.",
+  "properties": {
+    "job": {
+      "type": "string"
+    },
+    "session_id": {
+      "format": "uuid",
+      "type": "string"
+    }
+  },
+  "required": [
+    "session_id",
+    "job"
+  ],
+  "title": "SessionBackgroundForgetParams",
+  "type": "object"
+}

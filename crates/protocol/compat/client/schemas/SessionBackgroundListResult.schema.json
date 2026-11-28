@@ -13,7 +13,7 @@
       "description": "One call running in the background.",
       "properties": {
         "agent_task": {
-          "description": "An ACP agent's own command, still running after its call ended\n(client protocol 1.40.0): `job` is its terminal, and the agent runs\nit, so cookie cannot stop it.",
+          "description": "An ACP agent's own command, still running after its call ended\n(client protocol 1.40.0): `job` is its terminal, and the agent runs\nit, so cookie cannot stop it; the user can forget it\n(`session.background.forget`, 1.111.0).",
           "type": "boolean"
         },
         "by": {

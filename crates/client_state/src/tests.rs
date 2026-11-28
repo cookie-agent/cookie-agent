@@ -5906,6 +5906,7 @@ fn an_acp_agents_ended_background_command_shows_as_a_row_with_how_it_ran() {
         started_at: at(48),
         exit_code: None,
         signal: None,
+        dropped: None,
     };
     let mut state = SessionState::default();
     // Between runs: no run records it.
@@ -5948,6 +5949,7 @@ fn an_acp_agents_ended_background_command_shows_as_a_row_with_how_it_ran() {
                 display: None,
                 exit_code,
                 signal: signal.map(str::to_owned),
+                dropped: None,
                 ..ended.clone()
             },
             at(ended_at),
@@ -5994,6 +5996,7 @@ fn settling_session() -> SessionState {
                     started_at: at(800),
                     exit_code: None,
                     signal: None,
+                    dropped: None,
                 }),
                 ..AcpSessionUpdate::default()
             },

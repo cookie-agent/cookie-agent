@@ -831,6 +831,12 @@ impl ServerProtocol for StubServer {
     ) -> Result<cookie_agent_protocol::SessionBackgroundStopResult, ServerFault> {
         Err(ServerFault::method_not_found("stub"))
     }
+    async fn forget_background(
+        &self,
+        _: cookie_agent_protocol::SessionBackgroundForgetParams,
+    ) -> Result<cookie_agent_protocol::SessionBackgroundForgetResult, ServerFault> {
+        Err(ServerFault::method_not_found("stub"))
+    }
     async fn list_mcp_servers(
         &self,
         _: cookie_agent_protocol::McpServerListParams,

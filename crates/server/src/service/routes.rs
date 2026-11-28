@@ -1853,6 +1853,17 @@ impl ServerProtocol for Server {
         Ok(cookie_agent_protocol::SessionBackgroundStopResult {})
     }
 
+    async fn forget_background(
+        &self,
+        params: cookie_agent_protocol::SessionBackgroundForgetParams,
+    ) -> Result<cookie_agent_protocol::SessionBackgroundForgetResult> {
+        self.engine
+            .forget_agent_command(params.session_id, &params.job)
+            .await
+            .map_err(protocol_fault)?;
+        Ok(cookie_agent_protocol::SessionBackgroundForgetResult {})
+    }
+
     async fn list_mcp_servers(&self, _: McpServerListParams) -> Result<McpServerListResult> {
         Ok(McpServerListResult {
             servers: self.engine.list_mcp_servers(),

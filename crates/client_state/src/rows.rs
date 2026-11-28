@@ -62,7 +62,8 @@ pub fn agent_session_message_summary(message: &cookie_agent_protocol::AcpSession
 /// in the background, as a background call's report reads: what it ran,
 /// else its tool, and whether it is `settling`
 /// ([`crate::SessionState::background_settling`]), said first as a long
-/// command is cut off.
+/// command is cut off. A dropped one says that cookie stopped following it
+/// instead of that it ended.
 pub fn agent_background_ended_summary(
     ended: &cookie_agent_protocol::AcpBackgroundEnded,
     settling: bool,
@@ -73,13 +74,23 @@ pub fn agent_background_ended_summary(
         .map(|display| display.split_whitespace().collect::<Vec<_>>().join(" "))
         .filter(|display| !display.is_empty())
         .unwrap_or_else(|| ended.tool.clone());
-    let state = if settling { " (settling)" } else { "" };
-    format!("Background{state}: {what} ended")
+    let state = if settling && ended.dropped.is_none() {
+        " (settling)"
+    } else {
+        ""
+    };
+    let ended_how = match ended.dropped {
+        None => "ended",
+        Some(cookie_agent_protocol::AcpBackgroundDropped::Forgotten) => "forgotten",
+        Some(cookie_agent_protocol::AcpBackgroundDropped::SessionReplaced) => "no longer followed",
+    };
+    format!("Background{state}: {what} {ended_how}")
 }
 
 /// What an opened row of an ACP agent's ended background command says
 /// before the command itself: its tool, how long it ran until `ended_at`,
-/// and how it exited when the agent said so.
+/// and how it exited when the agent said so, or why cookie stopped
+/// following it.
 pub fn agent_background_ended_details(
     ended: &cookie_agent_protocol::AcpBackgroundEnded,
     ended_at: jiff::Timestamp,
@@ -93,15 +104,24 @@ pub fn agent_background_ended_details(
         60..3600 => format!("{}m {}s", ran / 60, ran % 60),
         _ => format!("{}h {}m", ran / 3600, ran % 3600 / 60),
     };
-    let exit = match (&ended.signal, ended.exit_code) {
-        (Some(signal), _) => format!("ended by {signal}"),
-        (None, Some(code)) => format!("exit code {code}"),
-        (None, None) => "no exit code reported".to_owned(),
+    let exit = match (ended.dropped, &ended.signal, ended.exit_code) {
+        (Some(cookie_agent_protocol::AcpBackgroundDropped::Forgotten), ..) => {
+            "forgotten by the user; it may still run".to_owned()
+        }
+        (Some(cookie_agent_protocol::AcpBackgroundDropped::SessionReplaced), ..) => {
+            "the agent's session was replaced, so its end is not reported; it may still run"
+                .to_owned()
+        }
+        (None, Some(signal), _) => format!("ended by {signal}"),
+        (None, None, Some(code)) => format!("exit code {code}"),
+        (None, None, None) => "no exit code reported".to_owned(),
     };
-    format!(
-        "the agent's {} call · ran in the background for {ran} · {exit}",
-        ended.tool
-    )
+    let ran = if ended.dropped.is_some() {
+        format!("followed in the background for {ran}")
+    } else {
+        format!("ran in the background for {ran}")
+    };
+    format!("the agent's {} call · {ran} · {exit}", ended.tool)
 }
 
 /// The header of a compaction checkpoint's row: what it is, how much it

@@ -370,6 +370,7 @@ fn run_split_by_background(session: SessionId, run: RunId, finish: bool) -> Vec<
                             started_at: time(90),
                             exit_code: Some(0),
                             signal: None,
+                            dropped: None,
                         }),
                         ..cookie_agent_protocol::AcpSessionUpdate::default()
                     },

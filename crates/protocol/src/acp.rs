@@ -339,6 +339,27 @@ pub struct AcpBackgroundEnded {
     /// The signal that ended it, when the agent says it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub signal: Option<String>,
+    /// Set when cookie stopped following it without the agent reporting an
+    /// end (client protocol 1.111.0): it may still run. Such an end never
+    /// settles, as no follow-up from the agent is coming.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dropped: Option<AcpBackgroundDropped>,
+}
+
+/// Why cookie stopped following an ACP agent's background command that the
+/// agent had not reported the end of (client protocol 1.111.0).
+///
+/// A value this build does not know reads as `forgotten`.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+#[schemars(extend("x-open" = true))]
+pub enum AcpBackgroundDropped {
+    /// The agent's session it ran in was replaced by another (a new or
+    /// forked session), which reports nothing of the old one's commands.
+    SessionReplaced,
+    /// The user forgot it (`session.background.forget`).
+    #[serde(other)]
+    Forgotten,
 }
 
 /// Input the daemon delivered into the agent's running work (an ACP v2

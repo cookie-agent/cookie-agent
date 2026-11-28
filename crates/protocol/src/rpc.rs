@@ -577,6 +577,7 @@ pub const PLUGINS_SETTINGS_SET_METHOD: &str = "plugins.settings.set";
 pub const RUN_TOOL_BACKGROUND_METHOD: &str = "run.tool_background";
 pub const SESSION_BACKGROUND_LIST_METHOD: &str = "session.background.list";
 pub const SESSION_BACKGROUND_STOP_METHOD: &str = "session.background.stop";
+pub const SESSION_BACKGROUND_FORGET_METHOD: &str = "session.background.forget";
 pub const BACKGROUND_CHANGED_METHOD: &str = "background.changed";
 
 /// Move an executing call of a background-capable tool to the background,
@@ -618,6 +619,23 @@ pub struct SessionBackgroundStopParams {
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 pub struct SessionBackgroundStopResult {}
 
+/// Stop following an ACP agent's own command (`agent_task`) as the user
+/// (client protocol 1.111.0), for one the agent will not report the end of,
+/// such as a command it lost track of. Cookie runs nothing of the agent's,
+/// so this ends nothing: the command leaves the session's background calls
+/// and stops holding the session, the agent's process, and a daemon
+/// restart, and the session records it as forgotten
+/// (`AcpBackgroundEnded.dropped`). Refused for a call cookie can stop.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionBackgroundForgetParams {
+    pub session_id: SessionId,
+    pub job: String,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct SessionBackgroundForgetResult {}
+
 /// A session's background calls changed.
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 pub struct BackgroundChangedNotification {
@@ -641,7 +659,8 @@ pub struct BackgroundCall {
     pub by: BackgroundActor,
     /// An ACP agent's own command, still running after its call ended
     /// (client protocol 1.40.0): `job` is its terminal, and the agent runs
-    /// it, so cookie cannot stop it.
+    /// it, so cookie cannot stop it; the user can forget it
+    /// (`session.background.forget`, 1.111.0).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub agent_task: bool,
 }

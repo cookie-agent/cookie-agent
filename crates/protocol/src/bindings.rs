@@ -428,6 +428,7 @@ fn client_methods() -> Vec<MethodSpec> {
         request!(RUN_TOOL_BACKGROUND_METHOD, ToDaemon, RunToolBackgroundParams => RunToolBackgroundResult),
         request!(SESSION_BACKGROUND_LIST_METHOD, ToDaemon, SessionBackgroundListParams => SessionBackgroundListResult),
         request!(SESSION_BACKGROUND_STOP_METHOD, ToDaemon, SessionBackgroundStopParams => SessionBackgroundStopResult),
+        request!(SESSION_BACKGROUND_FORGET_METHOD, ToDaemon, SessionBackgroundForgetParams => SessionBackgroundForgetResult),
         request!("mcp.server.list", ToDaemon, McpServerListParams => McpServerListResult),
         request!("mcp.server.add", ToDaemon, McpServerAddParams => McpServerMutationResult),
         request!("mcp.server.edit", ToDaemon, McpServerEditParams => McpServerMutationResult),

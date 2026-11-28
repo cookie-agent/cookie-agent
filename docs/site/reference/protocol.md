@@ -394,6 +394,7 @@ Idempotent redelivery resolves against the state preceding the original run.
 | `run.tool_background` | Run ID, tool call ID | `accepted` boolean: false unless the call is an executing call of a background-capable tool; it detaches at its detach point (see [Background calls](tools.md#background-calls)) |
 | `session.background.list` | Session ID | The session's background `calls` |
 | `session.background.stop` | Session ID, `job` | Empty, once the call has ended; it still reports to the model, as stopped by the user. An unknown or finished job is an error |
+| `session.background.forget` | Session ID, `job` (since 1.111.0) | Empty, once the ACP agent's own command `job` (`agent_task`) has left the list: cookie stops following it and holding the session, the agent's process, and a restart for it, and records it as forgotten. It ends nothing. Any other job is an error |
 | `events.subscribe` | Session ID, optional cursor and `cursor_timestamp`, optional `limit`; since 1.59.0 optional `view` (`full` or `display`), `from: "tail"`, and `max_bytes` | Stored events after the cursor, or `stale_cursor`; with `from: "tail"` the newest events and a `window`; the display view's `cut` results; since 1.76.0, on the first page of a paged request, `view_events`, how many events the view holds in all; starts notifications on the final page (see [Subscriptions](events.md#subscriptions)) |
 | `events.page` | Session ID, `before`, optional `view` and `max_bytes` (since 1.59.0) | The newest `events` before `before`, their `header`, `older_cursor`, and `cut`; no notifications (see [Newest first](events.md#newest-first)) |
 | `event.read` | Session ID, `seq` (since 1.59.0) | The stored `event` at `seq`, whole, or `null` |
@@ -1441,7 +1442,12 @@ over the Agent Client Protocol (see the
   in the background after its tool call ended, such as Claude Code's
   background shell, has ended. It is recorded where the end arrives,
   between runs too, before the run the end may wake, and clients show it
-  as they show a background call's report.
+  as they show a background call's report. Since 1.111.0 it may carry
+  `dropped` instead of an exit, when cookie stopped following the command
+  without the agent reporting its end: `forgotten` (the user forgot it with
+  `session.background.forget`) or `session_replaced` (the agent's session
+  that ran it was replaced by a new or forked one); an unknown value reads
+  as `forgotten`. Such a command may still run, and its end never settles.
 - Since 1.52.0, `acp_session_updated` may carry `prompt_context`: the text
   blocks cookie gave the agent's session, as its system prompt or ahead of
   its first prompt's input, recorded as they are sent. Since 1.58.0 they
@@ -2000,7 +2006,8 @@ its display argument, when the call started and when it moved to the
 background, and who moved it (`model` or `user`). `agent_task: true` (since
 1.40.0) marks an ACP agent's own command still running after its call ended:
 `job` is its terminal, and `session.background.stop` refuses it, since only
-the agent can stop it. The list lives in the daemon, so it
+the agent can stop it; since 1.111.0 `session.background.forget` takes it off
+the list without stopping it. The list lives in the daemon, so it
 never shows a call a daemon restart killed. `background.changed` reaches only
 connections subscribed to the session; one that falls behind gets every
 subscribed session's list again. Changes within 250 ms of the first go as one

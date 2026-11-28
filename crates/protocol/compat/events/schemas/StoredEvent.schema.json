@@ -1,5 +1,21 @@
 {
   "$defs": {
+    "AcpBackgroundDropped": {
+      "description": "Why cookie stopped following an ACP agent's background command that the\nagent had not reported the end of (client protocol 1.111.0).\n\nA value this build does not know reads as `forgotten`.",
+      "oneOf": [
+        {
+          "const": "session_replaced",
+          "description": "The agent's session it ran in was replaced by another (a new or\nforked session), which reports nothing of the old one's commands.",
+          "type": "string"
+        },
+        {
+          "const": "forgotten",
+          "description": "The user forgot it (`session.background.forget`).",
+          "type": "string"
+        }
+      ],
+      "x-open": true
+    },
     "AcpBackgroundEnded": {
       "description": "A command of the agent's that kept running in the background after its\ntool call ended, and has now ended (client protocol 1.50.0), such as\nClaude Code's background shell. Recorded where the end arrives, between\nruns too, so the transcript shows it before the run it may wake.",
       "properties": {
@@ -9,6 +25,17 @@
             "string",
             "null"
           ]
+        },
+        "dropped": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AcpBackgroundDropped"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Set when cookie stopped following it without the agent reporting an\nend (client protocol 1.111.0): it may still run. Such an end never\nsettles, as no follow-up from the agent is coming."
         },
         "exit_code": {
           "description": "Its exit code, when the agent says it; Claude Code does not.",

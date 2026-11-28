@@ -19,8 +19,10 @@ use super::{App, Modal, RpcUpdate, paint_panel, truncate_with_ellipsis};
 const DETAILS: &str = " [Details]";
 /// Each panel row's control that stops its call.
 const STOP: &str = " [stop]";
-/// In place of [`STOP`] for an ACP agent's own command, which only the agent stops.
-const AGENT_TASK: &str = " [agent's]";
+/// In place of [`STOP`] for an ACP agent's own command, which only the agent
+/// stops: the user can forget it, for one the agent will not report the end
+/// of.
+const FORGET: &str = " [forget]";
 
 #[derive(Debug, Default)]
 pub(super) struct BackgroundPanelState {
@@ -170,7 +172,7 @@ impl App {
         paint_panel(frame, area, &self.theme);
         let inner_width = usize::from(area.width.saturating_sub(2));
         let row_width = inner_width
-            .saturating_sub(UnicodeWidthStr::width(STOP).max(UnicodeWidthStr::width(AGENT_TASK)));
+            .saturating_sub(UnicodeWidthStr::width(STOP).max(UnicodeWidthStr::width(FORGET)));
         let now = jiff::Timestamp::now();
         let lines = calls
             .iter()
@@ -180,6 +182,7 @@ impl App {
                 let elapsed =
                     u64::try_from(now.duration_since(call.started_at).as_secs()).unwrap_or(0);
                 let by = match call.by {
+                    _ if call.agent_task => "run by the agent",
                     BackgroundActor::Model => "by the model",
                     BackgroundActor::User => "by you",
                 };
@@ -206,25 +209,21 @@ impl App {
                 self.hit_map
                     .background_rows
                     .push((Rect::new(area.x + 1, y, row_width as u16, 1), index));
-                // An ACP agent's own command: only the agent stops it.
-                if call.agent_task {
-                    return Line::from(vec![
-                        Span::styled(row, style),
-                        Span::styled(AGENT_TASK, self.theme.muted()),
-                    ]);
-                }
+                // An ACP agent's own command: only the agent stops it, and
+                // the user can forget it.
+                let control = if call.agent_task { FORGET } else { STOP };
                 self.hit_map.background_stops.push((
                     Rect::new(
                         area.x + 1 + row_width as u16,
                         y,
-                        UnicodeWidthStr::width(STOP) as u16,
+                        UnicodeWidthStr::width(control) as u16,
                         1,
                     ),
                     index,
                 ));
                 Line::from(vec![
                     Span::styled(row, style),
-                    Span::styled(STOP, self.theme.link()),
+                    Span::styled(control, self.theme.link()),
                 ])
             })
             .collect::<Vec<_>>();
@@ -238,7 +237,10 @@ impl App {
                     )))
                     .title_bottom(crate::ui::panel_title(
                         Line::from(Span::styled(
-                            truncate_with_ellipsis("Up/Down · s: stop · Esc: close", inner_width),
+                            truncate_with_ellipsis(
+                                "Up/Down · s: stop or forget · Esc: close",
+                                inner_width,
+                            ),
                             self.theme.internal(),
                         ))
                         .right_aligned(),
@@ -267,7 +269,9 @@ impl App {
     }
 
     /// Stops the background call at `index` of the selected session's list,
-    /// as the user. It still reports to the model.
+    /// as the user. It still reports to the model. An ACP agent's own
+    /// command, which only the agent stops, is forgotten instead: cookie
+    /// stops listing it.
     pub(super) fn stop_background_call(&mut self, index: usize) {
         let (Some(session_id), Some(call)) =
             (self.selected, self.background_calls().get(index).cloned())
@@ -275,15 +279,20 @@ impl App {
             return;
         };
         self.background_panel.selected = index;
-        if call.agent_task {
-            self.status = format!(
-                "{} is the agent's own command: the agent runs it, so ask the agent to stop it",
-                call.job
-            );
-            return;
-        }
         let client = self.client.clone();
         let updates = self.rpc_updates_tx.clone();
+        if call.agent_task {
+            self.status = format!(
+                "forgot {}: it is the agent's own command, so it is not stopped",
+                call.job
+            );
+            self.spawn_rpc(async move {
+                if let Err(error) = client.forget_background(session_id, call.job).await {
+                    let _ = updates.send(RpcUpdate::failure(&error));
+                }
+            });
+            return;
+        }
         self.spawn_rpc(async move {
             if let Err(error) = client.stop_background(session_id, call.job).await {
                 let _ = updates.send(RpcUpdate::failure(&error));

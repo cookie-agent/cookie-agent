@@ -372,6 +372,7 @@ fn an_ended_background_command_folds_to_its_command_and_opens_to_how_it_ran() {
             started_at: at(10),
             exit_code: Some(1),
             signal: None,
+            dropped: None,
         },
     });
     // Something started after it, so it does not settle.
@@ -422,6 +423,7 @@ fn a_settling_background_command_draws_again_when_it_stops_settling() {
             started_at: at(10),
             exit_code: None,
             signal: None,
+            dropped: None,
         },
     });
     let session = SessionId::new_v7();

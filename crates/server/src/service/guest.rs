@@ -100,7 +100,8 @@ fn access(method: &str) -> Access {
         "approval.respond"
         | protocol::ELICITATION_RESPOND_METHOD
         | protocol::ATTACHMENT_DECIDE_METHOD
-        | protocol::SESSION_BACKGROUND_STOP_METHOD => Access::ActInTree("session_id"),
+        | protocol::SESSION_BACKGROUND_STOP_METHOD
+        | protocol::SESSION_BACKGROUND_FORGET_METHOD => Access::ActInTree("session_id"),
         "run.steer" | "run.cancel" | protocol::RUN_TOOL_BACKGROUND_METHOD => Access::ActOnRun,
         protocol::ARTIFACT_UPLOAD_CHUNK_METHOD
         | protocol::ARTIFACT_UPLOAD_FINISH_METHOD

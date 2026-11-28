@@ -4280,6 +4280,9 @@ impl Engine {
             self.retire_acp_session(session, process, &from.acp_session_id)
                 .await;
         }
+        // Commands of an agent session this one replaced are no longer
+        // reported on.
+        self.acp_session_replaced(session, &acp_session_id).await;
         let options = options_of(response.config_options.as_ref());
         self.remember_acp_options(agent, &options, matches!(how, AcpSessionStart::New));
         let mut live = LiveSession {

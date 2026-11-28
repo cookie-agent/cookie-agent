@@ -457,11 +457,22 @@ fn background_row(
                     {move || format!(" · {}", format_clock_elapsed(elapsed()))}
                 </p>
             </div>
-            // An ACP agent's own command: the agent runs it, and
-            // only the agent can stop it.
+            // An ACP agent's own command: the agent runs it, and only the
+            // agent can stop it. The user can forget one the agent lost.
             {if call.agent_task {
+                let forget = job.clone();
                 view! {
                     <span class=NOTE data-agent-task=call.job.clone()>"run by the agent"</span>
+                    <button
+                        type="button"
+                        class=BUTTON
+                        data-forget=call.job.clone()
+                        title="Stop listing it, for a command the agent will not report the end of. It is not stopped."
+                        on:click=move |_| workspace.forget_background(forget.clone())
+                    >
+                        <Glyph icon=icondata::LuEyeOff />
+                        "Forget"
+                    </button>
                 }
                 .into_any()
             } else {

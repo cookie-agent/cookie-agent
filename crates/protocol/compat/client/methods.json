@@ -1028,6 +1028,14 @@
     {
       "direction": "to_daemon",
       "kind": "request",
+      "method": "session.background.forget",
+      "params": "SessionBackgroundForgetParams",
+      "params_role": "command",
+      "result": "SessionBackgroundForgetResult"
+    },
+    {
+      "direction": "to_daemon",
+      "kind": "request",
       "method": "session.background.list",
       "params": "SessionBackgroundListParams",
       "params_role": "command",

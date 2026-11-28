@@ -779,7 +779,9 @@ buttons.
 - **Background calls.** While the session has calls running in the
   background, a bar above the composer lists them. Click it, or use
   **Background calls**, to see how long each has run and stop one; a stopped call
-  still reports to the model.
+  still reports to the model. An ACP agent's own command, marked "run by the
+  agent", has **Forget** instead: it takes a command the agent lost track of
+  off the list without stopping it.
 - **Dictation.** When the daemon has [voice input](../engine/speech.md)
   backends, a microphone sits beside Send; **Ctrl+Shift+Space** in the
   composer starts it too. The first time, the browser asks for the

@@ -757,7 +757,13 @@ not in it.
   a stop), shows in the session's
   background calls, marked "run by the agent", until it exits. Cookie keeps
   the agent's process and the session alive meanwhile, and an idle daemon
-  restart waits for it. Only the agent can stop it: ask it to. When the
+  restart waits for it. Only the agent can stop it: ask it to. If the
+  agent lost track of it and will never report its end, **Forget** it (the
+  web's Background calls tab, or `s` in the TUI's `/background` panel):
+  cookie stops listing it and holding anything for it, without stopping
+  it. Cookie does the same on its own when the agent's session that ran the
+  command is replaced by a new or forked one. Either way the transcript
+  records it as forgotten or no longer followed, not as ended. When the
   command ends, the agent usually starts work on its own to report it, which
   can take up to a minute. For up to 90 seconds after the end, its row in the
   transcript says it is settling, and cookie keeps the process, the session,

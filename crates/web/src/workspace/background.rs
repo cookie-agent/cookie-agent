@@ -64,4 +64,18 @@ impl Workspace {
             }
         });
     }
+
+    /// Stops following the ACP agent's own command `job`, one the agent will
+    /// not report the end of; it is not stopped.
+    pub fn forget_background(self, job: String) {
+        let (Some(client), Some(session_id)) = (self.client(), self.selected.get_untracked())
+        else {
+            return;
+        };
+        spawn_local(async move {
+            if let Err(error) = client.forget_background(session_id, job).await {
+                self.status.set(crate::errors::describe(&error));
+            }
+        });
+    }
 }

@@ -895,7 +895,10 @@ While the selected session has background calls, a bar above the composer
 lists them; clicking it, or `/background`, opens a panel with one row per call
 (job, tool, its argument, how long it has run, and who moved it). Up/Down
 select a row, `s` or a row's `[stop]` stops that call, and Esc closes the
-panel. A stopped call still reports to the model, as stopped by you. A
+panel. A stopped call still reports to the model, as stopped by you. An ACP
+agent's own command, which only the agent can stop, has `[forget]` in place
+of `[stop]`: `s` or a click takes it off the list without stopping it, for a
+command the agent lost track of. A
 subagent working on its own, outside a call that waits for it, is listed under
 its handle; stopping it cancels the turn it is running, and the subagent
 reports that turn as cancelled. Cancelling the session's run (Esc) never stops

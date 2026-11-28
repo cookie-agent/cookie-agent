@@ -373,6 +373,29 @@ What v2 does report is the agent's terminals.
     that the agent woke on its own: v2 names no cause. Added
     2026-10-28 at the user's request.
   - It has no Stop: v2 gives clients no terminal kill.
+  - **Only the agent can say it ended, so the user can forget it.** An
+    agent can lose track of a command and never report its end: on
+    2026-11-27 a Claude Code session listed one whose task Claude Code no
+    longer knew (its `TaskStop` found none), with no process left, and it
+    held the session, the agent's process, and a restart until the process
+    ended. Cookie cannot check on it, as v2 gives it no process to watch.
+    So the row has **Forget** (`session.background.forget`, client
+    protocol 1.111.0) in place of Stop: the command leaves the list at
+    once and stops counting for restart, eviction, and idle shutdown,
+    without settling. Nothing is stopped. The session records the end with
+    `background_ended.dropped: forgotten`, and clients show the row as
+    forgotten, not ended; it wakes nothing. Only the user forgets, through
+    a client: the model's `stop_background` still refuses an agent
+    command. Added 2026-11-27 at the user's request.
+  - **A replaced agent session drops its commands.** Each command
+    remembers the agent's session that ran it. When cookie opens a
+    different one for the cookie session (a new session in place of one
+    it could not resume, or a fork at a revert), the old session's
+    commands are dropped as forgetting drops them, recorded with
+    `dropped: session_replaced`, since nothing will report on them.
+    Resuming the same agent session keeps them. Added 2026-11-27 at the
+    user's request. A staleness timeout was rejected: background work such
+    as training is often silent for hours.
   - **It settles after it exits.** An agent can take a while to follow up:
     in 344 ends recorded between runs, the wake came a median of 1.5 s
     later and at most 57.8 s later, and every end was followed by one.

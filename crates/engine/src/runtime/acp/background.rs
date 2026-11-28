@@ -9,6 +9,12 @@
 //! agent's process from idling out. It ends when the terminal exits, or with
 //! the agent's process.
 //!
+//! The agent is the only one that can say a command ended. One it will not
+//! report the end of (it lost track of it) leaves when the user forgets it
+//! ([`Engine::forget_agent_command`]), or when the agent's session it ran
+//! in is replaced by another ([`Engine::acp_session_replaced`]); either
+//! records the end as dropped, which does not settle.
+//!
 //! An agent can take a while to follow up on a command that ended, so an
 //! exited command settles before it counts as gone: it leaves the list at
 //! once, but until the agent's next round, its process's end, or
@@ -18,12 +24,12 @@
 use std::time::Duration;
 
 use cookie_agent_protocol::{
-    ACP_BACKGROUND_SETTLE, AcpBackgroundEnded, BackgroundActor, BackgroundCall, SessionId,
-    ToolCallId,
+    ACP_BACKGROUND_SETTLE, AcpBackgroundDropped, AcpBackgroundEnded, AcpSessionUpdate,
+    BackgroundActor, BackgroundCall, SessionId, ToolCallId,
 };
 use tokio::time::Instant;
 
-use super::super::Engine;
+use super::super::{Engine, EngineError, Event, event_origin};
 use super::process::ProcessUse;
 use super::runner::LiveSession;
 use super::terminal::Exit;
@@ -33,6 +39,8 @@ pub(crate) struct AgentCommand {
     session: SessionId,
     /// The runtime the agent runs on.
     runtime: cookie_agent_protocol::RuntimeId,
+    /// The agent's session that runs it.
+    acp_session: String,
     /// Its terminal's ID, the job clients name it by.
     terminal: String,
     tool_call_id: ToolCallId,
@@ -79,6 +87,7 @@ impl Engine {
             commands.push(AgentCommand {
                 session: live.session,
                 runtime: live.agent.runtime.clone(),
+                acp_session: live.acp_session_id.clone(),
                 terminal,
                 tool_call_id,
                 tool,
@@ -117,6 +126,7 @@ impl Engine {
                 started_at: command.since,
                 exit_code: exit.code,
                 signal: exit.signal,
+                dropped: None,
             }
         };
         let inner = std::sync::Arc::downgrade(&self.inner);
@@ -129,6 +139,107 @@ impl Engine {
         self.notify_background_changed(session);
         self.refresh_live_waiting(session);
         Some(ended)
+    }
+
+    /// The user forgot `session`'s agent command `job`, one the agent will
+    /// not report the end of: it leaves the list, stops holding the session
+    /// and the agent's process, and the session records it as forgotten.
+    /// Nothing is ended: cookie runs nothing of the agent's.
+    pub async fn forget_agent_command(
+        &self,
+        session: SessionId,
+        job: &str,
+    ) -> Result<(), EngineError> {
+        let forgotten =
+            self.drop_acp_commands(session, AcpBackgroundDropped::Forgotten, |command| {
+                command.terminal == job && command.settles_at.is_none()
+            });
+        if forgotten.is_empty() {
+            return Err(EngineError::Runtime(
+                if self
+                    .background_calls(session)
+                    .iter()
+                    .any(|call| call.job == job)
+                {
+                    format!("`{job}` is cookie's own background call: stop it instead")
+                } else {
+                    format!("no running agent command `{job}` in this session")
+                },
+            ));
+        }
+        self.record_dropped(session, forgotten).await;
+        Ok(())
+    }
+
+    /// `session`'s agent now runs in its session `acp_session`: the commands
+    /// of the one it replaced, which reports nothing more of them, leave the
+    /// list, the running ones recorded as dropped.
+    pub(super) async fn acp_session_replaced(&self, session: SessionId, acp_session: &str) {
+        let dropped =
+            self.drop_acp_commands(session, AcpBackgroundDropped::SessionReplaced, |command| {
+                command.acp_session != acp_session
+            });
+        self.record_dropped(session, dropped).await;
+    }
+
+    /// Takes `session`'s commands that `which` picks off the list: the
+    /// running ones' ends, dropped for `why`. Settling ones go silently, as
+    /// their ends are on record.
+    fn drop_acp_commands(
+        &self,
+        session: SessionId,
+        why: AcpBackgroundDropped,
+        which: impl Fn(&AgentCommand) -> bool,
+    ) -> Vec<AcpBackgroundEnded> {
+        // The process may idle once nothing else holds it, which takes its
+        // own locks: these go after the list's.
+        let taken = {
+            let mut commands = self.acp_commands();
+            let (taken, kept) = std::mem::take(&mut *commands)
+                .into_iter()
+                .partition::<Vec<_>, _>(|command| command.session == session && which(command));
+            *commands = kept;
+            taken
+        };
+        if taken.is_empty() {
+            return Vec::new();
+        }
+        let ended = taken
+            .iter()
+            .filter(|command| command.settles_at.is_none())
+            .map(|command| AcpBackgroundEnded {
+                tool_call_id: command.tool_call_id,
+                tool: command.tool.clone(),
+                display: command.display.clone(),
+                started_at: command.since,
+                exit_code: None,
+                signal: None,
+                dropped: Some(why),
+            })
+            .collect();
+        drop(taken);
+        self.notify_background_changed(session);
+        self.refresh_live_waiting(session);
+        ended
+    }
+
+    /// Records each of `session`'s dropped commands' ends.
+    async fn record_dropped(&self, session: SessionId, dropped: Vec<AcpBackgroundEnded>) {
+        for ended in dropped {
+            let _ = self
+                .append(
+                    session,
+                    None,
+                    event_origin("engine:acp"),
+                    Event::AcpSessionUpdated {
+                        update: AcpSessionUpdate {
+                            background_ended: Some(ended),
+                            ..AcpSessionUpdate::default()
+                        },
+                    },
+                )
+                .await;
+        }
     }
 
     /// A round of `session`'s agent started, which takes in any follow-up:

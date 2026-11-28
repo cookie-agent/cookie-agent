@@ -5,6 +5,16 @@ The client protocol's version is `MAJOR.MINOR.PATCH`
 adds and a major breaks; before it, every minor could break the wire (see the
 [compatibility spec](../specs/compatibility-v1.md) section 3).
 
+## 1.111.0
+
+- `session.background.forget`: the user takes an ACP agent's own background
+  command (`agent_task`) off the list without stopping it, for one the agent
+  will never report the end of. `AcpBackgroundEnded.dropped` (open:
+  `forgotten`, `session_replaced`) records an end cookie decided rather than
+  the agent: a forgotten command, or one whose agent session was replaced by
+  a new or forked one. A 1.110.0 daemon does not know the method. Plugin
+  protocol 1.52.0 carries the new field.
+
 ## 1.110.0
 
 - Web forwards ([forwards spec](../specs/forwards.md) sections 6 and 7.1,
